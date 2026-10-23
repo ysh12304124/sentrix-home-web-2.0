@@ -39,6 +39,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import requests
 
 from photobench.domain.runtime.metrics import component_total, system_used
 from photobench.domain.runtime.ports import LifecycleProvider, RuntimeProviders, TelemetryProvider
@@ -511,7 +512,7 @@ class OpenAICompatibleInferenceProvider:
             root = self.base_url.removesuffix("/v1")
             for suffix in ("/health", "/api/health"):
                 try:
-                    response = httpx.get(
+                    response = requests.get(
                         f"{root}{suffix}", headers=self.headers, timeout=min(10, self.timeout)
                     )
                     response.raise_for_status()
@@ -519,10 +520,17 @@ class OpenAICompatibleInferenceProvider:
                     return {"status": "available", "source": suffix, "detail": body}
                 except Exception:
                     continue
-            return {"status": "unavailable", "error": str(models_error)}
+            try:
+                response = requests.get(
+                    f"{self.base_url}/models", headers=self.headers, timeout=min(15, self.timeout)
+                )
+                response.raise_for_status()
+                return {"status": "available", "source": "requests_models", **response.json()}
+            except Exception as req_err:
+                return {"status": "unavailable", "error": str(models_error)}
 
     def list_models(self) -> dict[str, Any]:
-        response = httpx.get(f"{self.base_url}/models", headers=self.headers, timeout=min(15, self.timeout))
+        response = httpx.get(f"{self.base_url}/models", headers=self.headers, timeout=min(15, self.timeout), trust_env=False)
         response.raise_for_status()
         body = response.json()
         models = [
@@ -550,6 +558,7 @@ class OpenAICompatibleInferenceProvider:
             json=self._body(payload),
             headers=self.headers,
             timeout=timeout or self.timeout,
+            trust_env=False,
         )
         response.raise_for_status()
         return dict(response.json())
@@ -567,6 +576,7 @@ class OpenAICompatibleInferenceProvider:
             json=self._body(payload),
             headers=self.headers,
             timeout=timeout or self.timeout,
+            trust_env=False,
         ) as response:
             response.raise_for_status()
             yield from response.iter_lines()
@@ -586,6 +596,7 @@ class OpenAICompatibleInferenceProvider:
             f"{self.manager_url}/tokenize-current",
             json={"messages": list(messages), "add_generation_prompt": True},
             timeout=min(timeout, self.timeout),
+            trust_env=False,
         )
         response.raise_for_status()
         value = response.json()
@@ -631,7 +642,7 @@ class OpenAICompatibleInferenceProvider:
         """
         root = self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
         try:
-            response = httpx.get(f"{root}/props", headers=self.headers, timeout=3)
+            response = httpx.get(f"{root}/props", headers=self.headers, timeout=3, trust_env=False)
             response.raise_for_status()
             payload = response.json()
         except Exception:  # noqa: BLE001 —— 见 max_concurrency 的 docstring
@@ -652,7 +663,7 @@ class OpenAICompatibleInferenceProvider:
         if not self.manager_url:
             return None
         try:
-            response = httpx.get(f"{self.manager_url}/state", headers=self.headers, timeout=3)
+            response = httpx.get(f"{self.manager_url}/state", headers=self.headers, timeout=3, trust_env=False)
             response.raise_for_status()
             payload = response.json()
         except Exception:  # noqa: BLE001
@@ -722,7 +733,7 @@ class ManagerTelemetryProvider:
     def _optional(self, path: str) -> dict[str, Any]:
         """**失败不抛**，落成 ``unavailable`` + ``error``：遥测是增强，不是前置条件。"""
         try:
-            response = httpx.get(f"{self.base_url}{path}", timeout=10)
+            response = httpx.get(f"{self.base_url}{path}", timeout=10, trust_env=False)
             response.raise_for_status()
             value = response.json() if response.content else {}
             return {"status": "available", "data": value}
@@ -1043,7 +1054,7 @@ class OrinLlamaCppTelemetryProvider:
         """llama.cpp 的 ``/metrics`` 里那几个 ``llamacpp:kv_cache_*``。探不到就什么都不加。"""
         data: dict[str, Any] = {}
         try:
-            response = httpx.get(f"{self.endpoint}/metrics", timeout=2)
+            response = httpx.get(f"{self.endpoint}/metrics", timeout=2, trust_env=False)
             response.raise_for_status()
             values: dict[str, float] = {}
             for line in response.text.splitlines():

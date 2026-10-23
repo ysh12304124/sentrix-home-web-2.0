@@ -127,6 +127,7 @@ class HttpxJsonClient:
             else httpx.Client(
                 verify=False,
                 follow_redirects=True,
+                trust_env=False,
                 timeout=120,
                 limits=httpx.Limits(
                     max_connections=32,
