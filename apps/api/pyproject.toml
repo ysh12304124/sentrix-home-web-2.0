@@ -46,10 +46,14 @@ dependencies = [
     # 跨平台安装（2026-10-21）：``onnxruntime-gpu`` 在 macOS 没有 wheel，Jetson 的
     # aarch64 GPU 包也不在 PyPI；把它们写死在 base 里会让 Mac/118 的 ``make install``
     # 直接失败。按平台分流：
-    #   · Linux x86_64（153）→ GPU 包，保留 CUDA 人脸；
+    #   · Linux x86_64（153/224）→ GPU 包，保留 CUDA 人脸；
     #   · macOS / Linux aarch64（158/46/118）→ CPU 包，显式声明 CPU provider 即可。
     "onnxruntime-gpu==1.30.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "onnxruntime==1.30.0; sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine == 'aarch64')",
+    # insightface 只约束 ``onnxruntime>=x``，解析器会拉最新版把命名空间覆盖成 1.31——
+    # 「两个都钉同一个版本」的设计（见上）要求 CPU 版**无条件**钉死（2026-10-23 uv
+    # 实测：224 x86_64 上 GPU 包 1.30.0 装好后仍被 insightface 的传递依赖覆盖成
+    # 1.31.0，face_provider_guard 的「修复命令版本号 == pyproject pin」用例当场红）。
+    "onnxruntime==1.30.0",
     "insightface==1.0.1",
     # headless：服务端不装 GUI 那份，1.0 两份都装了是因为它还要在开发机上跑预览。
     "opencv-python-headless>=4.10,<6",
