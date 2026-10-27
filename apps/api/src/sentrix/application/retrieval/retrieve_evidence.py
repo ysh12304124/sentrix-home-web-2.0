@@ -236,7 +236,7 @@ class RetrieveEvidence:
         limit = max(1, request.limit)
         recall_limit = limit * RECALL_OVERSAMPLE_FACTOR
         channel_weights = {**DEFAULT_CHANNEL_WEIGHTS, GRAPH_CHANNEL: GRAPH_CHANNEL_WEIGHT}
-        # 【定向检索】value_type（main schema）映射到通道加权
+        # 【定向检索】value_type（main schema）映射到通道加权（温和×1.3）
         vtype = getattr(request, 'value_type', '')
         if vtype == 'place':
             channel_weights[LEXICAL_CHANNEL] = 1.3
@@ -245,7 +245,9 @@ class RetrieveEvidence:
         elif vtype == 'person':
             channel_weights[ENTITY_CHANNEL] = 1.3
         elif vtype == 'description':
+            # 描述类：视觉特征（穿着/道具/场景）+文本描述并重
             channel_weights[VISUAL_CHANNEL] = 1.3
+            channel_weights[LEXICAL_CHANNEL] = 1.3
         elif vtype in ('amount', 'count', 'duration'):
             channel_weights[LEXICAL_CHANNEL] = 1.3
             channel_weights[ENTITY_CHANNEL] = 1.3
