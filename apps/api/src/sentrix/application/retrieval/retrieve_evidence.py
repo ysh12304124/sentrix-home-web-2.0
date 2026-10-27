@@ -109,7 +109,8 @@ class EvidenceRequest:
     # 这一条走的是**融合后的排除**，那才是「硬条件」的全部含义。
     conditions: tuple[Condition, ...] = ()
     # 问题分类：place/date/person/feature/cross/refuse/unknown
-    question_type: str = "unknown"  # 用于定向检索
+    question_type: str = "unknown"  # 旧字段（保留兼容）
+    value_type: str = ""  # main schema的值类型：place/time/amount/count/person/description等，用于定向检索
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,19 @@ class RetrieveEvidence:
         limit = max(1, request.limit)
         recall_limit = limit * RECALL_OVERSAMPLE_FACTOR
         channel_weights = {**DEFAULT_CHANNEL_WEIGHTS, GRAPH_CHANNEL: GRAPH_CHANNEL_WEIGHT}
+        # 【定向检索】value_type（main schema）映射到通道加权
+        vtype = getattr(request, 'value_type', '')
+        if vtype == 'place':
+            channel_weights[LEXICAL_CHANNEL] = 1.3
+        elif vtype == 'time':
+            channel_weights[LEXICAL_CHANNEL] = 1.3
+        elif vtype == 'person':
+            channel_weights[ENTITY_CHANNEL] = 1.3
+        elif vtype == 'description':
+            channel_weights[VISUAL_CHANNEL] = 1.3
+        elif vtype in ('amount', 'count', 'duration'):
+            channel_weights[LEXICAL_CHANNEL] = 1.3
+            channel_weights[ENTITY_CHANNEL] = 1.3
         primary_weights = {name: weight for name, weight in channel_weights.items() if name != GRAPH_CHANNEL}
 
         # **每个通道都先记一条 trace，再谈命中**——1.0 ``evidence_retrieval.py:203-230``。
