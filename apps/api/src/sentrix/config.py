@@ -69,6 +69,8 @@ class Settings(BaseSettings):
                 "text_embedder_url",
                 "legacy_clip_url",
                 "wemm_url",
+                "reranker_url",
+                "rerank_top_k",
                 "agent_wall_time_s",
                 "chat_timeout_s",
                 "face_providers",
@@ -106,6 +108,18 @@ class Settings(BaseSettings):
     legacy_clip_timeout_s: float = 30.0
     # bge-m3 侧车（8101）的查询超时，照 1.0 ``bge_text.py`` 的 10 秒。
     text_embedder_timeout_s: float = 10.0
+
+    # ---- 重排（BGE Reranker，可选增强） -------------------------------------------
+    # **空串 = 关闭**。这是重建检索顺序的增强，不是召回能力：侧车没起时检索照常
+    # 返回 RRF 顺序，只是少一次精排。默认关闭，避免「装了 API 却没有侧车」的部署
+    # 每次查询都先吃一次连接失败。本地启动：
+    # ``.venv/bin/python scripts/maintenance/bge_reranker_sidecar.py``（8104）。
+    reranker_url: str = ""
+    # 只重排 RRF 融合结果的前 K 条（2026-10-26 用户裁决：top 24，纯重排分数排序）。
+    # K 之后的候选保持 RRF 顺序跟在后面，用于补齐交付条数。
+    rerank_top_k: int = Field(default=24, ge=1)
+    # 侧车一次要过 K 对「查询 + 文档」；10 秒覆盖 MPS/CPU 冷启动后的单批交叉编码。
+    rerank_timeout_s: float = 10.0
     # 单个 Agent 回合的墙钟上限。180 是 153（GPU）的默认；Mac/CPU 上 4 并发时
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0

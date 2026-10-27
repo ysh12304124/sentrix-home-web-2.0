@@ -79,7 +79,7 @@ PHOTOBENCH_QA_CONCURRENCY=4 ...
 
 - 数据/结果/配置/前端产物根：`SENTRIX_DATA_DIR`、`PHOTOBENCH_{DATA,RESULTS,CONFIG,WEB_DIST}_ROOT`
 - 模型与侧车地址：`SENTRIX_VLM_BASE_URL`、`SENTRIX_WEMM_URL`、
-  `SENTRIX_TEXT_EMBEDDER_URL`、`SENTRIX_LEGACY_CLIP_URL`
+  `SENTRIX_TEXT_EMBEDDER_URL`、`SENTRIX_LEGACY_CLIP_URL`、`SENTRIX_RERANKER_URL`
 - llama-server 的 `--ctx-size/--parallel`（决定每个槽的上下文窗口）
 - judge 端点/模型/密钥（`judge_providers.json` 或 run payload）
 - 数据集根（158 的 `PHOTOBENCH_DATA_ROOT` 指向 1.0 的 `services/photobench/data`）

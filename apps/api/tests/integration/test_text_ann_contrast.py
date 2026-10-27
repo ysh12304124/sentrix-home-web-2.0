@@ -39,6 +39,9 @@ from sentrix.infrastructure.persistence.repositories.assets import (
     SqliteObservationRepository,
 )
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
+from sentrix.infrastructure.persistence.repositories.text_vectors import (
+    SqliteTextVectorRepository,
+)
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 
 SCOPE = "album-t117"
@@ -94,6 +97,7 @@ def library(migrations_ready_db, tmp_path: Path):
     observations = SqliteObservationRepository(migrations_ready_db)
     places = SqliteAssetPlaceRepository(migrations_ready_db)
     vectors = SqliteVectorRepository(migrations_ready_db)
+    text_vectors = SqliteTextVectorRepository(migrations_ready_db)
     index = SqliteLexicalIndex(migrations_ready_db, observations, assets=assets, places=places)
 
     media = tmp_path / "media"
@@ -175,6 +179,7 @@ def library(migrations_ready_db, tmp_path: Path):
         "observations": observations,
         "index": index,
         "vectors": vectors,
+        "text_vectors": text_vectors,
         "media": media,
         "payloads": payloads,
     }
@@ -202,7 +207,7 @@ def write_text_vectors(library) -> None:
         ("asset_d", scheme.EPISODIC_SPACE, TEXT_OF_C),
     ]
     for asset_id, space, vector in rows:
-        library["vectors"].upsert(
+        library["text_vectors"].upsert(
             VectorRecord(
                 scope_id=SCOPE,
                 space=space,
@@ -230,7 +235,7 @@ def build(library) -> RetrieveEvidence:
             recognize_place=lambda asset_id: False,
         ),
         entity=RetrieveEntity(index=library["index"], observations=library["observations"]),
-        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["vectors"]),
+        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["text_vectors"]),
     )
 
 

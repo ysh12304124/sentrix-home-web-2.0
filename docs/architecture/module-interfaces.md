@@ -479,7 +479,8 @@ class VisualEmbedder(Protocol):
 2. 更新 `scheme.py` 的 `model_id`/维度（这会让旧向量自然失效）；
 3. 实现适配器，保持 `embed_image` / `embed_query` 同一空间；
 4. 装配 `visual_embedder` / `text_embedder` / `embedding_health`；
-5. **重建向量**：`vector_repository` 与 `vector_index` 都要按新 `model_name` 重写；
+5. **重建向量**：视觉/人脸重写 `vector_repository`（`memory_vectors`），文本重写
+   `text_vector_repository`（`text_vectors`）；`vector_index` 只跟视觉；
 6. 跑检索回归：macro/micro 召回、R@1/R@5、视频召回。
 
 > 不清空旧向量的后果：查询向量与库内向量不同空间，分数看似正常但全是噪声。
@@ -493,8 +494,9 @@ class VisualEmbedder(Protocol):
 
 - 方案常量在 `domain/retrieval/scheme.py` 的 `SCHEMES`；适配器在
   `infrastructure/models/wemm.py` 与 `legacy.py`。
-- **切换方案 = 重建向量**。`memory_vectors` 按 `model_name` 分套，Qdrant collection
-  按 `(space, model, dimension)` 分套；不重建就是“索引为空”。
+- **切换方案 = 重建向量**。`memory_vectors`（视觉/人脸）与 `text_vectors`
+  （`semantic`/`episodic`）都按 `model_name` 分套，Qdrant collection 按
+  `(space, model, dimension)` 分套；不重建就是“索引为空”。
 - 2.0 不提供“某个槽单独换模型”的能力。要换就改 `SCHEMES` 并整方案迁移。
 
 legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`；
@@ -509,7 +511,8 @@ legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`�
 
 **必须保持**
 
-- 权威存储是 SQLite `VectorRepository`；索引只是镜像；
+- 权威存储是 SQLite：视觉/人脸走 `VectorRepository`（`memory_vectors`），文本走同一端口的
+  `text_vectors` 适配器；索引只是视觉镜像；
 - `upsert` 幂等；拒绝空向量；
 - 按 `scope_id` 过滤；
 - 不可用抛 `VectorIndexUnavailable`，禁止返回空列表；
@@ -861,6 +864,9 @@ def test_chat_model_maps_prompt_too_long():
 | `SENTRIX_LEGACY_CLIP_URL` | chinese-clip 侧车 | `http://127.0.0.1:8103` | legacy 方案视觉 | 否 |
 | `SENTRIX_LEGACY_CLIP_TIMEOUT_S` | chinese-clip 超时 | `30` | legacy 视觉 | 否 |
 | `SENTRIX_TEXT_EMBEDDER_TIMEOUT_S` | bge 超时 | `10` | legacy 文本 | 否 |
+| `SENTRIX_RERANKER_URL` | BGE Reranker 侧车；**空串 = 关闭** | `""` | RRF 后头部重排 | 否（缺失降级为 RRF 顺序） |
+| `SENTRIX_RERANK_TOP_K` | 重排的头部条数 | `24` | 重排 | 否 |
+| `SENTRIX_RERANK_TIMEOUT_S` | 重排超时 | `10` | 重排 | 否 |
 | `SENTRIX_CHAT_TIMEOUT_S` | 对话超时 | `120` | ChatModel | 否 |
 | `SENTRIX_VLM_TIMEOUT_S` | 视觉超时 | `180` | VLM/PersonVision/PhotoInspector | 否 |
 | `SENTRIX_VLM_CONTEXT_TOKENS` | 单槽窗口兜底 | `6144` | ChatModel | 否（探测优先） |

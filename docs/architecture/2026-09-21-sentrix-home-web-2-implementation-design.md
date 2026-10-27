@@ -269,6 +269,10 @@ sentrix.main    → 进程入口，只向下调用；与 api / application / dom
 
 1.0 的 59 张表 → 2.0 保留约 35 张、冻结约 24 张。
 
+**2.0 新增**：`text_vectors` —— 文本向量（`semantic` / `episodic`）从 `memory_vectors`
+拆出的独立表（`0015_text_vectors.sql`）；`memory_vectors` 之后只存视觉/人脸行。存量
+数据的复制、校验、反向同步与 purge 见 `docs/runbooks/text-vector-migration.md`。
+
 **保留**：`memory_spaces` `assets` `observations` `memory_vectors` `ingest_batches`；`events` `event_revisions` `event_observations` `event_participants` `event_entities`；`entities` `entity_revisions` `entity_properties` `entity_mentions` `entity_observations` `relationships`；`face_clusters` `face_instances` `face_prototypes` `person_appearance_evidence`；`family_person_memberships` `family_relationships` `family_analysis_runs` `family_person_portraits`；`semantic_profiles` `semantic_claims`；`person_event_memory` `person_patterns`；`agent_conversations` `agent_conversation_messages`(+FTS) `agent_trajectories` `agent_result_sets` `agent_photo_threads`；`agent_core_memory_cards` `agent_core_memory_items`；`observation_search_fts` `observation_search_terms`；`query_gaps` `runtime_settings` `rebuild_runs`
 
 **冻结**：见 1.3-D 清单，另加遗留表 `persons`（语义已迁到 `entities`）。

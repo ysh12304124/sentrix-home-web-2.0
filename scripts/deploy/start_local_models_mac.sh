@@ -5,6 +5,7 @@
 #   8100  llama.cpp OpenAI-compatible VLM (qwen35-q4km + mmproj)
 #   8101  BGE-M3 text embeddings (1024d)
 #   8103  Chinese-CLIP ViT-L/14 image embeddings (768d)
+#   8104  BGE reranker (optional; skipped when the weights are missing)
 #   8191  Sentrix API (legacy embedding scheme)
 set -euo pipefail
 
@@ -17,6 +18,8 @@ export SENTRIX_DEPLOYMENT_PROFILE="${SENTRIX_DEPLOYMENT_PROFILE:-mac}"
 VLM_PORT="${SENTRIX_VLM_PORT:-8100}"
 BGE_PORT="${SENTRIX_BGE_PORT:-8101}"
 CLIP_PORT="${SENTRIX_LEGACY_CLIP_PORT:-8103}"
+RERANK_PORT="${SENTRIX_BGE_RERANK_PORT:-8104}"
+RERANK_MODEL_DIR="${SENTRIX_BGE_RERANKER_MODEL_PATH:-$PROJ/data/models/bge-reranker-v2-m3}"
 API_PORT="${SENTRIX_API_PORT:-8191}"
 VLM_MODEL="${SENTRIX_VLM_MODEL:-$PROJ/data/models/qwen35-q4km/qwen35-q4km.gguf}"
 VLM_MMPROJ="${SENTRIX_VLM_MMPROJ:-$PROJ/data/models/qwen35-q4km/qwen35-mmproj-f16.gguf}"
@@ -89,12 +92,31 @@ wait_http "http://127.0.0.1:$CLIP_PORT/health" 180 || {
   exit 1
 }
 
+# 重排是可选增强：权重目录不在就跳过，API 侧传空串（= 关闭），检索照常走 RRF。
+RERANK_URL=""
+if [ -d "$RERANK_MODEL_DIR" ]; then
+  if ! port_in_use "$RERANK_PORT"; then
+    echo "启动 BGE Reranker :$RERANK_PORT"
+    nohup .venv/bin/python scripts/maintenance/bge_reranker_sidecar.py \
+      --port "$RERANK_PORT" > logs/bge-reranker.log 2>&1 < /dev/null &
+  fi
+  wait_http "http://127.0.0.1:$RERANK_PORT/health" 180 || {
+    echo "BGE Reranker 未就绪，日志：" >&2
+    tail -60 logs/bge-reranker.log >&2
+    exit 1
+  }
+  RERANK_URL="http://127.0.0.1:$RERANK_PORT"
+else
+  echo "跳过 BGE Reranker：未找到 $RERANK_MODEL_DIR"
+fi
+
 if ! port_in_use "$API_PORT"; then
   echo "启动 Sentrix API :$API_PORT"
   env \
     SENTRIX_EMBEDDING_SCHEME=legacy \
     SENTRIX_LEGACY_CLIP_URL="http://127.0.0.1:$CLIP_PORT" \
     SENTRIX_TEXT_EMBEDDER_URL="http://127.0.0.1:$BGE_PORT" \
+    SENTRIX_RERANKER_URL="$RERANK_URL" \
     SENTRIX_VLM_BASE_URL="http://127.0.0.1:$VLM_PORT/v1" \
     SENTRIX_DATA_DIR="$DATA_DIR" \
     nohup .venv/bin/python -m uvicorn --factory sentrix.main:create_app \
