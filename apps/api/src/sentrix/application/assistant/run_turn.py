@@ -692,6 +692,13 @@ class RunTurn:
                 answer = _planner_failure_answer(planned)
             else:
                 session.ledger.requirements = list(planned.requirements or ())
+                # 提取question_type
+                import json as _json
+                try:
+                    planned_data = _json.loads(planned.raw)
+                    session.ledger.question_type = planned_data.get("declaration", {}).get("question_type")
+                except:
+                    session.ledger.question_type = None
                 self._publish(
                     session,
                     session.state.emit(
@@ -882,6 +889,13 @@ class RunTurn:
                 tools_exhausted=not state.can_call_tool(),
                 page_available=_page_available(state),
             )
+            # 【优化】根据question_type强制inspect_photo
+            question_type = session.ledger.question_type if hasattr(session.ledger, 'question_type') else None
+            if question_type in ("place", "date", "person"):
+                for spec in specs:
+                    if spec.name == "inspect_photo":
+                        spec = spec._replace(required=True)
+                        break
             try:
                 reply = self._complete_recorded(session, messages, specs)
             except PromptTooLongError as error:
@@ -1670,6 +1684,8 @@ class RunTurn:
             extra={"arguments": _call_arguments(call)},
         )
         started_at = time.perf_counter()
+        # 传question_type给检索层做定向检索
+        qtype = session.ledger.question_type if hasattr(session.ledger, 'question_type') else "unknown"
         outcome = self._toolbox.execute(
             call.name,
             decision.arguments,
@@ -1679,6 +1695,7 @@ class RunTurn:
             # （``tools.py:2162-2165``）。1.0 从可变的 ``task_state`` 里取，2.0 的
             # ``TaskState`` 没有那一格——**这不是加状态，是把已经在手上的那个字符串传下去**。
             question=state.question,
+            question_type=qtype,
         )
         duration_ms = round((time.perf_counter() - started_at) * 1000, 1)
         state.record(

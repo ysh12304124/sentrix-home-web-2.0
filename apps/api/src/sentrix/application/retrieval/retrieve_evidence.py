@@ -108,6 +108,8 @@ class EvidenceRequest:
     # 那几个是传给通道的**召回前筛**，它们影响「召回什么」，不保证结果满足条件；
     # 这一条走的是**融合后的排除**，那才是「硬条件」的全部含义。
     conditions: tuple[Condition, ...] = ()
+    # 问题分类：place/date/person/feature/cross/refuse/unknown
+    question_type: str = "unknown"  # 用于定向检索
 
 
 @dataclass(frozen=True, slots=True)

@@ -205,9 +205,10 @@ class AssistantToolbox:
         scope_id: str,
         now: datetime,
         question: str = "",
+        question_type: str = "unknown",
     ) -> ToolOutcome:
         if name == "search_memories":
-            return self._search(arguments, scope_id=scope_id, now=now)
+            return self._search(arguments, scope_id=scope_id, now=now, question_type=question_type)
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -284,13 +285,13 @@ class AssistantToolbox:
 
     # ---- search_memories ----------------------------------------------------
 
-    def _search(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime) -> ToolOutcome:
+    def _search(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime, question_type: str = "unknown") -> ToolOutcome:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("empty_query", "query 不能为空，请用用户问题里的实词。")
 
         result = self._retrieval.execute(
-            EvidenceRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
+            EvidenceRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")), question_type=question_type)
         )
         result_set = ResultSet(
             id=f"rs_{uuid.uuid4().hex[:12]}",

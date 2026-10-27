@@ -184,13 +184,14 @@ class GoalPlanner:
                 debug_calls.append(debug_call)
 
             last_raw = reply.content
-            requirements, reason = parse_declaration(last_raw or "", scope_id=scope_id, question=question)
+            requirements, reason, question_type = parse_declaration(last_raw or "", scope_id=scope_id, question=question)
             if requirements is not None:
                 return PlannerResult(
                     requirements=requirements,
                     raw=last_raw,
                     model_calls=tuple(calls),
                     debug_calls=tuple(debug_calls),
+                    question_type=question_type,
                 )
             last_reason = reason
             if attempt + 1 >= self.max_attempts:
