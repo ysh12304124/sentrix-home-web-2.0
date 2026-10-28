@@ -42,9 +42,9 @@ from sentrix.domain.identity.ports import (
 )
 from sentrix.domain.media.ports import (
     AssetRepository,
-    AudioTranscriber,
     AudioMetadataReader,
     AudioRepository,
+    AudioTranscriber,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
