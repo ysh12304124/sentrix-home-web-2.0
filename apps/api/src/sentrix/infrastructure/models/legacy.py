@@ -262,3 +262,46 @@ class LegacyEmbeddingHealthProbe:
         if not self._text.available:
             errors.append(f"text: {self._text.load_error or 'unavailable'}")
         return "; ".join(errors)
+
+    def smoke_test(self) -> tuple[bool, str]:
+        """启动时推理测试：确认端到端功能可用，而不是只检查服务活着。
+
+        2026-10-29 的教训：CLIP 侧车缺少 `from PIL import Image`，`/health` 返回 ok，
+        但实际推理时 NameError。健康检查只检查服务活着，没发现功能 broken。
+        现在启动时做一次推理，确认能拿到向量。
+
+        Returns:
+            (success, error_message): success=True 表示测试通过，否则 error_message 说明原因。
+        """
+        import tempfile
+        from pathlib import Path
+
+        # 测试视觉嵌入：生成一个临时小图片
+        try:
+            from PIL import Image
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                img = Image.new("RGB", (64, 64), color=(128, 128, 128))
+                img.save(f, format="PNG")
+                temp_path = Path(f.name)
+            try:
+                vector = self._visual.embed_image(temp_path)
+                if not vector:
+                    return False, f"visual embed_image returned empty vector: {self._visual.load_error}"
+                if len(vector) != self._visual.dimension:
+                    return False, f"visual embed_image returned {len(vector)} dims, expected {self._visual.dimension}"
+            finally:
+                temp_path.unlink(missing_ok=True)
+        except Exception as e:
+            return False, f"visual smoke test failed: {type(e).__name__}: {e}"
+
+        # 测试文本嵌入
+        try:
+            vector = self._text.embed_query("test")
+            if not vector:
+                return False, f"text embed_query returned empty vector: {self._text.load_error}"
+            if len(vector) != self._text.dimension:
+                return False, f"text embed_query returned {len(vector)} dims, expected {self._text.dimension}"
+        except Exception as e:
+            return False, f"text smoke test failed: {type(e).__name__}: {e}"
+
+        return True, ""

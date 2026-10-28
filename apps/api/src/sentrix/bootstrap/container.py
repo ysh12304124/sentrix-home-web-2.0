@@ -309,6 +309,16 @@ class Container:
                 timeout_s=settings.text_embedder_timeout_s,
             )
             embedding_health = LegacyEmbeddingHealthProbe(visual_embedder, text_embedder)
+            # **启动时推理测试**：2026-10-29 的教训——CLIP 侧车缺少 `from PIL import Image`，
+            # `/health` 返回 ok，但实际推理时 NameError。健康检查只检查服务活着，没发现功能 broken。
+            # 现在启动时做一次推理，确认端到端功能可用。失败则 API 启动失败，明确报错。
+            smoke_ok, smoke_error = embedding_health.smoke_test()
+            if not smoke_ok:
+                raise RuntimeError(
+                    f"嵌入方案启动测试失败（embedding_scheme=legacy）: {smoke_error}。"
+                    f"请检查 CLIP/bge 侧车是否正常，代码是否有语法/import 错误。"
+                )
+            log.info("嵌入方案启动测试通过（legacy CLIP + bge）")
         else:
             # 统一多模态嵌入侧车。**两个槽指向同一个实例**（W1 起方案是统一空间）：
             # 建两个实例会让侧车那侧显存翻倍，熔断计数也会各自漂移。

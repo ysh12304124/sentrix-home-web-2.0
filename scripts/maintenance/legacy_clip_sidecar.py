@@ -37,6 +37,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from PIL import Image
+
 DIMENSION = 768
 CONTEXT_LENGTH = 52
 

@@ -39,6 +39,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import logging
+
+log = logging.getLogger(__name__)
+
 from photobench.domain.deploy.ports import RestartOutcome
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.runtime.ports import RunRuntimeSnapshot
@@ -262,6 +266,21 @@ class SubprocessSentrixProcess:
                     ):
                         if embedding.get(key):
                             env[name] = str(embedding[key])
+                else:
+                    # embedding 段存在但 mode 缺失/未知 → 显式兜底到 legacy，
+                    # 而不是让 config.py 的默认值按 profile 静默决定（server→wemm
+                    # 但 wemm 实际没部署 → 视觉向量全部写不进去 → 记忆图降级）。
+                    # Mac 上 redundant（config.py 自己也会选 legacy），但显式写出来
+                    # 让日志可追溯；server 上是真正修复。
+                    profile = (connection.get("product_settings") or {}).get(
+                        "deployment_profile", "server"
+                    )
+                    env["SENTRIX_EMBEDDING_SCHEME"] = "legacy"
+                    log.warning(
+                        "embedding.mode 未配置（profile=%s），显式兜底到 legacy CLIP。"
+                        "建议在 runtime_connection.json 显式指定 embedding.mode",
+                        profile,
+                    )
             for key, name in (
                 ("deployment_profile", "SENTRIX_DEPLOYMENT_PROFILE"),
                 ("agent_wall_time_s", "SENTRIX_AGENT_WALL_TIME_S"),
@@ -314,7 +333,9 @@ class SubprocessSentrixProcess:
 
     def _await_health(self, timeout: float) -> tuple[bool, str]:
         """轮询 ``/api/v1/health`` 直到 200。``ok`` / ``degraded`` 都算起来了
-        （``degraded`` 只表示库有问题，进程是活的——1.0 也是这么判的）。"""
+        （``degraded`` 只表示库有问题，进程是活的——1.0 也是这么判的）。
+        **但嵌入功能必须可用**：如果 ``embeddings != "ok"``，启动失败。理由见
+        本模块 docstring 的教训——嵌入降级会让整轮数据作废却没人发现。"""
         deadline = self._clock() + timeout
         last_error = ""
         while self._clock() < deadline:
@@ -324,8 +345,21 @@ class SubprocessSentrixProcess:
                 last_error = str(exc)
             else:
                 if isinstance(body, dict) and body.get("status") in {"ok", "degraded"}:
-                    return True, ""
-                last_error = f"unexpected health payload: {body!r}"
+                    # **嵌入功能必须可用。** 2026-10-28 的教训：wemm 侧车没启动，
+                    # /health 返回 degraded + embeddings=unavailable，但 photobench
+                    # 认为 API 起来了，跑完整个 run 才发现视觉向量全没写进去。
+                    # 现在启动时就检查，不可用立即失败。
+                    if body.get("embeddings") != "ok":
+                        error_detail = body.get("embeddings_error") or "embeddings unavailable"
+                        last_error = (
+                            f"embedding health check failed: {error_detail}. "
+                            f"Check embedding config in runtime_connection.json"
+                        )
+                        # 继续轮询，给侧车一点启动时间
+                    else:
+                        return True, ""
+                else:
+                    last_error = f"unexpected health payload: {body!r}"
             self._sleep(self._poll_interval)
         return False, last_error or f"sentrix did not become healthy within {timeout}s"
 
