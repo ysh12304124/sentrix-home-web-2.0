@@ -29,8 +29,21 @@ class QwenAudioTranscriber:
             audio_path = Path(temporary) / "audio.wav"
             subprocess.run(
                 [
-                    "ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vn",
-                    "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-y", str(audio_path),
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    "-y",
+                    str(audio_path),
                 ],
                 check=True,
                 capture_output=True,
