@@ -16,6 +16,7 @@ from pathlib import Path
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes
 from sentrix.application.media.import_assets import ImportAssets, ImportRequest
 from sentrix.domain.media.models import MediaType, VideoMetadata
+from sentrix.domain.media.ports import AudioTranscriber, TranscriptionSegment
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.asset_places import SqliteAssetPlaceRepository
 from sentrix.infrastructure.persistence.repositories.assets import (
@@ -69,8 +70,23 @@ class RecordingKeyframeExtractor:
         return target
 
 
+class FakeTranscriber:
+    def __init__(self, segments: tuple[TranscriptionSegment, ...]) -> None:
+        self.segments = segments
+
+    def transcribe_video(self, path: Path) -> tuple[TranscriptionSegment, ...]:
+        return self.segments
+
+
 class Harness:
-    def __init__(self, db: Database, tmp_path: Path, *, duration_sec: float = 125.0) -> None:
+    def __init__(
+        self,
+        db: Database,
+        tmp_path: Path,
+        *,
+        duration_sec: float = 125.0,
+        transcriber: AudioTranscriber | None = None,
+    ) -> None:
         self.assets = SqliteAssetRepository(db)
         self.observations = SqliteObservationRepository(db)
         self.events = SqliteEventRepository(db)
@@ -85,6 +101,7 @@ class Harness:
             video_repository=self.videos,
             keyframes=self.extractor,
             process_image=self._process_image,
+            transcriber=transcriber,
         )
         self.importer = ImportAssets(
             assets=self.assets,
@@ -138,6 +155,29 @@ def test_importing_a_video_forms_scenes_with_lineage_back_to_the_source(
     assert {item.parent_asset_id for item in derived} == {result.asset_id}
     # 抽取器被要求抽的秒数就是窗口中点——这是「能跳回原片」在写侧的那一半。
     assert [call[2] for call in harness.extractor.calls] == [30.0, 90.0, 122.5]
+
+
+def test_timestamped_speech_is_added_to_the_matching_scene_memory_text(
+    migrations_ready_db: Database, tmp_path: Path
+):
+    """Speech is assigned by source-time overlap before keyframe observations are built."""
+    transcriber = FakeTranscriber(
+        (
+            TranscriptionSegment(8.0, 10.0, "小明说开始做饭", "speaker_0"),
+            TranscriptionSegment(62.0, 65.0, "把盘子放到桌上"),
+            TranscriptionSegment(64.0, 66.0, "把盘子放到桌上"),  # duplicate ASR text is collapsed
+            TranscriptionSegment(121.0, 124.0, "大家开饭了"),
+        )
+    )
+    harness = Harness(migrations_ready_db, tmp_path, transcriber=transcriber)
+
+    result = harness.import_video()
+
+    scenes = harness.events.list_video_scenes(result.asset_id)
+    assert "speaker_0: 小明说开始做饭" in scenes[0].summary
+    assert "把盘子放到桌上" in scenes[1].summary
+    assert scenes[1].summary.count("把盘子放到桌上") == 1
+    assert "大家开饭了" in scenes[2].summary
 
 
 def test_a_keyframe_is_an_image_asset_whose_observation_lands_in_its_scene_event(
