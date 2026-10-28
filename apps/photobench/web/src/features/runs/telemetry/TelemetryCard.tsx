@@ -27,6 +27,7 @@ import { EXECUTION_PHASES } from "../../../lib/constants.ts";
 import { fmtMemory } from "../../../lib/format.ts";
 import { jetsonUnifiedFromRun, telemetryNumber, telemetryPlatform } from "../../../lib/telemetry.ts";
 import {
+  comparableMemoryProfile, gpuMetricRows, gpuMetricsView, memoryProfileRows,
   liveTelemetryPhaseRows,
   liveTelemetryRows,
   telemetryObservationRows,
@@ -263,6 +264,9 @@ function LegacyTelemetryCard({ run }: TelemetryCardProps) {
   const chartRef = useRef<EChartsType | null>(null);
   const sampleCount = telemetrySampleCount(run);
   const live = telemetryLiveState(run);
+  const historicalStats = gpuMetricsView(run);
+  const memory = run?.memory_profile || dict(run?.phases?.gpu_metrics).memory_profile
+    ? comparableMemoryProfile(run) : null;
   const rows = [...liveTelemetryRows(run), ...telemetryObservationRows(run)];
   const phaseRows = liveTelemetryPhaseRows(run);
   const processes = telemetryProcessList(run);
@@ -324,7 +328,7 @@ function LegacyTelemetryCard({ run }: TelemetryCardProps) {
     chartRef.current?.resize();
   }
 
-  if (!sampleCount && !telemetryObservationRows(run).length) return null;
+  if (!sampleCount && !telemetryObservationRows(run).length && !memory && !Object.keys(dict(run?.phases?.gpu_metrics)).length) return null;
   return (
     <details
       open
@@ -381,6 +385,17 @@ function LegacyTelemetryCard({ run }: TelemetryCardProps) {
           </small>
         </div>
       ) : null}
+      <details className="metric-definition-panel">
+        <summary>历史采样汇总</summary>
+        <p className="muted">历史运行按当时记录的口径展示。</p>
+        <div className="phase-metrics">
+          {[...gpuMetricRows(historicalStats), ...(memory ? memoryProfileRows(memory) : [])].map((row, index) => (
+            <div className="phase-metric" key={`${row[0]}-${index}`}>
+              <span>{row[0]}</span><strong>{row[1]}</strong><small>{row[2]}</small>
+            </div>
+          ))}
+        </div>
+      </details>
       <details className="metric-definition-panel telemetry-definition-panel">
         <summary>资源曲线口径说明</summary>
         <div className="metric-definition-row">

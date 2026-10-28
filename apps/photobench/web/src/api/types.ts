@@ -151,7 +151,7 @@ export interface TelemetryLive {
   metrics_contract_version?: number;
   memory_accounting?: "nvidia_pss_and_vram" | "jetson_pss_plus_nvmap_estimate" | "apple_capacity_estimate";
   memory_complete?: boolean;
-  field_stats?: Record<string, { peak?: number; mean?: number; p95?: number; valid_count?: number }>;
+  field_stats?: Record<string, { peak?: number; mean?: number; p50?: number; p95?: number; valid_count?: number }>;
   rejected_samples?: Record<string, number>;
   sampling?: Record<string, unknown>;
   source?: string;

@@ -258,3 +258,13 @@ describe("TelemetryCard · echarts 生命周期（1.0 :1027-1125 / :2824-2837）
     ]);
   });
 });
+
+it("retains replay-only historical memory values inside the telemetry section", () => {
+  const value = { run_id: "old-replay", status: "completed", memory_profile: {
+    status: "completed", memory_profile: { method: "macos_unified_memory_v1", memory_used_peak_gib: 12.5 },
+  } } as Run;
+  const view = render(<TelemetryCard run={value} />);
+  expect(view.getByText("历史采样汇总")).toBeTruthy();
+  expect(view.getByText("12.50 GiB")).toBeTruthy();
+  expect(echartsMock.init).not.toHaveBeenCalled();
+});

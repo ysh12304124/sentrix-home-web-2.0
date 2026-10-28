@@ -1,11 +1,9 @@
 /**
  * 「结果指标」卡片组（不含实时遥测卡）。逐行照搬 1.0 `App.vue:3331-3430`：
- * GPU 指标 / 可比较显存 / 指标汇总 + token 分布 / 确定性交付与 OCR partial /
+ * 指标汇总 + token 分布 / 确定性交付与 OCR partial /
  * 主 Agent 工具性能 / 运行可追溯信息。
  *
- * 1.0 的三处组件内助手（`resultPhaseStatus` `:2154-2157`、`gpuMetricsStatusLabel`
- * `:2158-2162`、`isOrinPssRun` `:2274-2284`）没有落进 `lib/`，只服务这几张卡，
- * 因此留在本文件内；它们读的全局 `activeRun` 改成显式入参 `run`。
+ * 资源指标统一在实时资源遥测卡展示；其余结果汇总保留在此。
  *
  * `<h3 class="result-heading">结果指标</h3>` 与 `<div class="result-phase-list">`
  * 由组合层（`RunDetail`）提供，因为 1.0 的第一张卡是 `TelemetryCard`，它排在本组件之前。
@@ -16,10 +14,6 @@ import { fmtMs, fmtPct, fmtSeconds, phaseSeconds, statusLabel } from "../../lib/
 import { effectiveRunSummary } from "../../lib/runSummary.ts";
 import {
   aggregateMetricRows,
-  comparableMemoryProfile,
-  gpuMetricRows,
-  gpuMetricsView,
-  memoryProfileRows,
   tokenDistributionCount,
   tokenDistributionRows,
 } from "../../lib/telemetry.ts";
@@ -44,34 +38,6 @@ function resultPhaseStatus(phase: unknown, run: Run | null | undefined): string 
   return ["cancelled", "interrupted", "failed"].includes(String(run?.status)) ? "not_run" : "pending";
 }
 
-/** 1.0 `:2158-2162`。 */
-function gpuMetricsStatusLabel(run: Run | null | undefined): string {
-  const phase = gpuMetricsView(run);
-  if (phase.partial && phase.status === "running") return "实时更新中";
-  return statusLabel(resultPhaseStatus(phase, run));
-}
-
-/** 1.0 `:2274-2284`。 */
-function isOrinPssRun(run: Run | null | undefined): boolean {
-  const sources: unknown[] = ["orin_ssh_pss", "jetson_local_pss", "apple_unified"];
-  const r = dict(run);
-  const gpu = dict(dict(r.phases).gpu_metrics);
-  const method = dict(gpu.memory_profile).method || dict(comparableMemoryProfile(run)?.memory_profile).method;
-  return (
-    sources.includes(r.telemetry_source) ||
-    sources.includes(dict(r.telemetry_live).source) ||
-    sources.includes(gpu.source) ||
-    method === "orin_process_pss_uma_v1" ||
-    method === "orin_smaps_rss_plus_gpu_uma_v1" ||
-    method === "apple_phys_footprint_v1" ||
-    // 1.0 `:1195-1197`。漏掉这三种时，只有 `memory_profile.method` 的历史 Apple run
-    // 会多显示一张「可比较显存」卡——那张卡对统一内存机器不适用，会误导对比。
-    method === "apple_resident_rss_v2" ||
-    method === "apple_max_rss_footprint_v1" ||
-    method === "apple_phys_footprint_plus_mapped_weights_v1"
-  );
-}
-
 /** 1.0 `:3338` 的 `:class="['phase-metric', { 'priority-metric': row[3] }]"`。 */
 function metricClass(row: MetricRow): string {
   return row[3] ? "phase-metric priority-metric" : "phase-metric";
@@ -84,88 +50,14 @@ export interface ResultMetricsProps {
 export function ResultMetrics({ run }: ResultMetricsProps) {
   // 1.0 在每张卡里现算 `effectiveRunSummary(activeRun.value)`（`:426`）；纯函数、不发请求。
   const summary = effectiveRunSummary(run);
-  const gpu = gpuMetricsView(run);
-  const comparable = comparableMemoryProfile(run);
   const delivery = deliveryBreakdown(summary);
   const tools = toolPerformanceRows(summary);
   const integrity = dict(run?.input_integrity);
   const snapshots = dict(run?.hardware_snapshots);
   const start = snapshotSummary(snapshots.start);
   const end = snapshotSummary(snapshots.end);
-  const concurrency = dict(run).qa_concurrency;
-
-  /** 1.0 `:3336`。 */
-  const gpuTime = gpu.partial
-    ? "已按当前已采样数据滚动汇总；全部阶段结束后更新为全程均值/峰值。"
-    : "指标计算耗时 " + fmtSeconds(phaseSeconds(run?.phases?.gpu_metrics));
-  const orinUnified =
-    dict(gpu.memory_profile).method === "orin_smaps_rss_plus_gpu_uma_v1" ||
-    dict(gpu.memory_profile).scope === "host_smaps_rss_plus_gpu_uma" ||
-    gpu.model_process_host_memory_mib != null;
-  const gpuSource =
-    gpu.source === "apple_unified"
-      ? "Mac：主指标是主模型占用（footprint+权重映射）"
-      : ["orin_ssh_pss", "jetson_local_pss"].includes(String(gpu.source))
-        ? orinUnified
-          ? "Orin：主指标是主机 smaps Rss + GPU/UMA 页"
-          : "Orin：主指标是 llama-server 的 VmRSS（旧口径）"
-        : gpu.memory_pressure
-          ? "macOS 统一内存系统级采样（含模型 Metal 分配）"
-          : "模型进程显存为 NVML 按 PID 汇总的实际占用，KV Cache 为 vLLM 逻辑使用率";
   return (
     <>
-      <details className="phase-card result-phase-card gpu-result-card">
-        <summary className="phase-title">
-          <b>GPU 指标</b>
-          <span className={`phase-status ${resultPhaseStatus(gpu, run)}`}>{gpuMetricsStatusLabel(run)}</span>
-        </summary>
-        <p className="metric-calc-time">
-          {gpuTime} · {gpuSource}
-          {Number(concurrency) > 1
-            ? ` · QA 并发 ${concurrency}（时延含排队，勿与串行 run 直接对比）`
-            : ""}
-        </p>
-        <div className="phase-metrics">
-          {gpuMetricRows(gpu).map((row) => (
-            <div key={row[0]} className={metricClass(row)}>
-              <span>{row[0]}</span>
-              <strong>{row[1]}</strong>
-              <small>{row[2]}</small>
-            </div>
-          ))}
-        </div>
-      </details>
-
-      {!isOrinPssRun(run) ? (
-        <details className="phase-card result-phase-card gpu-result-card">
-          <summary className="phase-title">
-            <b>{comparable?.source === "replay" ? "可比较显存复测" : "可比较显存"}</b>
-            <span className={`phase-status ${comparable?.status || "pending"}`}>
-              {statusLabel(comparable?.status || "pending")}
-            </span>
-          </summary>
-          <p className="metric-calc-time">
-            {(dict(comparable?.memory_profile).method === "orin_process_pss_uma_v1"
-              ? "Orin 统一内存按进程 PSS 记录；KV 字节数尚不可用，不与独立显存直接比较。"
-              : comparable?.source === "gpu_metrics"
-                ? "来自本次正式评测 GPU 采样；"
-                : comparable?.source === "replay"
-                  ? "复用现有相册与问题，不运行 Benchmark/Judge，不保存本次回答；"
-                  : "本次 run 的 GPU 采样结束后生成；") + "工作负载显存为扣除预留 KV 后的估算值，不是硬件实测。"}
-          </p>
-          {comparable?.error ? <p className="error">{vtext(comparable.error)}</p> : null}
-          <div className="phase-metrics">
-            {memoryProfileRows(comparable || {}).map((row) => (
-              <div key={row[0]} className={metricClass(row)}>
-                <span>{row[0]}</span>
-                <strong>{row[1]}</strong>
-                <small>{row[2]}</small>
-              </div>
-            ))}
-          </div>
-        </details>
-      ) : null}
-
       <details className="phase-card result-phase-card aggregate-result-card">
         <summary className="phase-title">
           <b>指标汇总</b>

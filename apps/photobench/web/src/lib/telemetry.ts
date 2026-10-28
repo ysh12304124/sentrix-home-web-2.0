@@ -156,7 +156,7 @@ export function gpuMetricRows(rawPhase: unknown = {}): MetricRow[] {
 /**
  * 1.0 `:857-935`。把 `phases.gpu_metrics` 与实时采样历史合成为一个可渲染的相位对象。
  *
- * 优先采用后端完整样本统计。仅当历史完整时，以有限样本重算均值、采样峰值和 nearest-rank P95；
+ * 优先采用后端完整样本统计。仅当历史完整时，以有限样本重算均值、采样峰值、P50和 nearest-rank P95；
  * 降采样历史或缺失历史不能恢复均值、分位数。
  */
 export function gpuMetricsView(run: unknown): Dict {
@@ -179,6 +179,7 @@ export function gpuMetricsView(run: unknown): Dict {
     return {
       peak: sorted[count - 1],
       mean: values.reduce((sum, value) => sum + value, 0) / count,
+      p50: sorted[Math.floor(count / 2)],
       p95: sorted[Math.max(0, Math.ceil(count * 0.95) - 1)],
     };
   };

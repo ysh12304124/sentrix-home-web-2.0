@@ -353,11 +353,9 @@ describe("pipelineMetricRows：缺失阶段走不同回退（1.0 :2199-2232）",
       },
     };
     const rows = pipelineMetricRows(phase);
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toEqual(["评测图片墙钟均值", "1.5s", "历史运行未记录评测图片数，按旧口径展示"]);
-    expect(rows[1]).toEqual(["实际图片并发", "-", "配置 - · vLLM 上限 -"]);
-    expect(rows[2]).toEqual(["事件总结", "-", "批次耗时 -"]);
-    expect(rows[3]).toEqual(["图片 CLIP", "10ms", "总计 30ms · P95 20ms"]);
+    expect(rows[1]).toEqual(["图片 CLIP", "10ms", "总计 30ms · P95 20ms"]);
     expect(rows.map((r) => r[0])).not.toContain("人脸检测");
   });
 
@@ -381,11 +379,11 @@ describe("pipelineMetricRows：缺失阶段走不同回退（1.0 :2199-2232）",
       "阶段墙钟 1000s ÷ 100 张评测图片；不含身份参考图",
     ]);
     expect(rows[1]).toEqual(["实际图片并发", "8 路", "配置 8 · vLLM 上限 16"]);
-    expect(rows[2]).toEqual(["事件总结", "18/20 次", "批次耗时 5s"]);
+    expect(rows[2]).toEqual(["事件总结调用", "18/20 次", "批次耗时 5s"]);
   });
 
-  it("墙钟均值两者都缺 → 未记录", () => {
-    expect(pipelineMetricRows({ pipeline_metrics: {} })[0][1]).toBe("未记录");
+  it("旧记录没有补充统计时不显示空卡", () => {
+    expect(pipelineMetricRows({ pipeline_metrics: {} })).toEqual([]);
   });
 
   it("显式流水线把不同阶段耗时列成独立指标", () => {
@@ -394,8 +392,8 @@ describe("pipelineMetricRows：缺失阶段走不同回退（1.0 :2199-2232）",
       pipeline_metrics: {},
     });
     expect(rows.slice(0, 4)).toEqual([
-      ["源媒体模型准备", "10s", "并发 worker 累计耗时"],
-      ["关键帧提取", "4s", "ffmpeg 抽帧墙钟累计"],
+      ["源媒体模型准备", "10s", "视觉向量、画面理解、人脸检测；并发累计耗时"],
+      ["关键帧提取", "4s", "仅视频适用；抽帧累计耗时"],
       ["记忆图构建", "0.4s", "结构化图节点与边重建"],
       ["因果边判定", "0.2s", "规则信号筛选与文本模型因果判定；包含在记忆图构建耗时内"],
     ]);
@@ -444,9 +442,21 @@ describe("openImageTarget（1.0 :2194 纯半）", () => {
 });
 
 
-it("显式流水线只展示已记录耗时，等待响应时不展示历史缺失占位卡", () => {
-  expect(pipelineMetricRows({ execution_mode: "explicit" })).toEqual([]);
-  const rows = pipelineMetricRows({ execution_mode: "explicit", timings: { memory_graph: 2 } });
-  expect(rows).toHaveLength(1);
-  expect(rows[0]?.[0]).toBe("记忆图构建");
+it("显式流水线展示完整步骤，零耗时有效、缺失不伪装完成", () => {
+  const waiting = pipelineMetricRows({ execution_mode: "explicit", status: "running" });
+  expect(waiting).toHaveLength(10);
+  expect(waiting.every(row => row[1] === "待回传")).toBe(true);
+  const rows = pipelineMetricRows({ execution_mode: "explicit", status: "done",
+    timings: { memory_graph: 2, causal_graph: 0, source_memory_prepare: NaN } });
+  expect(rows).toHaveLength(10);
+  expect(rows.find(row => row[0] === "记忆图构建")?.[1]).toBe("2s");
+  expect(rows.find(row => row[0] === "因果边判定")?.[1]).toBe("<1ms");
+  expect(rows.find(row => row[0] === "关键帧提取")?.[1]).toBe("未记录");
+  expect(rows.find(row => row[0] === "源媒体模型准备")?.[1]).toBe("未记录");
+});
+
+it("历史记录保留有效并发统计，事件计时与调用数各有独立标题", () => {
+  const rows = pipelineMetricRows({ timings: { event_summarize: 5 },
+    pipeline_metrics: { effective_workers: 4, event_count: 2, event_summary_call_count: 2 } });
+  expect(rows.map(row => row[0])).toEqual(["事件总结", "实际图片并发", "事件总结调用"]);
 });

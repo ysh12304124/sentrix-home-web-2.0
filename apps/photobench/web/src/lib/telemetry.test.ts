@@ -60,7 +60,7 @@ describe("gpuMetricsView (:857-935)", () => {
     const sparse = gpuMetricsView({ status: "running", telemetry_live: {
       samples_count: 3, history: [{ gpu_utilization_pct: null }, { gpu_utilization_pct: 0 }, { gpu_utilization_pct: 20 }],
     } });
-    expect(sparse.gpu_utilization_pct).toEqual({ peak: 20, mean: 10, p95: 20 });
+    expect(sparse.gpu_utilization_pct).toEqual({ peak: 20, mean: 10, p50: 20, p95: 20 });
   });
   it("有 ≥20 个历史采样时：peak=max、mean=算术平均、p95=floor(n*0.95) 位（不是 max）", () => {
     const history = Array.from({ length: 21 }, (_, i) => ({ gpu_utilization_pct: i + 1 }));
@@ -71,7 +71,7 @@ describe("gpuMetricsView (:857-935)", () => {
     };
     const view = gpuMetricsView(run);
     // 1..21：mean=11，peak=21，sorted[floor(21*0.95)]=sorted[19]=20
-    expect(view.gpu_utilization_pct).toEqual({ peak: 21, mean: 11, p95: 20 });
+    expect(view.gpu_utilization_pct).toEqual({ peak: 21, mean: 11, p50: 11, p95: 20 });
   });
 
   it("采样数 <20 时 p95 退化为 max（与 ≥20 口径不同）", () => {
@@ -83,7 +83,7 @@ describe("gpuMetricsView (:857-935)", () => {
     };
     const view = gpuMetricsView(run);
     // 有历史就用历史，不理会 latest=99：mean=20
-    expect(view.gpu_utilization_pct).toEqual({ peak: 30, mean: 20, p95: 30 });
+    expect(view.gpu_utilization_pct).toEqual({ peak: 30, mean: 20, p50: 20, p95: 30 });
   });
 
   it("缺少完整历史时不伪造均值和 P95", () => {

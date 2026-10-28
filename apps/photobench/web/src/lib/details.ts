@@ -335,16 +335,7 @@ export function openImageTarget(image: MediaLike | null | undefined): { url: str
 
 type MetricRow = [string, string, string];
 
-/**
- * 1.0 `:2199-2232`。
- *
- * 回退口径（不同字段不一样）：
- *   - 墙钟均值：有有效 `image_count` 且墙钟有限 → `墙钟 ÷ 张数`；否则回
- *     `phase.average_seconds_per_photo`；再没有才 `未记录`（并换第二列文案）。
- *   - 阶段计时行：`stage_timings[key]` 为假值 → **整行消失**（`filter` 掉），不是占位。
- *   - `effective_workers == null` → `-`；`event_count == null` → `-`。
- * 六个计时段里 `vlm_image_description_seconds` 走「累计调用」文案，其余走 `row`。
- */
+/** 产品流水线的十项计时。显式执行保留完整步骤，缺少计时不推断执行状态。 */
 export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
   const p = dict(phase);
   const metrics = dict(p.pipeline_metrics);
@@ -373,10 +364,10 @@ export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
   };
   const explicitTimingRows = (
     [
-      ["源媒体模型准备", "source_memory_prepare", "并发 worker 累计耗时"],
-      ["源媒体记忆提交", "source_memory_commit", "按目录顺序串行提交"],
-      ["关键帧提取", "video_keyframe_extraction", "ffmpeg 抽帧墙钟累计"],
-      ["关键帧记忆构建", "video_keyframe_memory", "VLM/OCR/人脸/实体/事实累计"],
+      ["源媒体模型准备", "source_memory_prepare", "视觉向量、画面理解、人脸检测；并发累计耗时"],
+      ["源媒体记忆提交", "source_memory_commit", "地点、事件归属、文本向量、实体与事实；按序提交"],
+      ["关键帧提取", "video_keyframe_extraction", "仅视频适用；抽帧累计耗时"],
+      ["关键帧记忆构建", "video_keyframe_memory", "仅视频适用；画面、文字、人脸与记忆处理"],
       ["事件总结", "event_summarize", "批末事件摘要"],
       ["参与者投影", "participant_projection", "已确认身份投影到事件"],
       ["记忆图构建", "memory_graph", "结构化图节点与边重建"],
@@ -385,8 +376,12 @@ export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
       ["人物画像", "person_insights", "人物画像收尾"],
     ] as Array<[string, string, string]>
   )
-    .filter(([, key]) => pipelineTimings[key] != null)
-    .map(([label, key, note]) => [label, fmtSeconds(pipelineTimings[key]), note] as MetricRow);
+    .filter(([, key]) => p.execution_mode === "explicit" || pipelineTimings[key] != null)
+    .map(([label, key, note]) => {
+      const recorded = typeof pipelineTimings[key] === "number" && Number.isFinite(pipelineTimings[key]);
+      const waiting = p.status === "running" || p.status === "pending";
+      return [label, recorded ? fmtSeconds(pipelineTimings[key]) : waiting ? "待回传" : "未记录", note] as MetricRow;
+    });
   if (p.execution_mode === "explicit") return explicitTimingRows;
   const legacyRows = ([
     [
@@ -402,7 +397,7 @@ export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
       `配置 ${metrics.configured_workers ?? "-"} · vLLM 上限 ${metrics.vllm_max_num_seqs ?? "-"}`,
     ],
     [
-      "事件总结",
+      "事件总结调用",
       metrics.event_count == null ? "-" : `${metrics.event_summary_call_count ?? 0}/${metrics.event_count} 次`,
       `批次耗时 ${fmtSeconds(metrics.event_summary_wall_seconds)}`,
     ],
@@ -413,5 +408,6 @@ export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
     row("event_clustering_seconds", "事件聚类"),
     row("text_embedding_seconds", "文本 embedding"),
   ] as Array<MetricRow | null>).filter((r): r is MetricRow => r !== null);
-  return [...explicitTimingRows, ...legacyRows];
+  // 旧合并流水线只保留有记录的补充统计，避免空卡及重复事件标题。
+  return [...explicitTimingRows, ...legacyRows.filter(row => row[1] !== "-" && row[1] !== "未记录")];
 }

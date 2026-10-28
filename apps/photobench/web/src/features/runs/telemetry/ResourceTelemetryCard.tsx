@@ -121,7 +121,7 @@ function ResourceGraph({ graph, history, snapshots, sampledDown, revision }: {
     }
     return () => { observer?.disconnect(); parents.forEach(parent => parent.removeEventListener("toggle", resize)); };
   }, [graph, history, snapshots, sampledDown, revision, phaseColors]);
-  useEffect(() => () => { chart.current?.dispose(); chart.current = null; }, []);
+  useEffect(() => () => { chart.current?.dispose(); chart.current = null; previous.current = ""; }, []);
   return <div className="telemetry-chart"><div className="telemetry-chart-header"><b>{graph.title}</b>
     {!snapshots && history.some(point => point.phase) ? <label>
       <input type="checkbox" checked={phaseColors} onChange={event => setPhaseColors(event.target.checked)} />曲线按阶段着色
@@ -156,6 +156,12 @@ function formatResource(value: unknown, unit: string): string {
   const number = telemetryNumber(value);
   return number === null ? "未采集" : `${number.toFixed(1)} ${unit}`;
 }
+function resourceStatistics(stats: Point | undefined, format: (value: unknown) => string) {
+  const value = (key: string) => telemetryNumber(stats?.[key]) === null ? "未记录" : format(stats![key]);
+  return <>{[["采样峰值", "peak"], ["P50", "p50"], ["P95", "p95"]].map(([label, key]) =>
+    <span key={key} style={{ whiteSpace: "nowrap" }}>{label} {value(key)}</span>
+  )}</>;
+}
 export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) {
   const live = telemetryLiveState(run);
   const stats = gpuMetricsView(run);
@@ -186,21 +192,21 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
     <div className="phase-metrics live-telemetry-metrics">{fields.map(([label, key]) =>
       <div className="phase-metric" key={key}><span>{label}</span>
         <strong>{telemetryNumber(latest[key]) === null ? "未采集" : fmtMemory(latest[key])}</strong>
-        <small>采样峰值 {telemetryNumber(stats[key]?.peak) === null ? "未记录" : fmtMemory(stats[key].peak)}</small>
+        <small>{resourceStatistics(stats[key], fmtMemory)}</small>
       </div>)}
     </div>
     <div className="phase-metrics resource-status-metrics" aria-label="利用率、温度与功率指标">
       {statusFields.map(([label, key, unit]) =>
         <div className="phase-metric" key={key}><span>{label}</span>
           <strong>{formatResource(latest[key], unit)}</strong>
-          <small>采样峰值 {telemetryNumber(stats[key]?.peak) === null ? "未记录" : formatResource(stats[key].peak, unit)}</small>
+          <small>{resourceStatistics(stats[key], value => formatResource(value, unit))}</small>
         </div>)}
     </div>
     <ResourceGraph {...{ graph, history, snapshots, sampledDown, revision }} />
     <small className="muted">{snapshots ? "阶段快照，横轴为序号。" : run?.history_mode === "full"
       ? `完整测评过程，${sampleCount} 个采样点，绘制 ${history.length} 点。`
       : `当前遥测窗口，绘制 ${history.length} 点，整轮已采集 ${sampleCount} 点。`}
-      {!snapshots ? `${run?.history_mode === "full" ? "横轴从本轮首个采样点计时。" : ""}峰值来自全部有效采样，可缩放查看细节。` : ""}</small>
+      {!snapshots ? `${run?.history_mode === "full" ? "横轴从本轮首个采样点计时。" : ""}峰值、P50、P95取本轮有效采样，缩放不改变统计。` : ""}</small>
     <details onToggle={event => setExtra(event.currentTarget.open)}>
       <summary>利用率、温度与功率</summary>
       <p className="muted">功率范围：{POWER_LABELS[latest.power_scope || stats.power_scope] ?? "未记录"}。不同设备的功率范围可能不同。</p>
@@ -210,6 +216,7 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
       <p>Linux 进程内存取相关进程 PSS 合计；PSS 按比例分摊共享页。Mac 按整组进程估计驻留内存。整机内存为总物理内存减空闲页，包含驻留缓存。</p>
       <p>主模型显存统计所选推理服务进程组；产品显存统计主模型与嵌入、视觉等其他产品进程，并按进程去重。其他产品进程没有额外显存分配时，两者会相等。</p>
       <p>153 显存来自 NVML；Orin 来自 nvmap 分配记录；Mac 仅显示 IORegistry 提供的整机显存参考值，当前模型服务未提供进程显存占用。统一内存设备上，显存表示 GPU 分配的共享内存，可能与进程内存重叠，两项不相加。产品显存来源不齐时留空。</p>
+      <p>P50 表示中位水平，P95 表示约 95% 的有效采样不超过该值；缺失值不参与统计。</p>
       <p>目标每秒采样。来源超过 3 秒有效期即留空。Orin 的 GPU 温度直接读取系统 GPU 温度节点；节点暂时不可读时留空。利用率、温度、功率分别绘图，功率只表示标明的硬件范围。</p>
       {Object.entries(latest.resource_metrics ?? {}).filter(([, raw]) => (raw as Point).status !== "available").map(([key, raw]) =>
         <p key={key}>{RESOURCE_LABELS[key] ?? "资源指标"}：{GPU_TEMPERATURE_REASONS[(raw as Point).reason] ?? ((raw as Point).reason === "runtime_does_not_expose_process_gpu_bytes" ? "模型服务未提供进程显存占用" : (raw as Point).reason === "product_gpu_sources_incomplete" ? "产品显存来源未齐全" : "来源不可用或已过期")}</p>)}

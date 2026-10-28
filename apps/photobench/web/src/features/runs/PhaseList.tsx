@@ -80,7 +80,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
           const errors = phaseErrorDetails(phase);
           const metrics = pipelineMetricRows(phase);
           return (
-            <article className="phase-card" key={phaseDef.key}>
+            <article className={phaseDef.key === "pipeline_processing" ? "phase-card pipeline-phase-card" : "phase-card"} key={phaseDef.key}>
               <div className="phase-title">
                 <div className="phase-name">
                   <span className="phase-step">{index + 1}</span>
@@ -165,6 +165,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                 <p className="muted">媒体进度按处理、失败和跳过的数量统计；事件总结、图构建和人物信息更新结束后，流水线才完成。</p>
               ) : null}
               {phaseDef.key === "pipeline_processing" && metrics.length > 0 ? (
+                <><p className="muted">耗时由产品流水线返回；未记录的步骤无法确认是否执行。并发累计耗时及包含项不相加。</p>
                 <div className="phase-metrics pipeline-metrics">
                   {metrics.map((row) => (
                     <div className="phase-metric" key={row[0]}>
@@ -173,7 +174,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                       <small>{row[2]}</small>
                     </div>
                   ))}
-                </div>
+                </div></>
               ) : null}
             </article>
           );

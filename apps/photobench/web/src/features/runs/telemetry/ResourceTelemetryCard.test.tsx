@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Run } from "../../../api/types.ts";
@@ -133,4 +134,26 @@ describe("resource telemetry v1", () => {
     expect(instance.setOption.mock.calls[2][1]).toEqual({ replaceMerge: ["series", "visualMap"] });
     expect(charts.init).toHaveBeenCalledTimes(1);
   });
+});
+
+it("uses full-sample percentiles for sparse charts and preserves zero and missing statistics", () => {
+  const value = run();
+  value.telemetry_live!.samples_count = 1000;
+  value.telemetry_live!.field_stats = {
+    model_process_system_memory_used_mib: { peak: 4096, p50: 1024, p95: 3072 },
+    cpu_utilization_pct: { peak: 90, p50: 0, p95: 75 },
+  };
+  const view = render(<TelemetryCard run={value} />);
+  const memory = view.container.querySelector(".live-telemetry-metrics")!;
+  expect(memory.children[0]!.textContent).toContain("采样峰值 4.00 GiBP50 1.00 GiBP95 3.00 GiB");
+  expect(memory.children[1]!.textContent).toContain("采样峰值 未记录P50 未记录P95 未记录");
+  expect(view.getByLabelText("利用率、温度与功率指标").children[0]!.textContent)
+    .toContain("采样峰值 90.0 %P50 0.0 %P95 75.0 %");
+});
+
+it("redraws a fresh chart when development StrictMode replays effects", () => {
+  render(<StrictMode><TelemetryCard run={run()} /></StrictMode>);
+  expect(charts.instances).toHaveLength(2);
+  expect(charts.instances[0].dispose).toHaveBeenCalledOnce();
+  expect(charts.instances[1].setOption).toHaveBeenCalledOnce();
 });
