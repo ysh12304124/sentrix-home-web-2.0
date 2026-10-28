@@ -236,21 +236,39 @@ class RetrieveEvidence:
         limit = max(1, request.limit)
         recall_limit = limit * RECALL_OVERSAMPLE_FACTOR
         channel_weights = {**DEFAULT_CHANNEL_WEIGHTS, GRAPH_CHANNEL: GRAPH_CHANNEL_WEIGHT}
-        # 【定向检索】value_type（main schema）映射到通道加权（温和×1.3）
+        # 【定向检索】value_type十类全映射（温和×1.3，不挤占其他通道）
         vtype = getattr(request, 'value_type', '')
-        if vtype == 'place':
+        if vtype == 'refuse':
+            # 拒答/信息注入：跳过检索直接驳回
+            return EvidenceResult()
+        elif vtype == 'place':
+            # 地点题：lexical搜地点词为主，metadata的place过滤辅助
             channel_weights[LEXICAL_CHANNEL] = 1.3
         elif vtype == 'time':
+            # 日期题：lexical搜时间词，metadata的time_bounds辅助
             channel_weights[LEXICAL_CHANNEL] = 1.3
         elif vtype == 'person':
+            # 人名/关系题：entity通道（人脸/身份）为主
             channel_weights[ENTITY_CHANNEL] = 1.3
+        elif vtype == 'media_set':
+            # 找照片/交付类：metadata+visual并重（asset检索+视觉召回）
+            channel_weights[METADATA_CHANNEL] = 1.3
+            channel_weights[VISUAL_CHANNEL] = 1.3
         elif vtype == 'description':
-            # 描述类：视觉特征（穿着/道具/场景）+文本描述并重
+            # 描述/场景/穿着类：视觉特征+文本描述并重
             channel_weights[VISUAL_CHANNEL] = 1.3
             channel_weights[LEXICAL_CHANNEL] = 1.3
         elif vtype in ('amount', 'count', 'duration'):
+            # 金额/数量/时长：lexical搜文本记录+entity辅助
             channel_weights[LEXICAL_CHANNEL] = 1.3
             channel_weights[ENTITY_CHANNEL] = 1.3
+        elif vtype == 'boolean':
+            # 是否类：标准多通道（不加权，靠多路证据交叉）
+            pass
+        elif vtype == 'value':
+            # OCR数值类：visible_text路线——lexical搜文字记录为主
+            channel_weights[LEXICAL_CHANNEL] = 1.5
+        # unknown/未识别：保持默认权重（不定向）
         primary_weights = {name: weight for name, weight in channel_weights.items() if name != GRAPH_CHANNEL}
 
         # **每个通道都先记一条 trace，再谈命中**——1.0 ``evidence_retrieval.py:203-230``。
