@@ -1,19 +1,10 @@
-/**
- * 6 张 Pipeline 执行阶段卡 + 阶段错误明细。逐行照搬
- * 1.0 `services/photobench/frontend/src/App.vue:3097-3129`（只读权威；任务表给的是
- * `:3090-3118`，实测 phase-list 到 `</div>` 收在 `:3129`）。
- *
- * `phasePercent` 是 1.0 `App.vue:2195-2198` 的私有函数，2.0 lib 尚未收，照搬在本文件。
- * `phaseSummary` / `phaseErrorDetails` / `phaseErrorSummary` / `pipelineMetricRows` 已在
- * `lib/details.ts`，直接 import。
- *
- * `phaseSummary(key, phase, itemCount)` 的第三参是 1.0 闭包读的 `activeRun.item_count`
- * （1.0 `:2175` 的 `activeRun.value?.item_count`），模板里只传两个参数——这里补上。
- */
+/** 测评阶段、流水线处理进度及已有计时的只读展示。 */
 import { useEffect, useState } from "react";
 import type { Phase, Run } from "../../api/types.ts";
 import { EXECUTION_PHASES } from "../../lib/constants.ts";
-import { phaseErrorDetails, phaseErrorSummary, phaseSummary, pipelineMetricRows } from "../../lib/details.ts";
+import { phaseErrorDetails, phaseErrorSummary, phaseSummary } from "../../lib/details.ts";
+import { isCombinedImport, pipelineTimingView } from "../../lib/pipelineTiming.ts";
+import type { PipelineTimingGroup } from "../../lib/pipelineTiming.ts";
 import { statusLabel } from "../../lib/format.ts";
 
 /** 1.0 `App.vue:2195-2198`。 */
@@ -50,6 +41,20 @@ function elapsedSeconds(start: unknown, end: number): string {
     ? String(Math.max(0, Math.floor((end - time) / 1000))) : "?";
 }
 
+function TimingTable({ group }: { group: PipelineTimingGroup }) {
+  return <div className="pipeline-timing-table-wrap">
+    <table className="pipeline-timing-table" aria-label={group.title}>
+      <thead><tr><th>处理环节</th><th>耗时</th><th>计时口径</th><th>处理内容</th></tr></thead>
+      <tbody>{group.rows.map(row => <tr key={row.key} className={row.nested ? "timing-included" : undefined}>
+        <th scope="row">{row.label}</th>
+        <td className="timing-value"><strong>{row.value}</strong>{row.share ? <small>占后端 {row.share}</small> : null}</td>
+        <td><span className="timing-basis">{row.basis}</span></td>
+        <td>{row.description}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
 export function PhaseList({ activeRun }: PhaseListProps) {
   const [now, setNow] = useState(() => Date.now());
   const terminal = ["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status ?? "");
@@ -78,7 +83,11 @@ export function PhaseList({ activeRun }: PhaseListProps) {
           const finishedAt = (processingDetails ?? phase)?.finished_at ?? (terminal ? activeRun.finished_at : null);
           const end = typeof finishedAt === "string" ? Date.parse(finishedAt) : now;
           const errors = phaseErrorDetails(phase);
-          const metrics = pipelineMetricRows(phase);
+          const displayImport = !terminal && legacyImport?.status === "running" && typeof legacyImport.started_at === "string"
+            ? { ...legacyImport, total_seconds: Math.max(0, (now - Date.parse(legacyImport.started_at)) / 1000) }
+            : legacyImport;
+          const timing = phaseDef.key === "pipeline_processing" ? pipelineTimingView(displayPhase, displayImport) : null;
+          const combinedImport = isCombinedImport(legacyImport);
           return (
             <article className={phaseDef.key === "pipeline_processing" ? "phase-card pipeline-phase-card" : "phase-card"} key={phaseDef.key}>
               <div className="phase-title">
@@ -90,7 +99,10 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                   {statusLabel(phase?.status || "pending")}
                 </span>
               </div>
-              <p className="phase-summary">{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
+              <p className="phase-summary">{phaseDef.key === "pipeline_processing" && combinedImport
+                ? "处理明细来自历史合并请求；单独处理阶段耗时未分离。"
+                : phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
+              {phaseDef.key === "photo_import" ? <p className="phase-scope-note">文件登记、去重、元数据读取与预览准备；处理明细见流水线。</p> : null}
               {processingDetails && progress?.current_directory ? (
                 <div className="import-progress-panel" data-testid="import-waiting">
                   <p className="muted">历史合并请求中的处理进度；计时保留原记录。</p>
@@ -164,17 +176,21 @@ export function PhaseList({ activeRun }: PhaseListProps) {
               {phaseDef.key === "pipeline_processing" && phase?.progress ? (
                 <p className="muted">媒体进度按处理、失败和跳过的数量统计；事件总结、图构建和人物信息更新结束后，流水线才完成。</p>
               ) : null}
-              {phaseDef.key === "pipeline_processing" && metrics.length > 0 ? (
-                <><p className="muted">耗时由产品流水线返回；未记录的步骤无法确认是否执行。并发累计耗时及包含项不相加。</p>
-                <div className="phase-metrics pipeline-metrics">
-                  {metrics.map((row) => (
-                    <div className="phase-metric" key={row[0]}>
-                      <span>{row[0]}</span>
-                      <strong>{row[1]}</strong>
-                      <small>{row[2]}</small>
-                    </div>
-                  ))}
-                </div></>
+              {timing && (timing.overview.length > 0 || timing.groups.length > 0) ? (
+                <div className="pipeline-timing">
+                  <div className="pipeline-timing-overview">{timing.overview.map(row => <div key={row.label}>
+                    <span>{row.label}</span><strong>{row.value}</strong><small>{row.note}</small>
+                  </div>)}</div>
+                  {timing.groups.map(group => group.collapsed
+                    ? <details className="pipeline-timing-group" key={group.key}>
+                      <summary>{group.title}</summary><p className="muted">{group.note}</p><TimingTable group={group} />
+                    </details>
+                    : <section className="pipeline-timing-group" key={group.key} aria-label={group.title}>
+                      <div className="pipeline-timing-heading"><h4>{group.title}</h4>{group.summary ? <strong>{group.summary}</strong> : null}</div>
+                      <p className="muted">{group.note}</p><TimingTable group={group} />
+                    </section>)}
+                  <p className="muted">未记录表示缺少独立计时，不能据此判断是否执行；画面理解、人脸和向量的细分时延以已保存的调用统计为准。</p>
+                </div>
               ) : null}
             </article>
           );

@@ -114,12 +114,12 @@ it("显示真实媒体计数与收尾阶段，媒体100%仍保持进行中，墙
       },
     },
   })} />);
-  expect(container.textContent).toContain("当前目录已处理 3/3 个媒体 · 新增 1 · 去重 1 · 失败 1 · 阶段墙钟 60s");
+  expect(container.textContent).toContain("当前目录已处理 3/3 个媒体 · 新增 1 · 去重 1 · 失败 1 · 登记与处理合并计时，详见流水线");
   expect(getByLabelText("当前目录媒体处理进度").getAttribute("value")).toBe("3");
   expect(getByTestId("import-waiting").textContent).toContain("生成人物画像");
   expect(getByTestId("import-waiting").textContent).toContain("后端状态：running");
   act(() => vi.advanceTimersByTime(1000));
-  expect(container.textContent).toContain("阶段墙钟 61s");
+  expect(container.textContent).toContain("1分1秒");
   unmount();
   expect(vi.getTimerCount()).toBe(0);
 });
@@ -174,4 +174,37 @@ it("显式流水线媒体100%时仍显示等待汇总，导入不承载处理详
   expect(cards[3]?.querySelector(".import-progress-panel")).toBeNull();
   expect(cards[4]?.textContent).toContain("等待流水线汇总");
   expect(cards[4]?.querySelector(".phase-status")?.textContent).toBe("进行中");
+});
+
+it("旧合并请求的观察、归属和画像时延只放在流水线，不混入登记耗时", () => {
+  const run = activeRun({
+    photo_import: { status: "done", total_seconds: 120, accepted_count: 2, total_photos: 2, failed_count: 0,
+      timings: { stage: 1, prepare: 50, finish: 30, summarize: 5, person_insights: 20 } },
+    pipeline_processing: { status: "done", total_seconds: 0.5 },
+  });
+  const saved = JSON.stringify(run);
+  const { container } = render(<PhaseList activeRun={run} />);
+  const cards = container.querySelectorAll(".phase-card");
+  expect(cards[3]?.textContent).toContain("登记落库累计 1s");
+  expect(cards[3]?.textContent).not.toMatch(/50s|30s|20s/);
+  expect(cards[4]?.textContent).toContain("历史合并请求耗时2分");
+  expect(cards[4]?.textContent).toContain("主线程等待累计");
+  expect(cards[4]?.textContent).toContain("人物画像20s");
+  expect(JSON.stringify(run)).toBe(saved);
+});
+
+it("显式阶段区分请求墙钟、后端总计和嵌套步骤，长耗时显示分钟", () => {
+  const { container, getByRole } = render(<PhaseList activeRun={activeRun({
+    photo_import: { execution_mode: "explicit", status: "done", timings: { asset_import: 1 } },
+    pipeline_processing: { execution_mode: "explicit", status: "done", total_seconds: 100,
+      started_at: "2026-10-29T01:00:00Z", finished_at: "2026-10-29T01:02:00Z",
+      timings: { total: 100, pipeline_core: 70, source_memory_prepare: 200, person_insights: 20 } },
+  })} />);
+  const pipeline = container.querySelector(".pipeline-phase-card");
+  expect(pipeline?.textContent).toContain("实际总耗时2分");
+  expect(pipeline?.textContent).toContain("后端处理耗时1分40秒");
+  expect(pipeline?.textContent).toContain("1分10秒 · 占后端 70.0%");
+  expect(getByRole("table", { name: "媒体处理与事件总结" }).textContent).toContain("3分20秒并行任务累计");
+  expect(getByRole("table", { name: "图谱与人物收尾" }).textContent).toContain("占后端 20.0%");
+  expect(pipeline?.querySelector("details")?.open).toBe(false);
 });

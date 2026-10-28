@@ -1070,4 +1070,26 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 
 /* 流水线含十个计时项，独占一行并按可用宽度排列。 */
 .pipeline-phase-card { grid-column:1 / -1; }
-.pipeline-phase-card .pipeline-metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); }
+.phase-scope-note { margin:5px 0 0 30px; color:var(--muted); font-size:11px; }
+.pipeline-timing-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:14px 0; }
+.pipeline-timing-overview > div { padding:12px 14px; border:1px solid var(--border); background:var(--surface); border-radius:7px; }
+.pipeline-timing-overview span,.pipeline-timing-overview small { display:block; color:var(--muted); font-size:11px; }
+.pipeline-timing-overview strong { display:block; margin:4px 0; font-size:20px; }
+.pipeline-timing-group { margin-top:14px; }
+.pipeline-timing-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.pipeline-timing-heading h4 { margin:0; font-size:13px; }
+.pipeline-timing-heading > strong { font-size:13px; }
+.pipeline-timing-group > summary { cursor:pointer; font-size:12px; font-weight:600; }
+.pipeline-timing-group > .muted { margin:5px 0 8px; font-size:11px; }
+.pipeline-timing-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:7px; }
+.pipeline-timing-table { width:100%; min-width:620px; border-collapse:collapse; background:var(--surface); }
+.pipeline-timing-table th,.pipeline-timing-table td { padding:9px 12px; text-align:left; vertical-align:top; font-size:12px; }
+.pipeline-timing-table thead th { color:var(--muted); background:var(--surface2); font-size:11px; }
+.pipeline-timing-table tbody th { width:23%; font-weight:500; }
+.pipeline-timing-table .timing-value { width:18%; white-space:nowrap; }
+.pipeline-timing-table td:nth-child(3) { width:17%; }
+.pipeline-timing-table td:last-child { color:var(--muted); font-size:11px; }
+.timing-value small { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
+.timing-basis { display:inline-block; padding:2px 5px; border-radius:4px; background:var(--surface2); color:var(--muted); font-size:10px; white-space:nowrap; }
+.pipeline-timing-table .timing-included th { padding-left:26px; color:var(--muted); }
+@media (max-width:700px) { .pipeline-timing-overview { grid-template-columns:1fr; } }
