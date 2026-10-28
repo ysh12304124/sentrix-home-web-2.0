@@ -74,6 +74,8 @@ class PlannerResult:
     #: 仅在 ``include_debug`` 时非空：每次尝试的完整 messages / 原始回复。
     #: 与 ``model_calls`` 分开：后者是评测指标，前者是复盘用的完整输入输出。
     debug_calls: tuple[dict[str, Any], ...] = ()
+    #: 问题类型（来自 planner 声明或 requirement 的 value_type），用于定向检索加权。
+    question_type: str = "unknown"
 
     @property
     def ok(self) -> bool:
@@ -184,14 +186,21 @@ class GoalPlanner:
                 debug_calls.append(debug_call)
 
             last_raw = reply.content
-            requirements, reason, question_type = parse_declaration(last_raw or "", scope_id=scope_id, question=question)
+            requirements, reason = parse_declaration(last_raw or "", scope_id=scope_id, question=question)
             if requirements is not None:
+                # value_type取requirement级的结构化绑定字段（main schema原生支持）
+                qtype = "unknown"
+                for req in requirements:
+                    vt = getattr(req, "value_type", None)
+                    if vt:
+                        qtype = vt.value if hasattr(vt, "value") else str(vt)
+                        break
                 return PlannerResult(
                     requirements=requirements,
                     raw=last_raw,
                     model_calls=tuple(calls),
                     debug_calls=tuple(debug_calls),
-                    question_type=question_type,
+                    question_type=qtype,
                 )
             last_reason = reason
             if attempt + 1 >= self.max_attempts:

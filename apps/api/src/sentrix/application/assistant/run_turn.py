@@ -1684,8 +1684,13 @@ class RunTurn:
             extra={"arguments": _call_arguments(call)},
         )
         started_at = time.perf_counter()
-        # 传question_type给检索层做定向检索
-        qtype = session.ledger.question_type if hasattr(session.ledger, 'question_type') else "unknown"
+        # 传value_type给检索层做定向检索（planner的requirement级结构化绑定字段）
+        vtype = ""
+        for req in session.ledger.requirements:
+            vt = getattr(req, "value_type", None)
+            if vt:
+                vtype = vt.value if hasattr(vt, "value") else str(vt)
+                break
         outcome = self._toolbox.execute(
             call.name,
             decision.arguments,
@@ -1695,7 +1700,7 @@ class RunTurn:
             # （``tools.py:2162-2165``）。1.0 从可变的 ``task_state`` 里取，2.0 的
             # ``TaskState`` 没有那一格——**这不是加状态，是把已经在手上的那个字符串传下去**。
             question=state.question,
-            question_type=qtype,
+            value_type=vtype,
         )
         duration_ms = round((time.perf_counter() - started_at) * 1000, 1)
         state.record(
