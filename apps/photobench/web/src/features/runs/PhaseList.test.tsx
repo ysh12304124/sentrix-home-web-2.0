@@ -58,7 +58,7 @@ describe("阶段卡（1.0 :3099-3129）", () => {
     expect(errors?.textContent).toContain("a1");
   });
 
-  it("pipeline_processing 进度条宽度 = (processed+failed+skipped)/total", () => {
+  it("媒体计数只填充第一段，不能当作流水线总进度", () => {
     const { container } = render(
       <PhaseList
         activeRun={activeRun({
@@ -72,8 +72,10 @@ describe("阶段卡（1.0 :3099-3129）", () => {
 
     // EXECUTION_PHASES 第 5 个（index 4）是 pipeline_processing。
     const phase = container.querySelectorAll(".phase-card")[4];
-    const fill = phase?.querySelector(".phase-bar-fill") as HTMLElement | null;
+    const fill = phase?.querySelector(".pipeline-step:first-child i") as HTMLElement | null;
     expect(fill?.style.width).toBe("50%");
+    expect(phase?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBeNull();
+    expect(phase?.querySelectorAll(".pipeline-step.done")).toHaveLength(0);
   });
 });
 
@@ -116,8 +118,8 @@ it("显示真实媒体计数与收尾阶段，媒体100%仍保持进行中，墙
   })} />);
   expect(container.textContent).toContain("当前目录已处理 3/3 个媒体 · 新增 1 · 去重 1 · 失败 1 · 登记与处理合并计时，详见流水线");
   expect(getByLabelText("当前目录媒体处理进度").getAttribute("value")).toBe("3");
-  expect(getByTestId("import-waiting").textContent).toContain("生成人物画像");
-  expect(getByTestId("import-waiting").textContent).toContain("后端状态：running");
+  expect(getByTestId("import-waiting").textContent).toContain("人物画像");
+  expect(container.querySelector(".pipeline-phase-card .phase-status")?.textContent).toBe("进行中");
   act(() => vi.advanceTimersByTime(1000));
   expect(container.textContent).toContain("1分1秒");
   unmount();
@@ -133,7 +135,7 @@ it("未扫描的total保持未知，查询故障和上次观测同时可见", ()
   })} />);
   expect(container.textContent).toContain("当前目录已处理 0/? 个媒体");
   expect(container.textContent).toContain("GET disconnected");
-  expect(container.textContent).toContain("保留的计数不是当前实时进度");
+  expect(container.textContent).toContain("显示上次记录");
   expect(queryByLabelText("当前目录媒体处理进度")).toBeNull();
 });
 
@@ -172,8 +174,12 @@ it("显式流水线媒体100%时仍显示等待汇总，导入不承载处理详
   })} />);
   const cards = container.querySelectorAll(".phase-card");
   expect(cards[3]?.querySelector(".import-progress-panel")).toBeNull();
-  expect(cards[4]?.textContent).toContain("等待流水线汇总");
+  expect(cards[4]?.textContent).toContain("汇总与构建");
   expect(cards[4]?.querySelector(".phase-status")?.textContent).toBe("进行中");
+  expect(cards[4]?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBeNull();
+  expect(cards[4]?.querySelectorAll(".pipeline-step.done")).toHaveLength(1);
+  expect(cards[4]?.querySelector(".pipeline-step.running")?.textContent).toBe("汇总与构建");
+  expect(cards[4]?.querySelector(".phase-bar")).toBeNull();
 });
 
 it("旧合并请求的观察、归属和画像时延只放在流水线，不混入登记耗时", () => {
@@ -207,4 +213,13 @@ it("显式阶段区分请求墙钟、后端总计和嵌套步骤，长耗时显�
   expect(getByRole("table", { name: "媒体处理与事件总结", hidden: true }).textContent).toContain("3分20秒并行任务累计");
   expect(getByRole("table", { name: "图谱与人物收尾", hidden: true }).textContent).toContain("占后端 20.0%");
   expect(pipeline?.querySelector("details")?.open).toBe(false);
+});
+
+it("只有流水线成功终态才显示100%，无需等待QA结束", () => {
+  const { getByRole, container } = render(<PhaseList activeRun={activeRun({
+    pipeline_processing: { status: "done", progress: { total: 3, processed: 3, stage: "completed", request_status: "returned" } },
+    qa_eval: { status: "running" },
+  })} />);
+  expect(getByRole("progressbar", { name: "流水线整体进度" }).getAttribute("aria-valuenow")).toBe("100");
+  expect(container.querySelectorAll(".pipeline-step.done")).toHaveLength(3);
 });

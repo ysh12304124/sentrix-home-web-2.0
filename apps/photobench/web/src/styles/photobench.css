@@ -1100,3 +1100,22 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .timing-value small { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
 .timing-basis { display:inline-block; padding:2px 5px; border-radius:4px; background:var(--surface2); color:var(--muted); font-size:10px; white-space:nowrap; }
 .pipeline-timing-table .timing-included th { padding-left:26px; color:var(--muted); }
+
+/* 三段表示流水线步骤，只有阶段成功终态才全部填满。 */
+.pipeline-overall { margin:6px 0 0 30px; }
+.pipeline-overall-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:3px 10px; font-size:12px; }
+.pipeline-overall-heading > b { font-weight:500; }
+.pipeline-overall-heading > span { color:var(--muted); font-size:11px; }
+.pipeline-step-track { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:7px 0 4px; }
+.pipeline-step-bar { height:4px; border-radius:2px; background:var(--border); overflow:hidden; }
+.pipeline-step-bar i { display:block; height:100%; background:var(--accent); }
+.pipeline-step.done i { background:var(--accent2); }
+.pipeline-step.stopped i { background:var(--danger); }
+.pipeline-step.running .pipeline-step-bar { outline:1px solid var(--accent); outline-offset:1px; }
+.pipeline-step > span { display:block; margin-top:4px; font-size:10px; color:var(--muted); }
+.pipeline-step.running > span { color:var(--accent); font-weight:600; }
+.pipeline-step.stopped > span { color:var(--danger); }
+.pipeline-step-bar i.indeterminate { width:40% !important; animation:pipeline-working 1.5s linear infinite; }
+.pipeline-counts { margin:5px 0 0; color:var(--muted); font-size:11px; }
+@keyframes pipeline-working { from { transform:translateX(-110%); } to { transform:translateX(260%); } }
+@media (prefers-reduced-motion:reduce) { .pipeline-step-bar i.indeterminate { animation:none; } }
