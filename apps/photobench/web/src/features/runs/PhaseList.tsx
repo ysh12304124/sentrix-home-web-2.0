@@ -67,7 +67,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
     <>
       <h3>Pipeline 执行阶段</h3>
       {activeRun.mode === "build" ? <p>仅构建记忆空间；QA、Judge 和评分有效性不适用。</p> : null}
-      <div className="phase-list">
+      <div className="phase-list execution-phase-list">
         {EXECUTION_PHASES.filter((p) => activeRun.mode !== "build" || p.key !== "qa_eval").map((phaseDef, index) => {
           const phase = activeRun.phases?.[phaseDef.key];
           const start = typeof phase?.started_at === "string" ? Date.parse(phase.started_at) : NaN;

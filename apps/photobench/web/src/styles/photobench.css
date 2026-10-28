@@ -1068,8 +1068,13 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .trace-progress-events pre { max-height:420px; overflow:auto; }
 .trace-execution > summary { margin:8px 0; padding:8px 10px; color:#40547a; cursor:pointer; font-size:12px; }
 
-/* 阶段卡保持两列，详细步骤按需展开。 */
-.phase-list { align-items:start; }
+/* 默认六张阶段卡等高；展开流水线详情时只延展该卡。 */
+.execution-phase-list { align-items:stretch; grid-auto-rows:1fr; gap:10px; }
+.execution-phase-list > .phase-card { min-width:0; min-height:96px; }
+.execution-phase-list .phase-title { min-height:22px; }
+.execution-phase-list .phase-summary { line-height:1.55; }
+.execution-phase-list:has(.pipeline-details[open]) { grid-auto-rows:auto; }
+.execution-phase-list:has(.pipeline-details[open]) > .phase-card:last-child { align-self:start; }
 .pipeline-phase-card { min-width:0; }
 .pipeline-details { margin-top:8px; }
 .pipeline-details > summary { cursor:pointer; font-size:12px; color:var(--accent); padding:5px 0; }
