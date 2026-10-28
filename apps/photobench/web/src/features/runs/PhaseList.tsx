@@ -44,12 +44,11 @@ function elapsedSeconds(start: unknown, end: number): string {
 function TimingTable({ group }: { group: PipelineTimingGroup }) {
   return <div className="pipeline-timing-table-wrap">
     <table className="pipeline-timing-table" aria-label={group.title}>
-      <thead><tr><th>处理环节</th><th>耗时</th><th>计时口径</th><th>处理内容</th></tr></thead>
+      <thead><tr><th>处理环节</th><th>耗时</th><th>计时口径</th></tr></thead>
       <tbody>{group.rows.map(row => <tr key={row.key} className={row.nested ? "timing-included" : undefined}>
-        <th scope="row">{row.label}</th>
+        <th scope="row">{row.label}<small>{row.description}</small></th>
         <td className="timing-value"><strong>{row.value}</strong>{row.share ? <small>占后端 {row.share}</small> : null}</td>
         <td><span className="timing-basis">{row.basis}</span></td>
-        <td>{row.description}</td>
       </tr>)}</tbody>
     </table>
   </div>;
@@ -103,50 +102,16 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                 ? "处理明细来自历史合并请求；单独处理阶段耗时未分离。"
                 : phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
               {phaseDef.key === "photo_import" ? <p className="phase-scope-note">文件登记、去重、元数据读取与预览准备；处理明细见流水线。</p> : null}
-              {processingDetails && progress?.current_directory ? (
-                <div className="import-progress-panel" data-testid="import-waiting">
-                  <p className="muted">历史合并请求中的处理进度；计时保留原记录。</p>
-                  <div className="import-progress-head">
-                    <div className="import-progress-location">
-                      <span className="import-progress-eyebrow">当前目录</span>
-                      <strong title={String(progress.current_directory)}>{String(progress.current_directory)}</strong>
-                    </div>
-                    <span className="import-progress-clock">本目录请求已用 {elapsedSeconds(progress?.request_started_at, end)} 秒</span>
-                  </div>
-                  <div className="import-progress-stats">
-                    <span><b>{observation?.completed ?? "?"}</b><small>已处理</small></span>
-                    <span><b>{observation?.total ?? "?"}</b><small>媒体总数</small></span>
-                    <span><b>{observation?.imported ?? "?"}</b><small>新增</small></span>
-                    <span><b>{observation?.deduplicated ?? "?"}</b><small>去重</small></span>
-                    <span><b>{observation?.failed ?? "?"}</b><small>失败</small></span>
-                  </div>
-                  <div className="import-progress-meta">
-                    <span className="import-progress-stage">
-                      {importStageLabels[observation?.stage ?? ""] ?? observation?.stage ?? "逐媒体进度尚不可用"}
-                      {observation?.current_file ? ` · ${observation.current_file}` : ""}
-                    </span>
-                    <span className="import-progress-freshness">
-                      {observation ? `后端状态：${observation.status ?? "未知"} · 更新于 ${observation.updated_at ?? "未记录"}` : "等待进度接口"}
-                    </span>
-                  </div>
-                  {progress?.request_error ? <p className="import-progress-warning">请求错误：{progress.request_error}；产品是否已停止以独立进度为准。</p> : null}
+              {processingDetails ? <p className="phase-summary">{importStageLabels[observation?.stage ?? ""] ?? observation?.stage ?? "等待处理进度"}
+                {observation?.completed != null ? ` · 已处理 ${observation.completed}/${observation.total ?? "?"}` : ""}
+              </p> : null}
+              {processingDetails ? <>
+                {progress?.request_error ? <p className="import-progress-warning">请求错误：{progress.request_error}；产品是否已停止以独立进度为准。</p> : null}
                   {progress?.availability !== "available" ? <p className="import-progress-warning">查询状态：{progress?.availability ?? "未接入"} · {progress?.query_error ?? "等待进度接口"}；保留的计数不是当前实时进度。</p> : null}
                   {!terminal && phase?.status === "running" && progress?.last_received_at &&
                     Number(elapsedSeconds(progress.last_received_at, now)) > 10
                     ? <p className="import-progress-warning">进度查询超过 10 秒未刷新，当前显示上次观测。</p> : null}
-                  <div className="import-progress-directory">
-                    已完成目录 {Number(progress.directories_done ?? 0)}/{Number(progress.directories_total ?? 0)}
-                  </div>
-                </div>
-              ) : null}
-              {processingDetails && observation &&
-                typeof observation.total === "number" && observation.total > 0 &&
-                typeof observation.completed === "number" ? (
-                  <div className="import-progress-bar-wrap">
-                    <progress aria-label="当前目录媒体处理进度" max={observation.total} value={observation.completed} />
-                    <small>媒体处理进度；事件总结和人物画像另行收尾。</small>
-                  </div>
-                ) : null}
+              </> : null}
               {errors.length > 0 ? (
                 <details className="phase-errors">
                   <summary>{phaseErrorSummary(phase)}</summary>
@@ -173,24 +138,67 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                   <div className="phase-bar-fill" style={{ width: `${phasePercent(phase)}%` }} />
                 </div>
               ) : null}
-              {phaseDef.key === "pipeline_processing" && phase?.progress ? (
-                <p className="muted">媒体进度按处理、失败和跳过的数量统计；事件总结、图构建和人物信息更新结束后，流水线才完成。</p>
-              ) : null}
-              {timing && (timing.overview.length > 0 || timing.groups.length > 0) ? (
-                <div className="pipeline-timing">
-                  <div className="pipeline-timing-overview">{timing.overview.map(row => <div key={row.label}>
-                    <span>{row.label}</span><strong>{row.value}</strong><small>{row.note}</small>
-                  </div>)}</div>
-                  {timing.groups.map(group => group.collapsed
-                    ? <details className="pipeline-timing-group" key={group.key}>
-                      <summary>{group.title}</summary><p className="muted">{group.note}</p><TimingTable group={group} />
-                    </details>
-                    : <section className="pipeline-timing-group" key={group.key} aria-label={group.title}>
-                      <div className="pipeline-timing-heading"><h4>{group.title}</h4>{group.summary ? <strong>{group.summary}</strong> : null}</div>
-                      <p className="muted">{group.note}</p><TimingTable group={group} />
-                    </section>)}
-                  <p className="muted">未记录表示缺少独立计时，不能据此判断是否执行；画面理解、人脸和向量的细分时延以已保存的调用统计为准。</p>
+              {combinedImport && timing && timing.overview.length > 0 ? <div className="pipeline-timing-overview">
+                {timing.overview.map(row => <span key={row.label} title={row.note}>
+                  {row.label} <strong>{row.value}</strong>
+                </span>)}
+              </div> : null}
+              {processingDetails || (timing && timing.groups.length > 0) ? (
+                <details className="pipeline-details" key={`${activeRun.run_id}-pipeline-details`}>
+                  <summary>处理步骤与耗时详情</summary>
+              {processingDetails && progress?.current_directory ? (
+                <div className="import-progress-panel" data-testid="import-waiting">
+                  <p className="muted">历史合并请求中的处理进度；计时保留原记录。</p>
+                  <div className="import-progress-head">
+                    <div className="import-progress-location">
+                      <span className="import-progress-eyebrow">当前目录</span>
+                      <strong title={String(progress.current_directory)}>{String(progress.current_directory)}</strong>
+                    </div>
+                    <span className="import-progress-clock">本目录请求已用 {elapsedSeconds(progress?.request_started_at, end)} 秒</span>
+                  </div>
+                  <div className="import-progress-stats">
+                    <span><b>{observation?.completed ?? "?"}</b><small>已处理</small></span>
+                    <span><b>{observation?.total ?? "?"}</b><small>媒体总数</small></span>
+                    <span><b>{observation?.imported ?? "?"}</b><small>新增</small></span>
+                    <span><b>{observation?.deduplicated ?? "?"}</b><small>去重</small></span>
+                    <span><b>{observation?.failed ?? "?"}</b><small>失败</small></span>
+                  </div>
+                  <div className="import-progress-meta">
+                    <span className="import-progress-stage">
+                      {importStageLabels[observation?.stage ?? ""] ?? observation?.stage ?? "逐媒体进度尚不可用"}
+                      {observation?.current_file ? ` · ${observation.current_file}` : ""}
+                    </span>
+                    <span className="import-progress-freshness">
+                      {observation ? `后端状态：${observation.status ?? "未知"} · 更新于 ${observation.updated_at ?? "未记录"}` : "等待进度接口"}
+                    </span>
+                  </div>
+                  <div className="import-progress-directory">
+                    已完成目录 {Number(progress.directories_done ?? 0)}/{Number(progress.directories_total ?? 0)}
+                  </div>
                 </div>
+              ) : null}
+              {processingDetails && observation &&
+                typeof observation.total === "number" && observation.total > 0 &&
+                typeof observation.completed === "number" ? (
+                  <div className="import-progress-bar-wrap">
+                    <progress aria-label="当前目录媒体处理进度" max={observation.total} value={observation.completed} />
+                    <small>媒体处理进度；事件总结和人物画像另行收尾。</small>
+                  </div>
+                ) : null}
+                  {phase?.progress ? <p className="muted">媒体处理后还需完成事件总结、图谱和人物信息更新。</p> : null}
+                  {timing ? <div className="pipeline-timing">
+                    {timing.overview.map(row => <p className="muted" key={row.label}>{row.label} <strong>{row.value}</strong> · {row.note}</p>)}
+                    {timing.groups.map(group => group.collapsed
+                      ? <details className="pipeline-timing-group" key={group.key}>
+                        <summary>{group.title}</summary><p className="muted">{group.note}</p><TimingTable group={group} />
+                      </details>
+                      : <section className="pipeline-timing-group" key={group.key} aria-label={group.title}>
+                        <div className="pipeline-timing-heading"><h4>{group.title}</h4>{group.summary ? <strong>{group.summary}</strong> : null}</div>
+                        <p className="muted">{group.note}</p><TimingTable group={group} />
+                      </section>)}
+                    <p className="muted">未记录的独立计时保持空缺；细分时延以已保存的调用统计为准。</p>
+                  </div> : null}
+                </details>
               ) : null}
             </article>
           );

@@ -125,15 +125,15 @@ it("显示真实媒体计数与收尾阶段，媒体100%仍保持进行中，墙
 });
 
 it("未扫描的total保持未知，查询故障和上次观测同时可见", () => {
-  const { container, getByTestId, queryByLabelText } = render(<PhaseList activeRun={activeRun({
+  const { container, queryByLabelText } = render(<PhaseList activeRun={activeRun({
     photo_import: { status: "running", progress: {
       current_directory: "videos", availability: "unavailable", query_error: "GET disconnected",
       observation: { total: null, completed: 0, imported: 0, deduplicated: 0, failed: 0, stage: "scanning" },
     } },
   })} />);
   expect(container.textContent).toContain("当前目录已处理 0/? 个媒体");
-  expect(getByTestId("import-waiting").textContent).toContain("GET disconnected");
-  expect(getByTestId("import-waiting").textContent).toContain("保留的计数不是当前实时进度");
+  expect(container.textContent).toContain("GET disconnected");
+  expect(container.textContent).toContain("保留的计数不是当前实时进度");
   expect(queryByLabelText("当前目录媒体处理进度")).toBeNull();
 });
 
@@ -187,9 +187,9 @@ it("旧合并请求的观察、归属和画像时延只放在流水线，不混�
   const cards = container.querySelectorAll(".phase-card");
   expect(cards[3]?.textContent).toContain("登记落库累计 1s");
   expect(cards[3]?.textContent).not.toMatch(/50s|30s|20s/);
-  expect(cards[4]?.textContent).toContain("历史合并请求耗时2分");
+  expect(cards[4]?.textContent).toContain("历史合并请求耗时 2分");
   expect(cards[4]?.textContent).toContain("主线程等待累计");
-  expect(cards[4]?.textContent).toContain("人物画像20s");
+  expect(cards[4]?.textContent).toContain("人物画像人物画像生成与刷新。20s");
   expect(JSON.stringify(run)).toBe(saved);
 });
 
@@ -201,10 +201,10 @@ it("显式阶段区分请求墙钟、后端总计和嵌套步骤，长耗时显�
       timings: { total: 100, pipeline_core: 70, source_memory_prepare: 200, person_insights: 20 } },
   })} />);
   const pipeline = container.querySelector(".pipeline-phase-card");
-  expect(pipeline?.textContent).toContain("实际总耗时2分");
-  expect(pipeline?.textContent).toContain("后端处理耗时1分40秒");
+  expect(pipeline?.textContent).toContain("实际总耗时 2分");
+  expect(pipeline?.textContent).toContain("后端处理耗时 1分40秒");
   expect(pipeline?.textContent).toContain("1分10秒 · 占后端 70.0%");
-  expect(getByRole("table", { name: "媒体处理与事件总结" }).textContent).toContain("3分20秒并行任务累计");
-  expect(getByRole("table", { name: "图谱与人物收尾" }).textContent).toContain("占后端 20.0%");
+  expect(getByRole("table", { name: "媒体处理与事件总结", hidden: true }).textContent).toContain("3分20秒并行任务累计");
+  expect(getByRole("table", { name: "图谱与人物收尾", hidden: true }).textContent).toContain("占后端 20.0%");
   expect(pipeline?.querySelector("details")?.open).toBe(false);
 });
