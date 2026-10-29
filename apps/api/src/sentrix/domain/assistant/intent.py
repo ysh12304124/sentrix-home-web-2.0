@@ -437,22 +437,48 @@ def parse_declaration(
         return None, "invalid_planner_action"
 
     declaration = payload.get("declaration")
-    if payload.get("action") not in {"declare", "revise"} or not isinstance(declaration, Mapping):
+    # 容错：llama.cpp不强制JSON schema，模型可能输出"search"等非标准action
+    action = payload.get("action")
+    if not action or not isinstance(action, str) or not isinstance(declaration, Mapping):
         return None, "invalid_planner_action"
     if str(declaration.get("scope_id") or "") != scope_id:
         return None, "scope_mismatch"
 
     requirements: list[EvidenceRequirement] = []
     for item in declaration.get("requirements") or []:
+        # 容错：模型可能输出字符串而非dict
+        if isinstance(item, str):
+            # 字符串作为description和predicate
+            description = item.strip()
+            predicate = item.strip()
+            evidence_type = EvidenceType("structured_fact")
+            value_type = RequirementValueType("description")
+            required = True
+            scope: tuple[tuple[str, str], ...] = ()
+            if not description:
+                continue
+            requirements.append(
+                EvidenceRequirement(
+                    id=f"req_{len(requirements) + 1}",
+                    evidence_type=evidence_type,
+                    description=description,
+                    required=required,
+                    predicate=predicate,
+                    value_type=value_type,
+                    scope=scope,
+                )
+            )
+            continue
         if not isinstance(item, Mapping):
-            return None, "invalid_planner_action"
+            continue
         try:
             evidence_type = EvidenceType(str(item.get("evidence_type") or ""))
         except ValueError:
-            return None, "invalid_planner_action"
+            evidence_type = EvidenceType("structured_fact")
 
         description = str(item.get("description") or "").strip()
-        predicate = str(item.get("predicate") or "").strip()
+        # 容错：normalize_payload转换的字符串需求没有predicate
+        predicate = str(item.get("predicate") or description).strip()
         raw_value_type = str(item.get("value_type") or "").strip()
         required = item.get("required", True)
         if not description or not predicate or _ANGLE_PLACEHOLDER.search(description):
@@ -460,13 +486,15 @@ def parse_declaration(
         try:
             value_type = RequirementValueType(raw_value_type)
         except ValueError:
-            return None, "invalid_requirement"
+            # 容错：normalize_payload转换的需求没有value_type
+            value_type = RequirementValueType("description")
+        # 容错：normalize_payload可能输出非bool的required
         if not isinstance(required, bool):
-            return None, "invalid_requirement"
+            required = True
 
         raw_scope = item.get("scope", {})
         if not isinstance(raw_scope, Mapping):
-            return None, "invalid_requirement"
+            raw_scope = {}
         scope: list[tuple[str, str]] = []
         for key, value in raw_scope.items():
             key_text = str(key)
