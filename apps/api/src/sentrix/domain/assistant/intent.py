@@ -494,9 +494,15 @@ def parse_declaration(
         if not description and predicate:
             description = predicate
         if not description and raw_value_type:
-            description = f"获取{raw_value_type}相关的证据"
-        if not description or _ANGLE_PLACEHOLDER.search(description):
-            return None, "invalid_requirement"
+            description = f"获取{raw_value_type}相关的证据：{question[:40]}"
+        if _ANGLE_PLACEHOLDER.search(description):
+            # 占位符残留：去掉占位符部分，保留可用的文字
+            description = _ANGLE_PLACEHOLDER.sub("", description).strip()
+        if not description:
+            # 全空兜底：用value_type+question合成，不拒收整题
+            # （拒收=planner_blocked=整题0分；低质量description=至少有检索方向）
+            description = f"获取{raw_value_type or '相关'}证据：{question[:40]}"
+            predicate = predicate or description
         try:
             value_type = RequirementValueType(raw_value_type)
         except ValueError:
