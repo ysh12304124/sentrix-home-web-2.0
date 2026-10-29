@@ -36,11 +36,7 @@ from typing import Any
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-from sentrix.application.retrieval.retrieve_graph import (
-    graph_direction,
-    graph_intent,
-    graph_routing_policy,
-)
+from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import Attachment
 from sentrix.domain.assistant.ports import PersonDirectory, ResultSetRepository
@@ -305,14 +301,7 @@ class AssistantToolbox:
                 "graph_candidate_asset_ids": list(result.graph_asset_ids),
                 "graph_primary_asset_ids": list(result.primary_asset_ids),
                 "graph_fused_asset_ids": list(result.fused_asset_ids),
-                "graph_policy": {
-                    "intent": graph_intent(query),
-                    "direction": graph_direction(query),
-                    "mode": "enabled" if graph_trace and graph_trace["status"] == "ok" else "skipped",
-                    "reason": (
-                        graph_trace.get("reason", "") if graph_trace else graph_routing_policy(query).reason
-                    ),
-                },
+                "graph_policy": {"intent": graph_intent(query), "direction": graph_direction(query)},
             },
         )
 

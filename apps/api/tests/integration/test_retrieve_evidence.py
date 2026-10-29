@@ -21,7 +21,7 @@ from sentrix.application.retrieval.retrieve_evidence import (
     EvidenceRequest,
     RetrieveEvidence,
 )
-from sentrix.application.retrieval.retrieve_graph import GRAPH_MAX_HOPS, GraphSearchResult
+from sentrix.application.retrieval.retrieve_graph import GraphSearchResult
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
@@ -344,11 +344,9 @@ def test_the_visual_channel_still_reports_its_backend_health(library):
 class _RecordingGraph:
     def __init__(self) -> None:
         self.seeds: tuple[str, ...] = ()
-        self.max_hops = 0
 
-    def execute(self, *, seed_asset_ids, scope_id, limit, question="", max_hops=GRAPH_MAX_HOPS):
+    def execute(self, *, seed_asset_ids, scope_id, limit, question=""):
         self.seeds = tuple(seed_asset_ids)
-        self.max_hops = max_hops
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -362,43 +360,17 @@ class _RecordingGraph:
         )
 
 
-def test_generic_query_keeps_primary_head_and_skips_graph_expansion(library):
+def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(library):
     graph = _RecordingGraph()
     use_case = build(library, graph=graph)
 
     result = use_case.execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
 
-    assert graph.seeds == ()
-    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_c"]
-    assert result.graph_asset_ids == ()
+    assert graph.seeds == ("asset_b", "asset_c")
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
+    assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
-    assert result.fused_asset_ids == ("asset_b", "asset_c")
-    graph_trace = next(trace for trace in result.channel_trace if trace.channel == "graph")
-    assert graph_trace.status == "degraded"
-    assert graph_trace.reason == "policy_skip:intent_general_not_graph"
-
-
-def test_causal_query_uses_bounded_graph_expansion(library):
-    graph = _RecordingGraph()
-    use_case = build(library, graph=graph)
-
-    result = use_case.execute(EvidenceRequest(text="为什么瓶子倒了？", scope_id=SCOPE, limit=4))
-
-    assert len(graph.seeds) == 3
-    assert graph.max_hops == 3
-    graph_trace = next(trace for trace in result.channel_trace if trace.channel == "graph")
-    assert graph_trace.status == "ok"
-
-
-def test_evidence_existence_query_skips_graph_even_when_it_contains_causal_words(library):
-    graph = _RecordingGraph()
-    use_case = build(library, graph=graph)
-
-    result = use_case.execute(EvidenceRequest(text="为什么没有证据证明瓶子倒了？", scope_id=SCOPE, limit=2))
-
-    assert graph.seeds == ()
-    graph_trace = next(trace for trace in result.channel_trace if trace.channel == "graph")
-    assert graph_trace.reason == "policy_skip:uncertainty_or_existence_query"
+    assert result.fused_asset_ids == ("asset_b", "asset_graph")
 
 
 # ---- 通道轨迹（T125：S6 的验收条件）------------------------------------------------

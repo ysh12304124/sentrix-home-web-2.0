@@ -41,11 +41,7 @@ from datetime import datetime
 
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_graph import (
-    GRAPH_CHANNEL,
-    RetrieveGraph,
-    graph_routing_policy,
-)
+from sentrix.application.retrieval.retrieve_graph import GRAPH_CHANNEL, RetrieveGraph
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import (
@@ -359,53 +355,38 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
-        graph_policy = graph_routing_policy(text, limit=limit)
         if self._graph is not None:
-            if not graph_policy.enabled:
+            graph_started = time.monotonic()
+            try:
+                graph_result = self._graph.execute(
+                    seed_asset_ids=[candidate.asset_id for candidate in primary_fused[:limit]],
+                    scope_id=request.scope_id,
+                    limit=max(recall_limit, limit * 2),
+                    question=text,
+                )
+                channel_hits[GRAPH_CHANNEL] = graph_result.hits
+                traces.append(
+                    ChannelTrace(
+                        channel=GRAPH_CHANNEL,
+                        status="degraded" if graph_result.degraded else "ok",
+                        candidate_count=len(graph_result.hits),
+                        latency_ms=round((time.monotonic() - graph_started) * 1000, 1),
+                        backend=graph_result.backend,
+                        reason=graph_result.reason if graph_result.degraded else "",
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - 图是可降级的派生通道
+                log.warning("图记忆拓展抛异常，本次按空结果继续: %s", error)
                 channel_hits[GRAPH_CHANNEL] = ()
                 traces.append(
                     ChannelTrace(
                         channel=GRAPH_CHANNEL,
-                        status="degraded",
+                        status="error",
                         candidate_count=0,
-                        latency_ms=0.0,
-                        backend="policy",
-                        reason=f"policy_skip:{graph_policy.reason}",
+                        latency_ms=round((time.monotonic() - graph_started) * 1000, 1),
+                        reason=str(error),
                     )
                 )
-            else:
-                graph_started = time.monotonic()
-                try:
-                    graph_result = self._graph.execute(
-                        seed_asset_ids=[candidate.asset_id for candidate in primary_fused[:limit]],
-                        scope_id=request.scope_id,
-                        limit=max(recall_limit, limit * 2),
-                        question=text,
-                        max_hops=graph_policy.max_hops,
-                    )
-                    channel_hits[GRAPH_CHANNEL] = graph_result.hits
-                    traces.append(
-                        ChannelTrace(
-                            channel=GRAPH_CHANNEL,
-                            status="degraded" if graph_result.degraded else "ok",
-                            candidate_count=len(graph_result.hits),
-                            latency_ms=round((time.monotonic() - graph_started) * 1000, 1),
-                            backend=graph_result.backend,
-                            reason=graph_result.reason if graph_result.degraded else "",
-                        )
-                    )
-                except Exception as error:  # noqa: BLE001 - 图是可降级的派生通道
-                    log.warning("图记忆拓展抛异常，本次按空结果继续: %s", error)
-                    channel_hits[GRAPH_CHANNEL] = ()
-                    traces.append(
-                        ChannelTrace(
-                            channel=GRAPH_CHANNEL,
-                            status="error",
-                            candidate_count=0,
-                            latency_ms=round((time.monotonic() - graph_started) * 1000, 1),
-                            reason=str(error),
-                        )
-                    )
 
         fused = fuse(channel_hits, channel_weights=channel_weights)
 
@@ -445,7 +426,7 @@ class RetrieveEvidence:
                     candidate.asset_id,
                 )
             )
-            graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
+            graph_slots = min(len(graph_candidates), max(1, min(4, limit // 4 or 1)))
             selected: list[FusedCandidate] = [
                 *primary_fused[: max(0, limit - graph_slots)],
                 *graph_candidates[:graph_slots],
