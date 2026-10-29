@@ -6,7 +6,8 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 LEGACY_ABILITY_VERSION = "ability-2026.10.28-v1"
-ABILITY_VERSION = "ability-2026.10.28-v2"
+V2_ABILITY_VERSION = "ability-2026.10.28-v2"
+ABILITY_VERSION = "ability-2026.10.29-v3"
 LEGACY_FAMILIES = {"P": "信息获取与感知", "R": "推理与计算", "S": "归纳与总结"}
 ABILITY_FAMILIES = {**LEGACY_FAMILIES, "H": "抗幻觉", "I": "抗注入攻击"}
 LEGACY_ABILITIES = {
@@ -23,7 +24,7 @@ LEGACY_ABILITIES = {
     "S3": "跨事件归纳",
     "S4": "过程与时间线整理",
 }
-ABILITIES = {
+V2_ABILITIES = {
     "P1": "媒体定位与筛选",
     "P2": "记录属性查询",
     "P3": "视觉内容理解",
@@ -35,6 +36,8 @@ ABILITIES = {
     "S1": "场景综合描述",
     "S2": "经历与过程总结",
 }
+SAFETY_SUBTYPES = {"hallucination": "H1", "injection": "I1"}
+ABILITIES = {**V2_ABILITIES, "H1": "抗幻觉", "I1": "抗注入攻击"}
 BENCHMARK_GROUPS = {"ordinary": "普通能力题", "hallucination": "抗幻觉拒答", "injection": "注入防护"}
 ABILITY_VERSIONS = {
     LEGACY_ABILITY_VERSION: {
@@ -42,6 +45,7 @@ ABILITY_VERSIONS = {
         "types": LEGACY_ABILITIES,
         "groups": BENCHMARK_GROUPS,
     },
+    V2_ABILITY_VERSION: {"families": ABILITY_FAMILIES, "types": V2_ABILITIES, "groups": BENCHMARK_GROUPS},
     ABILITY_VERSION: {"families": ABILITY_FAMILIES, "types": ABILITIES, "groups": BENCHMARK_GROUPS},
 }
 ABILITY_FIELDS = (
@@ -56,7 +60,7 @@ ABILITY_FIELDS = (
 
 
 def family_ids(group: str, primary: list[str], action: Any = None) -> list[str]:
-    """V2 primary directions; special benchmarks deliberately have no subtypes."""
+    """Primary directions shared by V2 and V3; subtype meaning follows the saved version."""
     if group in {"hallucination", "injection"}:
         return ["H" if group == "hallucination" else "I"]
     return [] if action == "clarify" else sorted({v[0] for v in primary})
@@ -100,13 +104,23 @@ def validate_abilities(row: Mapping[str, Any]) -> None:
                 raise ValueError("invalid ability IDs")
         if set(primary) & set(supporting):
             raise ValueError("primary and supporting abilities overlap")
-        if group != "ordinary" and primary:
+        if version == ABILITY_VERSION:
+            safety = SAFETY_SUBTYPES.get(str(group))
+            if safety:
+                expected_primary = [] if record.get("expected_action") == "clarify" else [safety]
+                if primary != expected_primary or supporting:
+                    raise ValueError(
+                        "safety group must use its matching subtype without supporting abilities"
+                    )
+            elif any(v not in V2_ABILITIES for v in primary + supporting):
+                raise ValueError("ordinary groups must use ordinary abilities")
+        elif group != "ordinary" and primary:
             raise ValueError("safety groups must not contribute ordinary abilities")
         if record is not row and record.get("expected_action") == "clarify" and primary:
             raise ValueError("clarification turn has primary abilities")
         if group == "ordinary" and record.get("expected_action") != "clarify" and not primary:
             raise ValueError("ordinary answer has no primary ability")
-        if version == ABILITY_VERSION:
+        if version in {V2_ABILITY_VERSION, ABILITY_VERSION}:
             expected = family_ids(str(group), primary, record.get("expected_action"))
             if record.get("ability_family_ids") != expected:
                 raise ValueError("invalid ability_family_ids")
@@ -128,13 +142,17 @@ def ability_dimensions(record: Mapping[str, Any]) -> dict[str, list[str]]:
         return unknown
     if any(not isinstance(v, str) or v not in catalog for v in primary):
         return unknown
-    if version == ABILITY_VERSION:
+    if version in {V2_ABILITY_VERSION, ABILITY_VERSION}:
         families = family_ids(str(group), primary, record.get("expected_action"))
         if record.get("ability_family_ids") != families:
             return unknown
     else:
         families = sorted({v[0] for v in primary}) if group == "ordinary" else []
-    types = (sorted(set(primary)) or ["unknown"]) if group == "ordinary" else ["not_applicable"]
+    types = (
+        (sorted(set(primary)) or ["unknown"])
+        if group == "ordinary" or version == ABILITY_VERSION
+        else ["not_applicable"]
+    )
     if record.get("expected_action") == "clarify":
         types = ["not_applicable"]
         if group == "ordinary":

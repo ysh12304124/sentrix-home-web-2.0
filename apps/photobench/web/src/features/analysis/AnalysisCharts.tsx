@@ -180,9 +180,9 @@ export function AnalysisCharts({ report: r, filter }: {
           <option value="">全部大类</option>{Object.entries(qaTaxonomy.tasks).map(([key, task]) => <option key={key} value={key}>{task.label}</option>)}
         </select></label>}
         {dimension === "ability_type" && <label>一级能力<select aria-label="分析一级能力" value={parent} onChange={e => setParent(e.target.value)}>
-          <option value="">全部能力</option>{Object.keys(qaTaxonomy.abilities.families).filter(key => Object.values(abilityParent).includes(key)).map(key => <option key={key} value={key}>{displayLabel(key)}</option>)}
+          <option value="">全部能力</option>{Object.keys(qaTaxonomy.abilities.families).filter(key => allRows.some(row => abilityParent[row.value] === key)).map(key => <option key={key} value={key}>{displayLabel(key)}</option>)}
         </select></label>}
-        {dimension === "ability_type" && r.rule_version >= 8 && <span className="analysis-hint">抗幻觉、抗注入攻击暂不细分，请在一级标签中筛选。</span>}
+        {dimension === "ability_type" && r.rule_version >= 8 && <span className="analysis-hint">{r.ability_taxonomy_versions?.includes("ability-2026.10.29-v3") ? "v3二级包含抗幻觉和抗注入攻击；历史版本按原标签统计。" : "抗幻觉、抗注入攻击暂不细分，请在一级标签中筛选。"}</span>}
         {dimension === "ability_family" && <button className="btn compact" onClick={() => setDimension("ability_type")}>展开二级能力</button>}
         {dimension === "content_type" && r.rule_version >= 5 && <button className="btn compact" onClick={() => setDimension("content_subtype")}>展开细分题型</button>}
         <label>显示方式<select aria-label="分布显示方式" value={ratio ? "ratio" : "count"} onChange={e => setRatio(e.target.value === "ratio")}>

@@ -438,7 +438,7 @@ def test_evidence_includes_recorded_model_io_and_ledger_with_exact_paths():
 
 
 def labels_v2(primary=None, group="ordinary"):
-    from photobench.domain.datasets.ability_taxonomy import ABILITY_VERSION
+    from photobench.domain.datasets.ability_taxonomy import V2_ABILITY_VERSION as ABILITY_VERSION
 
     primary = primary or []
     return dict(
@@ -560,7 +560,8 @@ def test_snapshot_labels_use_frozen_source_and_keep_existing_versions():
 def test_version_filter_is_shared_by_api_statistics_and_export(tmp_path):
     from test_error_analysis import atomic, await_job, write_run
 
-    from photobench.domain.datasets.ability_taxonomy import ABILITY_VERSION, LEGACY_ABILITY_VERSION
+    from photobench.domain.datasets.ability_taxonomy import LEGACY_ABILITY_VERSION
+    from photobench.domain.datasets.ability_taxonomy import V2_ABILITY_VERSION as ABILITY_VERSION
 
     root = tmp_path / "results"
     saved = {"qa_id": "q0", "question": "find", **labels_v2(["P3"])}

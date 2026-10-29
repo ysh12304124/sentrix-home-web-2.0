@@ -143,7 +143,7 @@ export function TagAnalysis({
     dimension === "ability_family"
       ? /^[PRSHI]$/.test(k)
       : dimension === "ability_type"
-        ? /^[PRS][1-4]$/.test(k)
+        ? /^(?:[PRS][1-4]|[HI]1)$/.test(k)
         : false,
   );
   const rows = [
@@ -399,7 +399,9 @@ export function TagAnalysis({
           ? `已标注 ${partition.labeled || 0} · 未标注 ${partition.unknown || 0} · 不适用 ${partition.not_applicable || 0} · 多标签 ${partition.multi_labeled || 0} ${noun}`
           : "旧报告未保存逐项分组检查，请重新生成规则分析。"}
         {dimension === "ability_type" &&
-          "；抗幻觉、抗注入及普通澄清轮无二级能力。"}
+          (r.ability_taxonomy_versions?.includes("ability-2026.10.29-v3")
+            ? "；v3二级包含抗幻觉和抗注入攻击；普通澄清轮不适用，历史版本按原标签统计。"
+            : "；抗幻觉、抗注入及普通澄清轮无二级能力。")}
         {view === "composition" &&
           !canPie &&
           " 分组重叠或完整性未确认，使用条形图。"}

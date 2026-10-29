@@ -177,9 +177,9 @@ def test_schema3_loader_and_metadata_preserve_abilities_and_manifest_version(tmp
         source.qa_rows("a", "new")
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 def test_execution_freezes_and_records_each_turns_own_abilities(version):
-    annotate = v2_labels if version == "v2" else labels
+    annotate = v3_annotation if version == "v3" else v2_labels if version == "v2" else labels
     from fakes_execution import FakeAlbums, FakeSentrixClient
     from test_run_execution import _assets, _completed_turn, _execution, _manifest, _polls, _request, _rows
 
@@ -208,9 +208,9 @@ def test_execution_freezes_and_records_each_turns_own_abilities(version):
     assert [t["ability_type"] for t in case_from_item(result, 0)["turns"]] == [["P1"], ["P3"]]
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 def test_api_filter_and_exports_use_the_same_versioned_ability_case_set(tmp_path: Path, version):
-    annotate = v2_labels if version == "v2" else labels
+    annotate = v3_annotation if version == "v3" else v2_labels if version == "v2" else labels
     from fastapi.testclient import TestClient
     from test_error_analysis import atomic, await_job, write_run
 
@@ -242,6 +242,8 @@ def test_api_filter_and_exports_use_the_same_versioned_ability_case_set(tmp_path
             ("ability_family=P&ability_type=P1&benchmark_group=ordinary", 1),
             ("ability_family=R", 0),
             ("benchmark_group=injection", 1),
+            ("ability_type=I1", 1 if version == "v3" else 0),
+            ("content_unit=turn&ability_family=I&ability_type=I1", 1 if version == "v3" else 0),
             ("content_unit=turn&ability_type=P1", 1),
         ]:
             assert client.get(url + "/cases?" + query).json()["total"] == expected
@@ -254,7 +256,7 @@ def test_api_filter_and_exports_use_the_same_versioned_ability_case_set(tmp_path
 
 
 def v2_labels(ids=None, group="ordinary", action="answer"):
-    from photobench.domain.datasets.ability_taxonomy import ABILITY_VERSION as CURRENT
+    from photobench.domain.datasets.ability_taxonomy import V2_ABILITY_VERSION as CURRENT
 
     result = labels(ids, group, action)
     families = {"ordinary": sorted({v[0] for v in ids or []}), "hallucination": ["H"], "injection": ["I"]}
@@ -337,3 +339,70 @@ def test_saved_version_controls_names_in_legacy_current_and_mixed_exports():
     before.pop("ability_labels")
     before["rule_version"] = 7
     assert "记录定位与筛选" in export_report(before, [old], "html", {})
+
+
+def v3_labels(group, action="refuse"):
+    subtype = {"hallucination": "H1", "injection": "I1"}[group]
+    result = labels([] if action == "clarify" else [subtype], group, action)
+    result.update(ability_taxonomy_version="ability-2026.10.29-v3", ability_family_ids=[subtype[0]])
+    return result
+
+
+@pytest.mark.parametrize(
+    "group,subtype,name", [("hallucination", "H1", "抗幻觉"), ("injection", "I1", "抗注入攻击")]
+)
+def test_v3_safety_subtypes_validate_filter_and_export(group, subtype, name):
+    row = v3_labels(group)
+    validate_qa_annotations(row)
+    assert ability_dimensions(row)["ability_type"] == [subtype]
+    case = case_from_item(item(**row), 0)
+    r = report([case])
+    assert r["denominators"]["ability_valid"] == 1
+    assert r["denominators"]["ability_family_valid"] == 1
+    assert matches(case, {"ability_type": subtype, "ability_family": subtype[0]})
+    assert r["ability_labels"][subtype] == name
+    assert name in export_report(r, [case], "html", {"ability_type": subtype})
+    assert subtype in export_report(r, [case], "csv", {"ability_type": subtype})
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"ability_primary_ids": []},
+        {"ability_primary_ids": ["I1"]},
+        {"ability_primary_ids": ["P1"]},
+        {"ability_supporting_ids": ["I1"]},
+        {"ability_family_ids": ["I"]},
+    ],
+)
+def test_v3_safety_rejects_inconsistent_family_subtype_or_support(patch):
+    with pytest.raises(ValueError):
+        validate_qa_annotations({**v3_labels("hallucination"), **patch})
+
+
+def test_v3_keeps_v2_safety_history_and_ordinary_clarification_semantics():
+    old = {
+        **labels([], "hallucination", "refuse"),
+        "ability_taxonomy_version": "ability-2026.10.28-v2",
+        "ability_family_ids": ["H"],
+    }
+    validate_qa_annotations(old)
+    assert ability_dimensions(old)["ability_type"] == ["not_applicable"]
+    new = v3_labels("hallucination", "clarify")
+    validate_qa_annotations(new)
+    assert ability_dimensions(new)["ability_type"] == ["not_applicable"]
+    ordinary = {
+        **labels(["H1"]),
+        "ability_taxonomy_version": "ability-2026.10.29-v3",
+        "ability_family_ids": ["H"],
+    }
+    with pytest.raises(ValueError):
+        validate_qa_annotations(ordinary)
+
+
+def v3_annotation(ids=None, group="ordinary", action="answer"):
+    if group != "ordinary":
+        return v3_labels(group, action)
+    result = v2_labels(ids, group, action)
+    result["ability_taxonomy_version"] = "ability-2026.10.29-v3"
+    return result
