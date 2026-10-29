@@ -133,6 +133,7 @@ class GoalPlanner:
             try:
                 # 规划不带工具：它要的是一段 JSON 声明，不是一次工具往返。
                 # 端点支持时用 JSON Schema 约束解码；不支持的 fake/后端走原路径。
+                # 【临时调试】禁用structured路径，测试是否是llama.cpp的schema约束问题
                 if isinstance(self._model, StructuredChatModel):
                     reply = self._model.complete_structured(
                         messages,

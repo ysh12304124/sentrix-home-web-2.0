@@ -56,6 +56,17 @@ log = logging.getLogger("sentrix.assistant.chat_client")
 _CHANNEL_OPEN = "<|channel>"
 _CHANNEL_CLOSE = "<channel|>"
 
+# llama.cpp + chatml 模板的 thinking 标记：``<think>...
+</think>
+
+``。
+# qwen35 LoRA 模型用 chatml 模板时会输出这种格式。
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "
+</think>
+
+"
+
 # 1.0 ``app.py:2680-2692`` 的两个人工常数：给回答留的 token 上限，与安全余量。
 #
 # **``PROMPT_BUDGET_TOKENS = 4400`` 已被删除，它是一条静默失败。** 那个数是照 1.0
@@ -170,14 +181,50 @@ def split_thought_channel(text: str) -> tuple[str, str]:
 
     ``thought`` 是通道体，每段去掉名字行（``<|channel>`` 后面那一行是通道名）后按序拼起
     来，空段丢弃。它是真实产出，所以它有个去处，不是被静默扔掉。
+
+    **同时支持两种 thinking 格式：**
+    - Gemma 4：``<|channel>thought\\n...<channel|>``
+    - llama.cpp chatml (qwen35)：``<think>...
+</think>
+
+``
     """
+    import re
+
+    # 先处理 <think>...
+</think>
+
+ 格式（llama.cpp chatml）
+    think_pattern = re.compile(r"<think>.*?
+</think>
+
+", re.DOTALL)
+    think_open = "<think>"
+    think_close = "
+</think>
+
+"
+
+    # 处理两种格式
     kept: list[str] = []
     thought: list[str] = []
+
+    # 先剥 <think>...
+</think>
+
+    text_after_think = think_pattern.sub("", text)
+    think_matches = think_pattern.findall(text)
+    for m in think_matches:
+        content = m[len(think_open):-len(think_close)].strip()
+        if content:
+            thought.append(content)
+    text = text_after_think
+
+    # 再处理 <|channel>...<channel|>（Gemma 4）
     for part in text.split(_CHANNEL_CLOSE):
         head, opened, rest = part.partition(_CHANNEL_OPEN)
         kept.append(head)
         if opened:
-            # 第一行是通道名（本例恒为 ``thought``），不是内容。
             _name, newline, body = rest.partition("\n")
             if newline and body.strip():
                 thought.append(body.strip())
