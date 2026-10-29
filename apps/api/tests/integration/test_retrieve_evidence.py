@@ -21,7 +21,7 @@ from sentrix.application.retrieval.retrieve_evidence import (
     EvidenceRequest,
     RetrieveEvidence,
 )
-from sentrix.application.retrieval.retrieve_graph import GraphSearchResult
+from sentrix.application.retrieval.retrieve_graph import GRAPH_MAX_HOPS, GraphSearchResult
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
@@ -344,9 +344,11 @@ def test_the_visual_channel_still_reports_its_backend_health(library):
 class _RecordingGraph:
     def __init__(self) -> None:
         self.seeds: tuple[str, ...] = ()
+        self.max_hops = 0
 
-    def execute(self, *, seed_asset_ids, scope_id, limit, question=""):
+    def execute(self, *, seed_asset_ids, scope_id, limit, question="", max_hops=GRAPH_MAX_HOPS):
         self.seeds = tuple(seed_asset_ids)
+        self.max_hops = max_hops
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -367,10 +369,35 @@ def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(l
     result = use_case.execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
 
     assert graph.seeds == ("asset_b", "asset_c")
+    assert graph.max_hops == 2
     assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
     assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
     assert result.fused_asset_ids == ("asset_b", "asset_graph")
+
+
+def test_a_weak_graph_path_does_not_displace_primary_head(library):
+    class _WeakGraph(_RecordingGraph):
+        def execute(self, **kwargs):
+            self.seeds = tuple(kwargs["seed_asset_ids"])
+            self.max_hops = kwargs["max_hops"]
+            return GraphSearchResult(
+                hits=(
+                    CandidateHit(
+                        asset_id="asset_graph",
+                        channel="graph",
+                        rank=1,
+                        raw_score=0.71,
+                        score_kind="graph_path",
+                    ),
+                )
+            )
+
+    result = build(library, graph=_WeakGraph()).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
+
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_c"]
+    assert result.graph_asset_ids == ("asset_graph",)
+    assert result.fused_asset_ids == ("asset_b", "asset_c")
 
 
 # ---- 通道轨迹（T125：S6 的验收条件）------------------------------------------------

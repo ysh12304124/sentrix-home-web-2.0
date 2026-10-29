@@ -41,7 +41,12 @@ from datetime import datetime
 
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_graph import GRAPH_CHANNEL, RetrieveGraph
+from sentrix.application.retrieval.retrieve_graph import (
+    GRAPH_CHANNEL,
+    GRAPH_MIN_PROMOTION_SCORE,
+    RetrieveGraph,
+    graph_search_policy,
+)
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import (
@@ -355,6 +360,7 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
+        graph_policy = graph_search_policy(text, limit=limit)
         if self._graph is not None:
             graph_started = time.monotonic()
             try:
@@ -363,6 +369,7 @@ class RetrieveEvidence:
                     scope_id=request.scope_id,
                     limit=max(recall_limit, limit * 2),
                     question=text,
+                    max_hops=graph_policy.max_hops,
                 )
                 channel_hits[GRAPH_CHANNEL] = graph_result.hits
                 traces.append(
@@ -406,27 +413,29 @@ class RetrieveEvidence:
             primary_fused = [candidate for candidate in primary_fused if candidate.asset_id in kept]
             excluded_count = outcome.excluded_count
 
-        # graph 是 expander，不应像第六条独立 primary 通道一样凭 RRF 分数把结果
-        # 全部压在尾部（primary 的 RRF 分数天然大一个数量级，旧实现因此在正常
-        # limit 下几乎永远看不到图扩展）。保留 primary 的排序作为基线，并为图扩展
-        # 预留一个小而确定的尾部窗口；窗口内按 graph 的 0.5 应用层权重与路径排名
-        # 选择，未命中时再由 primary 补位。这样既不改冻结 DEFAULT_CHANNEL_WEIGHTS，
-        # 也不会让图候选反向改变 primary 排名。
+        # graph 是 expander，不能像第六条 primary 通道一样只凭 RRF 分数挤掉主结果。
+        # 允许图把「primary 过取尾部里已有、但还没进入交付头部」的候选晋升，
+        # 也允许它补一条高置信的新候选；低于路径分数门槛的图结果只留在遥测里。
         if channel_hits.get(GRAPH_CHANNEL):
-            primary_ids = {candidate.asset_id for candidate in primary_fused}
+            primary_head_ids = {candidate.asset_id for candidate in primary_fused[:limit]}
             graph_candidates = [
                 candidate
                 for candidate in fused
-                if GRAPH_CHANNEL in candidate.channels and candidate.asset_id not in primary_ids
+                if (
+                    GRAPH_CHANNEL in candidate.channels
+                    and candidate.asset_id not in primary_head_ids
+                    and candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
+                )
             ]
             graph_candidates.sort(
                 key=lambda candidate: (
+                    -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
                     candidate.channels.get(GRAPH_CHANNEL, 10**9),
                     -candidate.score,
                     candidate.asset_id,
                 )
             )
-            graph_slots = min(len(graph_candidates), max(1, min(4, limit // 4 or 1)))
+            graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
             selected: list[FusedCandidate] = [
                 *primary_fused[: max(0, limit - graph_slots)],
                 *graph_candidates[:graph_slots],
