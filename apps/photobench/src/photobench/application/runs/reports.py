@@ -34,12 +34,12 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.http.ports import JsonHttpClient
-from photobench.domain.results.ports import RunStore
+from photobench.domain.results.ports import RunRevisions, RunStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
 
 #: 2.0 的 REST 前缀。1.0 是 ``/api``。
@@ -81,6 +81,7 @@ class RunReports:
         albums: AlbumSource | None = None,
     ) -> None:
         self._store = store
+        self._revisions = cast(RunRevisions, store)
         self._http = http
         self._sentrix_url = sentrix_url
         self._albums = albums
@@ -166,7 +167,7 @@ class RunReports:
 
     def keyframe_analysis(self, run_id: str) -> dict[str, Any]:
         # 先取 revision：不存在时与 ``_state`` 同一个出口抛 ``KeyError``（HTTP 404）。
-        cache_key = ("keyframe", run_id, self._store.revision(run_id))
+        cache_key = ("keyframe", run_id, self._revisions.revision(run_id))
         cached = self._memo_get(cache_key)
         if cached is not None:
             return cached
@@ -184,7 +185,7 @@ class RunReports:
         return result
 
     def memory_effectiveness(self, run_id: str) -> dict[str, Any]:
-        cache_key = ("memory", run_id, self._store.revision(run_id))
+        cache_key = ("memory", run_id, self._revisions.revision(run_id))
         cached = self._memo_get(cache_key)
         if cached is not None:
             return cached

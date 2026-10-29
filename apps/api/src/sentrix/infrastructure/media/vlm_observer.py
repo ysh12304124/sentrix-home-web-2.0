@@ -127,7 +127,7 @@ def _shrink_image(payload: bytes, mime: str, path: Path, max_side: int) -> tuple
                 image = background
             else:
                 image = image.convert("RGB")
-            image.thumbnail((max_side, max_side), Image.LANCZOS)
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             out = io.BytesIO()
             image.save(out, format="JPEG", quality=85, optimize=True)
             return out.getvalue(), "image/jpeg"
