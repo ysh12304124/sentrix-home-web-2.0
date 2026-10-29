@@ -437,11 +437,19 @@ def parse_declaration(
         return None, "invalid_planner_action"
 
     declaration = payload.get("declaration")
-    # 容错：llama.cpp不强制JSON schema，模型可能输出"search"等非标准action
+    # 容错：llama.cpp不强制JSON schema。两坑：
+    # ① prompt说"字段由schema固定"→模型省略action字段（224实测）
+    # ② prompt说"不要输出scope_id"→模型省略scope_id（cfc7f9b修的）
+    # 两者都不该拒收——只要declaration有goal/requirements就接受。
     action = payload.get("action")
-    if not action or not isinstance(action, str) or not isinstance(declaration, Mapping):
-        return None, "invalid_planner_action"
-    if str(declaration.get("scope_id") or "") != scope_id:
+    if not isinstance(declaration, Mapping):
+        # 兼容旧形状：requirements直接在payload顶层
+        if isinstance(payload.get("requirements"), list):
+            declaration = payload
+        else:
+            return None, "invalid_planner_action"
+    declared_scope = str(declaration.get("scope_id") or "")
+    if action in ("declare", "revise") and declared_scope and declared_scope != scope_id:
         return None, "scope_mismatch"
 
     requirements: list[EvidenceRequirement] = []
@@ -481,7 +489,13 @@ def parse_declaration(
         predicate = str(item.get("predicate") or description).strip()
         raw_value_type = str(item.get("value_type") or "").strip()
         required = item.get("required", True)
-        if not description or not predicate or _ANGLE_PLACEHOLDER.search(description):
+        # 容错：qwen可能省略description（schema required但模型不遵守，224实测）
+        # description缺失时fallback到predicate/value_type合成，不再拒收
+        if not description and predicate:
+            description = predicate
+        if not description and raw_value_type:
+            description = f"获取{raw_value_type}相关的证据"
+        if not description or _ANGLE_PLACEHOLDER.search(description):
             return None, "invalid_requirement"
         try:
             value_type = RequirementValueType(raw_value_type)
