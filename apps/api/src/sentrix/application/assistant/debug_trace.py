@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sentrix.domain.assistant.models import ChatMessage, ModelReply, ToolCall
@@ -74,3 +74,18 @@ def model_reply_payload(reply: ModelReply) -> dict[str, Any]:
         "completion_tokens": reply.completion_tokens,
         "tool_argument_parse_facts": [dict(item) for item in reply.tool_argument_parse_facts],
     }
+
+
+def model_timing_facts(
+    diagnostics: Mapping[str, Any], duration_ms: float, completion_tokens: int | None
+) -> dict[str, Any]:
+    """非流式只计算端到端 token/s；首 token 耗时保持未采集。"""
+    streamed = diagnostics.get("streamed")
+    if not isinstance(streamed, bool):
+        return {}
+    facts: dict[str, Any] = {"streamed": streamed}
+    if streamed is False and duration_ms > 0 and completion_tokens is not None:
+        facts.update(
+            tokens_per_second=round(completion_tokens * 1000 / duration_ms, 3), token_rate_basis="end_to_end"
+        )
+    return facts

@@ -1,229 +1,133 @@
-/**
- * 每道题下面的全流程完整轨迹。
- *
- * 两条视图叠在一起，来源不同、用途也不同：
- *
- * 1. **Agent 全流程**（`turnTimeline`）：planner → 每次模型调用 → 它发起的工具 →
- *    语义评审 → 最终回答。每条模型调用展开就是**实际发送的 messages / tools** 与
- *    **原始回复**（正文、思考通道、原始工具调用参数）。
- * 2. **运行时事件**（`turn.trace`）：2.0 的原始进度流。每个已有步骤（规划 / 模型动作 /
- *    工具结果 / 评审 / 结束）都按 `step_id` / `parent_step_id` / `call_id` 挂回对应的
- *    那次模型调用，展开即可看到「模型这一步看到什么、回答什么」。
- *
- * 老 run 没有 `debug_calls` 时两个视图都回退到 1.0 的 `debug_trace`；缺数据的地方
- * 明确写「未记录」，不做推断。
- */
+import { useState } from "react";
+import type { ReactNode } from "react";
 import type { RunItemDetail } from "../../api/types.ts";
-import {
-  callLabel,
-  debugCallForStep,
-  turnDebugCalls,
-  turnProgressEvents,
-  turnTimeline,
-  runtimeTurns,
-} from "../../lib/agentTrace.ts";
+import { isRuleRefusal, turnModelCalls, turnProgressEvents, turnTimeline, runtimeTurns } from "../../lib/agentTrace.ts";
 import type { Dict, TraceTimelineEntry } from "../../lib/agentTrace.ts";
-import { conversationTurns } from "../../lib/evidence.ts";
-import { esc } from "../../lib/format.ts";
-
+import { conversationTurns, itemParseRate } from "../../lib/evidence.ts";
+import { actionLabel, esc, fmtMs, judgeScoreLabel, retrievalBackendLabel, retrievalBackendDegraded, turnCompletionLabel, turnTerminationLabel } from "../../lib/format.ts";
+import { toolDurationMs, toolLatencySegments } from "../../lib/trace.ts";
+import { toolStatusLabel } from "./qaShared.ts";
+import { TimingSegments } from "./TracePerformance.tsx";
+import { Agent2SummaryPanel } from "./Agent2SummaryPanel.tsx";
 import { ModelCallView } from "./ModelCallView.tsx";
 
-function pretty(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
+function Fold({ className, summary, children, defaultOpen = false }: {
+  className: string; summary: ReactNode; children: () => ReactNode; defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return <details className={className} open={open} onToggle={event => {
+    if (event.target === event.currentTarget) setOpen(event.currentTarget.open);
+  }}><summary>{summary}</summary>{open ? children() : null}</details>;
 }
-
-function ToolTraceView({ tool }: { tool: Dict }) {
-  return (
-    <details className="model-tool-node">
-      <summary>
-        <strong>{String(tool.tool || tool.tool_name || "未知工具")}</strong>
-        <span>{String(tool.status || "未记录")}</span>
-        {tool.duration_ms != null ? <span>{String(tool.duration_ms)} ms</span> : null}
-      </summary>
-      <div className="model-tool-node-body">
-        {tool.text ? <p className="muted small">{String(tool.text)}</p> : null}
-        <p className="muted small">工具输入</p>
-        <pre>{pretty(tool.arguments ?? {})}</pre>
-        <p className="muted small">工具输出</p>
-        <pre>{pretty(tool.result ?? tool.observation ?? {})}</pre>
-      </div>
-    </details>
-  );
-}
-
-function TimelineEntryView({ entry }: { entry: TraceTimelineEntry }) {
-  if (entry.kind === "tool") return <ToolTraceView tool={entry.tool ?? {}} />;
-  if (entry.kind === "answer") {
-    const attachments = entry.attachments ?? [];
-    return (
-      <section className="trace-answer-block">
-        <h5>最终回答</h5>
-        <p>{esc(entry.answer) || "未记录"}</p>
-        {attachments.length ? (
-          <>
-            <p className="muted small">交付素材（{attachments.length}）</p>
-            <pre>{pretty(attachments)}</pre>
-          </>
-        ) : null}
-      </section>
-    );
-  }
-  if (!entry.call) return null;
-  const title =
-    entry.kind === "planner" ? "规划器调用" : entry.kind === "judge" ? "语义评审调用" : undefined;
-  return <ModelCallView call={entry.call} title={title} />;
-}
-
-const STEP_LABELS: Record<string, string> = {
-  plan: "规划",
-  status: "状态",
-  model_action: "模型动作（发起工具调用）",
-  tool_result: "工具结果",
-  tool_error: "工具错误",
-  judge: "语义评审",
-  terminal: "结束",
-  guard: "门禁 / 恢复",
+const eventLabels: Record<string, string> = {
+  status: "状态变化", plan: "规划完成", planner: "任务规划", model_action: "发起工具",
+  tool_result: "工具结果", tool_error: "工具失败", judge: "答案核验", guard: "检查与恢复",
+  evidence_binding: "证据核对", terminal: "本轮结束", model: "模型调用", tool: "工具调用",
 };
-
-function ProgressStepView({ turn, step, index }: { turn: Dict; step: Dict; index: number }) {
-  // 两个来源：PhotoBench 投影过的 `debug_trace`（字段在顶层）与主 API 的原始
-  // `trace` 事件（字段在 payload 里）。同一块 UI 要同时认。
-  const payload =
-    typeof step.payload === "object" && step.payload !== null ? (step.payload as Dict) : {};
-  const type = String(step.type || step.kind || "");
-  const linked = debugCallForStep(turn, step);
-  const label = STEP_LABELS[type] || type || `步骤 ${index + 1}`;
-  const tool = step.tool ?? payload.tool;
-  const argumentsValue = step.arguments ?? payload.arguments;
-  const observationValue = step.observation ?? payload.result ?? payload.observation;
-  const parentStepId = step.parent_step_id ?? payload.parent_step_id;
-  const hasToolData = argumentsValue != null || observationValue != null || tool;
-  return (
-    <details className={`debug-step debug-step-${type || "step"}`}>
-      <summary>
-        <span className="debug-step-index">{index + 1}</span>
-        <strong>{label}</strong>
-        <span className="debug-step-status">{String(step.status || "已记录")}</span>
-        {tool ? <span>工具 · {String(tool)}</span> : null}
-        {parentStepId ? <span>父步骤 · {String(parentStepId)}</span> : null}
-        {linked ? <span className="debug-step-linked">含模型完整输入 / 输出</span> : null}
-      </summary>
-      {step.text ? <p className="muted small">{String(step.text)}</p> : null}
-      {hasToolData ? (
-        <div className="debug-step-tool">
-          {argumentsValue != null ? (
-            <>
-              <p className="muted small">工具输入</p>
-              <pre>{pretty(argumentsValue)}</pre>
-            </>
-          ) : null}
-          {observationValue != null ? (
-            <>
-              <p className="muted small">工具输出</p>
-              <pre>{pretty(observationValue)}</pre>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-      {linked ? <ModelCallView call={linked} title={`这一步的模型调用 · ${callLabel(linked.call_type)}`} /> : null}
-      {!linked && !hasToolData ? <pre className="debug-step-raw">{pretty(step)}</pre> : null}
-    </details>
-  );
+function pretty(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
-
-function LegacySteps({ turn }: { turn: Dict }) {
-  const steps = Array.isArray(turn.debug_trace) ? (turn.debug_trace as Dict[]) : [];
-  if (!steps.length) return null;
-  return (
-    <div className="debug-steps">
-      {steps.map((step, index) => (
-        <ProgressStepView key={index} turn={turn} step={step} index={index} />
-      ))}
-    </div>
-  );
+function RuntimeEvent({ event }: { event: Dict }) {
+  const kind = String(event.kind || event.type || event.stage || "event");
+  return <Fold className={"debug-step debug-kind-" + kind} summary={<>
+    <strong>{eventLabels[kind] || kind}</strong>
+    <span>{esc(event.text) || esc(event.message)}</span>
+  </>}>{() => <pre>{pretty(event)}</pre>}</Fold>;
 }
-
-export interface DebugTracePanelProps {
-  detail: RunItemDetail;
+function ToolTraceView({ tool, unbound }: { tool: Dict; unbound?: boolean }) {
+  const name = String(tool.tool || tool.tool_name || "未知工具");
+  const backend = retrievalBackendLabel(tool);
+  return <Fold className="model-tool-node" summary={<>
+    <strong>{name === "final_answer" ? "交付回答 · final_answer" : name}</strong>
+    <span>{toolStatusLabel(tool)}</span><span>工具耗时 {fmtMs(toolDurationMs(tool))}</span>
+    {backend ? <span className={`retrieval-backend${retrievalBackendDegraded(tool) ? " degraded" : ""}`}>检索后端 {backend}</span> : null}
+    {unbound ? <span>父调用未确定</span> : null}
+    {tool.text ? <span>{esc(tool.text)}</span> : null}
+  </>}>{() => <div className="model-tool-node-body">
+    <TimingSegments title="工具内部耗时" total={toolDurationMs(tool)} segments={toolLatencySegments(tool)} />
+    {name === "final_answer" ? <p className="muted small">执行上一步模型给出的答案和媒体选择；此工具不额外调用模型。</p> : null}
+    <p className="muted small">工具输入</p><pre>{pretty(tool.arguments ?? "未记录")}</pre>
+    <p className="muted small">工具输出</p><pre>{pretty(tool.result ?? tool.observation ?? "未记录")}</pre>
+    <p className="muted small">调用ID · {esc(tool.tool_call_id ?? tool.step_id) || "未记录"} · 父步骤 {esc(tool.parent_step_id) || "未记录"}</p>
+  </div>}</Fold>;
 }
-
-export function DebugTracePanel({ detail }: DebugTracePanelProps) {
-  const rawTurns = runtimeTurns(detail);
-  const turns: Dict[] = rawTurns.length
-    ? rawTurns
-    : (conversationTurns(detail) as unknown as Dict[]);
+function TimelineEntryView({ entry, detail, modelLabel }: { entry: TraceTimelineEntry; detail: RunItemDetail; modelLabel?: string }) {
+  if (entry.kind === "event") return <RuntimeEvent event={entry.event ?? {}} />;
+  if (entry.kind === "tool") return <ToolTraceView tool={entry.tool ?? {}} unbound={entry.unbound} />;
+  if (entry.kind === "answer") return <section className="trace-answer-block">
+    <h5>本轮回答</h5><p>{esc(entry.answer) || "未记录"}</p>
+    {entry.attachments?.length ? <details><summary>交付媒体 · {entry.attachments.length} 项</summary>
+      <pre>{pretty(entry.attachments)}</pre></details> : null}
+  </section>;
+  if (!entry.call) return null;
+  return <ModelCallView call={entry.call} detail={detail} modelLabel={modelLabel} title={entry.kind === "planner" ? "规划器调用" : entry.kind === "judge" ? "答案核验调用" : entry.call.call_type === "tool_internal" ? "工具内部模型调用" : "Agent 模型调用"} />;
+}
+export interface DebugTracePanelProps { detail: RunItemDetail; modelLabel?: string }
+export function DebugTracePanel({ detail, modelLabel }: DebugTracePanelProps) {
+  const raw = runtimeTurns(detail);
+  const planned = conversationTurns(detail);
+  const turns: Dict[] = raw.length ? raw : planned as unknown as Dict[];
   if (!turns.length) return null;
-
-  const modelCallCount = rawTurns.reduce((sum, turn) => sum + turnDebugCalls(turn).length, 0);
-  const hasDebug = modelCallCount > 0;
-
-  return (
-    <details className="call-node debug-trace-node">
-      <summary>
-        <strong>全流程完整轨迹</strong>
-        <span>
-          {turns.length} 轮用户问答 · {modelCallCount} 次模型调用 · 含每步实际输入 / 原始输出
-        </span>
-      </summary>
-      <div className="debug-trace-body">
-        {!hasDebug ? (
-          <p className="debug-trace-missing">
-            该结果没有记录模型的完整输入 / 输出：它可能跑在本次改动之前，或采集开关
-            （include_debug）未打开。工具入参 / 结果与进度事件仍按原样展示。
-          </p>
-        ) : null}
-        {turns.map((turn, turnIndex) => {
-          const index = Number(turn.index);
-          const resolvedIndex = Number.isInteger(index) ? index : turnIndex;
-          const timeline = turnTimeline(detail, resolvedIndex);
-          const events = turnProgressEvents(turn);
-          return (
-            <section key={resolvedIndex} className="debug-turn-full">
-              <header className="debug-turn-head">
-                <div>
-                  <span className="debug-turn-index">第 {resolvedIndex + 1} 轮</span>
-                  <strong>{esc(turn.message) || "问答"}</strong>
-                </div>
-                <span>
-                  {turn.agent_status ? `状态 ${String(turn.agent_status)}` : "状态未记录"}
-                  {turn.termination_reason ? ` · ${String(turn.termination_reason)}` : ""}
-                </span>
-              </header>
-              <div className="trace-user-message">
-                <small>用户</small>
-                <p>{esc(turn.message) || "未记录"}</p>
-              </div>
-              <div className="trace-timeline">
-                <h5>Agent 全流程（按发生顺序）</h5>
-                {timeline.length ? (
-                  timeline.map((entry) => <TimelineEntryView key={entry.key} entry={entry} />)
-                ) : (
-                  <p className="muted small">没有可展示的模型调用。</p>
-                )}
-              </div>
-              <details className="trace-progress-events">
-                <summary>
-                  运行时事件（2.0 进度流 · {events.length || (Array.isArray(turn.debug_trace) ? turn.debug_trace.length : 0)} 条）
-                </summary>
-                {events.length ? (
-                  <div className="debug-steps">
-                    {events.map((step, stepIndex) => (
-                      <ProgressStepView key={stepIndex} turn={turn} step={step} index={stepIndex} />
-                    ))}
-                  </div>
-                ) : (
-                  <LegacySteps turn={turn} />
-                )}
-              </details>
-            </section>
-          );
-        })}
-      </div>
-    </details>
-  );
+  const calls = turns.flatMap((turn, index) => turnModelCalls(detail, Number(turn.index ?? index)));
+  const toolCount = Array.isArray(detail.tool_trace) ? detail.tool_trace.length : null;
+  const knownCalls = calls.length > 0 || Array.isArray(detail.model_call_metrics) || turns.every(isRuleRefusal);
+  const shared = detail.conversation_context_mode === "shared_conversation_id" ||
+    (turns.length > 1 && turns.every(turn => turn.conversation_id && turn.conversation_id === turns[0].conversation_id));
+  return <Fold className="call-node debug-trace-node" summary={<>
+    <strong>对话与执行轨迹</strong>
+    <span>{turns.length} 轮用户对话 · {knownCalls ? calls.length : "未记录"} 次模型调用 · {toolCount ?? "未记录"} 次工具调用</span>
+    {turns.length > 1 ? <span>{shared ? "共享会话上下文" : "会话复用情况未记录"}</span> : null}
+  </>}>{() => <div className="debug-trace-body">
+    <div className="trace-performance-summary"><span>{itemParseRate(detail)}</span><span>展开调用查看 Token、TTFT 和工具耗时</span></div>
+    {calls.some(call => !Array.isArray(call.messages)) ? <p className="debug-trace-missing">部分调用只保存了指标，完整输入输出未记录；调用和工具关系仍按已有记录展示。</p> : null}
+    {turns.map((turn, position) => {
+      const index = Number(turn.index ?? position);
+      const timeline = turnTimeline(detail, index);
+      const events = turnProgressEvents(turn);
+      const turnCalls = turnModelCalls(detail, index);
+      const ruleRefusal = !turnCalls.length && isRuleRefusal(turn);
+      const behavior = (turn.task_judge ?? {}) as Dict;
+      const budget = ((turn.trace_bundle as Dict | undefined)?.budget ?? {}) as Dict;
+      const guard = (turn.guard_debug ?? {}) as Dict;
+      return <Fold key={index} className="debug-turn debug-turn-full" defaultOpen summary={<>
+        <strong>用户第 {index + 1} 轮</strong><span>{esc(turn.message)}</span>
+        <span>{turnCompletionLabel(turn)} · {turnTerminationLabel(turn)}</span>
+      </>}>{() => <>
+        <div className="trace-context-note">
+          {turn.context_turn_count != null ? <span>已携带 {String(turn.context_turn_count)} 轮历史对话</span> : null}
+          {turn.conversation_id ? <details><summary>会话标识</summary><code>{String(turn.conversation_id)}</code></details> : null}
+        </div>
+        <details className="trace-execution-diagnostics"><summary>执行诊断</summary>
+          <div className="trace-performance-summary">
+            <span>状态：{turnCompletionLabel(turn)} · {turnTerminationLabel(turn)}</span>
+            {budget.model_steps != null ? <span>模型步骤 {String(budget.model_steps)} / {String(budget.max_steps ?? "上限未记录")}</span> : null}
+            {budget.tool_round_trips != null ? <span>工具往返 {String(budget.tool_round_trips)} / {String(budget.max_tool_calls ?? "上限未记录")}</span> : null}
+            {guard.recovery_attempts != null ? <span>恢复 {String(guard.recovery_attempts)} 次</span> : null}
+            {turn.parse_status ? <span>动作解析：{String(turn.parse_status)}</span> : null}
+            {turn.agent_stability ? <span>{itemParseRate(turn)}</span> : null}
+            {turn.error || turn.agent_reason ? <span>{String(turn.error || turn.agent_reason)}</span> : null}
+          </div>
+        </details>
+        {ruleRefusal ? <p className="trace-policy-refusal">安全规则直接拒答，本轮未调用模型或工具。</p> : null}
+        {timeline.some(entry => entry.kind !== "answer") ? <Fold className="trace-execution" defaultOpen={turns.length === 1}
+          summary={<strong>执行步骤 · {turnCalls.length} 次模型 · {timeline.filter(entry => entry.kind === "tool").length} 次工具</strong>}>
+          {() => <>
+            <div className="trace-timeline">{timeline.filter(entry => entry.kind !== "answer")
+              .map(entry => <TimelineEntryView key={entry.key} entry={entry} detail={detail} modelLabel={modelLabel} />)}</div>
+            {turn.agent2_trace && !ruleRefusal ? <Agent2SummaryPanel detail={{index, agent2_trace:turn.agent2_trace}} /> : null}
+            <details className="trace-progress-events"><summary>原始事件 · {events.length} 条（核对用）</summary>
+              <pre>{pretty(events.length ? events : turn.debug_trace ?? [])}</pre>
+            </details>
+          </>}
+        </Fold> : null}
+        {timeline.find(entry => entry.kind === "answer") ? <TimelineEntryView entry={timeline.find(entry => entry.kind === "answer")!} detail={detail} />
+          : <p>{esc(turn.answer) || esc(turn.final_answer) || "执行记录未保存"}</p>}
+        {turn.expected_action || turn.task_judge || turn.judge ? <div className="result-turn-scores">
+          <span>任务行为：期望{actionLabel(turn.expected_action)} / 实际{actionLabel(behavior.actual_action)}</span>
+          <span>{behavior.correct === true ? "行为符合" : behavior.correct === false ? "行为不符" : "行为未评分"}</span>
+          <span>回答质量：{judgeScoreLabel(turn, null)}</span>
+        </div> : null}
+      </>}</Fold>;
+    })}
+  </div>}</Fold>;
 }

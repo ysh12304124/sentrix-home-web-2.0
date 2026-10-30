@@ -8,6 +8,7 @@ import {
   debugCallForStep,
   turnDebugCalls,
   turnTimeline,
+  turnModelCalls,
 } from "./agentTrace.ts";
 
 const CALL = (overrides: Record<string, unknown> = {}) => ({
@@ -117,15 +118,15 @@ describe("agentTrace · 完整模型轨迹访问器", () => {
 
   it("时间线按 planner → model → 它发起的工具 → judge → answer 排列", () => {
     const timeline = turnTimeline(ITEM, 0);
-    expect(timeline.map((entry) => entry.kind)).toEqual([
+    expect(timeline.filter(entry => entry.kind !== "event").map((entry) => entry.kind)).toEqual([
       "planner",
       "model",
       "tool",
       "judge",
       "answer",
     ]);
-    expect(timeline[2].tool?.tool).toBe("search_memories");
-    expect(timeline[4].answer).toBe("停在小区地下车库");
+    expect(timeline.find(entry => entry.kind === "tool")?.tool?.tool).toBe("search_memories");
+    expect(timeline.at(-1)?.answer).toBe("停在小区地下车库");
   });
 
   it("老 run 没有 debug_calls 时回退到 debug_trace 的步", () => {
@@ -149,7 +150,7 @@ describe("agentTrace · 完整模型轨迹访问器", () => {
     ]);
   });
 
-  it("同一 step_id 有失败重试时，绑定成功的那次输入，工具只挂一次", () => {
+  it("重试调用按attempt匹配自身IO，工具只挂成功尝试一次", () => {
     const retry = {
       runtime_turns: [
         {
@@ -163,12 +164,13 @@ describe("agentTrace · 完整模型轨迹访问器", () => {
                 call_type: "agent",
                 seq: 0,
                 status: "error",
+                attempt: 1,
                 messages: [{ role: "system", content: "失败尝试" }],
                 tools: [],
                 response: null,
                 error: "prompt too long",
               },
-              { ...CALL(), seq: 1 },
+              { ...CALL(), seq: 1, attempt: 2 },
             ],
           },
           trace: [],
@@ -181,8 +183,9 @@ describe("agentTrace · 完整模型轨迹访问器", () => {
       call_type: "agent",
       conversation_turn: 0,
     });
-    expect(bound).not.toBeNull();
-    expect(callMessages(bound)[0]?.content).toBe("你是相册助手");
+    expect(bound).toBeNull();
+    expect(callMessages(debugCallForCall(retry,{step_id:"step_1",call_type:"agent",conversation_turn:0,attempt:1}))[0]?.content).toBe("失败尝试");
+    expect(callMessages(debugCallForCall(retry,{step_id:"step_1",call_type:"agent",conversation_turn:0,attempt:2}))[0]?.content).toBe("你是相册助手");
     expect(turnTimeline(retry, 0).filter((entry) => entry.kind === "tool")).toHaveLength(1);
   });
 
@@ -192,4 +195,50 @@ describe("agentTrace · 完整模型轨迹访问器", () => {
     expect(callContent(call)).toBe("");
     expect(callThought(call)).toBe("先检索");
   });
+});
+
+
+it("仅有指标也展示完整调用数，未绑定工具保留，运行时证据核对就近展示", () => {
+  const item = {model_call_metrics:[{step_id:"step_1",call_type:"agent",conversation_turn:0,status:"complete",duration_ms:50}],
+    tool_trace:[{step_id:"t1",parent_step_id:"step_1",tool:"search_memories",conversation_turn:0},
+                {step_id:"unknown",parent_step_id:"absent",tool:"read_photo_text",conversation_turn:0}],
+    runtime_turns:[{index:0,answer:"答案",trace:[
+      {kind:"model_action",payload:{step_id:"t1",parent_step_id:"step_1"}},
+      {kind:"tool_result",payload:{step_id:"t1",parent_step_id:"step_1"}},
+      {kind:"evidence_binding",text:"证据匹配",payload:{}},
+      {kind:"terminal",payload:{}}]}]};
+  expect(turnModelCalls(item,0)).toHaveLength(1);
+  const timeline=turnTimeline(item,0);
+  expect(timeline.filter(entry=>entry.kind==="model")).toHaveLength(1);
+  expect(timeline.filter(entry=>entry.kind==="tool")).toHaveLength(2);
+  expect(timeline.find(entry=>entry.tool?.tool==="read_photo_text")?.unbound).toBe(true);
+  expect(timeline.findIndex(entry=>entry.event?.kind==="evidence_binding")).toBeGreaterThan(timeline.findIndex(entry=>entry.tool?.tool==="search_memories"));
+  expect(timeline.at(-1)?.kind).toBe("answer");
+});
+
+it("两轮重复step_id不会合并或错配输入，final_answer只记工具", () => {
+  const item={model_call_metrics:[{step_id:"step_1",conversation_turn:0,attempt:1},{step_id:"step_1",conversation_turn:1,attempt:1}],
+    runtime_turns:[0,1].map(index=>({index,message:"问题"+index,answer:"回答"+index,trace_bundle:{debug_calls:[CALL({attempt:1,messages:[{role:"user",content:"问题"+index}]})]}})),
+    tool_trace:[{step_id:"f",tool:"final_answer",parent_step_id:"step_1",conversation_turn:1}]};
+  expect(callMessages(debugCallForCall(item,item.model_call_metrics[1]))[0].content).toBe("问题1");
+  expect(turnTimeline(item,0).filter(entry=>entry.kind==="tool")).toHaveLength(0);
+  expect(turnTimeline(item,1).filter(entry=>entry.kind==="model")).toHaveLength(1);
+  expect(turnTimeline(item,1).filter(entry=>entry.kind==="tool")).toHaveLength(1);
+});
+
+
+it("有真实调用开始时间时，最终模型调用展示在证据核对之前", () => {
+  const item={runtime_turns:[{index:0,answer:"回答",trace_bundle:{debug_calls:[
+    CALL({started_at:"2026-10-28T15:04:37.301Z",duration_ms:3045,response:{content:"回答"}})
+  ]},trace:[{kind:"status",timestamp:"2026-10-28T23:04:37+08:00"},
+    {kind:"evidence_binding",timestamp:"2026-10-28T23:04:40+08:00"},
+    {kind:"terminal",timestamp:"2026-10-28T23:04:40+08:00"}]}]};
+  const timeline=turnTimeline(item,0);
+  expect(timeline.map(entry=>entry.kind==="event"?entry.event?.kind:entry.kind)).toEqual(["status","model","evidence_binding","terminal","answer"]);
+});
+
+
+it("不同call_id不能仅凭相同step_id借用输入", () => {
+ const item={runtime_turns:[{index:0,trace_bundle:{debug_calls:[CALL({call_id:"b",attempt:1})]}}]};
+ expect(debugCallForCall(item,{call_id:"a",step_id:"step_1",attempt:1,call_type:"agent",conversation_turn:0})).toBeNull();
 });

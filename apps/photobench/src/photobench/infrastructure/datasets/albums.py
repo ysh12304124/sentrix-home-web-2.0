@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from photobench.domain.datasets.catalog import ALBUM_MEDIA_COLLECTIONS
+from photobench.domain.datasets.qa_taxonomy import validate_qa_annotations
 from photobench.infrastructure.datasets.qa_metadata import (
     apply_task_action_defaults,
     load_jsonl,
@@ -141,9 +142,32 @@ class JsonAlbumSource:
             rows = load_jsonl(path)
         except (OSError, json.JSONDecodeError) as exc:
             raise KeyError(f"{album_id}/{qa_set}") from exc
-        return apply_task_action_defaults(
+        definition = (manifest.get("qa_set_versions") or {}).get(qa_set) or {}
+        if definition.get("schema_version") in {"2.0", "3.0"}:
+            ids = [row.get("qa_id") for row in rows]
+            if not all(ids) or len(set(ids)) != len(rows):
+                raise ValueError("QA IDs must be present and unique")
+            if definition.get("qa_sha256") != sha256_file(path):
+                raise ValueError("versioned QA file fingerprint mismatch")
+            for row in rows:
+                if definition.get("schema_version") == "3.0" and (
+                    not row.get("ability_taxonomy_version")
+                    or row.get("ability_taxonomy_version") != definition.get("ability_taxonomy_version")
+                ):
+                    raise ValueError("ability version missing or inconsistent with manifest")
+                validate_qa_annotations(row)
+        rows = apply_task_action_defaults(
             rows, str(manifest.get("album_id") or album_id), qa_set, self._policy
         )
+        for row in rows:
+            for source, target in (
+                ("dataset_version", "dataset_version"),
+                ("schema_version", "qa_schema_version"),
+                ("taxonomy_version", "taxonomy_version"),
+            ):
+                if definition.get(source):
+                    row[target] = definition[source]
+        return rows
 
     def read_file(self, album_id: str, relative: str) -> bytes:
         path = self._album_dir(album_id) / relative

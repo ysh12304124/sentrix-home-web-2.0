@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "locked_at": "2026-10-29",
+  "scope": "Resource telemetry dependencies only; not the complete product environment lock",
+  "python_packages": {
+    "psutil": {
+      "version": "7.2.2",
+      "platforms": [
+        "macOS-arm64",
+        "Linux-x86_64",
+        "Linux-aarch64"
+      ]
+    },
+    "nvidia-ml-py": {
+      "version": "13.615.71",
+      "platforms": [
+        "Linux-x86_64"
+      ],
+      "import_name": "pynvml"
+    }
+  },
+  "macmon": {
+    "version": "0.8.2",
+    "platform": "macOS-arm64",
+    "verified_binary_sha256": "0f2d054758fa48d1d68b55d2dcd0b964955d932f05d056645be9cb937b2d4b59",
+    "binary_provenance": "Homebrew macmon/0.8.2/bin/macmon",
+    "upgrade_policy": "Hold verified 0.8.2; verify checksum when reusing this binary; record a new checksum for a rebuilt binary"
+  },
+  "native_platform_baselines": {
+    "local_mac": {
+      "os": "macOS 26.6.1",
+      "os_build": "25G76",
+      "tools_bundled_with_os": [
+        "footprint",
+        "ioreg",
+        "vm_stat",
+        "sysctl",
+        "ps",
+        "lsof",
+        "libproc",
+        "IOKit"
+      ]
+    },
+    "rtx3090_153": {
+      "kernel": "6.8.0-138-generic",
+      "nvidia_driver": "595.99.02",
+      "driver_tools": [
+        "NVML",
+        "nvidia-smi"
+      ],
+      "debian_packages": {
+        "procps": "2:3.3.17-6ubuntu2.1",
+        "iproute2": "5.15.0-1ubuntu2",
+        "lsof": "4.93.2+dfsg-1.1build2"
+      }
+    },
+    "orin_agx_118": {
+      "kernel": "5.15.148-tegra",
+      "debian_packages": {
+        "nvidia-l4t-core": "36.4.7-20250918154033",
+        "nvidia-l4t-tools": "36.4.7-20250918154033",
+        "procps": "2:3.3.17-6ubuntu2.1",
+        "iproute2": "5.15.0-1ubuntu2",
+        "lsof": "4.93.2+dfsg-1.1build2"
+      },
+      "driver_sources": [
+        "tegrastats",
+        "nvmap",
+        "/proc",
+        "hwmon"
+      ]
+    },
+    "orin_nx_46": {
+      "kernel": "5.15.148-tegra",
+      "debian_packages": {
+        "nvidia-l4t-core": "36.4.3-20250107174145",
+        "nvidia-l4t-tools": "36.4.3-20250107174145",
+        "procps": "2:3.3.17-6ubuntu2.1",
+        "iproute2": "5.15.0-1ubuntu2.2",
+        "lsof": "4.93.2+dfsg-1.1build2"
+      },
+      "driver_sources": [
+        "tegrastats",
+        "nvmap",
+        "/proc",
+        "hwmon"
+      ]
+    }
+  },
+  "enforcement": {
+    "python": "Exact == pins in apps/photobench/pyproject.toml; resolved by normal package installation",
+    "macmon": "Provision the verified binary/version and pin the Homebrew formula; see docs/runbooks/telemetry-tools.md",
+    "native_tools": "Preserve the recorded OS/driver image baseline; no automatic OS or driver changes",
+    "updates": "Review dependency changes together with this lock and the telemetry runbook; retain historical run versions"
+  }
+}

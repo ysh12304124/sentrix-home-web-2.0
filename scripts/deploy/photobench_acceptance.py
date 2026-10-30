@@ -106,6 +106,33 @@ def expected_total(parts: list[Any], actual: Any, tolerance: float = 0.1) -> boo
     return actual is None if expected is None else finite(actual) and abs(actual - expected) <= tolerance
 
 
+def check_apple_resident_totals(sample: dict[str, Any]) -> bool:
+    """Independent recomputation from recorded byte components, not provider totals."""
+    observations = sample.get("memory_observations") or {}
+    for group, field in (
+        ("model", "model_process_system_memory_used_mib"),
+        ("product", "product_stack_memory_mib"),
+    ):
+        observation = observations.get(group) or {}
+        values = observation.get("components_bytes") or {}
+        parts = [values.get(key) for key in ("dirty", "swapped", "clean", "reclaimable")]
+        expected = None
+        if observation.get("status") == "available" and memory_dependencies_fresh(sample, field):
+            if not all(finite(value) and value >= 0 for value in parts):
+                return False
+            numbers = [float(value) for value in parts if finite(value)]
+            if numbers[1] > numbers[0]:
+                return False
+            expected = (numbers[0] - numbers[1] + numbers[2] + numbers[3]) / 1048576
+        actual = sample.get(field)
+        if expected is None:
+            if actual is not None:
+                return False
+        elif not finite(actual) or abs(expected - actual) > 0.005:
+            return False
+    return True
+
+
 def check_jetson_product_total(sample: dict[str, Any]) -> bool:
     if sample.get("memory_observation_version") == 1 and not memory_dependencies_fresh(
         sample, "product_stack_memory_mib"
@@ -648,6 +675,18 @@ def assess_tasks(items: list[dict[str, Any]], *, expected_count: int = 10) -> di
     for index, item in enumerate(items):
         reason = item.get("termination_reason")
         turns = item.get("runtime_turns") or []
+        # Independently inspect every final product turn, including earlier
+        # conversation turns; intermediate recovered model errors are not finals.
+        failure = next(
+            (
+                turn.get("termination_reason")
+                for turn in turns
+                if turn.get("termination_reason") in failure_reasons
+            ),
+            None,
+        )
+        if failure:
+            reason = failure
         terminal = bool(turns) and item.get("execution_status") == "completed"
         for turn in turns:
             trace = turn.get("agent2_trace") or {}
@@ -735,6 +774,29 @@ def assess_tasks(items: list[dict[str, Any]], *, expected_count: int = 10) -> di
     return report
 
 
+def check_terminal_status(
+    saved: dict[str, Any], api: dict[str, Any], tasks: dict[str, Any], missing_scores: list[Any]
+) -> list[str]:
+    """Independent cross-check, without importing the production completion rule."""
+    errors = []
+    if saved.get("status") != api.get("status"):
+        errors.append("terminal_status_saved_api_mismatch")
+    outputs: list[Any] = []
+    for item in saved.get("items") or []:
+        for fact in [item, *(item.get("runtime_turns") or [])]:
+            outputs.extend(fact.get(k) for k in ("judge", "task_judge", "evidence_judge"))
+            outputs.extend(fact.get("task_judges") or [])
+    failed_judge = any(isinstance(o, dict) and o.get("judge_status") == "failed" for o in outputs)
+    task_failure = any(tasks.get(k) for k in ("controlled_failure", "unhandled_failure", "cancelled"))
+    partial = any(p.get("status") == "partial" for p in (saved.get("phases") or {}).values())
+    expected = (
+        "completed_with_errors" if task_failure or missing_scores or failed_judge or partial else "completed"
+    )
+    if saved.get("status") != expected:
+        errors.append(f"terminal_status_expected:{expected}")
+    return errors
+
+
 def audit(runtime: Path) -> dict[str, Any]:
     bindings = read_json(runtime / "bindings.json")
     pre = read_json(runtime / "preflight.json")
@@ -805,6 +867,7 @@ def audit(runtime: Path) -> dict[str, Any]:
             fact = attempt.get("score_normalization") or {}
             if fact.get("converted"):
                 normalizations.append({"index": index, "fact": fact})
+    chain_errors.extend(check_terminal_status({**saved, "items": items}, api, tasks, missing_scores))
     infrastructure_errors: list[str] = []
     phase_report: dict[str, Any] = {}
     observed_phases = (
@@ -900,6 +963,10 @@ def audit(runtime: Path) -> dict[str, Any]:
             if not check_jetson_product_total(sample):
                 metric_errors.append(f"{index}:jetson_product_total")
             formulas_checked += 1
+        elif accounting == "apple_footprint_resident_v2":
+            if not check_apple_resident_totals(sample):
+                metric_errors.append(f"{index}:apple_resident_totals")
+            formulas_checked += 1
         elif accounting == "apple_capacity_estimate":
             for total, left, right in (
                 (
@@ -925,6 +992,21 @@ def audit(runtime: Path) -> dict[str, Any]:
             if sample.get("source") in {"jetson_local_pss", "orin_ssh_pss"}:
                 metric_errors.append(f"{index}:nvidia_labeled_jetson")
             formulas_checked += 1
+        if sample.get("system_memory_scope") in {
+            "apple_physical_nonfree_including_cache_v2",
+            "linux_physical_nonfree_including_cache_v2",
+        }:
+            system = (sample.get("memory_observations") or {}).get("system") or {}
+            physical_total, physical_free = system.get("total_mib"), system.get("free_mib")
+            physical_used = sample.get("system_memory_used_mib")
+            if memory_dependencies_fresh(sample, "system_memory_used_mib") and (
+                not finite(physical_total)
+                or not finite(physical_free)
+                or not finite(physical_used)
+                or not 0 <= physical_free <= physical_total
+                or abs(physical_used - (physical_total - physical_free)) > 0.05
+            ):
+                metric_errors.append(f"{index}:physical_system_total")
         if sample.get("power_rail") and finite(sample.get("power_draw_w")):
             rails.add(str(sample["power_rail"]))
         if sample.get("device_observation_age_seconds", 0) > 3 and finite(sample.get("power_draw_w")):
@@ -959,7 +1041,7 @@ def audit(runtime: Path) -> dict[str, Any]:
     report = {
         "run_id": run_id,
         "revision": pre["revision"],
-        "acceptance_rule_version": 3,
+        "acceptance_rule_version": 4,
         "mode": mode,
         "service_pass": not chain_errors,
         "scoring_complete": None if mode == "build" else len(scores) == expected_items,

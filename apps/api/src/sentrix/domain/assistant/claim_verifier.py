@@ -39,6 +39,7 @@ class ClaimReview:
     reason: str = ""
     claim: Claim | None = None
     debug_call: Mapping[str, Any] | None = None
+    model_call: Mapping[str, Any] | None = None
 
     @property
     def blocks(self) -> bool:

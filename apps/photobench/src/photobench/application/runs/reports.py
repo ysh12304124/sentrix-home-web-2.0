@@ -39,7 +39,7 @@ from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.http.ports import JsonHttpClient
-from photobench.domain.results.ports import RunStore
+from photobench.domain.results.ports import RunRevisions, RunStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
 
 #: 2.0 的 REST 前缀。1.0 是 ``/api``。
@@ -166,8 +166,12 @@ class RunReports:
 
     def keyframe_analysis(self, run_id: str) -> dict[str, Any]:
         # 先取 revision：不存在时与 ``_state`` 同一个出口抛 ``KeyError``（HTTP 404）。
-        cache_key = ("keyframe", run_id, self._store.revision(run_id))
-        cached = self._memo_get(cache_key)
+        cache_key = (
+            ("keyframe", run_id, self._store.revision(run_id))
+            if isinstance(self._store, RunRevisions)
+            else None
+        )
+        cached = self._memo_get(cache_key) if cache_key is not None else None
         if cached is not None:
             return cached
 
@@ -180,12 +184,17 @@ class RunReports:
             assets, error = self._assets(scope_id)
             facts = self._video_facts(assets) if assets else {}
             result = keyframe_analysis.keyframe_analysis(state, assets, error=error, video_facts=facts)
-        self._memo_put(cache_key, result)
+        if cache_key is not None:
+            self._memo_put(cache_key, result)
         return result
 
     def memory_effectiveness(self, run_id: str) -> dict[str, Any]:
-        cache_key = ("memory", run_id, self._store.revision(run_id))
-        cached = self._memo_get(cache_key)
+        cache_key = (
+            ("memory", run_id, self._store.revision(run_id))
+            if isinstance(self._store, RunRevisions)
+            else None
+        )
+        cached = self._memo_get(cache_key) if cache_key is not None else None
         if cached is not None:
             return cached
 
@@ -198,7 +207,8 @@ class RunReports:
             fetched, _ = self._assets(scope_id)
             assets = fetched or []
         result = memory_effectiveness.memory_effectiveness(state, assets)
-        self._memo_put(cache_key, result)
+        if cache_key is not None:
+            self._memo_put(cache_key, result)
         return result
 
     def _graph_snapshot(self, scope_id: str) -> dict[str, Any]:

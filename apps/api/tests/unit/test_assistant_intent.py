@@ -454,6 +454,7 @@ def test_a_model_error_becomes_planner_call_error():
     assert len(result.model_calls) == 1
     assert result.model_calls[0]["status"] == "error"
     assert result.model_calls[0]["error"] == "connection refused"
+    assert result.model_calls[0]["json_output"]["attempted"] is False
 
 
 def test_a_missing_brace_is_repaired_without_a_second_call():
@@ -473,6 +474,7 @@ def test_a_garbled_output_is_retried_with_the_previous_output_rolled_back():
 
     assert result.ok
     assert len(model.calls) == 2
+    assert [call["json_output"]["json_object_valid"] for call in result.model_calls] == [False, True]
     second = [message.content for message in model.calls[1]]
     assert "我不会规划。" in second  # 上一轮原文
     assert "无法被解析" in second[-1]  # 失败原因翻译成的修正指令
@@ -541,3 +543,12 @@ def test_planner_debug_is_off_by_default():
     result = GoalPlanner(model).declare("给我看看海边的照片", scope_id=SCOPE)
 
     assert result.debug_calls == ()
+
+
+@pytest.mark.parametrize(
+    "raw,valid", [('{"ok":true}', True), ('{"ok":', False), ("[]", False), ("plain answer", False)]
+)
+def test_explicit_json_output_fact_is_strict_object(raw, valid):
+    from sentrix.domain.assistant.intent import json_output_fact
+
+    assert json_output_fact(raw) == {"required": True, "attempted": True, "json_object_valid": valid}

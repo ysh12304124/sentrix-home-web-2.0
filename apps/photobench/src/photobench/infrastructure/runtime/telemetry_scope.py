@@ -111,6 +111,7 @@ def _from_runtime_connection(raw: Mapping[str, Any]) -> dict[str, Any] | None:
             if isinstance(item, dict) and item.get("id") == "sentrix_api"
             else item
             for item in raw.get("product") or []
+            if not (isinstance(item, dict) and item.get("id") == "photobench")
         ],
     }
 

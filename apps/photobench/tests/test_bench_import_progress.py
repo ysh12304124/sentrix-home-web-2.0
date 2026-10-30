@@ -160,3 +160,41 @@ def test_observer_stop_deadline_is_visible_and_late_network_result_cannot_mutate
             thread.join(timeout=1)
             assert not thread.is_alive()
     assert len(observations) == count
+
+
+def test_import_cancel_retries_registration_race_without_replaying_post():
+    cancel = threading.Event()
+    cancel.set()
+    released = threading.Event()
+
+    class Client(TrackedClient):
+        attempts = 0
+
+        def import_album_tracked(self, **kwargs):
+            self.post_calls += 1
+            self.operation_id = kwargs["operation_id"]
+            assert released.wait(3)
+            self.finished = True
+            return {"imported": 1}
+
+        def cancel_operation(self, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise KeyError("registration not visible yet")
+            released.set()
+            return {"operation_id": kwargs["operation_id"], "cleanup_status": "pending"}
+
+    client = Client()
+    import_with_progress(
+        client,
+        scope_id="s",
+        directory="d",
+        limit=1,
+        timeout=3,
+        observe=lambda _value: None,
+        interval=0.005,
+        cancel_event=cancel,
+    )
+    assert client.attempts == 2
+    assert client.post_calls == 1
+    assert not any(t.name == "photobench-import-progress" for t in threading.enumerate())

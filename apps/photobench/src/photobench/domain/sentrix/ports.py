@@ -185,3 +185,10 @@ class ProgressTrackedImports(Protocol):
     ) -> dict[str, Any]: ...
 
     def import_progress(self, *, operation_id: str, timeout: int = 3) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class CancellableOperations(Protocol):
+    def cancel_operation(self, *, kind: str, operation_id: str, timeout: int = 3) -> dict[str, Any]:
+        """Request/observe cooperative cancellation; transport/unknown failures propagate."""
+        ...

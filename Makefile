@@ -91,6 +91,7 @@ check-docs: ## 文档防腐校验
 	# 只跑 sentrix 那份等于说「第二个包的服务面没有契约」——前端（S10）从哪一份生成
 	# 客户端，取决于这两条都有人守。
 	$(PY) scripts/export_photobench_openapi.py --check
+	$(PY) scripts/export_qa_taxonomy.py --check
 
 # 注意：所有目标必须从仓库根执行。从 apps/api/ 下跑 pytest 时 coverage 配置
 # 不会被加载，fail_under=85 会静默失效（该目录下有独立的 pyproject.toml）。

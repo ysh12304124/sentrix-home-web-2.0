@@ -11,6 +11,7 @@ from typing import Any
 from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
+    model_timing_facts,
 )
 from sentrix.domain.assistant.claim_verifier import (
     Claim,
@@ -21,6 +22,7 @@ from sentrix.domain.assistant.claim_verifier import (
 )
 from sentrix.domain.assistant.evidence_binding import Fact
 from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
+from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
 from sentrix.domain.assistant.ports import ChatModel
 
@@ -44,6 +46,14 @@ class ClaimVerifier:
         raw_messages = build_claim_messages(query=query, claim=claim, facts=facts, requirement=requirement)
         messages = [ChatMessage(ChatRole(str(item["role"])), str(item["content"])) for item in raw_messages]
         started = time.perf_counter()
+        model_call: dict[str, Any] = {
+            "step_id": step_id,
+            "call_type": "claim_verifier",
+            "attempt": 1,
+            "started_at": datetime.now(UTC).isoformat(),
+            "status": "error",
+        }
+        model_call["json_output"] = json_output_fact()
         debug_call: dict[str, Any] | None = None
         if include_debug:
             debug_call = {
@@ -58,20 +68,37 @@ class ClaimVerifier:
             }
         try:
             reply = self._model.complete(messages, ())
-        except Exception:
-            log.warning("L3 claim 核验调用失败，按 ambiguous 放行", exc_info=True)
-            return ClaimReview(claim=claim, debug_call=debug_call)
-        if debug_call is not None:
-            debug_call.update(
-                status="complete",
-                prompt_tokens=reply.prompt_tokens,
-                completion_tokens=reply.completion_tokens,
-                finish_reason=reply.finish_reason,
+        except Exception as error:
+            model_call.update(
+                error_type=type(error).__name__,
+                error=str(error),
                 duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+            if debug_call is not None:
+                debug_call.update(model_call)
+            log.warning("L3 claim 核验调用失败，按 ambiguous 放行", exc_info=True)
+            return ClaimReview(claim=claim, debug_call=debug_call, model_call=model_call)
+        model_call.update(
+            status="complete",
+            prompt_tokens=reply.prompt_tokens,
+            completion_tokens=reply.completion_tokens,
+            finish_reason=reply.finish_reason,
+            duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            diagnostics=dict(reply.diagnostics),
+            json_output=json_output_fact(reply.content),
+        )
+        model_call.update(
+            model_timing_facts(reply.diagnostics, model_call["duration_ms"], reply.completion_tokens)
+        )
+        if debug_call is not None:
+            debug_call.update(model_call)
+            debug_call.update(
                 response=model_reply_payload(reply),
             )
         verdict, reason = parse_claim_review(reply.content or "")
-        return ClaimReview(verdict=verdict, reason=reason, claim=claim, debug_call=debug_call)
+        return ClaimReview(
+            verdict=verdict, reason=reason, claim=claim, debug_call=debug_call, model_call=model_call
+        )
 
 
 __all__ = ["ClaimReview", "ClaimVerdict", "ClaimVerifier"]

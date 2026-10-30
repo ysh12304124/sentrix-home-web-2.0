@@ -27,10 +27,12 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from photobench.domain.runs.analysis import judge_score_for_summary
+from photobench.domain.runs.analysis import judge_score_for_summary, retrieval_metric_projection
 
 #: 1.0 ``:6530`` 的 ``retrieval`` 子对象取的字段清单，顺序照抄。
 _RETRIEVAL_FIELDS = (
+    "retrieval_metrics_applicable",
+    "retrieval_metrics_reason",
     "retrieval_recall",
     "retrieval_precision",
     "retrieval_f1",
@@ -45,6 +47,10 @@ _RETRIEVAL_FIELDS = (
     "video_retrieval_f1",
     "retrieval_media_refs",
     "answer_evidence_media_refs",
+    "hallucination_category",
+    "unknown_target",
+    "diagnostic_locator_media_refs",
+    "diagnostic_distractor_media_refs",
     "gt_media",
     "predicted_media",
     "retrieved_candidate_media",
@@ -198,6 +204,7 @@ def export_sft(
             item_score = judge_score_for_summary(item.get("judge"))
             if item_score is None or item_score < min_score:
                 continue
+        item = {**item, **retrieval_metric_projection(item)}
         qa_id = item.get("qa_id")
         turns_out: list[dict[str, Any]] = []
         for turn in item.get("runtime_turns") or []:

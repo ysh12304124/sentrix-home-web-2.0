@@ -129,6 +129,32 @@ def test_list_runs_sorts_by_started_at_descending_and_counts_active(results: Pat
     assert response["scan"]["state"] == "ready"
 
 
+def test_multiturn_search_matches_first_and_followup_messages(tmp_path: Path):
+    state = _state(
+        "multi",
+        items=[
+            {
+                "qa_id": "q1",
+                "question": "国庆前后在河北",
+                "turn_status": "complete",
+                "runtime_turns": [
+                    {"index": 0, "message": "找婚礼舞台留影"},
+                    {"index": 1, "message": "国庆前后在河北"},
+                ],
+            }
+        ],
+    )
+    _write(tmp_path, "multi", state)
+    reader = _read_runs(tmp_path)
+    for term in ("婚礼舞台", "河北"):
+        result = reader.get_run_items("multi", search=term)
+        assert result["total"] == 1
+        assert result["items"][0]["display_question"] == "找婚礼舞台留影"
+        assert result["items"][0]["conversation_turn_count"] == 2
+    original = json.loads((tmp_path / "multi" / "run.json").read_text())
+    assert original == state
+
+
 def test_a_run_that_is_still_going_shows_up_in_the_list(results: Path):
     """**还在跑的 run 必须在列表里。**（2026-10-09 修）
 

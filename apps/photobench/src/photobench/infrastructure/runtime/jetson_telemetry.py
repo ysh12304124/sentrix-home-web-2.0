@@ -20,6 +20,8 @@ S9a 施工记录把它裁决给 S9b；S9b 切三段时漏分，S9b-2 施工记�
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
 import re
 import shutil
@@ -35,10 +37,14 @@ import httpx
 
 from photobench.domain.runtime.metrics import (
     MEMORY_OBSERVATION_TTL_SECONDS,
+    RESOURCE_TELEMETRY_VERSION,
     component_total,
     memory_freshness,
-    system_used,
+    physical_memory_used,
 )
+from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+from photobench.infrastructure.runtime.hardware import HostCpuSampler
+from photobench.infrastructure.runtime.jetson_probe import JetsonMemoryWorker
 from photobench.infrastructure.runtime.telemetry_scope import (
     dedupe_rows,
     load_telemetry_services,
@@ -167,15 +173,25 @@ def _refresh_nvmap_clients_mib() -> dict[int, float] | None:
         for line in text.splitlines():
             parts = line.split()
             # CLIENT PROCESS PID SIZE — the trailing "total" row has 2 fields.
-            if len(parts) < 4 or not parts[2].isdigit() or not parts[3].endswith("K"):
+            if (
+                len(parts) < 4
+                or not parts[2].isdigit()
+                or re.fullmatch(r"[0-9]+(?:\.[0-9]+)?[KMG]", parts[3]) is None
+            ):
                 continue
             try:
-                size_mib = float(parts[3][:-1]) / 1024.0
+                size_mib = float(parts[3][:-1]) * {"K": 1 / 1024, "M": 1, "G": 1024}[parts[3][-1]]
             except ValueError:
                 continue
             pid = int(parts[2])
             parsed[pid] = round(parsed.get(pid, 0.0) + size_mib, 3)
-        table = parsed
+        table = parsed if parsed or re.search(r"^\s*total\s+0K\s*$", text, re.MULTILINE) else None
+    total = re.search(r"^\s*total\s+(\d+)([KMG])\s*$", text or "", re.MULTILINE)
+    _nvmap_cache["total_mib"] = (
+        float(total.group(1)) * {"K": 1 / 1024, "M": 1, "G": 1024}[total.group(2)]
+        if total and table is not None
+        else None
+    )
     _nvmap_cache["at"] = now
     _nvmap_cache["table"] = table
     _nvmap_cache["observation"] = _observation(
@@ -191,93 +207,30 @@ def _refresh_nvmap_clients_mib() -> dict[int, float] | None:
 def _process_gpu_memory_mib(
     model_pids: set[int],
     *,
-    rss_mib: float | None,
-    host_rss_mib: float | None,
     ledger: Mapping[int, float] | None | Literal["probe"] = "probe",
 ) -> tuple[float | None, str]:
-    """GPU/UMA memory charged to the model process, plus which source supplied it.
-
-    The nvmap ledger is the allocation basis and is authoritative when readable.
-    The residual (VmRSS - smaps Rss) is a residency basis and is real only on
-    L4T >= R36.4.7; on R36.4.3 it is structurally zero because nvmap.ko does not
-    charge GPU pages to the process. A zero residual therefore means "not
-    accounted", never "not used", and must not be reported as a real value.
-    """
+    """PID-owned nvmap allocations; unreadable ledgers remain unknown."""
     table = _nvmap_clients_mib() if ledger == "probe" else ledger
-    if table is not None and model_pids:
-        # The table is complete, so an absent PID really does mean zero and a
-        # listed value outranks the residual.
-        return round(sum(table.get(int(pid), 0.0) for pid in model_pids), 3), "nvmap_iovmm"
-    if rss_mib is None or host_rss_mib is None:
+    if table is None or not model_pids:
         return None, "unavailable"
-    residual = round(max(0.0, float(rss_mib) - float(host_rss_mib)), 3)
-    if residual <= 0:
-        return None, "unavailable"
-    return residual, "vmrss_residual"
-
-
-JETSON_UNIFIED_MEMORY_UNIT = "host_smaps_rss_plus_gpu_mib"
-JETSON_UNIFIED_MEMORY_METHOD = "orin_smaps_rss_plus_gpu_uma_v1"
-JETSON_UNIFIED_MEMORY_SCOPE = "host_smaps_rss_plus_gpu_uma"
+    total = component_total([table.get(int(pid), 0.0) for pid in model_pids])
+    return total, "nvmap_iovmm" if total is not None else "unavailable"
 
 
 def apply_jetson_memory_metadata(data: dict[str, Any]) -> dict[str, Any]:
-    """统一口径的样本必须带独立的 unit/method/scope。
-
-    只写 ``model_process_host_memory_mib`` 而不改 ``memory_unit``，读侧会继续按
-    旧的 ``process_pss_uma_mib`` / ``orin_process_pss_uma_v1`` 解释，前端就会把
-    「smaps Rss + GPU」显示成 VmRSS。这里把三处元数据一次改齐；没有拆分字段时
-    保持旧口径（远端 PSS provider / 历史样本）。
-    """
-    if data.get("model_process_host_memory_mib") is None:
-        return data
-    data["memory_unit"] = JETSON_UNIFIED_MEMORY_UNIT
-    data["memory_scope"] = JETSON_UNIFIED_MEMORY_SCOPE
-    data["memory_profile"] = {
-        "method": JETSON_UNIFIED_MEMORY_METHOD,
-        "memory_unit": JETSON_UNIFIED_MEMORY_UNIT,
-        "scope": JETSON_UNIFIED_MEMORY_SCOPE,
-    }
-    return data
-
-
-def unified_model_memory(
-    model_pids: set[int],
-    *,
-    rss_mib: float | None,
-    host_rss_mib: float | None,
-    ledger: Mapping[int, float] | None | Literal["probe"] = "probe",
-) -> dict[str, Any]:
-    """Jetson CPU residency + GPU allocation estimate, with explicit unknowns.
-
-    PSS and nvmap are different accounting views; no universal physical-page
-    deduplication is claimed across driver versions or shared GPU buffers.
-    """
-    result: dict[str, Any] = {}
-    if rss_mib is None and host_rss_mib is None:
-        return result
-    if host_rss_mib is None:
-        # Unknown host residency cannot be replaced by a different accounting basis.
-        result["model_process_system_memory_used_mib"] = None
-        result["model_process_host_memory_mib"] = None
-        result["model_process_gpu_memory_mib"] = None
-        result["memory_complete"] = False
-        result["memory_accounting"] = "jetson_pss_plus_nvmap_estimate"
-        result["model_process_system_memory_scope"] = "host_smaps_rss_plus_gpu_uma"
-        result["model_process_gpu_memory_source"] = "unavailable"
-        return result
-    gpu_mib, gpu_source = _process_gpu_memory_mib(
-        model_pids, rss_mib=rss_mib, host_rss_mib=host_rss_mib, ledger=ledger
+    """New observations separate PSS and GPU allocations, including missing values."""
+    data.update(
+        protocol_version=RESOURCE_TELEMETRY_VERSION,
+        memory_accounting="jetson_pss_and_nvmap_v3",
+        memory_unit="process_pss_mib",
+        memory_scope="process_pss_separate_gpu_allocation",
+        memory_profile={
+            "method": "jetson_pss_and_nvmap_v3",
+            "memory_unit": "process_pss_mib",
+            "scope": "process_pss_separate_gpu_allocation",
+        },
     )
-    total = component_total([host_rss_mib, gpu_mib])
-    result["memory_accounting"] = "jetson_pss_plus_nvmap_estimate"
-    result["memory_complete"] = total is not None
-    result["model_process_system_memory_used_mib"] = total
-    result["model_process_system_memory_scope"] = "host_smaps_rss_plus_gpu_uma"
-    result["model_process_host_memory_mib"] = round(float(host_rss_mib), 2)
-    result["model_process_gpu_memory_mib"] = round(gpu_mib, 2) if gpu_mib is not None else None
-    result["model_process_gpu_memory_source"] = gpu_source
-    return result
+    return data
 
 
 _listener_cache: dict[tuple[str, ...], dict[str, Any]] = {}
@@ -291,8 +244,14 @@ def _process_start_ticks(pid: int) -> str | None:
         return None
 
 
+class _SocketInodes(set[str]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.descriptors: dict[str, str] = {}
+
+
 def _socket_inodes(pid: int) -> set[str]:
-    inodes: set[str] = set()
+    inodes = _SocketInodes()
     try:
         fds = list(Path(f"/proc/{pid}/fd").iterdir())
     except OSError:
@@ -305,7 +264,20 @@ def _socket_inodes(pid: int) -> set[str]:
         match = re.fullmatch(r"socket:\[(\d+)\]", target)
         if match:
             inodes.add(match.group(1))
+            inodes.descriptors[match.group(1)] = fd.name
     return inodes
+
+
+def _owns_listener_sockets(pid: int, held: set[str], descriptors: dict[str, str]) -> bool:
+    if set(descriptors) != held:
+        return held <= _socket_inodes(pid)
+    try:
+        return all(
+            os.readlink(Path(f"/proc/{pid}/fd") / fd) == f"socket:[{inode}]"
+            for inode, fd in descriptors.items()
+        )
+    except OSError:
+        return False
 
 
 def _listening_ports_by_pid(target_ports: set[str] | None = None) -> dict[int, set[str]]:
@@ -315,6 +287,7 @@ def _listening_ports_by_pid(target_ports: set[str] | None = None) -> dict[int, s
     ``/proc/*/fd`` 的 readlink 给 fd→inode。不给 ``target_ports`` 过滤的话，一台
     跑满连接的机器上这一步会扫遍所有 fd。限定端口时，2秒内仅重查已知持有者的
     socket与启动标识；监听集合/身份变化立即全扫，避免把固定PID当长期身份。
+    缓存只保存定位结果，每次都重新核验所有权，不因固定时间到期重复全机fd扫描。
     """
     target_ports = {str(port) for port in (target_ports or set())}
     socket_ports: dict[str, str] = {}
@@ -342,28 +315,34 @@ def _listening_ports_by_pid(target_ports: set[str] | None = None) -> dict[int, s
         entry = _listener_cache.get(selection, {})
         cached = entry.get("owners", {})
         identities = entry.get("identities", {})
+        descriptors = entry.get("descriptors", {})
         if (
             target_ports
             and entry.get("signature") == signature
-            and time.monotonic() < entry.get("expires", 0)
             and cached
             and all(
                 identities.get(pid) is not None
                 and _process_start_ticks(pid) == identities[pid]
-                and held <= _socket_inodes(pid)
+                and _owns_listener_sockets(pid, held, descriptors.get(pid, {}))
                 for pid, held in cached.items()
             )
         ):
+            entry["expires"] = time.monotonic() + 2.0  # idle retention, not observation freshness
             return {pid: {socket_ports[inode] for inode in held} for pid, held in cached.items()}
     owners: dict[int, set[str]] = {}
+    listener_descriptors: dict[int, dict[str, str]] = {}
     result: dict[int, set[str]] = {}
     for proc in Path("/proc").iterdir():
         if not proc.name.isdecimal():
             continue
         before = _process_start_ticks(int(proc.name))
-        held = _socket_inodes(int(proc.name)) & socket_ports.keys()
+        sockets = _socket_inodes(int(proc.name))
+        held = sockets & socket_ports.keys()
         if held and before is not None and before == _process_start_ticks(int(proc.name)):
             owners[int(proc.name)] = held
+            listener_descriptors[int(proc.name)] = {
+                inode: fd for inode, fd in getattr(sockets, "descriptors", {}).items() if inode in held
+            }
             result[int(proc.name)] = {socket_ports[inode] for inode in held}
     with _listener_lock:
         now = time.monotonic()
@@ -378,26 +357,85 @@ def _listening_ports_by_pid(target_ports: set[str] | None = None) -> dict[int, s
             "signature": signature,
             "owners": owners,
             "identities": {pid: _process_start_ticks(pid) for pid in owners},
+            "descriptors": listener_descriptors,
             "expires": now + 2.0,
         }
     return result
 
 
+def _process_identity(pid: int) -> tuple[str, int]:
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return fields[19], int(fields[1])
+
+
+def _process_parent_snapshot() -> dict[int, int]:
+    # The AGX kernel does not expose /proc/<pid>/task/<tid>/children.
+    # ps walks proc in native code outside the sampler process's GIL; do not
+    # read hundreds of unrelated stat files from Python probe threads.
+    completed = subprocess.run(
+        ["ps", "-e", "-o", "pid=,ppid="],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=0.5,
+    )
+    return {int(pid): int(parent) for pid, parent in (line.split() for line in completed.stdout.splitlines())}
+
+
+class _ProcessRows(list[dict[str, Any]]):
+    def __init__(self, rows: list[dict[str, Any]], discovery: dict[str, Any]) -> None:
+        super().__init__(rows)
+        self.discovery = discovery
+
+
 def _host_process_rows(target_ports: set[str] | None = None) -> list[dict[str, Any]]:
-    # A single stat per PID supplies the ancestry graph. Read RSS/cmdline only
-    # for selected listeners and their current descendants, never every daemon.
-    identities: dict[int, tuple[str, int]] = {}
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdecimal():
-            continue
+    started = time.monotonic()
+    discovery: dict[str, Any] = {"path": "full_proc"}
+    identities: dict[int, tuple[str, int]] | None = None
+    ports_by_pid: dict[int, set[str]] = {}
+    if target_ports:
         try:
-            fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
-            identities[int(proc.name)] = (fields[19], int(fields[1]))
-        except (OSError, ValueError, IndexError):
-            continue
-    # Resolve sockets after the identity snapshot: a PID reused during discovery
-    # cannot inherit old ownership and still pass the final start-tick check.
-    ports_by_pid = _listening_ports_by_pid(target_ports)
+            parents = _process_parent_snapshot()
+            discovery.update(path="native_pid_parent", parent_seconds=time.monotonic() - started)
+            listener_started = time.monotonic()
+            ports_by_pid = _listening_ports_by_pid(target_ports)
+            discovery["listener_seconds"] = time.monotonic() - listener_started
+            selected = set(ports_by_pid)
+            while True:
+                expanded = selected | {pid for pid, parent in parents.items() if parent in selected}
+                if expanded == selected:
+                    break
+                selected = expanded
+            identities = {}
+            for pid in selected:
+                try:
+                    identity = _process_identity(pid)
+                except (OSError, ValueError, IndexError):
+                    continue  # The snapshot may include a child that already exited.
+                if identity[1] == parents.get(pid):
+                    identities[pid] = identity
+            # A reused listener PID cannot inherit old port ownership.
+            if ports_by_pid != _listening_ports_by_pid(target_ports):
+                identities = None
+                discovery.update(path="full_proc_fallback", reason="listener_changed")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            # Failed native discovery falls back to the complete proc snapshot.
+            identities = None
+            discovery.update(
+                path="full_proc_fallback",
+                reason=type(error).__name__,
+                parent_seconds=time.monotonic() - started,
+            )
+    if identities is None:
+        identities = {}
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdecimal():
+                continue
+            try:
+                identities[int(proc.name)] = _process_identity(int(proc.name))
+            except (OSError, ValueError, IndexError):
+                continue
+        ports_by_pid = _listening_ports_by_pid(target_ports)
     selected = set(ports_by_pid) if target_ports else set(identities)
     while True:
         expanded = selected | {pid for pid, (_, parent) in identities.items() if parent in selected}
@@ -423,7 +461,8 @@ def _host_process_rows(target_ports: set[str] | None = None) -> list[dict[str, A
                 "identity": cmdline.lower()[:1000],
             }
         )
-    return rows
+    discovery["total_seconds"] = time.monotonic() - started
+    return _ProcessRows(rows, discovery)
 
 
 def _is_system_related_process(row: dict[str, Any]) -> bool:
@@ -470,8 +509,11 @@ def _augment_local_process_memory(
     model_pid: int | None,
     endpoint_port: str,
     telemetry_services: Mapping[str, Any] | None = None,
+    probe: BoundedProbe | None = None,
+    topology_probe: BoundedProbe | None = None,
+    topology_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fresh related-PID PSS plus main/auxiliary nvmap allocation estimates."""
+    """Independently observed process PSS and PID-owned nvmap allocations."""
     # Never let a disappeared PID or failed smaps read inherit a previous total.
     data = {
         key: value
@@ -485,7 +527,7 @@ def _augment_local_process_memory(
         model_process_host_memory_mib=None,
         model_process_gpu_memory_mib=None,
         model_process_gpu_memory_source="unavailable",
-        memory_accounting="jetson_pss_plus_nvmap_estimate",
+        memory_accounting="jetson_pss_and_nvmap_v3",
     )
     scope = telemetry_services if telemetry_services is not None else load_telemetry_services()
     started = time.monotonic()
@@ -506,13 +548,48 @@ def _augment_local_process_memory(
                 target_ports.update(str(port) for port in spec.get("ports") or [])
                 if spec.get("pids") or (spec.get("keywords") and not spec.get("ports")):
                     port_scoped = False
+    topology_result: dict[str, Any] = {}
     try:
         # Legacy keyword matching and explicit PID selectors require the full
         # inventory; narrowing them to listener trees would silently omit RAM.
-        rows = _host_process_rows(target_ports if port_scoped else None)
+        ports = target_ports if port_scoped else None
+        if topology_probe is None:
+            rows = _host_process_rows(ports)
+        else:
+            # Once a tree is known, start/harvest discovery without blocking
+            # current memory reads. Waiting a second here serialized the two
+            # walks and left too little of the total window for a fresh tree.
+            topology_deadline = started + (0.0 if port_scoped and topology_snapshot else 1.0)
+            discovery = {"topology": lambda: _host_process_rows(ports)}
+            ready_topology = topology_probe.collect(
+                discovery, budget=max(0.0, topology_deadline - time.monotonic())
+            )
+            if float(ready_topology.get("topology", {}).get("started", started)) < started:
+                # Harvesting a previous callback's completed job does not launch
+                # its successor. Start a current discovery within the SAME
+                # deadline, so a slow memory walk cannot age that old topology
+                # beyond TTL while a newer discovery could have completed.
+                current_topology = topology_probe.collect(
+                    discovery, budget=max(0.0, topology_deadline - time.monotonic())
+                )
+                ready_topology.update(current_topology)
+            if "topology" in ready_topology and topology_snapshot is not None:
+                topology_snapshot.clear()
+                topology_snapshot.update(ready_topology["topology"])
+            topology_result = dict(topology_snapshot or ready_topology.get("topology") or {})
+            # Retain original times; memory_freshness invalidates slow/old
+            # discoveries. No accumulating topology jobs or artificial refresh.
+            rows = topology_result.get("value") or []
     except Exception:
         rows = []
-    topology_observation = _observation("proc_listener_topology", started, available=bool(rows))
+    topology_observation = _observation(
+        "proc_listener_topology",
+        float(topology_result.get("started", started)),
+        available=bool(rows),
+        discovery=getattr(rows, "discovery", {}),
+    )
+    if topology_result:
+        topology_observation["finished_at_monotonic"] = topology_result.get("finished")
     if scope:
         main_spec = dict(scope.get("main_model") or {})
         model_rows = service_rows(rows, main_spec) if main_spec.get("local") is not False else []
@@ -548,13 +625,88 @@ def _augment_local_process_memory(
         auxiliary_rows = []
     observations: dict[int, tuple[float | None, float | None]] = {}
     memory_observations: dict[str, Any] = {"topology": topology_observation}
-    for row in dedupe_rows(model_rows + sentrix_rows):
+    selected_rows = dedupe_rows(model_rows + sentrix_rows)
+    ready: dict[str, dict[str, Any]] = {}
+    if probe is not None:
+        readers = {
+            f"{row['pid']}:{row.get('start_ticks')}": (
+                lambda pid=int(row["pid"]): (
+                    _process_start_ticks(pid),
+                    _process_smaps_memory_mib(pid),
+                    _process_start_ticks(pid),
+                )
+            )
+            for row in selected_rows
+        }
+        # On AGX, a real smaps_rollup walk during visual inference can exceed
+        # 0.6s. Allow topology and current reads a bounded 2.5s total window,
+        # still below the unchanged 3s source TTL/coverage requirement. Do not
+        # substitute a prior memory value when a read exceeds this deadline.
+        ready = probe.collect(readers, budget=max(0.0, 2.5 - (time.monotonic() - started)))
+    if topology_probe is not None and probe is not None and port_scoped:
+        # Discovery that exceeded its initial 1s wait may finish DURING smaps.
+        # It can also finish just AFTER smaps. Use only the remainder of the
+        # same 2.5s window; returning early could age the prior topology past
+        # TTL even though its current replacement needs only a short wait.
+        # launch=False keeps this a join of existing work, never a new probe.
+        latest = topology_probe.collect(
+            {"topology": lambda: _host_process_rows(target_ports)},
+            budget=max(0.0, 2.5 - (time.monotonic() - started)),
+            launch=False,
+        ).get("topology")
+        if latest is not None and float(latest["started"]) < started:
+            # A previous callback's job can finish while memory is read. Its
+            # successor was not launchable at entry; start it now within the
+            # SAME deadline, retaining the older observation if still pending.
+            current = topology_probe.collect(
+                {"topology": lambda: _host_process_rows(target_ports)},
+                budget=max(0.0, 2.5 - (time.monotonic() - started)),
+            ).get("topology")
+            if current is not None:
+                latest = current
+        if latest is not None:
+            if topology_snapshot is not None:
+                topology_snapshot.clear()
+                topology_snapshot.update(latest)
+            latest_rows = latest.get("value") or []
+            fields = ("ppid", "start_ticks", "listening_ports", "identity")
+            previous_members = {row["pid"]: tuple(row.get(key) for key in fields) for row in rows}
+            current_members = {row["pid"]: tuple(row.get(key) for key in fields) for row in latest_rows}
+            if previous_members == current_members and latest_rows:
+                topology_observation.clear()
+                topology_observation.update(
+                    _observation(
+                        "proc_listener_topology",
+                        float(latest["started"]),
+                        available=True,
+                        discovery=getattr(latest_rows, "discovery", {}),
+                    )
+                )
+                topology_observation["finished_at_monotonic"] = latest.get("finished")
+                # VmRSS belongs to that new topology read. PSS/smaps RSS keep
+                # their own original probe times; no old value is relabelled.
+                current_rss = {row["pid"]: row.get("rss_mib") for row in latest_rows}
+                for row in model_rows + sentrix_rows + product_rows + auxiliary_rows + selected_rows:
+                    row["rss_mib"] = current_rss[row["pid"]]
+            else:
+                # A new worker / reused PID cannot inherit the old membership's
+                # memory totals. The next callback observes the new tree.
+                topology_observation.update(
+                    status="unavailable", reason="topology_changed_during_memory_read"
+                )
+    for row in selected_rows:
         pid = int(row["pid"])
-        before = _process_start_ticks(pid)
         observed = time.monotonic()
         over_budget = observed - started >= 1.0
-        pss, rss = (None, None) if over_budget else _process_smaps_memory_mib(pid)
-        after = _process_start_ticks(pid)
+        if probe is None:
+            before = _process_start_ticks(pid)
+            pss, rss = (None, None) if over_budget else _process_smaps_memory_mib(pid)
+            after = _process_start_ticks(pid)
+        else:
+            result = ready.get(f"{pid}:{row.get('start_ticks')}", {})
+            over_budget = not result or "value" not in result
+            observed = float(result.get("started", observed))
+            before, (pss, rss), after = result.get("value", (None, (None, None), None))
         same_process = before is not None and before == after and row.get("start_ticks") == before
         observations[pid] = (pss, rss) if same_process else (None, None)
         for basis, value in (("pss", pss), ("rss", rss), ("identity", before)):
@@ -575,30 +727,24 @@ def _augment_local_process_memory(
     for row in sentrix_rows + model_rows + product_rows + auxiliary_rows:
         row["pss_mib"], row["smaps_rss_mib"] = observations[int(row["pid"])]
     model_pids = {row["pid"] for row in model_rows}
-    model_rss = _sum_mib(model_rows, "rss_mib")
     model_pss = _sum_mib(model_rows, "pss_mib")
-    model_smaps_rss = _sum_mib(model_rows, "smaps_rss_mib")
     sentrix_pss = _sum_mib(sentrix_rows, "pss_mib")
     auxiliary_pids = {row["pid"] for row in auxiliary_rows}
     # Share exactly one ledger observation across main and auxiliary totals.
     # Keep its original timestamp even when the global cache is reused.
     with _nvmap_lock:
-        identities = {row["pid"]: row.get("start_ticks") for row in model_rows + auxiliary_rows}
+        identities = {row["pid"]: row.get("start_ticks") for row in selected_rows}
         previous_identities = _nvmap_cache.get("process_identities") or {}
         if any(previous_identities.get(pid) != identity for pid, identity in identities.items()):
             _nvmap_cache["at"] = float("-inf")
         ledger = _nvmap_clients_mib()
         _nvmap_cache["process_identities"] = identities
         nvmap_observation = dict(_nvmap_cache.get("observation") or {})
-        auxiliary_memory = unified_model_memory(
-            auxiliary_pids,
-            rss_mib=_sum_mib(auxiliary_rows, "rss_mib"),
-            host_rss_mib=_sum_mib(auxiliary_rows, "smaps_rss_mib"),
-            ledger=ledger,
-        )
-        model_memory = unified_model_memory(
-            model_pids, rss_mib=model_rss, host_rss_mib=model_smaps_rss, ledger=ledger
-        )
+        model_gpu, gpu_source = _process_gpu_memory_mib(model_pids, ledger=ledger)
+        auxiliary_gpu, _ = _process_gpu_memory_mib(auxiliary_pids, ledger=ledger)
+        product_gpu, _ = _process_gpu_memory_mib({row["pid"] for row in selected_rows}, ledger=ledger)
+        device_gpu = _nvmap_cache.get("total_mib") if ledger is not None else None
+
     memory_observations["nvmap"] = nvmap_observation
     for row in dedupe_rows(model_rows + sentrix_rows):
         if _process_start_ticks(int(row["pid"])) != row.get("start_ticks"):
@@ -613,9 +759,7 @@ def _augment_local_process_memory(
         if scope
         else bool(auxiliary_rows)
     )
-    auxiliary_uma = (
-        auxiliary_memory.get("model_process_gpu_memory_mib") if auxiliary_rows or auxiliary_expected else 0.0
-    )
+    auxiliary_uma = auxiliary_gpu if auxiliary_rows or auxiliary_expected else 0.0
     main_complete = bool(model_rows) and (not scope or service_resolved(rows, main_spec))
     data["root_pid"] = next(
         (
@@ -627,13 +771,17 @@ def _augment_local_process_memory(
     )
     data["process_memory_used_mib"] = model_pss if main_complete else None
     data["model_process_memory_used_mib"] = data["process_memory_used_mib"]
-    data["model_system_processes"] = []
-    if model_memory and main_complete:
-        data.update(model_memory)
-        data["model_system_processes"] = [
-            {key: row.get(key) for key in ("pid", "process_name", "rss_mib", "pss_mib", "listening_ports")}
-            for row in model_rows[:20]
-        ]
+    data["model_process_system_memory_used_mib"] = data["process_memory_used_mib"]
+    data["model_process_host_memory_mib"] = data["process_memory_used_mib"]
+    data["model_process_system_memory_scope"] = "selected_model_pss"
+    data["model_process_host_memory_scope"] = "selected_model_pss"
+    data["model_process_gpu_memory_mib"] = model_gpu if main_complete else None
+    data["model_process_gpu_memory_source"] = gpu_source
+    data["device_gpu_memory_mib"] = device_gpu
+    data["model_system_processes"] = [
+        {key: row.get(key) for key in ("pid", "process_name", "rss_mib", "pss_mib", "listening_ports")}
+        for row in model_rows
+    ]
     roles_complete = not scope or all(
         service_resolved(rows, spec)
         for spec in [dict(scope.get("sentrix") or {}), profile, *(scope.get("product") or [])]
@@ -669,28 +817,18 @@ def _augment_local_process_memory(
     if auxiliary_expected and not auxiliary_rows:
         data["sentrix_auxiliary_model_pss_mib"] = None
     data["product_stack_memory_mib"] = None
-    # 每个相关进程的 PSS 都在、且模型的两个补偿输入（VmRSS / smaps-Rss）也在时才写总量。
-    if (
-        sentrix_pss is not None
-        and sentrix_pss_complete
-        and model_pss is not None
-        and model_pss_complete
-        and model_rss is not None
-        and model_smaps_rss is not None
-        and model_memory.get("model_process_gpu_memory_mib") is not None
-        and auxiliary_uma is not None
-        and (not auxiliary_expected or bool(auxiliary_rows))
-    ):
-        uma_extra = float(model_memory["model_process_gpu_memory_mib"])
-        product = component_total([sentrix_pss, model_pss, uma_extra, auxiliary_uma])
+    if sentrix_pss_complete and model_pss_complete:
+        product = component_total([sentrix_pss, model_pss])
         data["product_stack_memory_mib"] = product
         data["benchmark_process_memory_used_mib"] = product
-        data["benchmark_process_memory_scope"] = "all_related_pss_plus_model_uma_extra"
-        data["model_uma_extra_mib"] = round(uma_extra, 2)
-        data["benchmark_processes"] = [
-            {key: row.get(key) for key in ("pid", "process_name", "rss_mib", "pss_mib", "listening_ports")}
-            for row in (sentrix_rows + model_rows)[:50]
-        ]
+    data["benchmark_process_memory_scope"] = "all_related_pss"
+    data["product_stack_gpu_memory_mib"] = product_gpu if roles_complete and main_complete else None
+    data["benchmark_process_gpu_memory_mib"] = data["product_stack_gpu_memory_mib"]
+    data["benchmark_process_gpu_memory_scope"] = "nvmap_related_pid_allocations"
+    data["benchmark_processes"] = [
+        {key: row.get(key) for key in ("pid", "process_name", "rss_mib", "pss_mib", "listening_ports")}
+        for row in selected_rows
+    ]
     data["memory_complete"] = (
         data.get("model_process_system_memory_used_mib") is not None
         and data.get("product_stack_memory_mib") is not None
@@ -711,41 +849,33 @@ def _augment_local_process_memory(
         )
 
     main_refs, stack_refs, auxiliary_refs = refs(model_rows), refs(sentrix_rows), refs(auxiliary_rows)
-    main_gpu_refs = (
-        [*refs(model_rows, "identity"), "nvmap"]
-        if model_memory.get("model_process_gpu_memory_source") == "nvmap_iovmm"
-        else refs(model_rows, "rss")
-    )
-    auxiliary_gpu_refs = (
-        (
-            [*refs(auxiliary_rows, "identity"), "nvmap"]
-            if auxiliary_memory.get("model_process_gpu_memory_source") == "nvmap_iovmm"
-            else refs(auxiliary_rows, "rss")
-        )
-        if auxiliary_rows
-        else ["topology"]
-    )
+    main_gpu_refs = [*refs(model_rows, "identity"), "nvmap"]
+    auxiliary_gpu_refs = [*refs(auxiliary_rows, "identity"), "nvmap"]
+    product_gpu_refs = [*refs(selected_rows, "identity"), "nvmap"]
     dependencies = {
         "model_process_memory_used_mib": main_refs,
-        "model_process_host_memory_mib": refs(model_rows, "rss"),
+        "model_process_host_memory_mib": main_refs,
         "model_process_gpu_memory_mib": main_gpu_refs,
-        "model_process_system_memory_used_mib": list(dict.fromkeys(refs(model_rows, "rss") + main_gpu_refs)),
+        "model_process_system_memory_used_mib": main_refs,
         "sentrix_stack_pss_mib": stack_refs,
         "sentrix_product_pss_mib": refs(product_rows),
         "sentrix_auxiliary_model_pss_mib": auxiliary_refs,
         "sentrix_auxiliary_model_uma_mib": auxiliary_gpu_refs,
-        "product_stack_memory_mib": list(
-            dict.fromkeys(main_refs + stack_refs + main_gpu_refs + auxiliary_gpu_refs)
-        ),
+        "product_stack_memory_mib": list(dict.fromkeys(main_refs + stack_refs)),
     }
     dependencies["benchmark_process_memory_used_mib"] = dependencies["product_stack_memory_mib"]
+    dependencies["product_stack_gpu_memory_mib"] = product_gpu_refs
+    dependencies["benchmark_process_gpu_memory_mib"] = product_gpu_refs
+    dependencies["device_gpu_memory_mib"] = ["nvmap"]
     data.update(
         memory_observation_version=1,
         memory_observations=memory_observations,
         memory_dependencies=dependencies,
+        process_probe_seconds=time.monotonic() - started,
+        process_probe_pending=probe.pending_work() if probe is not None else [],
         pss_sampled_at_monotonic=started,
     )
-    return data
+    return apply_jetson_memory_metadata(data)
 
 
 def is_jetson_host() -> bool:
@@ -767,7 +897,7 @@ def is_jetson_host() -> bool:
 
 
 JETSON_SAMPLE_INTERVAL_SECONDS = max(
-    0.1, float(os.environ.get("PHOTOBENCH_JETSON_SAMPLE_INTERVAL_SECONDS", "0.5"))
+    0.1, float(os.environ.get("PHOTOBENCH_JETSON_SAMPLE_INTERVAL_SECONDS", "1.0"))
 )
 
 
@@ -782,14 +912,15 @@ def _meminfo_mib() -> dict[str, Any]:
         return {}
     total = values.get("MemTotal")
     available = values.get("MemAvailable")
-    used = system_used(total, available)
-    if used is None or total is None or available is None:
+    used = physical_memory_used(total, values.get("MemFree"))
+    if used is None or total is None:
         return {}
     return {
         "system_memory_used_mib": used,
         "system_memory_total_mib": round(total, 3),
-        "system_memory_available_mib": round(max(0.0, available), 3),
-        "system_memory_scope": "host_all_processes",
+        "system_memory_available_mib": round(available, 3) if available is not None else None,
+        "system_memory_free_mib": values.get("MemFree"),
+        "system_memory_scope": "linux_physical_nonfree_including_cache_v2",
     }
 
 
@@ -798,7 +929,7 @@ def _parse_tegrastats_line(line: str) -> dict[str, Any]:
     for key, pattern, scale in (
         ("system_memory_used_mib", r"RAM\s+(\d+)/(\d+)MB", 1),
         ("gpu_utilization_pct", r"GR3D_FREQ\s+(\d+)%", 1),
-        ("temperature_c", r"(?:gpu|tj)@([\d.]+)C", 1),
+        ("temperature_c", r"\bgpu@([\d.]+)C", 1),
     ):
         match = re.search(pattern, line)
         if not match:
@@ -809,30 +940,69 @@ def _parse_tegrastats_line(line: str) -> dict[str, Any]:
             sample["system_memory_available_mib"] = round(
                 max(0.0, sample["system_memory_total_mib"] - sample[key]), 3
             )
-            sample["system_memory_scope"] = "host_all_processes"
+            sample["system_memory_scope"] = "tegrastats_ram_legacy"
     rails = {
         name: round(float(current) / 1000, 3)
-        for name, current in re.findall(r"(VDD_[A-Z0-9_]+)\s+(\d+)mW", line)
+        for name, current in re.findall(r"((?:VDD|VIN)_[A-Z0-9_]+)\s+(\d+)mW", line)
     }
     if rails:
         sample["power_rails_average_w"] = {
             name: round(float(average) / 1000, 3)
-            for name, average in re.findall(r"(VDD_[A-Z0-9_]+)\s+\d+mW/(\d+)mW", line)
+            for name, average in re.findall(r"((?:VDD|VIN)_[A-Z0-9_]+)\s+\d+mW/(\d+)mW", line)
         }
-        rail = next(
-            (name for name in ("VDD_IN", "VDD_GPU_SOC", "VDD_CPU_GPU_CV", "VDD_SOC") if name in rails),
-            next(iter(rails)),
-        )
-        sample.update(
-            power_draw_w=rails[rail],
-            power_rails_w=rails,
-            power_rail=rail,
-            power_scope="board" if rail == "VDD_IN" else "rail",
-        )
+        sample["power_rails_w"] = rails
+        agx_inputs = ("VDD_GPU_SOC", "VDD_CPU_CV", "VIN_SYS_5V0")
+        if "VDD_IN" in rails:
+            sample.update(power_draw_w=rails["VDD_IN"], power_rail="VDD_IN", power_scope="module_input")
+        elif all(name in rails for name in agx_inputs):
+            sample.update(
+                power_draw_w=round(sum(rails[name] for name in agx_inputs), 3),
+                power_rail="+".join(agx_inputs),
+                power_scope="module_estimate",
+            )
+        else:
+            sample.update(power_draw_w=None, power_scope="module_inputs_incomplete")
     cpu = re.search(r"cpu@([\d.]+)C", line)
     if cpu:
         sample["cpu_temperature_c"] = round(float(cpu.group(1)), 3)
     return sample
+
+
+def _gpu_temperature(root: Path | None = None) -> dict[str, Any]:
+    """Read the GPU thermal zone; idle EAGAIN remains an explicit missing value."""
+    result: dict[str, Any] = {
+        "temperature_c": None,
+        "gpu_temperature_method": "jetson_gpu_thermal_sysfs",
+        "gpu_temperature_observed_at_monotonic": time.monotonic(),
+    }
+    reason = "gpu_temperature_sensor_missing"
+    for zone in sorted((root or Path("/sys/class/thermal")).glob("thermal_zone*")):
+        try:
+            if (zone / "type").read_text(encoding="ascii").strip().lower() != "gpu-thermal":
+                continue
+            result["gpu_temperature_sensor"] = str(zone / "temp")
+            # Buffered text reads can turn a sysfs EAGAIN into TypeError on
+            # Python 3.10. os.read preserves the kernel's actual errno.
+            fd = os.open(zone / "temp", os.O_RDONLY)
+            try:
+                celsius = float(os.read(fd, 128).decode("ascii").strip()) / 1000
+            finally:
+                os.close(fd)
+            if not 0 < celsius <= 150:
+                reason = "gpu_temperature_invalid_reading"
+                break
+            result["temperature_c"] = round(celsius, 3)
+            return result
+        except OSError as error:
+            reason = (
+                "gpu_temperature_sensor_temporarily_unavailable"
+                if error.errno == errno.EAGAIN
+                else "gpu_temperature_sensor_read_failed"
+            )
+        except (ValueError, UnicodeError):
+            reason = "gpu_temperature_invalid_reading"
+    result["resource_missing_reasons"] = {"temperature_c": reason}
+    return result
 
 
 class _TegrastatsStream:
@@ -908,7 +1078,7 @@ _TEGRASTATS = _TegrastatsStream(int(JETSON_SAMPLE_INTERVAL_SECONDS * 1000))
 class LocalJetsonLlamaCppTelemetryProvider:
     """采样一个**被核验过**的本机 llama-server 进程，绝不对一个任意远端 PID 采样。
 
-    设备读数与 PSS 走与 153 NVML 相同的 0.5s 节奏；tegrastats 保持单个长驻进程。
+    设备读数与 PSS 走与 153 NVML 相同的 1s 节奏；tegrastats 保持单个长驻进程。
     **缺 PSS / KV 就留空**，绝不把整机 RAM 标成 GPU VRAM（Orin 是 UMA，本来就没有
     独立 VRAM——这是这一路与 ``HostNvidiaTelemetryProvider`` 最根本的区别）。
     """
@@ -922,6 +1092,15 @@ class LocalJetsonLlamaCppTelemetryProvider:
         telemetry_services: Mapping[str, Any] | None = None,
     ):
         self.telemetry_services = telemetry_services
+        self._cpu = HostCpuSampler()
+        self._memory_probe = BoundedProbe(limit=4)
+        self._topology_probe = BoundedProbe(limit=1)
+        self._topology_snapshot: dict[str, Any] = {}
+        self._optional_probe = BoundedProbe(limit=1)
+        self._kv_observation: dict[str, Any] = {}
+        self._memory_worker: JetsonMemoryWorker | None = None
+        self._worker_requested = False
+        self._worker_error: str | None = None
         parsed = urlparse(endpoint_url)
         if parsed.scheme not in {"http", "https"} or not parsed.port:
             raise ValueError("a local llama.cpp endpoint with an explicit port is required")
@@ -1049,40 +1228,19 @@ class LocalJetsonLlamaCppTelemetryProvider:
             sample["device_observed_at_monotonic"] = _TEGRASTATS._observed_at
             sample["device_observation_age_seconds"] = time.monotonic() - _TEGRASTATS._observed_at
             sample["device_observation_ttl_seconds"] = 3 * _TEGRASTATS.interval_ms / 1000
+        sample.update(_gpu_temperature())
         self._device_sample = sample
         return self._device_sample
 
     def gpu_stats(self) -> dict[str, Any]:
-        # A failed optional probe is unknown, never the preceding observation.
-        data: dict[str, Any] = self._metrics()
-        data["memory_unit"] = "process_pss_uma_mib"
-        data["memory_scope"] = "model_process_pss"
-        data["memory_profile"] = {"method": "orin_process_pss_uma_v1"}
-        try:
-            pid = self._pid()
-            if pid != self._last_pid:
-                # PID 变了意味着换过一次模型进程：上一次的进程内存读数不再属于它。
-                self._last_pid = pid
-                data.pop("process_memory_used_mib", None)
-            data["root_pid"] = pid
-            if pid != getattr(self, "_baseline_pid", None):
-                self._baseline_pid = pid
-                self._system_baseline_mib = None
-            # process_memory() owns the single fresh PSS/RSS observation for
-            # every related PID. Walking the large main model here as well
-            # delays all core memory samples without contributing a value.
-            data["llama_server_args"] = self._llama_args(pid)
-            device = self._device()
-            used = device.get("system_memory_used_mib")
-            if self._system_baseline_mib is None and isinstance(used, (int, float)):
-                self._system_baseline_mib = float(used)
-            if self._system_baseline_mib is not None and isinstance(used, (int, float)):
-                data["system_memory_baseline_mib"] = round(self._system_baseline_mib, 2)
-                data["system_memory_delta_mib"] = round(float(used) - self._system_baseline_mib, 2)
-        except (OSError, ValueError, IndexError) as exc:
-            # 探不到就撤掉进程内存指标并写明原因——留旧值会被读成当前值。
-            data.pop("process_memory_used_mib", None)
-            data["pss_error"] = str(exc)
+        # Optional HTTP is isolated from the core sampler; at most one request in flight.
+        ready = self._optional_probe.collect({"kv": self._metrics}, budget=0.0)
+        if "kv" in ready:
+            self._kv_observation = ready["kv"]
+        observation = self._kv_observation
+        fresh = time.monotonic() - float(observation.get("started", float("-inf"))) <= 3 * self.pss_interval
+        data: dict[str, Any] = dict(observation.get("value") or {}) if fresh else {}
+        data["kv_observed_at_monotonic"] = observation.get("started")
         self._last_memory = {"status": "available", "source": "jetson_local_pss", "data": data}
         return {
             "status": "available",
@@ -1091,20 +1249,70 @@ class LocalJetsonLlamaCppTelemetryProvider:
                 "gpus": [
                     {
                         "index": 0,
-                        "memory_unit": "process_pss_uma_mib",
-                        "memory_scope": "model_process_pss",
+                        "protocol_version": RESOURCE_TELEMETRY_VERSION,
+                        "memory_accounting": "jetson_pss_and_nvmap_v3",
+                        "memory_unit": "process_pss_mib",
+                        "memory_scope": "process_pss_separate_gpu_allocation",
                         **self._device(),
                     }
-                ],
+                ]
             },
         }
+
+    def pending_work(self) -> list[str]:
+        return [
+            *self._memory_probe.pending_work(),
+            *self._topology_probe.pending_work(),
+            *self._optional_probe.pending_work(),
+            *(self._memory_worker.pending_work() if self._memory_worker is not None else []),
+        ]
+
+    def start_sampling(self) -> None:
+        self._worker_requested = True
+        self._worker_error = None
+        try:
+            if self._memory_worker is not None and self._memory_worker.pending_work():
+                raise RuntimeError("previous Jetson memory worker is still running")
+            self._memory_worker = JetsonMemoryWorker(str(self.port), self.telemetry_services)
+            self._memory_worker.start()
+        except Exception as error:
+            self._worker_error = f"{type(error).__name__}: {error}"
+
+    def stop_sampling(self) -> None:
+        if self._memory_worker is not None:
+            self._memory_worker.close()
 
     def process_memory(self) -> dict[str, Any]:
         try:
             data: dict[str, Any] = self._last_memory.get("data") or {}
-            augmented = _augment_local_process_memory(
-                data, model_pid=None, endpoint_port=str(self.port), telemetry_services=self.telemetry_services
-            )
+            if self._worker_requested:
+                if self._worker_error is not None or self._memory_worker is None:
+                    raise RuntimeError(self._worker_error or "Jetson memory worker unavailable")
+                augmented = {**data, **self._memory_worker.sample()}
+            else:
+                augmented = _augment_local_process_memory(
+                    data,
+                    model_pid=None,
+                    endpoint_port=str(self.port),
+                    telemetry_services=self.telemetry_services,
+                    probe=self._memory_probe,
+                    topology_probe=self._topology_probe,
+                    topology_snapshot=self._topology_snapshot,
+                )
+            pid = augmented.get("root_pid")
+            identity = (pid, _process_start_ticks(pid)) if isinstance(pid, int) else None
+            if identity != getattr(self, "_baseline_identity", None):
+                self._baseline_identity = identity
+                self._system_baseline_mib = None
+            used = self._device_sample.get("system_memory_used_mib")
+            if self._system_baseline_mib is None and isinstance(used, (int, float)):
+                self._system_baseline_mib = float(used)
+            if self._system_baseline_mib is not None and isinstance(used, (int, float)):
+                augmented["system_memory_baseline_mib"] = self._system_baseline_mib
+                augmented["system_memory_delta_mib"] = round(float(used) - self._system_baseline_mib, 2)
+            if isinstance(pid, int):
+                with contextlib.suppress(OSError, ValueError, IndexError):
+                    augmented["llama_server_args"] = self._llama_args(pid)
             augmented, _ = memory_freshness({**augmented, "_t": time.monotonic()})
             augmented.pop("_t", None)
             augmented["process_memory_used_mib"] = augmented.get(
@@ -1127,14 +1335,25 @@ class LocalJetsonLlamaCppTelemetryProvider:
             "system_memory_available_mib",
             "system_memory_scope",
         }
+        free = data.get("system_memory_free_mib")
         data = {key: value for key, value in data.items() if key in keys}
         if "system_memory_used_mib" not in data:
             return {"status": "unavailable", "source": "proc_meminfo", "reason": "ram_sample_unavailable"}
-        data["system_observation"] = _observation("proc_meminfo", started, available=True)
+        data.update(cpu_utilization_pct=self._cpu.sample(), cpu_observed_at_monotonic=time.monotonic())
+        data["system_observation"] = _observation(
+            "proc_meminfo",
+            started,
+            available=True,
+            total_mib=data.get("system_memory_total_mib"),
+            free_mib=free,
+        )
         return {"status": "available", "source": "proc_meminfo", "data": data}
 
     def kv_cache(self) -> dict[str, Any]:
         data: dict[str, Any] = self._last_memory.get("data") or {}
+        observed = data.get("kv_observed_at_monotonic")
+        if observed is None or time.monotonic() - float(observed) > 3 * self.pss_interval:
+            return {"status": "unavailable", "source": "llamacpp_metrics", "reason": "kv_metrics_stale"}
         if "kv_cache_used_tokens" not in data and "vllm_metrics" not in data:
             return {"status": "unavailable", "source": "llamacpp_metrics", "reason": "kv_metrics_not_exposed"}
         return {
