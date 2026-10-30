@@ -213,7 +213,7 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
       {extra ? GRAPHS.slice(1).map(graph => <ResourceGraph key={graph.title} {...{ graph, history, snapshots, sampledDown, revision }} />) : null}
     </details>
     <details className="metric-definition-panel"><summary>指标说明与采集状态</summary>
-      <p>Linux 进程内存取相关进程 PSS 合计；PSS 按比例分摊共享页。Mac 按整组进程估计驻留内存。整机内存为总物理内存减空闲页，包含驻留缓存。</p>
+      <p>Linux 进程内存取相关进程 PSS 合计；PSS 按比例分摊共享页。Mac 新采样的主模型内存直接读取内核 phys_footprint，按服务唯一 PID 汇总；历史记录保持原口径。整套产品仍为驻留估计。整机内存为总物理内存减空闲页，包含驻留缓存。</p>
       <p>主模型显存统计所选推理服务进程组；产品显存统计主模型与嵌入、视觉等其他产品进程，并按进程去重。其他产品进程没有额外显存分配时，两者会相等。</p>
       <p>153 显存来自 NVML；Orin 来自 nvmap 分配记录；Mac 仅显示 IORegistry 提供的整机显存参考值，当前模型服务未提供进程显存占用。统一内存设备上，显存表示 GPU 分配的共享内存，可能与进程内存重叠，两项不相加。产品显存来源不齐时留空。</p>
       <p>P50 表示中位水平，P95 表示约 95% 的有效采样不超过该值；缺失值不参与统计。</p>

@@ -1,10 +1,8 @@
-"""Apple Silicon telemetry with separately versioned resident group accounting.
+"""Apple Silicon telemetry using kernel phys_footprint for the model service.
 
-System RAM includes resident caches. Model/product estimates use footprint's
-cross-process deduplicated summary: dirty - swapped + clean + reclaimable.
-Compressed/swapped logical pages and file mapping lengths are never added.
-The physical compressor store remains part of system RAM, without inventing
-per-process physical attribution. GPU counters remain device diagnostics.
+Model memory reads ri_phys_footprint for each unique service PID. Product memory
+retains its separately identified resident group estimate. GPU counters remain
+device diagnostics. Historical samples preserve their original definitions.
 """
 
 from __future__ import annotations
@@ -429,6 +427,42 @@ def _process_identity(pid: int) -> int | None:
         return None
 
 
+def _phys_footprint_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Read kernel phys_footprint for unique model service PIDs."""
+    result: dict[str, Any] = {
+        "source": "proc_pid_rusage_phys_footprint",
+        "status": "unavailable",
+        "observed_at_monotonic": time.monotonic(),
+        "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+        "pids": sorted({int(row["pid"]) for row in rows}),
+        "process_identities": {},
+        "phys_footprint_by_pid": {},
+    }
+    try:
+        if not result["pids"]:
+            result["reason"] = "service_scope_unresolved"
+            return result
+        for pid in result["pids"]:
+            info = _RUsageInfoV0()
+            with _LIBPROC_LOCK:
+                code = _libproc().proc_pid_rusage(pid, 0, ctypes.byref(info))
+            if code != 0 or not info.ri_proc_start_abstime or info.ri_proc_exit_abstime:
+                result["reason"] = "phys_footprint_unavailable"
+                return result
+            result["process_identities"][pid] = int(info.ri_proc_start_abstime)
+            result["phys_footprint_by_pid"][pid] = int(info.ri_phys_footprint)
+        if any(_process_identity(pid) != identity for pid, identity in result["process_identities"].items()):
+            result["reason"] = "process_identity_changed"
+            return result
+        result.update(status="available", phys_footprint_bytes=sum(result["phys_footprint_by_pid"].values()))
+        return result
+    except (OSError, AttributeError, ValueError):
+        result["reason"] = "phys_footprint_unavailable"
+        return result
+    finally:
+        result["finished_at_monotonic"] = time.monotonic()
+
+
 def parse_footprint(payload: Any, pids: set[int]) -> dict[str, int] | None:
     """Accept only complete, matching group summaries; normalize units once."""
     if not isinstance(payload, dict) or payload.get("errors"):
@@ -735,7 +769,11 @@ class LocalAppleUnifiedTelemetryProvider:
         groups = {"model": model_rows, "product": _dedupe_rows(sentrix_rows + model_rows)}
         eligible = {"model": model_complete, "product": bool(model_complete and roles_complete)}
         readers = {
-            name: (lambda group=group: _resident_group(group))
+            name: (
+                lambda group=group, name=name: (
+                    _phys_footprint_group(group) if name == "model" else _resident_group(group)
+                )
+            )
             for name, group in groups.items()
             if eligible[name]
         }
@@ -752,9 +790,12 @@ class LocalAppleUnifiedTelemetryProvider:
         }
         data: dict[str, Any] = {
             "protocol_version": RESOURCE_TELEMETRY_VERSION,
-            "memory_accounting": "apple_footprint_resident_v2",
-            "memory_unit": "apple_resident_mib",
-            "memory_profile": {"method": "apple_footprint_resident_v2"},
+            "memory_accounting": "apple_phys_footprint_v1",
+            "memory_unit": "apple_phys_footprint_mib",
+            "memory_profile": {
+                "method": "apple_phys_footprint_v1",
+                "product_method": "apple_footprint_resident_v2",
+            },
             "memory_observation_version": 1,
             "memory_observations": observations,
             "memory_dependencies": {
@@ -777,14 +818,15 @@ class LocalAppleUnifiedTelemetryProvider:
             ):
                 observation.update(status="unavailable", reason="group_membership_or_identity_changed")
             observations[name] = observation
-            value = observation.get("resident_bytes") if observation.get("status") == "available" else None
+            value_key = "phys_footprint_bytes" if name == "model" else "resident_bytes"
+            value = observation.get(value_key) if observation.get("status") == "available" else None
             mib = round(value / 1048576, 3) if value is not None else None
             if name == "model":
                 data["model_process_system_memory_used_mib"] = mib
                 data["process_memory_used_mib"] = mib
                 data["model_process_memory_used_mib"] = mib
-                data["model_process_system_memory_scope"] = "apple_footprint_group_resident_v2"
-                data["process_memory_scope"] = "apple_footprint_group_resident_v2"
+                data["model_process_system_memory_scope"] = "proc_pid_rusage_phys_footprint"
+                data["process_memory_scope"] = "proc_pid_rusage_phys_footprint"
                 data["model_system_processes"] = [
                     {key: row.get(key) for key in ("pid", "process_name", "listening_ports")} for row in group
                 ]
@@ -848,7 +890,7 @@ class LocalAppleUnifiedTelemetryProvider:
             "data": {
                 "gpus": [gpu],
                 "protocol_version": RESOURCE_TELEMETRY_VERSION,
-                "memory_accounting": "apple_footprint_resident_v2",
+                "memory_accounting": "apple_phys_footprint_v1",
             },
         }
 

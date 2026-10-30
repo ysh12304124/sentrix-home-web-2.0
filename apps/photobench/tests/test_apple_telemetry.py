@@ -298,6 +298,7 @@ def resident_observation(rows, mib=128):
         "finished_at_monotonic": time.monotonic(),
         "ttl_seconds": 3,
         "resident_bytes": mib * MIB,
+        "phys_footprint_bytes": mib * MIB,
         "components_bytes": {"dirty": mib * MIB, "swapped": 0, "clean": 0, "reclaimable": 0},
     }
 
@@ -320,6 +321,38 @@ def apple_host(monkeypatch):
         "_resident_group",
         lambda rows: resident_observation(rows, 640 if len(rows) == 1 and rows[0]["pid"] == 200 else 700),
     )
+
+    monkeypatch.setattr(apple, "_phys_footprint_group", lambda rows: resident_observation(rows, 640))
+
+
+def test_phys_footprint_reads_kernel_counter_and_deduplicates_pids(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def read(pid, flavor, pointer):
+        calls.append(pid)
+        pointer._obj.ri_phys_footprint = pid * MIB
+        pointer._obj.ri_proc_start_abstime = pid * 100
+        return 0
+
+    monkeypatch.setattr(apple, "_libproc", lambda: SimpleNamespace(proc_pid_rusage=read))
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
+    result = apple._phys_footprint_group([{"pid": 2}, {"pid": 3}, {"pid": 2}])
+    assert result["phys_footprint_bytes"] == 5 * MIB
+    assert calls == [2, 3]
+    assert result["source"] == "proc_pid_rusage_phys_footprint"
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: 0)
+    assert apple._phys_footprint_group([{"pid": 2}])["reason"] == "process_identity_changed"
+
+
+def test_phys_footprint_failure_remains_unknown(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(apple, "_libproc", lambda: SimpleNamespace(proc_pid_rusage=lambda *args: -1))
+    result = apple._phys_footprint_group([{"pid": 2}])
+    assert result["status"] == "unavailable"
+    assert "phys_footprint_bytes" not in result
 
 
 def footprint_payload(pids=(42,), scale=1):
@@ -387,7 +420,12 @@ def test_process_groups_are_independent_not_added(apple_host):
     assert data["model_process_system_memory_used_mib"] == 640
     assert data["product_stack_memory_mib"] == 700
     assert data["process_memory_used_mib"] == 640
-    assert data["memory_accounting"] == "apple_footprint_resident_v2"
+    assert data["memory_accounting"] == "apple_phys_footprint_v1"
+    from photobench.domain.runtime.metrics import resource_records
+
+    records = resource_records(data)
+    assert records["model_process_memory"]["method"] == "proc_pid_rusage_phys_footprint"
+    assert records["product_process_memory"]["method"] == "apple_footprint_group_resident_v2"
     assert "sentrix_stack_pss_mib" not in data
     assert "model_process_mapped_weights_mib" not in data
     assert data["memory_complete"] is True
@@ -409,7 +447,7 @@ def test_missing_product_group_does_not_hide_main(apple_host, monkeypatch):
 
     monkeypatch.setattr(apple, "_resident_group", group)
     data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
-    assert data["model_process_system_memory_used_mib"] == 512
+    assert data["model_process_system_memory_used_mib"] == 640
     assert data["product_stack_memory_mib"] is None
     assert data["memory_complete"] is False
 
@@ -421,6 +459,7 @@ def test_expired_observation_keeps_timestamp_and_clears_totals(apple_host, monke
         return result
 
     monkeypatch.setattr(apple, "_resident_group", group)
+    monkeypatch.setattr(apple, "_phys_footprint_group", group)
     data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
     assert data["product_stack_memory_mib"] is None
     assert data["process_memory_used_mib"] is None

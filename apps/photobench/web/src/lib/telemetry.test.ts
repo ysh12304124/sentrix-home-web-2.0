@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 describe("resident accounting v2", () => {
+  it("labels kernel phys_footprint without relabeling legacy resident estimates", () => {
+    const rows = keyMetricRows({ phases: { gpu_metrics: {
+      memory_accounting: "apple_phys_footprint_v1", source: "apple_unified",
+      model_process_system_memory_used_mib: { peak: 1024 },
+      device_gpu_memory_mib: { peak: 2048 },
+    } } }, {});
+    const model = rows.find(row => row.label === "主模型内存占用");
+    expect(model?.note).toContain("ri_phys_footprint");
+    expect(model?.note).not.toContain("Dirty");
+    expect(rows.find(row => row.label === "整机GPU占用（参考）")).toBeDefined();
+  });
   it("shows only three memory totals and keeps legacy capacity labels", () => {
     const latest = { memory_accounting: "apple_footprint_resident_v2", system_memory_used_mib: 15000,
       product_stack_memory_mib: 9000, model_process_system_memory_used_mib: 7000 };

@@ -48,7 +48,7 @@ export function telemetryNumber(value: unknown): number | null {
 export function telemetryPlatform(raw: unknown): string {
   const value = dict(raw);
   const accounting = value.memory_accounting || dict(value.latest).memory_accounting;
-  if (["apple_capacity_estimate", "apple_footprint_resident_v2"].includes(accounting)) return "apple_unified";
+  if (["apple_capacity_estimate", "apple_footprint_resident_v2", "apple_phys_footprint_v1"].includes(accounting)) return "apple_unified";
   if (["jetson_pss_plus_nvmap_estimate", "jetson_pss_and_nvmap_v3"].includes(accounting)) return "jetson_local_pss";
   if (accounting === "nvidia_pss_and_vram") return "nvidia";
   return value.source || ""; // Compatibility for historical records without a metric definition.
@@ -682,7 +682,9 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
   const isUnified = platform === "apple_unified";
   const isOrin = ["orin_ssh_pss", "jetson_local_pss"].includes(platform);
   const processMemory = dict(gpu.model_process_system_memory_used_mib).peak;
-  const processMemoryNote = resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
+  const processMemoryNote = gpu.memory_accounting === "apple_phys_footprint_v1"
+    ? "主模型服务 phys_footprint 采样峰值 · 内核 ri_phys_footprint 按唯一 PID 汇总，不加权重文件大小或 GPU 分配"
+    : resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
     ? gpu.memory_accounting === "apple_footprint_resident_v2"
       ? "主模型驻留内存采样峰值（估计） · 整组PID去重：Dirty − Swapped + Clean + Reclaimable"
       : "主模型占用采样峰值（footprint+权重映射）· 容量估计，映射不保证驻留，非 GPU 专属显存"

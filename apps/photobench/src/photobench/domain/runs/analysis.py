@@ -2508,6 +2508,22 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
             },
             **metrics,
         }
+    if latest.get("memory_accounting") == "apple_phys_footprint_v1":
+        return {
+            "samples_count": len(samples),
+            "source": "apple_unified",
+            "memory_profile": {
+                "method": "apple_phys_footprint_v1",
+                "memory_unit": "apple_phys_footprint_mib",
+                "product_method": "apple_footprint_resident_v2",
+                "note": (
+                    "Model: kernel ri_phys_footprint per unique service PID; "
+                    "product: resident group estimate. "
+                    "PID ledger sums do not imply shared-page deduplication."
+                ),
+            },
+            **metrics,
+        }
     if latest.get("memory_accounting") == "apple_footprint_resident_v2":
         return {
             "samples_count": len(samples),
