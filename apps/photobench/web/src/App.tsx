@@ -1,3 +1,4 @@
+import type { ActiveWorkStatus } from "./api/types.ts";
 /**
  * PhotoBench 前端的组合层（组合根）。
  *
@@ -203,11 +204,28 @@ export function App({ initialLoading = false }: AppProps) {
     runs.startPolling();
   }, [initDone, runs, runs.runs, runs.selectRun, runs.startPolling]);
 
+  const [workBusy, setWorkBusy] = useState(false);
+  useEffect(() => {
+    let disposed = false, pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const status = await api<ActiveWorkStatus>("/active-work");
+        if (!disposed && status.cleanup_status) setWorkBusy(status.cleanup_status !== "stopped");
+      } catch { /* Keep the last known state; a failed read cannot prove exit. */ }
+      finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 3000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
+
   // ── 启动 / 停止（1.0 `startSuite` :2674-2685 / `stopSuite` :2686-2690）────────
   // 两者只做 JSX 事件处理，不需要 memo：直接定义成普通函数，避免 useCallback 依赖
   // 每轮重建的 `startInput`（那只会让 identity 抖动，没有收益）。
   const startInput = {
-    hasRunning: runs.hasRunning,
+    hasRunning: runs.hasRunning || workBusy,
     suiteRunning,
     selectedModels,
     modelEndpoint: modelApi.modelEndpoint,
@@ -266,12 +284,43 @@ export function App({ initialLoading = false }: AppProps) {
     }
   };
 
+  const [stopStatus, setStopStatus] = useState("");
+  const [stopping, setStopping] = useState(false);
   const stopSuite = async () => {
-    if (!window.confirm("确定停止当前所有评测任务？")) return;
-    await api("/cancel-active", { method: "POST", body: "{}" });
-    await runs.loadRuns();
-    await runs.loadActiveRun();
+    if (stopping || !window.confirm("确定停止全部测评、重判和内存画像任务？正在执行的调用需要完成清理。")) return;
+    setStopping(true);
+    setStopStatus("正在发送取消请求…");
+    try {
+      const result = await api<{ errors?: Record<string, string> }>("/cancel-active", { method: "POST", body: "{}" });
+      if (Object.keys(result.errors || {}).length) throw new Error(Object.values(result.errors || {}).join("；"));
+      const status = await api<ActiveWorkStatus>("/active-work/cleanup", { method: "POST", body: "{}" });
+      setWorkBusy(status.cleanup_status !== "stopped");
+      setStopStatus(status.cleanup_status === "stopped" ? "已停止，后台任务已退出" : "已请求取消，正在等待后台任务退出；清理完成前禁止新建任务");
+      await runs.loadRuns();
+      await runs.loadActiveRun();
+    } catch (error) {
+      setStopStatus("停止未确认：" + (error as Error).message);
+      configApi.setError((error as Error).message);
+    } finally {
+      setStopping(false);
+    }
   };
+  useEffect(() => {
+    if (!stopStatus.startsWith("已请求取消")) return;
+    let disposed = false, pending = false;
+    const timer = window.setInterval(() => {
+      if (pending) return;
+      pending = true;
+      void api<ActiveWorkStatus>("/active-work/cleanup", { method: "POST", body: "{}" })
+        .then((status) => {
+          if (disposed) return;
+          if (Object.keys(status.errors || {}).length) setStopStatus("停止未确认：" + Object.values(status.errors || {}).join("；"));
+          else if (status.cleanup_status === "stopped") { setWorkBusy(false); setStopStatus("已停止，后台任务已退出"); }
+        }).catch((error: Error) => { if (!disposed) setStopStatus("停止未确认：" + error.message); })
+        .finally(() => { pending = false; });
+    }, 2000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [stopStatus]);
 
   /** 1.0 `openChainNode`（`:1984-2015`）：先并发补拉当前页所有详情，再算弹窗数据。 */
   const openChainNode = (mode: string, layer: GraphLayer, node: GraphNode): void => {
@@ -342,12 +391,14 @@ export function App({ initialLoading = false }: AppProps) {
                 onStart: () => {
                   void startSuite();
                 },
+                stopping,
                 onStop: () => {
                   void stopSuite();
                 },
               }}
               error={configApi.error}
             />
+            {stopStatus ? <p className="operation-status" role="status">{stopStatus}</p> : null}
             <RunsView
               runs={runs}
               judgeModel={configApi.judgeModel}
@@ -377,16 +428,6 @@ export function App({ initialLoading = false }: AppProps) {
               activeRun={runs.activeRun}
               qa={qa}
               resultRef={runs.runDetailRef}
-              reviewFor={runs.reviewFor}
-              onReviewChange={(summary, patch) => runs.setReview(String(summary.qa_id || ""), patch)}
-              reviewSaving={runs.reviewSaving}
-              onSaveReviews={() => {
-                void (async () => {
-                  await runs.saveReviews();
-                  // 1.0 `saveReviews`（`:2338`）末尾重拉当前页。
-                  await qa.loadQaPage();
-                })();
-              }}
               onOpenMedia={setLightbox}
             />
             ) : null}

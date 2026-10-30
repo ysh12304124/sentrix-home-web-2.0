@@ -6,7 +6,7 @@
  *   `snapshotSummary`(:2080) / `guardSummary`(:2092) / 局部 `normalizedTerminationReason`(:2107) /
  *   `retrievalChannelRows`(:2134) / `phaseSummary`(:2153) /
  *   `phaseErrorDetails`(:2182) / `phaseErrorSummary`(:2188) / `openImage` 的纯半(:2194) /
- *   `pipelineMetricRows`(:2199)。
+ *   流水线计时展示现位于 pipelineTiming.ts。
  *
  * **组件状态显式化**（逻辑一字未改，只把「从哪读」提成参数）：
  *   - 1.0 的 `toolPerformanceRows` / `deliveryBreakdown` 闭包读
@@ -25,10 +25,11 @@
  * `details.ts → trace.ts`。
  */
 import { fmtDate, fmtMemory, fmtSeconds, phaseSeconds } from "./format.ts";
+import { isCombinedImport, phaseElapsed, pipelineDuration } from "./pipelineTiming.ts";
 import { itemToolTrace } from "./trace.ts";
 import { imageUrl } from "../api/media.ts";
 import type { MediaLike } from "../api/media.ts";
-import type { Phase, RunSummary } from "../api/types.ts";
+import type { RunSummary } from "../api/types.ts";
 
 type Dict = Record<string, unknown>;
 
@@ -140,8 +141,8 @@ export function guardSummary(item: unknown): GuardSummary {
   const det = dict(guard.deterministic_delivery);
   const delivery = dict(dict(item).delivery_status);
   return {
-    recorded: Boolean(Object.keys(guard).length || dict(item).termination_reason || dict(item).agent_status),
-    status: (guard.status as string) || (dict(item).agent_status as string) || "-",
+    recorded: Boolean(Object.keys(guard).length || dict(item).termination_reason || (dict(item).agent_status || dict(item).turn_status)),
+    status: (guard.status as string) || (dict(item).agent_status as string) || (dict(item).turn_status as string) || "-",
     termination: normalizedTerminationReason(item),
     recoveries: guard.recovery_attempts ?? "-",
     codes: codes.length ? codes.join("、") : "无",
@@ -213,7 +214,7 @@ export function judgeProgressLabel(phase: unknown): string {
   return `Judge 已结束 ${completed}/${total}${skipped}`;
 }
 
-export function phaseSummary(key: string, phase: unknown, itemCount: unknown = null): string {
+export function phaseSummary(key: string, phase: unknown, itemCount: unknown = null, compactImport = false): string {
   if (!phase) return "";
   const p = dict(phase);
   if (key === "model_deploy" && p.unload_seconds != null) {
@@ -228,47 +229,47 @@ export function phaseSummary(key: string, phase: unknown, itemCount: unknown = n
     return `预置 ${p.seeded_count ?? 0} 人${relationshipText} · ${fmtSeconds(phaseSeconds(phase, "upload_seconds"))}`;
   }
   if (key === "photo_import") {
-    // **导入墙钟 ≠ 处理时间。** 2.0 的导入是同步的，VLM 观察与事件归属都在这个请求里，
-    // 不拆的话 64 分钟全叫「导入」，读起来像复制文件花了 64 分钟。
     const timings = dict(p.timings);
-    const parts: string[] = [];
-    if (timings.asset_import != null) parts.push(`资产落库 ${fmtSeconds(timings.asset_import)}`);
-    if (timings.prepare != null) parts.push(`观察 ${fmtSeconds(timings.prepare)}`);
-    if (timings.finish != null) parts.push(`归属 ${fmtSeconds(timings.finish)}`);
-    if (timings.summarize != null) parts.push(`总结 ${fmtSeconds(timings.summarize)}`);
-    if (timings.stage != null) parts.push(`落库 ${fmtSeconds(timings.stage)}`);
-    const breakdown = parts.length ? ` · ${parts.join(" · ")}` : "";
-    // Backend timings cover internal work and may exclude request waiting/queueing.
-    // Keep the measured phase wall clock authoritative and label the subtotal separately.
-    const total = fmtSeconds(phaseSeconds(phase) ?? phaseSeconds(phase, "upload_seconds"));
-    const backendTotal = timings.total != null ? ` · 后端计时 ${fmtSeconds(timings.total)}` : "";
+    const combined = isCombinedImport(p);
+    const elapsed = phaseElapsed(p, p.total_seconds ?? p.upload_seconds);
+    const duration = compactImport
+      ? combined ? " · 合并计时" : ` · ${pipelineDuration(elapsed.seconds)}`
+      : combined
+      ? " · 登记与处理合并计时，详见流水线"
+      : ` · ${elapsed.label} ${pipelineDuration(elapsed.seconds)}`;
+    const registration = timings.asset_import ?? timings.stage;
+    const registrationText = !compactImport && typeof registration === "number" && Number.isFinite(registration) && registration >= 0
+      ? ` · 登记落库累计 ${pipelineDuration(registration)}` : "";
     // The synchronous import endpoint does not report media counts until it returns.
     // Keep that interval visibly unknown instead of presenting missing values as zero.
     const count = (value: unknown): string =>
       typeof value === "number" && Number.isInteger(value) && value >= 0 ? String(value) : "?";
     const observation = dict(dict(p.progress).observation);
+    const summary = (prefix: string, completed: unknown, total: unknown, added: unknown, deduplicated: unknown, failed: unknown) =>
+      compactImport ? `媒体 ${count(completed)}/${count(total)} · 失败 ${count(failed)}${duration}`
+        : `${prefix} ${count(completed)}/${count(total)} 个媒体 · 新增 ${count(added)} · 去重 ${count(deduplicated)} · 失败 ${count(failed)}${duration}${registrationText}`;
     if (p.status === "running" && Object.keys(observation).length) {
-      return `当前目录已处理 ${count(observation.completed)}/${count(observation.total)} 个媒体 · 新增 ${count(observation.imported)} · 去重 ${count(observation.deduplicated)} · 失败 ${count(observation.failed)} · 阶段墙钟 ${total}`;
+      return summary("当前目录已处理", observation.completed, observation.total, observation.imported, observation.deduplicated, observation.failed);
     }
     if (typeof p.scanned_count === "number") {
       const completed = typeof p.accepted_count === "number" && typeof p.deduplicated_count === "number" &&
         typeof p.failed_count === "number" ? p.accepted_count + p.deduplicated_count + p.failed_count : null;
-      return `已处理 ${count(completed)}/${count(p.scanned_count)} 个媒体 · 新增 ${count(p.accepted_count)} · 去重 ${count(p.deduplicated_count)} · 失败 ${count(p.failed_count)} · 阶段墙钟 ${total}${backendTotal}${breakdown}`;
+      // Early explicit runs saved scanned_count as zero; their recorded outcomes give the actual total.
+      const scanned = p.execution_mode === "explicit" ? completed : p.scanned_count;
+      return summary("已处理", completed, scanned, p.accepted_count, p.deduplicated_count, p.failed_count);
     }
     const accepted = count(p.accepted_count);
     const totalMedia = count(p.total_media ?? p.total_photos);
     const failed = count(p.failed_count);
-    return `导入 ${accepted}/${totalMedia} 个媒体 · 失败 ${failed} · 阶段墙钟 ${total}${backendTotal}${breakdown}`;
+    if (compactImport) return `媒体 ${accepted}/${totalMedia} · 失败 ${failed}${duration}`;
+    return `导入 ${accepted}/${totalMedia} 个媒体 · 失败 ${failed}${duration}${registrationText}`;
   }
   if (key === "pipeline_processing" && p.progress) {
     const progress = dict(p.progress);
-    const timings = dict(p.timings);
-    const parts: string[] = [];
-    if (timings.video_keyframe_extraction != null) parts.push(`关键帧 ${fmtSeconds(timings.video_keyframe_extraction)}`);
-    if (timings.video_keyframe_memory != null) parts.push(`帧记忆 ${fmtSeconds(timings.video_keyframe_memory)}`);
-    if (timings.memory_graph != null) parts.push(`图构建 ${fmtSeconds(timings.memory_graph)}`);
-    const breakdown = parts.length ? ` · ${parts.join(" · ")}` : "";
-    return `${progress.processed || 0}/${progress.total || 0} 资产完成 · ${progress.failed || 0} 失败 · ${progress.skipped || 0} 跳过 · 阶段墙钟 ${fmtSeconds(phaseSeconds(phase))}${breakdown}`;
+    const elapsed = phaseElapsed(p);
+    const waiting = progress.request_status === "running" && progress.stage === "finalizing"
+      ? " · 媒体处理完成，等待流水线汇总" : "";
+    return `${progress.processed || 0}/${progress.total || 0} 资产完成 · ${progress.failed || 0} 失败 · ${progress.skipped || 0} 跳过 · ${elapsed.label} ${pipelineDuration(elapsed.seconds)}${waiting}`;
   }
   if (key === "qa_eval") {
     const progress = p.progress;
@@ -323,88 +324,4 @@ export function openImageTarget(image: MediaLike | null | undefined): { url: str
     url,
     name: (image?.file_name as string) || (image?.image_id as string) || "图片",
   };
-}
-
-// ── 1.0 :2199-2232 管线指标 ────────────────────────────────────────────
-
-type MetricRow = [string, string, string];
-
-/**
- * 1.0 `:2199-2232`。
- *
- * 回退口径（不同字段不一样）：
- *   - 墙钟均值：有有效 `image_count` 且墙钟有限 → `墙钟 ÷ 张数`；否则回
- *     `phase.average_seconds_per_photo`；再没有才 `未记录`（并换第二列文案）。
- *   - 阶段计时行：`stage_timings[key]` 为假值 → **整行消失**（`filter` 掉），不是占位。
- *   - `effective_workers == null` → `-`；`event_count == null` → `-`。
- * 六个计时段里 `vlm_image_description_seconds` 走「累计调用」文案，其余走 `row`。
- */
-export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
-  const p = dict(phase);
-  const metrics = dict(p.pipeline_metrics);
-  const timings = dict(metrics.stage_timings);
-  const pipelineTimings = dict(p.timings);
-  const imageCount = Number(metrics.image_count);
-  const wallSeconds = phaseSeconds(phase);
-  const hasImageCount = Number.isFinite(imageCount) && imageCount > 0;
-  const averageWallSeconds =
-    hasImageCount && Number.isFinite(wallSeconds) ? (wallSeconds as number) / imageCount : p.average_seconds_per_photo;
-  const row = (key: string, label: string): MetricRow | null => {
-    const value = timings[key];
-    if (!value) return null;
-    const v = dict(value);
-    return [label, fmtSeconds(v.mean_seconds), `总计 ${fmtSeconds(v.sum_seconds)} · P95 ${fmtSeconds(v.p95_seconds)}`];
-  };
-  const cumulativeCallRow = (key: string, label: string): MetricRow | null => {
-    const value = timings[key];
-    if (!value) return null;
-    const v = dict(value);
-    return [
-      label,
-      `单次均值 ${fmtSeconds(v.mean_seconds)}`,
-      `${v.count ?? "-"} 次调用累计 ${fmtSeconds(v.sum_seconds)} · P95 ${fmtSeconds(v.p95_seconds)}；并发调用可使累计耗时大于阶段墙钟`,
-    ];
-  };
-  const explicitTimingRows = (
-    [
-      ["源媒体模型准备", "source_memory_prepare", "并发 worker 累计耗时"],
-      ["源媒体记忆提交", "source_memory_commit", "按目录顺序串行提交"],
-      ["关键帧提取", "video_keyframe_extraction", "ffmpeg 抽帧墙钟累计"],
-      ["关键帧记忆构建", "video_keyframe_memory", "VLM/OCR/人脸/实体/事实累计"],
-      ["事件总结", "event_summarize", "批末事件摘要"],
-      ["参与者投影", "participant_projection", "已确认身份投影到事件"],
-      ["记忆图构建", "memory_graph", "结构化图节点与边重建"],
-      ["因果边判定", "causal_graph", "规则信号筛选与文本模型因果判定；包含在记忆图构建耗时内"],
-      ["家庭图谱", "family_graph", "家庭关系推断"],
-      ["人物画像", "person_insights", "人物画像收尾"],
-    ] as Array<[string, string, string]>
-  )
-    .filter(([, key]) => pipelineTimings[key] != null)
-    .map(([label, key, note]) => [label, fmtSeconds(pipelineTimings[key]), note] as MetricRow);
-  const legacyRows = ([
-    [
-      "评测图片墙钟均值",
-      averageWallSeconds == null ? "未记录" : fmtSeconds(averageWallSeconds),
-      hasImageCount
-        ? `阶段墙钟 ${fmtSeconds(wallSeconds)} ÷ ${imageCount} 张评测图片；不含身份参考图`
-        : "历史运行未记录评测图片数，按旧口径展示",
-    ],
-    [
-      "实际图片并发",
-      metrics.effective_workers == null ? "-" : `${metrics.effective_workers} 路`,
-      `配置 ${metrics.configured_workers ?? "-"} · vLLM 上限 ${metrics.vllm_max_num_seqs ?? "-"}`,
-    ],
-    [
-      "事件总结",
-      metrics.event_count == null ? "-" : `${metrics.event_summary_call_count ?? 0}/${metrics.event_count} 次`,
-      `批次耗时 ${fmtSeconds(metrics.event_summary_wall_seconds)}`,
-    ],
-    cumulativeCallRow("vlm_image_description_seconds", "VLM 图片描述调用"),
-    row("face_detection_seconds", "人脸检测"),
-    row("image_clip_seconds", "图片 CLIP"),
-    row("face_clustering_seconds", "人脸归类"),
-    row("event_clustering_seconds", "事件聚类"),
-    row("text_embedding_seconds", "文本 embedding"),
-  ] as Array<MetricRow | null>).filter((r): r is MetricRow => r !== null);
-  return [...explicitTimingRows, ...legacyRows];
 }

@@ -151,7 +151,7 @@ export interface TelemetryLive {
   metrics_contract_version?: number;
   memory_accounting?: "nvidia_pss_and_vram" | "jetson_pss_plus_nvmap_estimate" | "apple_capacity_estimate";
   memory_complete?: boolean;
-  field_stats?: Record<string, { peak?: number; mean?: number; p95?: number; valid_count?: number }>;
+  field_stats?: Record<string, { peak?: number; mean?: number; p50?: number; p95?: number; valid_count?: number }>;
   rejected_samples?: Record<string, number>;
   sampling?: Record<string, unknown>;
   source?: string;
@@ -186,6 +186,10 @@ export interface MemorySourceObservation {
 
 /** run 指标汇总。后端 `summary` 的字段是开放的，前端 `effectiveRunSummary` 现算 60+ 项。 */
 export interface RunSummary {
+  structured_json_requested?: number | null;
+  structured_json_total?: number | null;
+  structured_json_success?: number | null;
+  structured_json_rate?: number | null;
   run_valid?: boolean | null;
   completed?: number;
   total?: number;
@@ -379,9 +383,17 @@ export interface TaskJudge {
 
 /** 一行逐题摘要（`/api/v1/runs/{id}/items` 的 `items[]`）。 */
 export interface RunItemSummary {
+  display_question?: string;
+  conversation_turn_count?: number;
+  conversation_context_mode?: string;
   index: number;
   qa_id?: string;
   question?: string;
+  ability_taxonomy_version?: string;
+  ability_family_ids?: string[];
+  ability_primary_ids?: string[];
+  ability_supporting_ids?: string[];
+  benchmark_group?: string;
   task_type?: string;
   question_type?: string;
   tags?: string[];
@@ -689,6 +701,11 @@ export interface QaRow {
   answer?: string;
   tags?: string[];
   question_type?: string;
+  ability_taxonomy_version?: string;
+  ability_family_ids?: string[];
+  ability_primary_ids?: string[];
+  ability_supporting_ids?: string[];
+  benchmark_group?: string;
   task_type?: string;
   angle?: string;
   difficulty?: string;
@@ -805,4 +822,20 @@ export interface BenchConfig {
   custom_judge_prompt?: string;
   judge_providers?: Array<Record<string, unknown>>;
   [key: string]: unknown;
+}
+
+
+/** Live ownership, independent of business terminal status and historical runs. */
+export interface ActiveWorkStatus {
+  work: Array<{
+    id: string;
+    kind: string;
+    worker_alive: boolean;
+    cancel_requested?: boolean;
+    cleanup?: Record<string, unknown>;
+    operations?: Record<string, unknown>[];
+    pending_work?: string[];
+  }>;
+  cleanup_status: string;
+  errors?: Record<string, string>;
 }

@@ -31,20 +31,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from photobench.domain.datasets.ability_taxonomy import ABILITY_FIELDS
 from photobench.domain.runs.graph_quality import aggregate_graph_qa_by_type
 from photobench.domain.runs.judge import normalize_judge_score, parse_judge_json
 from photobench.domain.runtime.metrics import (
+    RESOURCE_FIELDS,
+    RESOURCE_TELEMETRY_VERSION,
     apple_power,
     apple_temperature,
+    cpu_freshness,
     device_freshness,
     finite_number,
     memory_freshness,
+    resource_records,
 )
 
 # 1.0 ``:933`` / ``:1261``。
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 RANKING_KS = (1, 5, 10)
-JUDGE_CONSISTENCY_VERSION = 3
+JUDGE_CONSISTENCY_VERSION = 4
 
 
 def now_iso() -> str:
@@ -78,9 +83,16 @@ def judge_score_consistency(
         # the start of a clause. Reference narration is not praise of the model.
         subject = r"(?:模型|助手)(?:的)?(?:回答|答案|结论)"
         clause_subject = r"^\s*(?:(?:该|此|最终)(?:次)?)?(?:回答|答案|结论)"
+        # A nearby reference to the correct answer is not an assertion that
+        # the tested answer is correct. Match an answer-level predicate.
+        praise = (
+            r"(?:内容|中的核心信息|的核心信息)?\s*"
+            r"(?:(?:是|为|基本上?|完全|总体上?|整体上?|均|都|确实|非常)\s*){0,3}"
+            r"(?:正确|准确)"
+        )
         assertions = (
-            rf"{subject}.{{0,12}}(?:正确|准确)",
-            rf"{clause_subject}.{{0,12}}(?:正确|准确)",
+            rf"{subject}{praise}" if version >= 4 else rf"{subject}.{{0,12}}(?:正确|准确)",
+            rf"{clause_subject}{praise}" if version >= 4 else rf"{clause_subject}.{{0,12}}(?:正确|准确)",
             rf"(?:{subject}|{clause_subject}).{{0,12}}与.{{0,12}}(?:参考答案|标准答案).{{0,8}}一致",
             rf"(?:{subject}|{clause_subject}).{{0,8}}符合.{{0,8}}预期",
             r"^\s*与.{0,12}(?:参考答案|标准答案).{0,8}一致",
@@ -148,7 +160,11 @@ def judge_consistency_status(judge: dict[str, Any] | None) -> str | None:
     judge = judge_projection(judge)
     recorded_version = judge.get("consistency_version")
     version = JUDGE_CONSISTENCY_VERSION if judge.get("score_derivation") else 1
-    if not judge.get("score_derivation") and isinstance(recorded_version, int) and recorded_version in (2, 3):
+    if (
+        not judge.get("score_derivation")
+        and isinstance(recorded_version, int)
+        and recorded_version in (2, 3, 4)
+    ):
         version = recorded_version
     if not judge_score_consistency(judge.get("score"), str(judge.get("reason") or ""), version=version):
         return "inconsistent"
@@ -372,9 +388,35 @@ def ranking_from_item(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def retrieval_metric_eligible(item: dict[str, Any]) -> bool:
+def retrieval_metric_eligible(item: Mapping[str, Any]) -> bool:
     """1.0 ``:1360``。不可回答的题目不进检索指标的分母。"""
-    return str(item.get("answerability") or "").strip().lower() != "unanswerable"
+    return str(item.get("answerability") or "").strip().lower() not in {
+        "unanswerable",
+        "insufficient_evidence",
+    }
+
+
+def retrieval_metric_projection(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep refusal metrics inapplicable while retaining recorded media and traces."""
+    if retrieval_metric_eligible(item):
+        return {"retrieval_metrics_applicable": True}
+    return {
+        "retrieval_metrics_applicable": False,
+        "retrieval_metrics_reason": "unanswerable",
+        **{
+            f"{prefix}_{metric}": None
+            for prefix in (
+                "retrieval",
+                "media_retrieval",
+                "image_retrieval",
+                "video_retrieval",
+                "candidate_retrieval",
+            )
+            for metric in ("precision", "recall", "f1")
+        },
+        **{f"{prefix}_retrieval_counts": None for prefix in ("media", "image", "video", "candidate")},
+        "image_ranking": {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +463,7 @@ def trace_action(step: dict[str, Any]) -> dict[str, Any] | None:
 
 def _native_turn_completion(turn: dict[str, Any]) -> bool | None:
     termination = str(turn.get("termination_reason") or "").lower()
-    if termination not in {"answered", "answered_with_gap"}:
+    if termination not in {"answered", "answered_with_gap", "policy_refusal"}:
         return False if termination else None
     budget = (turn.get("agent2_trace") or {}).get("budget_outcome") or {}
     steps, maximum = budget.get("model_steps"), budget.get("max_steps")
@@ -437,9 +479,61 @@ def _native_turn_completion(turn: dict[str, Any]) -> bool | None:
     status = str(turn.get("agent_status") or turn.get("status") or turn.get("turn_status") or "").lower()
     return (
         bool(str(turn.get("answer") or "").strip())
-        and status not in {"partial", "error", "timeout", "failed", "cancelled", "canceled"}
+        # partial 表示证据缺口；预算内已交付终态回答仍属于流程完成。
+        and status not in {"error", "timeout", "failed", "cancelled", "canceled"}
         and steps <= maximum
     )
+
+
+def structured_json_metrics(item: dict[str, Any]) -> dict[str, Any]:
+    """只使用显式 JSON 输出契约事实；不从自由文本或 HTTP 成功推断。"""
+    metrics = item.get("model_call_metrics") or []
+    calls = list(
+        metrics
+        if any(isinstance(call, dict) and call.get("json_output") for call in metrics)
+        else item.get("execution_trace") or []
+    )
+    for tool in item.get("tool_trace") or []:
+        calls.extend((tool.get("result") or {}).get("model_call_observations") or [])
+    for key in ("judge", "task_judge", "evidence_judge"):
+        calls.extend((item.get(key) or {}).get("call_observations") or [])
+    for judge in item.get("task_judges") or []:
+        calls.extend(judge.get("call_observations") or [])
+    seen: set[tuple[Any, ...]] = set()
+    facts = []
+    for call in calls:
+        fact = call.get("json_output") if isinstance(call, dict) else None
+        if not isinstance(fact, dict) or fact.get("required") is not True:
+            continue
+        identity = (
+            ("call", call["call_id"])
+            if call.get("call_id")
+            else (
+                "step",
+                call.get("conversation_turn"),
+                call.get("step_id"),
+                call.get("call_type"),
+                call.get("attempt"),
+            )
+            if call.get("step_id")
+            else ("object", id(call))
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        facts.append(fact)
+    attempts = [
+        fact
+        for fact in facts
+        if fact.get("attempted") is True and isinstance(fact.get("json_object_valid"), bool)
+    ]
+    count, success = len(attempts), sum(fact["json_object_valid"] for fact in attempts)
+    return {
+        "structured_json_requested": len(facts) or None,
+        "structured_json_total": count or None,
+        "structured_json_success": success if count else None,
+        "structured_json_rate": round(success / count, 3) if count else None,
+    }
 
 
 def agent_stability(item: dict[str, Any]) -> dict[str, Any]:
@@ -487,6 +581,7 @@ def agent_stability(item: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "metrics_contract_version": 2,
+        **structured_json_metrics(item),
         "json_parse_total": parse_total or None,
         "json_parse_success": parse_success if parse_total else None,
         "json_parse_rate": round(parse_success / parse_total, 3) if parse_total else None,
@@ -527,7 +622,7 @@ def derive_attribution(item: dict[str, Any]) -> dict[str, Any]:
     guard = item.get("guard_debug") or {}
     layers = {key: "na" for key in ("R", "V", "O", "T", "S", "G", "J")}
     details = {}
-    if isinstance(layer_recall, (int, float)):
+    if retrieval_metric_eligible(item) and isinstance(layer_recall, (int, float)):
         layers["R"] = "pass" if layer_recall >= 1 else "fail"
         label = "检索召回率" if source == "candidate" else "召回率（交付口径，无候选集）"
         details["R"] = f"{label} {layer_recall:.1%}"
@@ -584,6 +679,25 @@ def annotate_model_calls(model_calls: Sequence[Any], execution_trace: Sequence[A
     if all(call.get("call_observation") for call in calls):
         return calls
     if any(call.get("call_type") for call in calls):
+        for call in calls:
+            if call.get("call_observation"):
+                continue
+            tools = call.get("tool_calls") or []
+            outcome = (
+                "调用失败: " + str(call.get("error_type") or call.get("status"))
+                if call.get("status") in {"error", "failed"}
+                else "请求工具: " + ", ".join(str(value) for value in tools)
+                if tools
+                else "finish_reason: " + str(call.get("finish_reason") or "未记录")
+            )
+            call["call_observation"] = {
+                "kind": call.get("call_type"),
+                "purpose": "已保存的调用类型: " + str(call.get("call_type") or "未记录"),
+                "trigger": "步骤: " + str(call.get("step_id") or "未记录"),
+                "outcome": outcome,
+                "source": "saved_call_facts_v1",
+                "derivation_version": 1,
+            }
         return calls
     trace = [step for step in execution_trace if isinstance(step, dict)]
     if not trace:
@@ -752,12 +866,39 @@ def annotate_model_calls(model_calls: Sequence[Any], execution_trace: Sequence[A
 def bind_tool_calls_to_model_rounds(
     tool_trace: Sequence[Any], retrieval_trace: Sequence[Any], model_calls: Any = None
 ) -> list[dict[str, Any]]:
-    """1.0 ``:3838``。按 step ID 优先、历史 run 退回按顺序对齐工具与模型轮次。"""
+    """显式父步骤只在同一对话轮内绑定；缺少标识的旧记录保留顺序对齐。"""
     bound = [dict(trace) for trace in tool_trace if isinstance(trace, dict)]
     if not bound:
         return bound
     calls = [call for call in model_calls if isinstance(call, dict)] if isinstance(model_calls, list) else []
     model_call_count = len(calls) if calls else int(model_calls or 0)
+    if calls and any(trace.get("parent_step_id") or trace.get("parent_call_id") for trace in bound):
+        for trace in bound:
+            candidates = [
+                index
+                for index, call in enumerate(calls)
+                if call.get("conversation_turn", 0) == trace.get("conversation_turn", 0)
+                and call.get("call_type") != "tool_internal"
+                and (
+                    call.get("call_id") == trace["parent_call_id"]
+                    if trace.get("parent_call_id")
+                    else bool(trace.get("parent_step_id"))
+                    and str(call.get("step_id")) == str(trace["parent_step_id"])
+                )
+            ]
+            successful = [
+                index
+                for index in candidates
+                if calls[index].get("status") not in {"error", "failed", "cancelled"}
+                and not calls[index].get("error")
+            ]
+            if len(successful) == 1:
+                trace["model_call_index"] = successful[0]
+                trace["round_binding_source"] = "step_id"
+            elif trace.get("parent_step_id") or trace.get("parent_call_id"):
+                trace.pop("model_call_index", None)
+                trace["round_binding_source"] = "unresolved"
+        return bound
     call_index_by_step: dict[tuple[Any, str], int] = {}
     for index, call in enumerate(calls):
         if not call.get("step_id"):
@@ -1105,9 +1246,14 @@ def capability_summary(
         judge
         for item in items
         for judge in (item.get("task_judges") or [item.get("task_judge") or {}])
-        if judge.get("expected_action") in {"answer", "refuse", "clarify"}
+        if judge.get("expected_action") in {"answer", "refuse", "clarify", "answer_and_refuse"}
+        and (judge.get("expected_action") != "answer_and_refuse" or judge.get("behavior_rule_version") == 2)
     ]
     action_valid = [value for value in action_judges if value.get("correct") in {True, False}]
+    structured = [structured_json_metrics(item) for item in items]
+    structured_requested = sum(row["structured_json_requested"] or 0 for row in structured)
+    structured_total = sum(row["structured_json_total"] or 0 for row in structured)
+    structured_success = sum(row["structured_json_success"] or 0 for row in structured)
     parse_totals = [item.get("agent_stability", {}).get("json_parse_total") for item in items]
     parse_successes = [item.get("agent_stability", {}).get("json_parse_success") for item in items]
     tool_argument_total = sum(
@@ -1326,6 +1472,10 @@ def capability_summary(
         )
         if action_valid
         else None,
+        "structured_json_requested": structured_requested or None,
+        "structured_json_total": structured_total or None,
+        "structured_json_success": structured_success if structured_total else None,
+        "structured_json_rate": round(structured_success / structured_total, 3) if structured_total else None,
         "json_parse_total": parse_total or None,
         "json_parse_success": parse_success if parse_total else None,
         "json_parse_success_rate": round(parse_success / parse_total, 3) if parse_total else None,
@@ -1421,7 +1571,15 @@ def list_summary(state: dict[str, Any]) -> dict[str, Any]:
     for key, value in capability_summary(items, state.get("phases") or {}).items():
         if (
             key == "retrieval_recall_mean"
-            or key.startswith(("retrieval_", "media_retrieval_", "image_retrieval_", "video_retrieval_"))
+            or key.startswith(
+                (
+                    "retrieval_",
+                    "media_retrieval_",
+                    "image_retrieval_",
+                    "video_retrieval_",
+                    "candidate_retrieval_",
+                )
+            )
             or saved.get(key) is None
         ):
             saved[key] = value
@@ -1465,7 +1623,7 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
     """
     saved = dict(state.get("summary") or {})
     items = state.get("items") or []
-    if not saved.get("image_ranking"):
+    if not saved.get("image_ranking") or any(not retrieval_metric_eligible(item) for item in items):
         saved["image_ranking"] = (
             mean_ranking_metrics(
                 [
@@ -1477,7 +1635,9 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             or None
         )
     for item in items:
-        if isinstance(item, dict) and item.get("execution_trace"):
+        if isinstance(item, dict) and (
+            item.get("execution_trace") or item.get("metrics_contract_version") == 2
+        ):
             item["agent_stability"] = agent_stability(item)
     recalls = [
         float(value) for item in items if isinstance((value := item.get("retrieval_recall")), (int, float))
@@ -1538,11 +1698,17 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             "core_accuracy": round((distribution["1"] + distribution["2"]) / len(scores), 3)
             if scores
             else None,
-            "llm_ttft_ms_mean": saved.get(
-                "llm_ttft_ms_mean", round(sum(ttfts) / len(ttfts), 1) if ttfts else None
+            "llm_nonstreamed_count": sum(call.get("streamed") is False for call in calls),
+            "llm_call_metrics_count": len(calls),
+            "llm_ttft_ms_mean": (
+                saved["llm_ttft_ms_mean"]
+                if saved.get("llm_ttft_ms_mean") is not None
+                else (round(sum(ttfts) / len(ttfts), 1) if ttfts else None)
             ),
-            "llm_tokens_per_second_mean": saved.get(
-                "llm_tokens_per_second_mean", round(sum(rates) / len(rates), 1) if rates else None
+            "llm_tokens_per_second_mean": (
+                saved["llm_tokens_per_second_mean"]
+                if saved.get("llm_tokens_per_second_mean") is not None
+                else (round(sum(rates) / len(rates), 1) if rates else None)
             ),
             "prompt_tokens_total": (
                 saved.get("prompt_tokens_total")
@@ -1558,19 +1724,39 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             )
             if calls
             else None,
-            "llm_prompt_tokens_max": saved.get("llm_prompt_tokens_max", max(prompts) if prompts else None),
-            "llm_prompt_tokens_p95": saved.get("llm_prompt_tokens_p95", percentile(prompts, 0.95)),
-            "llm_completion_tokens_max": saved.get(
-                "llm_completion_tokens_max", max(completions) if completions else None
+            "llm_prompt_tokens_max": (
+                saved["llm_prompt_tokens_max"]
+                if saved.get("llm_prompt_tokens_max") is not None
+                else (max(prompts) if prompts else None)
             ),
-            "llm_completion_tokens_p95": saved.get(
-                "llm_completion_tokens_p95", percentile(completions, 0.95)
+            "llm_prompt_tokens_p95": (
+                saved["llm_prompt_tokens_p95"]
+                if saved.get("llm_prompt_tokens_p95") is not None
+                else (percentile(prompts, 0.95))
             ),
-            "llm_context_tokens_max": saved.get(
-                "llm_context_tokens_max", max(contexts) if contexts else None
+            "llm_completion_tokens_max": (
+                saved["llm_completion_tokens_max"]
+                if saved.get("llm_completion_tokens_max") is not None
+                else (max(completions) if completions else None)
             ),
-            "llm_context_tokens_p95": saved.get("llm_context_tokens_p95", percentile(contexts, 0.95)),
-            "llm_context_samples_count": saved.get("llm_context_samples_count", len(contexts)),
+            "llm_completion_tokens_p95": (
+                saved["llm_completion_tokens_p95"]
+                if saved.get("llm_completion_tokens_p95") is not None
+                else (percentile(completions, 0.95))
+            ),
+            "llm_context_tokens_max": (
+                saved["llm_context_tokens_max"]
+                if saved.get("llm_context_tokens_max") is not None
+                else (max(contexts) if contexts else None)
+            ),
+            "llm_context_tokens_p95": (
+                saved["llm_context_tokens_p95"]
+                if saved.get("llm_context_tokens_p95") is not None
+                else (percentile(contexts, 0.95))
+            ),
+            "llm_context_samples_count": len(contexts)
+            if calls
+            else saved.get("llm_context_samples_count", 0),
             "tool_performance": aggregate_tool_performance(items),
             "attribution": {"primary": attribution_primary, "layer_failures": attribution_layers},
             "delivery_breakdown": saved.get("delivery_breakdown", aggregate_delivery(items)),
@@ -1582,10 +1768,19 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
     for key, value in capability_summary(items, state.get("phases") or {}).items():
         if (
             key == "retrieval_recall_mean"
-            or key.startswith(("retrieval_", "media_retrieval_", "image_retrieval_", "video_retrieval_"))
+            or key.startswith(
+                (
+                    "retrieval_",
+                    "media_retrieval_",
+                    "image_retrieval_",
+                    "video_retrieval_",
+                    "candidate_retrieval_",
+                )
+            )
             or key.startswith(
                 (
                     "json_parse_",
+                    "structured_json_",
                     "tool_argument_json_",
                     "agent_",
                     "judge_phase_",
@@ -1653,6 +1848,7 @@ def run_list_entry(state: dict[str, Any]) -> dict[str, Any]:
             "telemetry_source",
             "runtime_framework",
             "persistence",
+            "cleanup",
         )
         if state.get(key) is not None
     }
@@ -1682,12 +1878,30 @@ def run_list_entry(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def conversation_projection(item: dict[str, Any]) -> dict[str, Any]:
+    """从已保存的对话生成展示摘要，保留原 question 和执行记录。"""
+    turns = [turn for turn in item.get("runtime_turns") or [] if isinstance(turn, dict)]
+    planned = [turn for turn in item.get("conversation") or [] if isinstance(turn, dict)]
+    messages = turns or planned
+    return {
+        "display_question": (messages[0].get("message") if messages else None) or item.get("question"),
+        "conversation_turn_count": len(messages) or item.get("conversation_turn_count") or 1,
+        "conversation_context_mode": item.get("conversation_context_mode"),
+        "agent_status": item.get("agent_status")
+        or item.get("turn_status")
+        or (turns[-1].get("agent_status") if turns else None),
+    }
+
+
 def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None = None) -> dict[str, Any]:
     """1.0 ``:6559`` 的 ``_item_summary``。"""
+    item = {**item, **retrieval_metric_projection(item)}
     judge = judge_projection(item.get("judge"))
+    media_counts = item.get("media_retrieval_counts") or {}
     return {
         "index": index,
         "qa_id": item.get("qa_id"),
+        **{key: item[key] for key in ABILITY_FIELDS if key in item},
         "question": item.get("question"),
         "task_type": item.get("task_type"),
         "question_type": item.get("question_type"),
@@ -1695,6 +1909,8 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
         "angle": item.get("angle"),
         "difficulty": item.get("difficulty"),
         "answerability": item.get("answerability"),
+        "retrieval_metrics_applicable": item["retrieval_metrics_applicable"],
+        "retrieval_metrics_reason": item.get("retrieval_metrics_reason"),
         "retrieval_recall": item.get("retrieval_recall"),
         "retrieval_precision": item.get("retrieval_precision"),
         "retrieval_f1": item.get("retrieval_f1"),
@@ -1707,8 +1923,10 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
         "video_retrieval_recall": item.get("video_retrieval_recall"),
         "video_retrieval_precision": item.get("video_retrieval_precision"),
         "video_retrieval_f1": item.get("video_retrieval_f1"),
-        "matched_count": len(item.get("matched_file_names") or []),
-        "ground_truth_count": len(item.get("retrieval_media_refs") or item.get("retrieval_image_ids") or []),
+        "matched_count": media_counts.get("matched", len(item.get("matched_file_names") or [])),
+        "ground_truth_count": media_counts.get(
+            "gt", len(item.get("retrieval_media_refs") or item.get("retrieval_image_ids") or [])
+        ),
         "ground_truth_image_count": len(item.get("retrieval_image_ids") or []),
         "ground_truth_video_count": len(item.get("retrieval_video_ids") or []),
         "judge": {
@@ -1727,7 +1945,7 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
         "task_judges": item.get("task_judges") or [],
         "evidence_judge": item.get("evidence_judge") or {},
         "agent_stability": item.get("agent_stability") or {},
-        "agent_status": item.get("agent_status"),
+        **conversation_projection(item),
         "termination_reason": item.get("termination_reason"),
         "has_error": bool(item.get("error")),
         "deterministic_delivery": ((item.get("guard_debug") or {}).get("deterministic_delivery") or {}),
@@ -1743,6 +1961,7 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
     """1.0 ``:4919`` 的 ``_hydrate_qa_metadata``；``qa_metadata`` 从 ``self`` 变成入参。"""
     metadata = qa_metadata.get(str(item.get("qa_id") or "")) or {}
     hydrated = {**metadata, **item}
+    hydrated.update(conversation_projection(hydrated))
     tag_fields = {
         "task_type": "task",
         "question_type": "question",
@@ -1780,7 +1999,8 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
             hydrated["retrieval_recall"] = recall
         if hydrated.get("retrieval_f1") is None:
             hydrated["retrieval_f1"] = f1
-    if not hydrated.get("attribution"):
+    hydrated.update(retrieval_metric_projection(hydrated))
+    if not hydrated.get("attribution") or not retrieval_metric_eligible(hydrated):
         hydrated["attribution"] = derive_attribution(hydrated)
     hydrated["tool_trace"] = bind_tool_calls_to_model_rounds(
         hydrated.get("tool_trace") or [],
@@ -1797,7 +2017,7 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
         and str(step.get("stage") or step.get("type") or "") == "model"
         and str(step.get("call_type") or "agent") in {"agent", "recovery"}
     ]
-    if agent_steps:
+    if agent_steps or hydrated.get("metrics_contract_version") == 2:
         hydrated["agent_stability"] = agent_stability(hydrated)
     return hydrated
 
@@ -1810,6 +2030,9 @@ GPU_SAMPLE_FIELDS = (
     "temperature_c",
     "cpu_temperature_c",
     "gpu_utilization_pct",
+    "cpu_utilization_pct",
+    "product_stack_gpu_memory_mib",
+    "device_gpu_memory_mib",
     "memory_used_mib",
     "gpu_allocated_unified_memory_mib",
     "gpu_in_use_unified_memory_mib",
@@ -1845,7 +2068,7 @@ def validated_telemetry_sample(sample: dict[str, Any]) -> tuple[dict[str, Any], 
     """Apply identical validity rules to fresh and historical observations; never mutate raw data."""
     result, rejected = device_freshness(sample)
     apple = (
-        sample.get("memory_accounting") == "apple_capacity_estimate"
+        sample.get("memory_accounting") in {"apple_capacity_estimate", "apple_footprint_resident_v2"}
         or sample.get("source") == "apple_unified"
     )
     for key, value in sample.items():
@@ -1859,7 +2082,10 @@ def validated_telemetry_sample(sample: dict[str, Any]) -> tuple[dict[str, Any], 
             result[key] = None
             rejected.append(key)
     result, memory_rejected = memory_freshness(result)
-    return result, list(dict.fromkeys([*rejected, *memory_rejected]))
+    result, cpu_rejected = cpu_freshness(result)
+    if result.get("protocol_version") == RESOURCE_TELEMETRY_VERSION:
+        result["resource_metrics"] = resource_records(result)
+    return result, list(dict.fromkeys([*rejected, *memory_rejected, *cpu_rejected]))
 
 
 def telemetry_sampling(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -1920,6 +2146,44 @@ def series_stats(history: Sequence[dict[str, Any]], key: str) -> dict[str, Any]:
     }
 
 
+def resource_series_stats(history: Sequence[dict[str, Any]], key: str) -> dict[str, Any]:
+    stats = series_stats(history, key)
+    if not history or history[-1].get("protocol_version") != RESOURCE_TELEMETRY_VERSION:
+        return stats
+    points: dict[float, tuple[float | None, tuple[Any, ...]]] = {}
+    for sample in history:
+        timestamp = finite_number(sample.get("t", sample.get("_t")))
+        if timestamp is not None:
+            scope = tuple(
+                sample.get(name)
+                for name in ("phase", "index", "protocol_version", "memory_accounting", "power_scope")
+            )
+            points[timestamp] = (finite_number(sample.get(key)), scope)
+    ordered = sorted(points.items())
+    integral = covered = 0.0
+    for (left_t, (left, left_scope)), (right_t, (right, right_scope)) in zip(
+        ordered, ordered[1:], strict=False
+    ):
+        duration = right_t - left_t
+        if left is not None and right is not None and left_scope == right_scope and 0 < duration <= 3:
+            covered += duration
+            integral += (left + right) * 0.5 * duration
+    elapsed = ordered[-1][0] - ordered[0][0] if ordered else 0.0
+    stats.update(
+        mean=integral / covered if covered else None,
+        mean_kind="time_weighted_trapezoid",
+        covered_seconds=covered,
+        coverage_ratio=covered / elapsed if elapsed else None,
+    )
+    if key == "power_draw_w":
+        stats.update(
+            energy_joules=integral if covered else None,
+            energy_scope="covered_intervals",
+            energy_wh=integral / 3600 if covered else None,
+        )
+    return stats
+
+
 def downsample_history(history: Sequence[dict[str, Any]], limit: int = 240) -> list[dict[str, Any]]:
     """1.0 ``:5378`` 的 ``_downsample_history``：阶段切换点必须保留。"""
     count = len(history)
@@ -1929,6 +2193,14 @@ def downsample_history(history: Sequence[dict[str, Any]], limit: int = 240) -> l
     for index in range(1, count):
         if history[index].get("phase") != history[index - 1].get("phase"):
             chosen.update((index - 1, index))
+        if history[index].get("protocol_version") == RESOURCE_TELEMETRY_VERSION:
+            current, previous = history[index], history[index - 1]
+            missing_transition = any(
+                (finite_number(current.get(key)) is None) != (finite_number(previous.get(key)) is None)
+                for _, key, *_ in RESOURCE_FIELDS
+            )
+            if current.get("gap_before") or missing_transition:
+                chosen.update((index - 1, index))
     remaining = max(0, limit - len(chosen))
     candidates = [index for index in range(count) if index not in chosen]
     for index in range(remaining):
@@ -1966,6 +2238,14 @@ def _is_telemetry_series_key(key: str) -> bool:
         or key.startswith(("runtime_", "kv_cache_"))
         or key
         in {
+            "protocol_version",
+            "resource_metrics",
+            "resource_missing_reasons",
+            "cpu_observed_at_monotonic",
+            "gpu_temperature_observed_at_monotonic",
+            "gpu_temperature_method",
+            "gpu_temperature_sensor",
+            "system_memory_scope",
             "memory_accounting",
             "memory_complete",
             "memory_unit",
@@ -2018,6 +2298,12 @@ def attach_gpu_sample_history(live: dict[str, Any], lines: Sequence[str]) -> Non
             for key in invalid:
                 rejected[key] = rejected.get(key, 0) + 1
             point = {k: item[k] for k in item if _is_telemetry_series_key(k)}
+            if history and item.get("protocol_version") == RESOURCE_TELEMETRY_VERSION:
+                previous_t = finite_number(history[-1].get("t"))
+                current_t = finite_number(item.get("_t"))
+                point["gap_before"] = (
+                    previous_t is not None and current_t is not None and current_t - previous_t > 3
+                )
             if point:
                 history.append(
                     {
@@ -2044,7 +2330,10 @@ def attach_gpu_sample_history(live: dict[str, Any], lines: Sequence[str]) -> Non
             if scopes.get("benchmark_process_ram"):
                 latest.setdefault("benchmark_process_memory_scope", scopes["benchmark_process_ram"])
                 peak.setdefault("benchmark_process_memory_scope", scopes["benchmark_process_ram"])
-            live["_full_sample_stats"] = {key: series_stats(history, key) for key in GPU_AGGREGATE_KEYS}
+            live["_full_sample_stats"] = {
+                key: resource_series_stats(history, key) for key in GPU_AGGREGATE_KEYS
+            }
+            live["protocol_version"] = latest.get("protocol_version")
             live["field_stats"] = live["_full_sample_stats"]
             live["rejected_samples"] = rejected
             live["sampling"] = telemetry_sampling(history)
@@ -2070,10 +2359,14 @@ GPU_AGGREGATE_KEYS = (
     "temperature_c",
     "cpu_temperature_c",
     "gpu_utilization_pct",
+    "cpu_utilization_pct",
+    "product_stack_gpu_memory_mib",
+    "device_gpu_memory_mib",
     "memory_used_mib",
     "gpu_allocated_unified_memory_mib",
     "gpu_in_use_unified_memory_mib",
     "model_process_memory_used_mib",
+    "benchmark_process_gpu_memory_mib",
     "kv_cache_usage_pct",
     "kv_cache_used_tokens",
     "power_draw_w",
@@ -2119,7 +2412,9 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
     keys = set(GPU_AGGREGATE_KEYS) | {
         key for sample in samples for key in sample if key.startswith(("runtime_", "kv_cache_"))
     }
-    metrics: dict[str, Any] = {key: stats for key in sorted(keys) if (stats := series_stats(samples, key))}
+    metrics: dict[str, Any] = {
+        key: stats for key in sorted(keys) if (stats := resource_series_stats(samples, key))
+    }
     metrics["sampling"] = telemetry_sampling(samples)
     latest = next((sample for sample in reversed(samples) if sample.get("memory_accounting")), samples[-1])
     if samples[-1].get("source") is not None:
@@ -2137,6 +2432,7 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "memory_complete",
         "power_scope",
         "power_rail",
+        "system_memory_scope",
     ):
         metrics[key] = (latest if key == "memory_accounting" else samples[-1]).get(key)
     limits = [
@@ -2149,6 +2445,18 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if isinstance(sample.get("model_process_memory_over_limit"), bool)
     ]
+    if latest.get("protocol_version") == RESOURCE_TELEMETRY_VERSION:
+        return {
+            "samples_count": len(samples),
+            **metrics,
+            "protocol_version": RESOURCE_TELEMETRY_VERSION,
+            "resource_metrics": latest.get("resource_metrics"),
+            "memory_profile": {
+                "method": latest.get("memory_accounting"),
+                "scope": "process_memory_and_gpu_separate",
+                "note": "Process memory and GPU allocation overlap on unified-memory platforms; do not add.",
+            },
+        }
     if (
         latest.get("memory_unit") == "host_smaps_rss_plus_gpu_mib"
         or latest.get("memory_accounting") == "jetson_pss_plus_nvmap_estimate"
@@ -2196,6 +2504,20 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 "note": (
                     "PSS is shared physical RAM, not dedicated GPU VRAM; "
                     "KV bytes unavailable without verified per-token allocation."
+                ),
+            },
+            **metrics,
+        }
+    if latest.get("memory_accounting") == "apple_footprint_resident_v2":
+        return {
+            "samples_count": len(samples),
+            "source": "apple_unified",
+            "memory_profile": {
+                "method": "apple_footprint_resident_v2",
+                "memory_unit": "apple_resident_mib",
+                "note": (
+                    "Group-deduplicated dirty - swapped + clean + reclaimable; "
+                    "compressor physical store is system-only."
                 ),
             },
             **metrics,
@@ -2305,6 +2627,7 @@ def apply_live_sample(
     live["latest"] = {key: value for key, value in sample.items() if _is_telemetry_series_key(key)}
     live["metrics_contract_version"] = 2
     live["memory_accounting"] = sample.get("memory_accounting")
+    live["protocol_version"] = sample.get("protocol_version")
     live["model_processes"] = sample.get("model_processes") or []
     live["model_system_processes"] = sample.get("model_system_processes") or []
     live["benchmark_processes"] = sample.get("benchmark_processes") or []

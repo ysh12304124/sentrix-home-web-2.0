@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 from photobench.application.runs.index import RunIndex
 from photobench.domain.datasets.ports import QaMetadataSource
+from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunReadViews, RunRevisions, RunStore
 from photobench.domain.runs import analysis
@@ -145,16 +146,39 @@ class ReadRuns:
                     self._state_weights.pop(removed, None)
         return state
 
-    def _qa_index(self) -> dict[str, dict[str, Any]]:
+    def _qa_index(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         """数据集侧元信息，进程内建一次（1.0 ``:4884`` 的 ``self.qa_metadata``）。
 
         **惰性而不是装配时建**：只有「题目」那几条路由用得上它，而它要扫一遍数据集
         目录。列表页不该为此付一次全库扫描。
         """
+        if not state:
+            return {}
+        snapshot = state.get("qa_snapshot") or {}
+        if "rows" in snapshot:
+            return {
+                str(row["qa_id"]): {
+                    **{k: v for k, v in row.items() if k != "answer"},
+                    "reference_answer": row.get("answer"),
+                }
+                for row in snapshot["rows"]
+            }
+        album, qa_set = state.get("album_id"), state.get("qa_set")
+        digest = (state.get("input_integrity") or {}).get("qa_sha256")
+        if not all((album, qa_set, digest)):
+            return {}
+        prefix = "\0".join((str(album), str(qa_set), str(digest))) + "\0"
         with self._lock:
             if self._qa_metadata is None:
                 self._qa_metadata = self._qa_source.metadata_by_qa_id()
-            return self._qa_metadata
+            return {
+                key[len(prefix) :]: {
+                    **{k: v for k, v in value.items() if k != "answer"},
+                    "reference_answer": value.get("answer"),
+                }
+                for key, value in self._qa_metadata.items()
+                if key.startswith(prefix)
+            }
 
     def _hydrate_legacy_gt_images(self, state: dict[str, Any]) -> None:
         """1.0 ``:6851``：给早于 ``gt_images`` 字段的结果补展示用的 GT 资产映射。
@@ -296,6 +320,8 @@ class ReadRuns:
         else:
             state = self._state(run_id)
             result = {key: value for key, value in state.items() if key != "items"}
+            if isinstance(result.get("qa_snapshot"), dict):
+                result["qa_snapshot"] = snapshot_metadata(result["qa_snapshot"])
             result["item_count"] = len(state.get("items") or [])
             result["summary"] = analysis.effective_summary(state)
         result.setdefault("read_revision", revision or None)
@@ -343,13 +369,14 @@ class ReadRuns:
         difficulty: str = "",
         answerability: str = "",
         primary: str = "",
+        question_type: str = "",
     ) -> dict[str, Any]:
         """``GET /api/runs/{id}/items``（1.0 ``get_run_items`` ``:6441``）。"""
         with self._item_locks[hash(run_id) % len(self._item_locks)]:
             cached = self._state(run_id)
             state = {**cached, "items": [dict(item) for item in cached.get("items") or []]}
             self._hydrate_legacy_gt_images(state)
-            qa_metadata = self._qa_index()
+            qa_metadata = self._qa_index(state)
             all_items = [
                 analysis.hydrate_qa_metadata(item, qa_metadata) for item in (state.get("items") or [])
             ]
@@ -367,6 +394,9 @@ class ReadRuns:
             items = []
             source_indexes = []
             facets = {
+                "question_types": sorted(
+                    {str(item["question_type"]) for item in all_items if item.get("question_type")}
+                ),
                 "task_types": sorted(
                     {str(item.get("task_type")) for item in all_items if item.get("task_type")}
                 ),
@@ -392,16 +422,24 @@ class ReadRuns:
                 ),
             }
             for source_index, item in enumerate(all_items):
+                turn_messages = " ".join(
+                    str(turn.get("message") or "")
+                    for turn in (item.get("runtime_turns") or item.get("conversation") or [])
+                    if isinstance(turn, dict)
+                ).lower()
                 if (
                     search
                     and search not in str(item.get("question") or "").lower()
                     and search not in str(item.get("qa_id") or "").lower()
+                    and search not in turn_messages
                 ):
                     continue
                 if (
                     score_filter is not None
                     and analysis.judge_score_for_summary(item.get("judge")) != score_filter
                 ):
+                    continue
+                if question_type and item.get("question_type") != question_type:
                     continue
                 if task_type and item.get("task_type") != task_type:
                     continue
@@ -467,6 +505,9 @@ class ReadRuns:
             items = state.get("items") or []
             if item_index < 0 or item_index >= len(items):
                 raise KeyError(f"item index out of range: {item_index}")
-            item = analysis.hydrate_qa_metadata(items[item_index], self._qa_index())
+            item = analysis.hydrate_qa_metadata(items[item_index], self._qa_index(state))
+            if not item.get("scope_id") and state.get("scope_id"):
+                item["scope_id"] = state["scope_id"]
+                item["scope_source"] = "saved_run_scope_v1"
             item["review"] = (self.get_reviews(run_id).get("reviews") or {}).get(str(item.get("qa_id")))
             return {"index": item_index, "item": item}

@@ -8,7 +8,6 @@ import {
   phaseErrorDetails,
   phaseErrorSummary,
   phaseSummary,
-  pipelineMetricRows,
   retrievalChannelRows,
   shortHash,
   snapshotSummary,
@@ -170,7 +169,7 @@ describe("itemTimingBreakdown（1.0 :2122-2133）", () => {
       model_ms: 222,
       tool_ms: null,
       judge_ms: 33,
-      other_ms: 0,
+      other_ms: null,
     });
   });
 
@@ -250,14 +249,24 @@ describe("phaseSummary：部分阶段缺失时各走各的回退（1.0 :2153-218
     ).toBe("预置 3 人 · 关系 4/5 · 2s");
     expect(phaseSummary("identity_seed", {})).toBe("预置 0 人 · -");
     expect(phaseSummary("photo_import", { accepted_count: 8, total_media: 10, failed_count: 2, upload_seconds: 1.5 })).toBe(
-      "导入 8/10 个媒体 · 失败 2 · 阶段墙钟 1.5s",
+      "导入 8/10 个媒体 · 失败 2 · 记录耗时 1.5s",
     );
     // Counts are unknown until the synchronous import response returns; never display fake zeroes.
-    expect(phaseSummary("photo_import", {})).toBe("导入 ?/? 个媒体 · 失败 ? · 阶段墙钟 -");
+    expect(phaseSummary("photo_import", {})).toBe("导入 ?/? 个媒体 · 失败 ? · 记录耗时 未记录");
     // Real Mac full-run values: backend subtotal must not replace the request wall clock.
     expect(phaseSummary("photo_import", { total_seconds: 1208, timings: { total: 738.1 } })).toBe(
-      "导入 ?/? 个媒体 · 失败 ? · 阶段墙钟 1208s · 后端计时 738.1s",
+      "导入 ?/? 个媒体 · 失败 ? · 记录耗时 20分8秒",
     );
+  });
+
+  it("显式导入用已记录的实际结果显示总数，兼容早期漏累计的扫描数", () => {
+    expect(phaseSummary("photo_import", {
+      execution_mode: "explicit", scanned_count: 0, total_media: 99,
+      accepted_count: 12, deduplicated_count: 1, failed_count: 1, total_seconds: 1,
+    })).toBe("已处理 14/14 个媒体 · 新增 12 · 去重 1 · 失败 1 · 记录耗时 1s");
+    expect(phaseSummary("photo_import", {
+      execution_mode: "explicit", scanned_count: 0, total_seconds: 1,
+    })).toBe("已处理 ?/? 个媒体 · 新增 ? · 去重 ? · 失败 ? · 记录耗时 1s");
   });
 
   it("pipeline_processing：有 progress 才展开，否则落到通用「耗时」", () => {
@@ -266,7 +275,7 @@ describe("phaseSummary：部分阶段缺失时各走各的回退（1.0 :2153-218
         progress: { processed: 3, total: 10, failed: 1, skipped: 2 },
         total_seconds: 60,
       }),
-    ).toBe("3/10 资产完成 · 1 失败 · 2 跳过 · 阶段墙钟 60s");
+    ).toBe("3/10 资产完成 · 1 失败 · 2 跳过 · 记录耗时 1分");
     expect(phaseSummary("pipeline_processing", { total_seconds: 4 })).toBe("耗时 4s");
   });
 
@@ -277,7 +286,7 @@ describe("phaseSummary：部分阶段缺失时各走各的回退（1.0 :2153-218
         total_seconds: 20,
         timings: { video_keyframe_extraction: 4, video_keyframe_memory: 12, memory_graph: 0.4 },
       }),
-    ).toBe("2/2 资产完成 · 0 失败 · 0 跳过 · 阶段墙钟 20s · 关键帧 4s · 帧记忆 12s · 图构建 0.4s");
+    ).toBe("2/2 资产完成 · 0 失败 · 0 跳过 · 记录耗时 20s");
   });
 
   it("qa_eval：有 progress 展开 Agent/Judge，无 progress 用 itemCount 兜底", () => {
@@ -330,65 +339,6 @@ describe("phaseSummary：部分阶段缺失时各走各的回退（1.0 :2153-218
     expect(judgeProgressLabel({ progress: { judge_completed: null, judge_total: 487 } })).toBe("Judge 已结束 ?/487");
     expect(judgeProgressLabel({ progress: { judge_concurrency: 0 } })).toBe("Judge 未配置");
     expect(judgeProgressLabel({ progress: { judge_completed: 69, judge_total: 487, judge_skipped: 1 } })).toBe("Judge 已结束 69/487 · 跳过 1");
-  });
-});
-
-describe("pipelineMetricRows：缺失阶段走不同回退（1.0 :2199-2232）", () => {
-  it("部分缺失：无有效 image_count → 墙钟均值回 average_seconds_per_photo；缺失计时段整行消失", () => {
-    const phase = {
-      average_seconds_per_photo: 1.5,
-      pipeline_metrics: {
-        image_count: 0,
-        stage_timings: { image_clip_seconds: { mean_seconds: 0.01, sum_seconds: 0.03, p95_seconds: 0.02 } },
-      },
-    };
-    const rows = pipelineMetricRows(phase);
-    expect(rows).toHaveLength(4);
-    expect(rows[0]).toEqual(["评测图片墙钟均值", "1.5s", "历史运行未记录评测图片数，按旧口径展示"]);
-    expect(rows[1]).toEqual(["实际图片并发", "-", "配置 - · vLLM 上限 -"]);
-    expect(rows[2]).toEqual(["事件总结", "-", "批次耗时 -"]);
-    expect(rows[3]).toEqual(["图片 CLIP", "10ms", "总计 30ms · P95 20ms"]);
-    expect(rows.map((r) => r[0])).not.toContain("人脸检测");
-  });
-
-  it("齐全：有 image_count 与墙钟 → 墙钟/张数；并发与事件总结走真值", () => {
-    const rows = pipelineMetricRows({
-      total_seconds: 1000,
-      pipeline_metrics: {
-        image_count: 100,
-        effective_workers: 8,
-        configured_workers: 8,
-        vllm_max_num_seqs: 16,
-        event_count: 20,
-        event_summary_call_count: 18,
-        event_summary_wall_seconds: 5,
-      },
-    });
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toEqual([
-      "评测图片墙钟均值",
-      "10s",
-      "阶段墙钟 1000s ÷ 100 张评测图片；不含身份参考图",
-    ]);
-    expect(rows[1]).toEqual(["实际图片并发", "8 路", "配置 8 · vLLM 上限 16"]);
-    expect(rows[2]).toEqual(["事件总结", "18/20 次", "批次耗时 5s"]);
-  });
-
-  it("墙钟均值两者都缺 → 未记录", () => {
-    expect(pipelineMetricRows({ pipeline_metrics: {} })[0][1]).toBe("未记录");
-  });
-
-  it("显式流水线把不同阶段耗时列成独立指标", () => {
-    const rows = pipelineMetricRows({
-      timings: { source_memory_prepare: 10, video_keyframe_extraction: 4, memory_graph: 0.4, causal_graph: 0.2 },
-      pipeline_metrics: {},
-    });
-    expect(rows.slice(0, 4)).toEqual([
-      ["源媒体模型准备", "10s", "并发 worker 累计耗时"],
-      ["关键帧提取", "4s", "ffmpeg 抽帧墙钟累计"],
-      ["记忆图构建", "0.4s", "结构化图节点与边重建"],
-      ["因果边判定", "0.2s", "规则信号筛选与文本模型因果判定；包含在记忆图构建耗时内"],
-    ]);
   });
 });
 

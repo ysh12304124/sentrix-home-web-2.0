@@ -38,6 +38,7 @@ export interface QaFilters {
   search: string;
   score: string;
   task_type: string;
+  question_type?: string;
   tag: string;
   angle: string;
   difficulty: string;
@@ -50,6 +51,7 @@ const EMPTY_QA_FILTERS: QaFilters = {
   search: "",
   score: "",
   task_type: "",
+  question_type: "",
   tag: "",
   angle: "",
   difficulty: "",

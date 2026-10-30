@@ -47,6 +47,7 @@ from sentrix.domain.media.ports import (
     MediaStorage,
     MetadataReader,
     ObservationRepository,
+    OperationControl,
     PhotoInspector,
     PreviewEncoder,
     VideoKeyframeExtractor,
@@ -85,6 +86,7 @@ from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataRead
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
+from sentrix.infrastructure.media.operations import InProcessOperationControl
 from sentrix.infrastructure.media.person_vision import (
     PillowPersonCropRenderer,
     PillowPersonPreviewRenderer,
@@ -166,6 +168,7 @@ class Container:
 
     spaces: SpaceRepository
 
+    operation_control: OperationControl
     import_progress: ImportProgressStore
     asset_repository: AssetRepository
     observation_repository: ObservationRepository
@@ -342,6 +345,7 @@ class Container:
             build_revision=read_build_revision(),
             settings=settings,
             database=database,
+            operation_control=InProcessOperationControl(),
             import_progress=InProcessImportProgressStore(),
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,

@@ -39,6 +39,8 @@ import io
 import json
 import logging
 import re
+import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageOps
 
+from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.ports import ModelServiceError
 from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
 from sentrix.domain.media.ports import ObservationSemantics
@@ -237,6 +240,7 @@ def chat_json(
     prompt: str,
     image: str | Sequence[str] | None,
     timeout_s: float,
+    observations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """一次「提示词（+ 一张或多张图）→ JSON 对象」的往返。任何失败都返回 ``None``。
 
@@ -254,19 +258,56 @@ def chat_json(
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for url in [image] if isinstance(image, str) else list(image or ()):
         content.append({"type": "image_url", "image_url": {"url": url}})
+    fact: dict[str, Any] = {
+        "call_id": uuid.uuid4().hex,
+        "status": "error",
+        "role": "tool_internal",
+        "json_output": json_output_fact(),
+        "diagnostics": {"request_sent": False},
+    }
+    started = time.perf_counter()
     try:
         body = {
             "model": model.current(),
             "messages": [{"role": "user", "content": content}],
             "max_tokens": MAX_ANSWER_TOKENS,
         }
+        fact["diagnostics"]["request_sent"] = None
         response = httpx.post(endpoint, json=body, timeout=timeout_s)
+        fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()
+        raw_content = _first_content(payload)
+        fact["json_output"] = json_output_fact(raw_content)
+        parsed = parse_json_object(raw_content)
+        fact.update(status="complete" if parsed is not None else "error", model=body["model"])
+        if parsed is None:
+            fact.update(error_type="ModelOutputFormatError", error="vision model output is not a JSON object")
+            fact["diagnostics"]["error_category"] = "model_output_format"
+        if isinstance(payload, dict):
+            fact.update(
+                {
+                    k: v
+                    for k, v in (payload.get("usage") or {}).items()
+                    if k in {"prompt_tokens", "completion_tokens"}
+                }
+            )
+        return parsed
     except (httpx.HTTPError, ModelServiceError, ValueError) as error:
+        fact.update(error_type=type(error).__name__, error=str(error))
+        fact["diagnostics"]["error_category"] = (
+            "request_timeout"
+            if isinstance(error, httpx.TimeoutException)
+            else "response_json_invalid"
+            if isinstance(error, ValueError)
+            else "service_error"
+        )
         log.warning("视觉调用失败，本次结果跳过: %s", error)
         return None
-    return parse_json_object(_first_content(payload))
+    finally:
+        fact["duration_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        if observations is not None:
+            observations.append(fact)
 
 
 class OpenAIVlmObserver:

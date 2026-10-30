@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sentrix.application.media.stage_spans import StageSpans
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
@@ -81,6 +82,7 @@ class VideoSceneExtraction:
     # 各阶段墙钟耗时（秒）。关键帧提取与关键帧记忆构建必须分开：前者是 ffmpeg I/O，
     # 后者才会调用视觉/VLM/人脸/实体/事实流水线，把两者揉成一个数无法判断瓶颈。
     timings: dict[str, float] = field(default_factory=dict)
+    timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 class ExtractVideoScenes:
@@ -110,6 +112,7 @@ class ExtractVideoScenes:
 
     def execute(self, source_asset_id: str) -> VideoSceneExtraction:
         total_started = time.perf_counter()
+        spans = StageSpans()
         asset = self._assets.get(source_asset_id)
         if asset is None or asset.media_type is not MediaType.VIDEO:
             return VideoSceneExtraction(
@@ -124,12 +127,15 @@ class ExtractVideoScenes:
             if self._scene_planner is not None
             else plan_scenes(duration)
         )
-        planning_seconds = time.perf_counter() - planning_started
+        planning_finished = time.perf_counter()
+        planning_seconds = planning_finished - planning_started
+        spans.include({"scene_planning": (planning_started, planning_finished)})
         if not windows:
             # 探测没读到时长（ffprobe 失败 / 还没探测过）。**不猜时长**：编一个只会
             # 得到「场景数量看着对、时间全是假的」，而那是没人能看出来的错误。
             return VideoSceneExtraction(
                 reason="no_duration",
+                timing_spans={**spans.intervals, "total": (total_started, time.perf_counter())},
                 timings={
                     "scene_planning": round(planning_seconds, 3),
                     "total": round(time.perf_counter() - total_started, 3),
@@ -148,7 +154,9 @@ class ExtractVideoScenes:
         for window in windows:
             scene_started = time.perf_counter()
             event = self._ensure_scene_event(asset, window, place_text)
-            scene_write_seconds += time.perf_counter() - scene_started
+            finished = time.perf_counter()
+            scene_write_seconds += finished - scene_started
+            spans.include({"scene_write": (scene_started, finished)})
             scene_count += 1
             if window.index in existing:
                 reused += 1
@@ -157,7 +165,9 @@ class ExtractVideoScenes:
             frame = self._keyframes.extract(
                 Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
             )
-            keyframe_extract_seconds += time.perf_counter() - extract_started
+            finished = time.perf_counter()
+            keyframe_extract_seconds += finished - extract_started
+            spans.include({"keyframe_extraction": (extract_started, finished)})
             asset_write_started = time.perf_counter()
             derived = self._derived_asset(asset, frame, window)
             self._video_repository.add_derived(
@@ -168,16 +178,22 @@ class ExtractVideoScenes:
                 source_frame_index=window.index,
                 source_scene_index=window.index,
             )
-            keyframe_asset_write_seconds += time.perf_counter() - asset_write_started
+            finished = time.perf_counter()
+            keyframe_asset_write_seconds += finished - asset_write_started
+            spans.include({"keyframe_asset_write": (asset_write_started, finished)})
             memory_started = time.perf_counter()
             self._process_image(derived, event.id)
-            keyframe_memory_seconds += time.perf_counter() - memory_started
+            finished = time.perf_counter()
+            keyframe_memory_seconds += finished - memory_started
+            spans.include({"keyframe_memory": (memory_started, finished)})
             keyframe_count += 1
 
+        spans.include({"total": (total_started, time.perf_counter())})
         return VideoSceneExtraction(
             scene_count=scene_count,
             keyframe_count=keyframe_count,
             reused=reused,
+            timing_spans=dict(spans.intervals),
             timings={
                 "scene_planning": round(planning_seconds, 3),
                 "scene_write": round(scene_write_seconds, 3),

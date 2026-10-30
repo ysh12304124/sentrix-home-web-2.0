@@ -2,6 +2,15 @@
 
 本契约是 T006 指标正确性修复的兼容性基线；不补齐 vLLM 专项指标。
 
+## 2026-10-29 内存与显存关键指标
+
+首屏独立展示主模型进程内存与GPU分配的有效采样峰值。NVIDIA/Jetson显存读取`model_process_gpu_memory_mib`，Mac使用`device_gpu_memory_mib`并命名“整机显存占用”，标明IORegistry参考/统一内存可能重叠。历史NVIDIA旧`model_process_memory_used_mib`只在原显存口径使用，不替代缺失的进程RAM。后端字段、采集公式和历史原值保持；统一内存两项不求和。工具版本与系统基线见[资源采集工具](../runbooks/telemetry-tools.md)。
+
+## 2026-10-27 不可回答题的媒体指标
+
+`answerability=insufficient_evidence` 与旧值 `unanswerable` 均排除在普通媒体交付、候选检索、图片/视频、micro/macro 和排名指标的分母之外；拒答质量评分继续统计。部分可回答题保留原指标资格。
+新执行结果及历史逐题只读投影使用 `retrieval_metrics_applicable=false`、`retrieval_metrics_reason=unanswerable`，各项 P/R/F1 为 null，排名与计数指标不适用。界面显示“不适用”，导出保持 null；记录的 GT、实际候选、交付媒体和工具轨迹保留，定位诊断引用不作为答案 GT。历史原始文件及快照不重写；已冻结的历史汇总不批量重生成。
+
 ## 2026-10-22 采样与分量观测补充（memory_observation_version=1）
 
 新增可选 `memory_observations`（来源ID到观测事实）、`memory_dependencies`（指标到必要来源ID列表）、
@@ -52,12 +61,40 @@
 
 ## Accounting and historical compatibility
 
-Jetson: system=MemTotal-MemAvailable; model=smaps RSS+nvmap; product=related PSS+
-main/auxiliary nvmap. These are attribution/allocation estimates, not a proof of
-physical-page deduplication. Positive VmRSS residual is a labeled fallback only.
-NVIDIA host RAM and device VRAM remain distinct. Apple footprint and mapped
-weights are separately retained and their sum is a capacity estimate; system
-active+wired+compressor is platform-specific.
+Current local Jetson system RAM (`linux_physical_nonfree_including_cache_v2`)
+is MemTotal - MemFree, including resident reclaimable caches and physical zram
+storage. MemAvailable remains an independent available-capacity estimate; it is
+not the complement of this used value. Historical `host_all_processes` system
+values and NVIDIA retain MemTotal - MemAvailable.
+Jetson model=smaps RSS+nvmap; product=related PSS+main/auxiliary nvmap. These are
+attribution/allocation estimates. CPU-mapped device allocations and shared GPU
+buffers require driver-specific overlap validation; no disjointness or exact
+physical-page deduplication is claimed. Positive VmRSS residual is a labeled
+fallback only. NVIDIA host RAM and device VRAM remain distinct.
+
+Current Apple `memory_accounting=apple_footprint_resident_v2` uses physical
+non-free system RAM: hw.memsize - free_count * page_size (scope
+`apple_physical_nonfree_including_cache_v2`). Resident caches and the compressor's
+actual physical storage are included; disk swap is not added. Model and product
+are independently observed PID groups, each using footprint's deduplicated
+summary.total: Dirty - Swapped + Clean + Reclaimable, normalized to bytes from
+unit/bytes-per-unit. Swapped includes compressed and disk-swapped logical pages;
+wired is a dirty subset and is not added again. This is a tool-attributed
+resident estimate. Compressor physical bytes remain system-only because exact
+per-process physical attribution is unavailable. Shared kernel/user wired
+objects and driver attribution remain tool limitations. Model/product values
+are not obtained by adding per-PID footprints or mapping lengths. Device GPU
+counters remain raw diagnostics and are not summed into these three curves.
+
+Both Apple groups check complete PID membership and creation identity before
+and after collection, preserve original times/components in existing optional
+memory_observations, and obey the existing 3-second TTL. Timeout, permission,
+partial JSON and group changes produce null. No cropping to system RAM occurs.
+The envelope remains contract version 2; distinct accounting, unit and scope
+identifiers version the formulas. API shapes and the four provider methods stay
+unchanged. Read/API/summary/export use recorded versions. Legacy Apple
+`apple_capacity_estimate` keeps footprint + mapped weight length as a capacity
+estimate, and active+wired+compressor as its platform-specific system metric.
 
 Historical files are not rewritten. Deterministic read projections may be
 recomputed from recorded facts, using the declared contract version. Missing
@@ -165,3 +202,61 @@ QA阶段的规范进度存于`phases.qa_eval.progress`：`agent_completed`为已
 Agent和Judge仍使用独立线程池，协调器等待任一池完成即提交结果，不再等全部Agent结束才回收Judge。恢复运行从已有明确Judge终态初始化计数，跳过事实单列，不重新请求既有评分。Agent阶段墙钟在最后Agent结果返回时结束，不包含等待Judge尾部。前端阶段卡和列表共用同一读取函数，优先内层、缺失时兼容外层；没有记录显示?，不以0替代未知。历史原文不改写，旧运行自身未更新的计数仍属于旧检查点事实，不能据有效评分数补造完整Judge终态。
 
 复现测试覆盖一题Agent阻塞时另一题Judge的合法0分、返回失败和抛异常及时可见；resume既有评分、失败/跳过、取消未开始题不假报完成、可空投影及历史外层字段UI。仅本地验证，未触碰四机或启动真实测评；后续发布按公共执行路径影响验证。
+
+
+## T006 2026-10-23 调用事实与清理状态
+
+详细契约及测试边界见[取消、调用事实与采样优化](../refactor/2026-10-23-cancellation-trace-deviations.md)。domain端口、application编排、infrastructure探测及bootstrap装配分层不变；产品同步导入配合协作取消，不引入持久队列。停止全部只请求测评相关任务停止，pending与worker真正退出分开。原始历史、null、TTL和3秒覆盖门槛保持；新运行的L2调用事实纳入真实模型调用统计，旧记录不补造。四机更新前重新核验占用，只激活授权8291/8872。受影响设备真实回归须使用新SHA，不能复用旧run标成新版。
+
+## T006 2026-10-24 运行终态汇总规则
+
+运行总状态沿用八种：pending、running、cancelling、completed、completed_with_errors、failed、cancelled、interrupted。阶段已有done/partial等状态保持，不增加细分类状态。domain.runs.execution.qa_completion_errors集中验证完成事实，application在Agent/Judge池回收后调用；不在API、前端或基础设施决定业务终态。TelemetryProvider、装配点、模型调用及外部schema均不变。
+
+- 必需流程结束、每个QA具有唯一且匹配的终态记录，应评样本具有合法有效分数，且没有最终Agent/Judge失败：completed。合法0分、低质量、合理澄清/拒答以及已恢复的中间错误不单独导致失败。
+- 部分样本Agent失败/超时、Judge最终失败（包括任务/证据子评分或既有多轮记录中的明确失败）或应有回答质量评分缺失：qa_eval=partial；总状态completed_with_errors。阶段failed_count统计失败样本，一题只计一次；error_details沿用既有sample_id/status/error_type/reason，Agent和Judge原因分列。不补0，不减少总样本分母，不为等满分子重复入队。
+- 缺失/重复/意外QA ID、缺少Agent终态属于结果完整性缺陷，抛出错误使该阶段及总状态failed。原始异常记录保留。显式取消优先走RunCancelledError/cancelled，尚未开始题仍scheduled，不能误记为失败或已完成。
+- 未配置Judge时评分不适用，不因占位分数缺失判错误；build不执行此QA规则。重试仍有界，以最终结果判断；历史attempts中的已恢复错误不计最终失败。run_valid不作为新验收结论；在QA收尾前先清除旧成功标志，完整性/最终评分错误时保持false，避免原始记录留下成功值。既有质量/召回/遥测公式及采样门槛不变。
+- 只影响新版新执行及resume生成的新run；既有run原始状态和SHA不改写。重判仍保留独立操作记录，不反改原运行当时的状态。列表xx/yy继续使用有效回答质量评分样本数/本轮样本数，因此可出现completed_with_errors与9/10，也可在子评分失败时显示10/10。
+
+本地验证包含先失败复现、domain完整性/计分边界、完整执行正常收尾/落盘/列表投影、取消及前端停止轮询；完整make ci固定提交后执行。发布只在无受管工作设备激活8291/8872，忙机仅暂存；共用执行逻辑的新版真机回归另行记录，不以本地假产品用例或旧run替代。
+
+### 2026-10-24 真机回归缺陷修复
+
+- 产品回合的`partial`不能单独判断成败。新执行完成检查同时读取每个最终回合的termination_reason/status/error；预算耗尽、解析/模型失败等最终失败进入completed_with_errors。answered_with_gap、合法0分及中间调用成功恢复保持原语义；多轮题任一最终回合失败须保留。一题仅计一次错误，未结束的产品回合属于完整性错误。execution_status=completed仍表示测评执行已收尾，不再替代产品任务成功。历史原文不改写。
+- Jetson拓扑探测使用独立单任务槽、有界等待，保留发现的原始起止；继续使用的前次已完成发现不刷新时间，超过原TTL照常失效。监听定位每次核验当前socket签名及持有者启动标识，不因固定2秒到期重扫全机fd；进程退出/监听变化仍重新定位，子孙进程仍重新发现。内存公式、源TTL、采样覆盖3秒门槛均不变。
+- 独立验收规则v4额外检查原始总状态、API状态和逐题分类/评分/阶段部分失败的一致性；能够识别受控失败并不自动证明运行总状态正确。
+
+2026-10-24负载实测补充：AGX视觉推理期间当前smaps_rollup读取会超过0.6秒，旧等待窗口会生成不完整采样。内存探测单次有界等待改为1.5秒（最多4并发，拓扑仍独立最多等0.1秒）；只等待真实读取，不回填先前内存值，超时仍null并登记pending线程。源TTL与严格覆盖3秒及全点完整要求保持，发布后必须重新做真实full验证。
+
+同轮取消专项发现并修复套件线程归属：串行套件工作线程同时按各run ID登记，active-work不再把仍在执行的导入报告为worker_alive=false；显式cleanup只能在拥有该run的线程真正退出后执行，不能与执行/采样/写盘并发收尾。同步导入取消仍等待已开始的工作协作退出，pending期间继续保留归属。
+
+2026-10-24拓扑值龄补修：真实负载进一步暴露0.1秒拓扑等待会复用接近TTL的发现，内存读取结束时拓扑过期。拓扑有界等待改为最多1秒；若刚收取前一回调的已完成任务，在同一截止时间内再启动本次发现。拓扑与最多4个smaps探测共用2.5秒总等待窗口，保留真实源起止，超时或过TTL仍null；3秒TTL和严格覆盖/全点完整要求不变。
+
+2026-10-24继续负载修复：AGX内核实测不提供task children接口，4fc8d0f的服务树优化会回退完整扫描，未据此宣称改善。端口限定发现改为调用本机ps仅取PID/PPID，由原生进程扫描父子关系，避免Python线程逐个打开数百个无关stat时争用同一进程GIL。之后仅对相关服务树读取stat/内存并核验父子关系、启动身份及当前端口归属；ps异常/超时退回完整祖先图，显式PID/关键词及legacy仍走完整发现。拓扑等待1秒、拓扑与内存总等待2.5秒保持，不增加TTL、不重标旧时间；完整性及3秒覆盖仍需真机full验收。
+
+2026-10-24并行发现收取修复：若拓扑在初始1秒窗口未完成，会继续与smaps并行；内存读取结束后在同一2.5秒总窗口的剩余时间内等待并收取现有拓扑（不再启动任务、不扩展总预算）。只有前后PID/启动身份/父子关系/监听端口/命令身份完全一致，才采用这次真实拓扑及其新VmRSS；PSS和smaps RSS保留各自真实原时刻。成员或身份变化使当前样本明确不可用，下一回调按新成员探测；不把旧内存重新标时，不放宽2.5秒总预算、3秒TTL/覆盖或每点完整要求。
+
+2026-10-24并行等待补修：已有服务树时拓扑发现零等待启动/收取，立即读取当前内存，随后只用2.5秒总窗口剩余时间收取拓扑；冷启动仍最多先等1秒。若前回调任务在内存读取期间才完成，槽位释放后可在同一截止时间内启动当前发现，最多一任务、不积压。归属核验与源真实观测时间不变。拓扑观测新增可选discovery诊断（原生/回退路径、原因、父子快照/监听/总耗时），仅记录运行事实；3秒TTL、覆盖和全点核心内存完整要求保持。
+
+2026-10-24整轮读侧补齐：`benchmark_process_gpu_memory_mib`同时进入实时、整轮全样本峰值与统计聚合；读取完整曲线不能丢掉已记录的测评系统GPU峰值。统计先于240点抽稀，不能从抽稀曲线补峰值；历史仅从已有真实采样生成读侧投影，不回写旧run。
+
+2026-10-24监听核验补修：首次发现保存监听socket对应的FD；后续每次重新读取当前监听表、PID启动身份及该FD的readlink，三者一致才复用归属，避免遍历相关进程全部无关FD。FD关闭/复用、PID变化或监听集合变化仍完整重新定位；缓存不刷新源观测时间，不变更TTL和覆盖要求。
+
+
+### 2026-10-24 Jetson受管进程探测
+
+Jetson正式采样的核心进程内存读取移入单个spawn子进程，与HTTP完整曲线读取和全样本发布分离。
+可选ManagedTelemetryWork由GpuSampler启动前准备、采样线程finally关闭；四方法原端口不变。
+同一时刻最多一个请求，超时不追加请求、不复用前次值；迟到结果保持原观测起止，domain仍按3秒TTL验证。
+关闭管道后子进程结束当前读取并退出；未退出PID经OwnedTelemetryWork计入stop_pending，不能冒称回收完成。
+仅创建与关闭本轮探测进程，不启停共享模型。探测进程作为产品后代参与PSS归属；使用当前绑定解释器，无新增依赖或部署开关。
+直接单步sample_once保留进程内诊断路径；正式start始终使用受管进程，启动失败明示unavailable，不静默回退。
+
+## 派生错误分析（规则版本1，2026-10-24）
+
+原质量、行为、检索和遥测公式不变。新增错误分析分别报告异常事件数、受影响题数、最终执行失败题数、明确恢复题数，题级/轮级/调用级分母独立；缺失和未覆盖保留未知。按角色、轮、步骤及重试ID保留证据；文本识别注明依据。两轮匹配以QA ID和定义指纹为准，配置不可比时不汇总提升。来源SHA256、过期检测、离线导出和可选AI约束见[错误分析设计](photobench-error-analysis.md)。
+
+
+### 2026-10-28 显式导入与流水线进度
+
+新链中 `photo_import.execution_mode=explicit` 仅统计资产登记；`pipeline_processing.progress` 的可选 `stage=media_processing|finalizing|completed` 和 `request_status=running|returned` 表示媒体计数与同步请求的状态。processed、failed、skipped 为互斥计数。媒体计数达到 total 不代表汇总请求已经返回；阶段终态仍由真实响应决定。历史没有这些字段时保留原计时，前端只调整处理详情所在卡片。查询失败保留上次观测，不能由缺失值推断完成。显式请求取消后的活跃本地线程继续报告 stop_pending；尚无远端 operation_id 中断接口。

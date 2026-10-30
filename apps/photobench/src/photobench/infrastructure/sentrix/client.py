@@ -244,6 +244,14 @@ class HttpxSentrixClient:
             )
         )
 
+    def cancel_operation(self, *, kind: str, operation_id: str, timeout: int = 3) -> dict[str, Any]:
+        if kind not in {"import", "turn"}:
+            raise ValueError("unknown operation kind")
+        prefix = "/imports/" if kind == "import" else "/assistant/turns/"
+        return dict(
+            self._http.request_json(self._url(prefix + _quote(operation_id) + "/cancel"), {}, "POST", timeout)
+        )
+
     def get_turn(self, *, turn_id: str, timeout: int = 30) -> dict[str, Any]:
         """``GET /api/v1/assistant/turns/{turn_id}``（**复数**，``assistant.py:341``）。"""
         return dict(

@@ -43,6 +43,9 @@ from PIL import Image
 if TYPE_CHECKING:
     import numpy as np
 
+import numpy as np
+from PIL import Image
+
 DIMENSION = 768
 CONTEXT_LENGTH = 52
 
@@ -237,7 +240,7 @@ def _normalize_numpy(vec: np.ndarray) -> list[float]:
     norm = float(np.linalg.norm(vec))
     if norm > 0:
         vec = vec / norm
-    return [float(x) for x in vec.tolist()]
+    return [float(value) for value in vec.tolist()]
 
 
 # ═══════════════════════════════════════════════════════════

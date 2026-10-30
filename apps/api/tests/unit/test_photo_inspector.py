@@ -365,6 +365,43 @@ def test_the_observer_has_no_question_slot_which_is_why_this_port_exists() -> No
     assert "{question}" in INSPECT_PROMPT
 
 
+def test_inspection_records_timeout_and_json_format_without_changing_fallback(
+    photo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import httpx
+
+    import sentrix.infrastructure.media.vlm_observer as observer
+
+    class KnownModel:
+        def current(self):
+            return "vision"
+
+    inspector = OpenAIPhotoInspector("http://vision/v1", KnownModel())
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(observer.httpx, "post", timeout)
+    parsed, facts = inspector.inspect_recorded(photo, "test")
+    assert parsed is None
+    assert facts[0]["diagnostics"]["error_category"] == "request_timeout"
+    assert facts[0]["role"] == "tool_internal"
+    first_id = facts[0]["call_id"]
+    monkeypatch.setattr(
+        observer.httpx,
+        "post",
+        lambda *args, **kwargs: httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "not JSON"}}]},
+            request=httpx.Request("POST", "http://vision/v1/chat/completions"),
+        ),
+    )
+    parsed, facts = inspector.inspect_recorded(photo, "test")
+    assert parsed is None
+    assert facts[0]["diagnostics"]["error_category"] == "model_output_format"
+    assert facts[0]["call_id"] != first_id
+
+
 # ---- 送图前的缩放：精读与观察共用同一档 ------------------------------------------
 
 

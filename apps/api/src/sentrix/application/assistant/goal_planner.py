@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -34,18 +35,21 @@ from typing import Any
 from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
+    model_timing_facts,
 )
 from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
 from sentrix.domain.assistant.intent import (
     build_prompt,
     correction_hint,
     history_prompt_suffix,
+    json_output_fact,
     parse_declaration,
     planner_chat_template_kwargs,
     planner_response_format,
 )
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
 from sentrix.domain.assistant.ports import ChatModel, ModelServiceError, StructuredChatModel
+from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.assistant.goal_planner")
 
@@ -95,6 +99,7 @@ class GoalPlanner:
         *,
         scope_id: str,
         history: str = "",
+        cancel_check: Callable[[], None] | None = None,
         include_debug: bool = False,
     ) -> PlannerResult:
         # 历史折进 system 文本，不再插一条 system 消息——严格 chat template 要求 system
@@ -108,6 +113,8 @@ class GoalPlanner:
         calls: list[dict[str, Any]] = []
         debug_calls: list[dict[str, Any]] = []
         for attempt in range(self.max_attempts):
+            if cancel_check is not None:
+                cancel_check()
             started = time.perf_counter()
             step_id = f"planner_{attempt + 1}"
             call: dict[str, Any] = {
@@ -128,6 +135,7 @@ class GoalPlanner:
                     "tools": [],
                     "response": None,
                 }
+            call["json_output"] = json_output_fact()
             try:
                 # 规划不带工具：它要的是一段 JSON 声明，不是一次工具往返。
                 # 端点支持时用 JSON Schema 约束解码；不支持的 fake/后端走原路径。
@@ -145,6 +153,8 @@ class GoalPlanner:
                     prompt_tokens=reply.prompt_tokens,
                     completion_tokens=reply.completion_tokens,
                     finish_reason=reply.finish_reason,
+                    diagnostics=dict(reply.diagnostics),
+                    json_output=json_output_fact(reply.content),
                 )
                 if include_debug:
                     debug_call.update(
@@ -154,12 +164,18 @@ class GoalPlanner:
                         finish_reason=reply.finish_reason,
                         response=model_reply_payload(reply),
                     )
+            except OperationCancelled:
+                raise
             except Exception as error:
                 log.exception("planner call failed: scope=%s attempt=%s", scope_id, attempt + 1)
                 # 只有模型服务这一侧的失败才带说明：它的文案里已经写明了端点地址，直接
                 # 转述比在上层另拼一句更准。别的原因（2.0 自己拼错了请求）不往里塞，
                 # 免得把内部形状说给用户听。
-                call.update(error_type=type(error).__name__, error=str(error))
+                call.update(
+                    error_type=type(error).__name__,
+                    error=str(error),
+                    diagnostics=dict(getattr(error, "diagnostics", {})),
+                )
                 if include_debug:
                     debug_call.update(error_type=type(error).__name__, error=str(error))
                 duration_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -178,6 +194,7 @@ class GoalPlanner:
 
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             call["duration_ms"] = duration_ms
+            call.update(model_timing_facts(reply.diagnostics, duration_ms, reply.completion_tokens))
             calls.append(call)
             if include_debug:
                 debug_call["duration_ms"] = duration_ms
@@ -192,6 +209,7 @@ class GoalPlanner:
                     model_calls=tuple(calls),
                     debug_calls=tuple(debug_calls),
                 )
+            call["output_format_error"] = reason
             last_reason = reason
             if attempt + 1 >= self.max_attempts:
                 break

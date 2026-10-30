@@ -55,14 +55,15 @@ from photobench.application.run_execution.service import (
 from photobench.application.runs.index import RunIndex
 from photobench.config import default_import_timeout
 from photobench.domain.datasets.ports import AlbumSource
+from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
 from photobench.domain.errors import InvalidRequestError
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter, RunStore
 from photobench.domain.runs import analysis
 from photobench.domain.runs.analysis import now_iso
-from photobench.domain.runs.execution import safe_slug
+from photobench.domain.runs.execution import RunCancelledError, safe_slug
 from photobench.domain.runtime.ports import LifecycleProvider, RunRuntimeSnapshot, TelemetryProvider
-from photobench.domain.sentrix.ports import SentrixClient
+from photobench.domain.sentrix.ports import CancellableOperations, SentrixClient
 
 #: 2.0 支持的模式。``build`` 仍不在其中（只导入不问答，尚无调用方要它）。
 #:
@@ -110,7 +111,9 @@ class RunSuites:
         budget_defaults: Mapping[str, Any] | None = None,
         inline_images: InlineImages | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        on_finished: Callable[[str], None] | None = None,
     ) -> None:
+        self._on_finished = on_finished
         self._build_revision = build_revision
         self._budget_defaults = dict(budget_defaults or {})
         self._store = store
@@ -134,6 +137,10 @@ class RunSuites:
         self._active: dict[str, RunExecution] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._memory_thread: threading.Thread | None = None
+        self._auxiliary: dict[str, tuple[threading.Thread, threading.Event]] = {}
+        self._reservations: dict[str, threading.Event] = {}
+        self._auxiliary_cleanup: dict[str, list[dict[str, Any]]] = {}
+        self._auxiliary_samplers: dict[str, list[GpuSampler]] = {}
 
     # ---- 内部 ---------------------------------------------------------------
 
@@ -147,7 +154,8 @@ class RunSuites:
     @staticmethod
     def _stop_pending(state: Mapping[str, Any]) -> bool:
         return bool(
-            (state.get("persistence") or {}).get("status") == "stop_pending"
+            (state.get("cleanup") or {}).get("status") == "stop_pending"
+            or (state.get("persistence") or {}).get("status") == "stop_pending"
             or (state.get("phases") or {})
             .get("photo_import", {})
             .get("progress", {})
@@ -181,11 +189,23 @@ class RunSuites:
                 with self._lock:
                     if not self._stop_pending(finished):
                         self._active.pop(run_id, None)
+                        self._threads.pop(run_id, None)
+            if self._on_finished is not None and not self._stop_pending(finished):
+                self._on_finished(run_id)
 
     def _require_inactive(self) -> None:
         busy = self._active_ids()
         if (
             busy
+            or self._reservations
+            or self._auxiliary_cleanup
+            or any(
+                sampler.pending_work()
+                for samplers in self._auxiliary_samplers.values()
+                for sampler in samplers
+            )
+            or any(thread.is_alive() for thread, _ in self._auxiliary.values())
+            or (self._memory_thread is not None and self._memory_thread.is_alive())
             or any(thread.is_alive() for thread in self._threads.values())
             or any(
                 run.state is not None and self._stop_pending(run.state.data) for run in self._active.values()
@@ -343,6 +363,11 @@ class RunSuites:
         thread = threading.Thread(target=_run_sequentially, name=f"suite-{suite_id}", daemon=True)
         with self._lock:
             self._threads[suite_id] = thread
+            # Each run is owned by the sequential suite worker. Status and
+            # cleanup look up run IDs, so retain the same thread under those
+            # IDs as well; otherwise a live import appears safe to clean up.
+            for run_id in created:
+                self._threads[run_id] = thread
         thread.start()
         return {
             "suite_id": suite_id,
@@ -392,6 +417,28 @@ class RunSuites:
         except KeyError as exc:
             raise InvalidRequestError(f"manifest not found for album: {album_id}") from exc
 
+        snapshot = saved.get("qa_snapshot")
+        if not isinstance(snapshot, dict) or "rows" not in snapshot:
+            manifest = self._albums.manifest(album_id)
+            digest = (saved.get("input_integrity") or {}).get("qa_sha256")
+            current = self._albums.integrity(album_id, manifest, qa_set)
+            if (
+                not digest
+                or digest != current.get("qa_sha256")
+                or (saved.get("input_integrity") or {}).get("task_action_policy_sha256")
+                != current.get("task_action_policy_sha256")
+            ):
+                raise InvalidRequestError("原测评缺少QA快照，且无法确认题库版本一致，不能续跑")
+            rows = self._albums.qa_rows(album_id, qa_set)
+            snapshot = {
+                "album_id": album_id,
+                "qa_set": qa_set,
+                "rows": rows,
+                "definition_sha256": qa_fingerprint(rows),
+                "source": "verified_legacy_file",
+            }
+        if snapshot.get("definition_sha256") != qa_fingerprint(snapshot["rows"]):
+            raise InvalidRequestError("原测评QA快照校验失败，不能续跑")
         prior_items = tuple(
             item
             for item in (saved.get("items") or [])
@@ -418,6 +465,7 @@ class RunSuites:
             judge_url=str(saved.get("judge_url") or ""),
             judge_model=str(saved.get("judge_model") or ""),
             prior_items=prior_items,
+            frozen_qa_snapshot=snapshot,
         )
         prior_snapshot = saved.get("runtime_snapshot")
         if (
@@ -484,7 +532,10 @@ class RunSuites:
                 if status not in DIRTY_STATUSES:
                     return {"cancelled": False, "run_id": run_id, "reason": f"run status is {status}"}
         if execution is not None:
-            execution.cancel(source="run_api")
+            if isinstance(execution, RunExecution):
+                execution.request_cancel(source="run_api")
+            else:
+                execution.cancel(source="run_api")
             return {"cancelled": True, "run_id": run_id}
         if self._state_if_exists(run_id) is None:
             raise KeyError(run_id)
@@ -498,16 +549,129 @@ class RunSuites:
         """
         cancelled: list[str] = []
         skipped: list[str] = []
+        errors: dict[str, str] = {}
         with self._lock:
             targets = list(self._active.items())
-        for run_id, execution in targets:
-            state = execution.state
-            if state is None or state.get("status") in DIRTY_STATUSES:
-                execution.cancel(source="cancel_all")
-                cancelled.append(run_id)
-            else:
-                skipped.append(run_id)
-        return {"cancelled": cancelled, "skipped": skipped, "total": len(targets)}
+            auxiliary = list(self._auxiliary.items())
+            for event in self._reservations.values():
+                event.set()
+            for _, (_, event) in auxiliary:
+                event.set()
+            for run_id, execution in targets:
+                state = execution.state
+                if state is None or state.get("status") in DIRTY_STATUSES:
+                    try:
+                        if isinstance(execution, RunExecution):
+                            execution.request_cancel(source="cancel_all")
+                        else:
+                            execution.cancel(source="cancel_all")
+                        cancelled.append(run_id)
+                    except Exception as error:
+                        errors[run_id] = str(error)
+                else:
+                    skipped.append(run_id)
+        result: dict[str, Any] = {"cancelled": cancelled, "skipped": skipped, "total": len(targets)}
+        if auxiliary or errors:
+            result.update(auxiliary=[key for key, _ in auxiliary], errors=errors, cleanup_status="pending")
+        return result
+
+    def work_status(self) -> dict[str, Any]:
+        with self._lock:
+            runs = []
+            for run_id, execution in self._active.items():
+                thread = self._threads.get(run_id)
+                runs.append(
+                    {
+                        "id": run_id,
+                        "kind": "run",
+                        "worker_alive": bool(thread and thread.is_alive()),
+                        "status": execution.state.get("status") if execution.state else "pending",
+                        "cleanup": dict(execution.state.get("cleanup") or {}) if execution.state else {},
+                    }
+                )
+            auxiliary = [
+                {
+                    "id": key,
+                    "kind": "auxiliary",
+                    "worker_alive": thread.is_alive(),
+                    "cancel_requested": event.is_set(),
+                }
+                for key, (thread, event) in self._auxiliary.items()
+            ]
+            reserved = [
+                {"id": key, "kind": "starting", "worker_alive": True, "cancel_requested": event.is_set()}
+                for key, event in self._reservations.items()
+            ]
+            cleanup = [
+                {"id": key, "kind": "auxiliary_cleanup", "worker_alive": False, "operations": operations}
+                for key, operations in self._auxiliary_cleanup.items()
+            ]
+            probes = [
+                {
+                    "id": key,
+                    "kind": "auxiliary_probes",
+                    "worker_alive": False,
+                    "pending_work": sampler.pending_work(),
+                }
+                for key, samplers in self._auxiliary_samplers.items()
+                for sampler in samplers
+                if sampler.pending_work()
+            ]
+            return {
+                "work": [*runs, *auxiliary, *reserved, *cleanup, *probes],
+                "cleanup_status": "pending"
+                if runs or auxiliary or reserved or cleanup or probes
+                else "stopped",
+            }
+
+    def refresh_cleanup(self) -> dict[str, Any]:
+        with self._lock:
+            retained = [
+                (key, execution)
+                for key, execution in self._active.items()
+                if not (self._threads.get(key) and self._threads[key].is_alive())
+            ]
+        errors = {}
+        for key, execution in retained:
+            if not isinstance(execution, RunExecution):
+                continue
+            try:
+                if execution.refresh_cleanup():
+                    if execution.state is not None:
+                        self._index.upsert(analysis.run_list_entry(execution.state.snapshot()))
+                    with self._lock:
+                        self._active.pop(key, None)
+                        self._threads.pop(key, None)
+                    if self._on_finished is not None:
+                        self._on_finished(key)
+            except Exception as error:
+                errors[key] = str(error)
+        with self._lock:
+            auxiliary_cleanup = list(self._auxiliary_cleanup.items())
+        for key, operations in auxiliary_cleanup:
+            try:
+                for operation in operations:
+                    if (
+                        isinstance(self._sentrix, CancellableOperations)
+                        and operation.get("cleanup_status") != "stopped"
+                    ):
+                        operation.update(
+                            self._sentrix.cancel_operation(
+                                kind=str(operation["kind"]),
+                                operation_id=str(operation["operation_id"]),
+                                timeout=1,
+                            )
+                        )
+                if all(operation.get("cleanup_status") == "stopped" for operation in operations):
+                    with self._lock:
+                        self._auxiliary_cleanup.pop(key, None)
+            except Exception as error:
+                errors[key] = str(error)
+        with self._lock:
+            for key, samplers in list(self._auxiliary_samplers.items()):
+                if not any(sampler.pending_work() for sampler in samplers):
+                    self._auxiliary_samplers.pop(key, None)
+        return {**self.work_status(), "errors": errors}
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
         """``DELETE /api/runs/{id}``（1.0 ``delete_run`` ``:7010``）。"""
@@ -619,6 +783,7 @@ class RunSuites:
         )
 
         with self._lock:
+            self._require_inactive()
             state = self._state_if_exists(run_id)
             if state is None:
                 raise KeyError(run_id)
@@ -629,6 +794,22 @@ class RunSuites:
             targets = self._rejudge_targets(state.get("items") or [])
             if not targets:
                 raise InvalidRequestError("run has no completed agent answers to rejudge")
+            snapshot = state.get("qa_snapshot") or {}
+            definitions = {str(row["qa_id"]): row for row in snapshot.get("rows") or []}
+            if snapshot and snapshot.get("definition_sha256") != qa_fingerprint(snapshot.get("rows")):
+                raise InvalidRequestError("原测评QA快照校验失败，不能重评分")
+            for index, turn_index in targets:
+                item = state["items"][index]
+                if snapshot:
+                    definition = definitions.get(str(item.get("qa_id")))
+                    if definition is None or (
+                        turn_index is not None
+                        and turn_index >= (len(definition.get("conversation") or []) or 1)
+                    ):
+                        raise InvalidRequestError("原测评QA快照缺少对应题目或对话轮定义")
+                elif turn_index is not None and len(item["runtime_turns"]) > 1:
+                    if not str(item["runtime_turns"][turn_index].get("reference_answer") or "").strip():
+                        raise InvalidRequestError("原测评未记录逐轮参考答案，不能重评分")
             rejudge_id = f"rejudge-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
             previous = state.get("rejudge")
             if previous:
@@ -649,37 +830,27 @@ class RunSuites:
             }
             for index in sorted({item_index for item_index, _ in targets}):
                 item = state["items"][index]
-                prior = item.get("judge")
-                if prior:
-                    item.setdefault("judge_history", []).append({"archived_at": now_iso(), "judge": prior})
-                item["judge"] = {"score": None, "reason": "", "status": "pending", "rejudge_id": rejudge_id}
-                for turn in item.get("runtime_turns") or []:
+                item["judge_status"] = "pending"
+                for record in [item, *(item.get("runtime_turns") or [])]:
                     for field in ("judge", "task_judge", "evidence_judge"):
-                        prior_turn = turn.get(field)
-                        if prior_turn:
-                            turn.setdefault(f"{field}_history", []).append(
-                                {"archived_at": now_iso(), field: prior_turn}
+                        prior = record.get(field)
+                        if prior:
+                            record.setdefault(f"{field}_history", []).append(
+                                {"archived_at": now_iso(), field: prior}
                             )
-                    turn["judge"] = {
+                    record["judge"] = {
                         "score": None,
                         "reason": "",
                         "status": "pending",
                         "rejudge_id": rejudge_id,
                     }
+                    record["task_judge"] = {"status": "pending", "rejudge_id": rejudge_id}
+                    record["evidence_judge"] = {"score": None, "reason": "not_applicable"}
+                item["task_judges"] = [turn["task_judge"] for turn in item.get("runtime_turns") or []]
             state["summary"] = analysis.effective_summary(state)
             self._writer.write_snapshot(run_id, state)
-
-        runner = JudgeRunner(
-            http=self._http,
-            judge_url=judge_url,
-            judge_model=judge_model,
-            judge_api_key=judge_api_key,
-            answer_quality_prompt=system_prompt,
-            task_judge_prompt=task_prompt,
-            evidence_judge_prompt=evidence_prompt,
-            sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
-            inline_images=self._inline_images,
-        )
+            cancel_event = threading.Event()
+            self._reservations[rejudge_id] = cancel_event
 
         #: 跨条目并发的上限，与 ``_resolve_judge_concurrency`` 同一个口径
         #: （``min(8, qa_concurrency)``）。**rejudge 此前是纯串行**：qa_eval 阶段按
@@ -689,14 +860,32 @@ class RunSuites:
         #: 让 561 个 worker 各读一遍既慢、又可能读到别人写了一半的状态。所以输入在
         #: 提交前一次性拍平成不可变元组，**状态回写全部留在主线程**——与并发前的
         #: 「先读当前 state、改、再整份写回」保持同一个形状。
-        concurrency = max(1, min(8, int(state.get("qa_concurrency") or 4)))
+        runner: JudgeRunner
+
+        snapshot = state.get("qa_snapshot") or {}
+        definitions = {str(row["qa_id"]): row for row in snapshot.get("rows") or []}
+        gt_source = "frozen_qa_snapshot" if definitions else "saved_run_item"
 
         def _payload(index: int, turn_index: int | None) -> tuple[Any, ...]:
             item = (state.get("items") or [])[index]
             turns = item.get("runtime_turns") or []
             record = turns[turn_index] if turn_index is not None else item
-            expected = record.get("expected_action") or item.get("expected_action")
-            reference = str(record.get("reference_answer") or item.get("reference_answer") or "")
+            definition = definitions.get(str(item.get("qa_id")), item)
+            definition_turns = definition.get("conversation") or []
+            if turn_index is not None:
+                gt = definition_turns[turn_index] if definition_turns else definition if snapshot else record
+                if not snapshot and len(turns) == 1:
+                    gt = {
+                        **item,
+                        **record,
+                        "reference_answer": record.get("reference_answer") or item["reference_answer"],
+                    }
+            else:
+                gt = definition
+            expected = gt.get("expected_action")
+            reference = str(
+                gt.get("reference_answer") if "reference_answer" in gt else gt.get("answer") or ""
+            )
             if not reference and expected == "clarify":
                 reference = "应要求用户提供至少一个具体、可用于后续检索的锚点；询问形式不限。"
             return (
@@ -706,9 +895,9 @@ class RunSuites:
                 reference,
                 str(record.get("answer") or ""),
                 expected,
-                item.get("task_type"),
-                item.get("question_type"),
-                item.get("answerability"),
+                gt.get("task_type"),
+                gt.get("question_type"),
+                gt.get("answerability"),
                 turns[: turn_index + 1] if turn_index is not None else None,
                 record.get("agent_status") or item.get("agent_status"),
                 record.get("termination_reason") or item.get("termination_reason") or "",
@@ -729,6 +918,8 @@ class RunSuites:
                 agent_status,
                 termination,
             ) = payload
+            if cancel_event.is_set():
+                raise RunCancelledError("rejudge cancelled")
             judge_result = runner.judge(
                 message,
                 reference,
@@ -757,15 +948,56 @@ class RunSuites:
             return index, turn_index, judge_result, task_result
 
         def _run_rejudge() -> None:
+            nonlocal runner
             try:
+                runner = JudgeRunner(
+                    http=self._http,
+                    cancel=cancel_event,
+                    judge_url=judge_url,
+                    judge_model=judge_model,
+                    judge_api_key=judge_api_key,
+                    answer_quality_prompt=system_prompt,
+                    task_judge_prompt=task_prompt,
+                    evidence_judge_prompt=evidence_prompt,
+                    sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
+                    inline_images=self._inline_images,
+                )
+                concurrency = max(1, min(8, int(state.get("qa_concurrency") or 4)))
                 prepared = [_payload(index, turn_index) for index, turn_index in targets]
                 with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-                    futures = {pool.submit(_judge_one, payload): payload for payload in prepared}
-                    for completed, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                    queue = iter(prepared)
+                    futures: dict[
+                        concurrent.futures.Future[tuple[int, int | None, dict[str, Any], dict[str, Any]]],
+                        tuple[Any, ...],
+                    ] = {}
+                    completed = 0
+
+                    def fill_slots() -> None:
+                        while len(futures) < concurrency and not cancel_event.is_set():
+                            payload = next(queue, None)
+                            if payload is None:
+                                break
+                            futures[pool.submit(_judge_one, payload)] = payload
+
+                    fill_slots()
+                    while futures:
+                        if cancel_event.is_set():
+                            for pending in futures:
+                                pending.cancel()
+                        done, _ = concurrent.futures.wait(
+                            futures, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
+                        )
+                        if not done:
+                            continue
+                        future = next(iter(done))
+                        payload = futures.pop(future)
+                        if cancel_event.is_set():
+                            continue
+                        completed += 1
+                        fill_slots()
                         current = self._state_if_exists(run_id)
                         if current is None:
                             return
-                        payload = futures[future]
                         index, turn_index = int(payload[0]), payload[1]
                         try:
                             _, _, judge_result, task_result = future.result()
@@ -785,14 +1017,16 @@ class RunSuites:
                         item = (current.get("items") or [])[index]
                         turns = item.get("runtime_turns") or []
                         record = turns[turn_index] if turn_index is not None else item
-                        judge_result["ground_truth_source"] = "current_qa_metadata"
+                        judge_result["ground_truth_source"] = gt_source
+                        judge_result["qa_definition_sha256"] = snapshot.get("definition_sha256")
                         judge_result["judged_at"] = now_iso()
                         judge_result["rejudge_id"] = rejudge_id
                         judge_result["status"] = (
                             "completed" if judge_result.get("score") in {0, 1, 2} else "failed"
                         )
                         record["judge"] = judge_result
-                        task_result["ground_truth_source"] = "current_qa_metadata"
+                        task_result["ground_truth_source"] = gt_source
+                        task_result["qa_definition_sha256"] = snapshot.get("definition_sha256")
                         record["task_judge"] = task_result
                         if turns:
                             item["judge"] = turns[-1].get("judge") or {}
@@ -805,6 +1039,18 @@ class RunSuites:
                         else:
                             item["judge"] = record.get("judge") or {}
                             item["task_judge"] = record.get("task_judge") or {}
+                        # Current scoring state follows every judged turn; execution history stays unchanged.
+                        records = turns or [item]
+                        qualities = [entry.get("judge") or {} for entry in records]
+                        tasks = [entry.get("task_judge") or {} for entry in records]
+                        item["judge_status"] = (
+                            "pending"
+                            if any(value.get("status") == "pending" for value in qualities)
+                            else "failed"
+                            if any(value.get("status") == "failed" for value in qualities)
+                            or any(value.get("judge_status") == "failed" for value in tasks)
+                            else "completed"
+                        )
                         current["rejudge"]["completed"] = completed
                         if judge_result.get("score") not in {0, 1, 2}:
                             current["rejudge"]["failed"] += 1
@@ -812,8 +1058,25 @@ class RunSuites:
                         self._writer.write_snapshot(run_id, current)
                 final = self._state_if_exists(run_id)
                 if final is not None:
-                    final["rejudge"]["status"] = "completed"
+                    final["rejudge"]["status"] = "cancelled" if cancel_event.is_set() else "completed"
                     final["rejudge"]["finished_at"] = now_iso()
+                    final["rejudge"]["not_completed"] = len(targets) - int(
+                        final["rejudge"].get("completed") or 0
+                    )
+                    if cancel_event.is_set():
+                        for item in final.get("items") or []:
+                            for record in [item, *(item.get("runtime_turns") or [])]:
+                                current_judge = record.get("judge") or {}
+                                if (
+                                    current_judge.get("rejudge_id") == rejudge_id
+                                    and current_judge.get("status") == "pending"
+                                ):
+                                    item["judge_status"] = "cancelled"
+                                    current_judge.update(
+                                        status="cancelled",
+                                        reason="rejudge cancelled before scoring completed",
+                                    )
+                    final["summary"] = analysis.effective_summary(final)
                     self._writer.write_snapshot(run_id, final)
                     self._index.upsert(analysis.run_list_entry(final))
             except Exception as exc:  # noqa: BLE001 —— 重判线程的兜底：状态要能被读出来
@@ -824,8 +1087,33 @@ class RunSuites:
                     failed["rejudge"]["error"] = str(exc)
                     self._writer.write_snapshot(run_id, failed)
 
-        thread = threading.Thread(target=_run_rejudge, name=rejudge_id, daemon=True)
-        thread.start()
+        def rejudge_worker() -> None:
+            try:
+                _run_rejudge()
+            finally:
+                with self._lock:
+                    self._auxiliary.pop(rejudge_id, None)
+                if self._on_finished is not None:
+                    self._on_finished(run_id)
+
+        thread = threading.Thread(target=rejudge_worker, name=rejudge_id, daemon=True)
+        with self._lock:
+            self._auxiliary[rejudge_id] = (thread, cancel_event)
+            try:
+                thread.start()
+            except Exception as error:
+                self._auxiliary.pop(rejudge_id, None)
+                state["rejudge"].update(status="failed", finished_at=now_iso(), error=str(error))
+                for item in state.get("items") or []:
+                    for record in [item, *(item.get("runtime_turns") or [])]:
+                        if (record.get("judge") or {}).get("rejudge_id") == rejudge_id:
+                            record["judge"].update(status="failed", score=None, reason="worker_start_failed")
+                            item["judge_status"] = "failed"
+                state["summary"] = analysis.effective_summary(state)
+                self._writer.write_snapshot(run_id, state)
+                raise
+            finally:
+                self._reservations.pop(rejudge_id, None)
         return {"run_id": run_id, "rejudge_id": rejudge_id, "total": len(targets), "status": "running"}
 
     # ---- 内存画像 -----------------------------------------------------------
@@ -872,25 +1160,41 @@ class RunSuites:
                     "items_sha256_before": _items_digest(state.get("items") or []),
                 }
                 self._writer.write_snapshot(rid, state)
+            cancel_event = threading.Event()
+            self._reservations[task_id] = cancel_event
+
+        owned_samplers: list[GpuSampler] = []
 
         def execute() -> None:
             lifecycle = self._lifecycle_for(manager_url)
             telemetry = self._manager_telemetry_for(manager_url)
-            sampler = GpuSampler(telemetry, interval=0.1)
             for rid, state in states.items():
+                sampler = GpuSampler(telemetry, interval=0.1)
+                owned_samplers.append(sampler)
                 record = state["memory_profile"]
                 record.update({"status": "running", "started_at": now_iso()})
                 completed = failed = request_count = 0
                 try:
                     # 没在跑的模型本来就停不掉——卸载失败不阻断装载（1.0 ``:2547`` 的
                     # 同一条处置）。
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
                     with contextlib.suppress(Exception):
                         lifecycle.stop({"timeout": 60}, timeout=90)
-                    self._sleep(5)
+                    if cancel_event.wait(0):
+                        raise RunCancelledError("memory profile cancelled")
+                    if self._sleep is time.sleep:
+                        cancel_event.wait(5)
+                    else:
+                        self._sleep(5)
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
                     lifecycle.start(
                         {"profile": state.get("model_profile"), "wait_ready": True, "ready_timeout": 600},
                         timeout=700,
                     )
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
                     model_state = lifecycle.state()
                     # 1.0 在这里调 bind-runtime；2.0 的等价物是「重启 2.0」
                     # （``application.deploy.SentrixModelSwitch``，S9c · T923）。
@@ -905,6 +1209,8 @@ class RunSuites:
                     sampler.start()
                     self._sleep(2)
                     for item in state.get("items") or []:
+                        if cancel_event.is_set():
+                            raise RunCancelledError("memory profile cancelled")
                         messages = [
                             str(turn.get("message") or "")
                             for turn in (item.get("conversation") or [])
@@ -915,6 +1221,8 @@ class RunSuites:
                         conversation_id = ""
                         item_ok = True
                         for message in messages:
+                            if cancel_event.is_set():
+                                raise RunCancelledError("memory profile cancelled")
                             request_count += 1
                             try:
                                 if not conversation_id:
@@ -925,13 +1233,27 @@ class RunSuites:
                                         ).get("id")
                                         or ""
                                     )
+                                if cancel_event.is_set():
+                                    raise RunCancelledError("memory profile cancelled")
                                 started = self._sentrix.start_turn(
                                     conversation_id=conversation_id, message=message, timeout=300
                                 )
                                 _await_turn(
-                                    self._sentrix, str(started.get("turn_id") or ""), 900, self._sleep
+                                    self._sentrix,
+                                    str(started.get("turn_id") or ""),
+                                    900,
+                                    self._sleep,
+                                    cancel_event,
+                                    record,
                                 )
+                            except RunCancelledError:
+                                raise
                             except Exception:  # noqa: BLE001 —— 单题失败不中断整段画像
+                                if any(
+                                    operation.get("cleanup_status") != "stopped"
+                                    for operation in record.get("cancelled_operations", [])
+                                ):
+                                    raise
                                 item_ok = False
                                 failed += 1
                         if item_ok:
@@ -972,6 +1294,11 @@ class RunSuites:
                             "original_items_untouched": True,
                         }
                     )
+                except RunCancelledError as exc:
+                    sampler.stop()
+                    record.update(
+                        **sampler.aggregate(), status="cancelled", finished_at=now_iso(), error=str(exc)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     sampler.stop()
                     record.update(
@@ -990,10 +1317,46 @@ class RunSuites:
                     )
                     self._writer.write_snapshot(rid, state)
 
-        thread = threading.Thread(target=execute, name=task_id, daemon=True)
+        def memory_worker() -> None:
+            try:
+                execute()
+            except Exception as error:
+                for rid, state in states.items():
+                    record = state["memory_profile"]
+                    if record.get("status") in {"pending", "running"}:
+                        record.update(status="failed", finished_at=now_iso(), error=str(error))
+                        self._writer.write_snapshot(rid, state)
+            finally:
+                for sampler in owned_samplers:
+                    sampler.stop()
+                with self._lock:
+                    operations = [
+                        operation
+                        for state in states.values()
+                        for operation in (state.get("memory_profile") or {}).get("cancelled_operations", [])
+                        if operation.get("cleanup_status") != "stopped"
+                    ]
+                    if operations:
+                        self._auxiliary_cleanup[task_id] = operations
+                    pending_samplers = [sampler for sampler in owned_samplers if sampler.pending_work()]
+                    if pending_samplers:
+                        self._auxiliary_samplers[task_id] = pending_samplers
+                    self._auxiliary.pop(task_id, None)
+
+        thread = threading.Thread(target=memory_worker, name=task_id, daemon=True)
         with self._lock:
             self._memory_thread = thread
-        thread.start()
+            self._auxiliary[task_id] = (thread, cancel_event)
+            try:
+                thread.start()
+            except Exception as error:
+                self._auxiliary.pop(task_id, None)
+                for rid, state in states.items():
+                    state["memory_profile"].update(status="failed", finished_at=now_iso(), error=str(error))
+                    self._writer.write_snapshot(rid, state)
+                raise
+            finally:
+                self._reservations.pop(task_id, None)
         return {"task_id": task_id, "run_ids": run_ids, "status": "running"}
 
     # ---- 供路由用的只读投影 -------------------------------------------------
@@ -1040,19 +1403,48 @@ def _items_digest(items: Sequence[dict[str, Any]]) -> str:
 
 
 def _await_turn(
-    client: SentrixClient, turn_id: str, timeout: int, sleep: Callable[[float], None]
+    client: SentrixClient,
+    turn_id: str,
+    timeout: int,
+    sleep: Callable[[float], None],
+    cancel_event: threading.Event | None = None,
+    cleanup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """内存画像用的回合等待。与 ``RunExecution._await_turn`` 同一条判据
     （非 ``pending`` / ``running`` 即终态），但**不共享实现**：那条挂在有状态的主链上，
     这条只服务画像重放，硬凑一个共享函数会把两条生命周期绑在一起。"""
     deadline = time.monotonic() + timeout
-    polled = client.get_turn(turn_id=turn_id)
-    while str(polled.get("status") or "") in {"pending", "running"}:
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"assistant turn {turn_id} did not complete within {timeout}s")
-        sleep(0.5)
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RunCancelledError("memory profile cancelled")
         polled = client.get_turn(turn_id=turn_id)
-    return polled
+        while str(polled.get("status") or "") in {"pending", "running"}:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunCancelledError("memory profile cancelled")
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"assistant turn {turn_id} did not complete within {timeout}s")
+            sleep(0.5)
+            polled = client.get_turn(turn_id=turn_id)
+        return polled
+    except Exception as error:
+        facts: dict[str, Any] = {
+            "kind": "turn",
+            "operation_id": turn_id,
+            "cleanup_status": "pending",
+            "wait_error": f"{type(error).__name__}: {error}",
+        }
+        if isinstance(client, CancellableOperations):
+            try:
+                facts.update(client.cancel_operation(kind="turn", operation_id=turn_id, timeout=3))
+            except Exception as cancel_error:
+                facts["error"] = str(cancel_error)
+        if cleanup is not None:
+            cleanup.setdefault("cancelled_operations", []).append(facts)
+        # A terminal turn record can precede worker exit; only the cancellation
+        # ownership endpoint may confirm stopped. Do not overlap a new replay.
+        if facts.get("cleanup_status") != "stopped" and cancel_event is not None:
+            cancel_event.set()
+        raise
 
 
 __all__ = ["DIRTY_STATUSES", "RUN_MODES", "RunSuites"]

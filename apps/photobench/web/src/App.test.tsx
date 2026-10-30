@@ -161,7 +161,7 @@ describe("记忆面板接线（P2 / 1.0 :3147）", () => {
         return Promise.resolve({ items: [], page: 1, page_size: 20, total: 0, pages: 1 });
       }
       if (path.startsWith("/runs/runX/reviews")) return Promise.resolve({ reviews: {} });
-      if (path.startsWith("/runs/runX?include_history=false")) return Promise.resolve({ run_id: "runX", status: "done", mode: "reuse" });
+      if (path.startsWith("/runs/runX?include_history=true")) return Promise.resolve({ run_id: "runX", status: "done", mode: "reuse" });
       return Promise.resolve({});
     });
 
@@ -198,14 +198,46 @@ describe("init() 的自动选中（1.0 :2758 / :2761-2765）", () => {
       if (path.startsWith("/runs/runX/items")) {
         return Promise.resolve({ items: [], page: 1, page_size: 20, total: 0, pages: 1 });
       }
-      if (path.startsWith("/runs/runX?include_history=false")) return Promise.resolve({ run_id: "runX", status: "running", mode: "reuse" });
+      if (path.startsWith("/runs/runX?include_history=true")) return Promise.resolve({ run_id: "runX", status: "running", mode: "reuse" });
       return Promise.resolve({});
     });
 
     render(<App />);
 
     await waitFor(() =>
-      expect(mockApi.mock.calls.some(([path]) => path === "/runs/runX?include_history=false")).toBe(true),
+      expect(mockApi.mock.calls.some(([path]) => path === "/runs/runX?include_history=true")).toBe(true),
     );
+  });
+});
+
+
+describe("停止全部", () => {
+  it("显示待收尾而不提前宣称退出，并能复查到停止", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    let cleanupCalls = 0;
+    const fallback = mockApi.getMockImplementation()!;
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/active-work") return Promise.resolve({ cleanup_status: "pending" });
+      if (path === "/cancel-active") return Promise.resolve({ cancelled: ["r"] });
+      if (path === "/active-work/cleanup") return Promise.resolve({ cleanup_status: ++cleanupCalls > 1 ? "stopped" : "pending" });
+      return fallback(path);
+    });
+    render(<App />);
+    await screen.findByTestId("runs-view");
+    fireEvent.click(screen.getByRole("button", { name: /停止全部/ }));
+    expect(await screen.findByText(/已请求取消，正在等待后台任务退出/)).toBeTruthy();
+    expect(screen.queryByText("已停止，后台任务已退出")).toBeNull();
+    expect(await screen.findByText("已停止，后台任务已退出", {}, { timeout: 4000 })).toBeTruthy();
+  });
+
+  it("请求失败不会显示为停止成功", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fallback = mockApi.getMockImplementation()!;
+    mockApi.mockImplementation((path: string) => path === "/cancel-active" ? Promise.reject(new Error("connection lost")) : fallback(path));
+    render(<App />);
+    await screen.findByTestId("runs-view");
+    fireEvent.click(screen.getByRole("button", { name: /停止全部/ }));
+    expect(await screen.findByText("停止未确认：connection lost")).toBeTruthy();
+    expect(screen.queryByText("已停止，后台任务已退出")).toBeNull();
   });
 });

@@ -23,6 +23,22 @@ def _item(**over: object) -> dict:
     return item
 
 
+@pytest.mark.parametrize(
+    ("counts", "legacy_matches", "expected"),
+    [(None, ["a.jpg"], 1), ({"matched": 1, "gt": 1}, [], 1), ({"matched": 0, "gt": 1}, ["a.jpg"], 0)],
+)
+def test_item_summary_uses_stored_media_counts(counts, legacy_matches, expected):
+    item = _item(
+        media_retrieval_counts=counts,
+        matched_file_names=legacy_matches,
+        retrieval_media_refs=[{"media_type": "image", "media_id": "a.jpg"}],
+    )
+    summary = analysis.item_summary(item, 0)
+    assert summary["matched_count"] == expected
+    assert summary["ground_truth_count"] == 1
+    assert item["media_retrieval_counts"] == counts
+
+
 # ---- Judge 一致性 ---------------------------------------------------------
 
 
@@ -75,6 +91,44 @@ def test_version_two_still_rejects_a_praising_zero(reason: str):
 def test_a_non_zero_score_is_always_consistent():
     assert analysis.judge_score_consistency(1, "回答正确") is True
     assert analysis.judge_consistency_status({"score": 2}) is None
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误，因此得0分。",
+        "模型回答提到正确答案，但最终写的是另一地点。",
+        "助手的回答没有提供正确内容。",
+        "答案引用正确时间却否定了问题的前提。",
+    ],
+)
+def test_v4_reference_narration_is_not_answer_level_praise(reason):
+    assert analysis.judge_score_consistency(0, reason) is True
+    assert analysis.judge_score_for_summary({"score": 0, "reason": reason, "consistency_version": 4}) == 0
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "模型回答正确",
+        "助手的回答内容完全准确",
+        "该回答基本正确",
+        "模型答案总体上是准确的",
+        "回答中的核心信息正确",
+        "模型回答与参考答案完全一致",
+    ],
+)
+def test_v4_still_rejects_real_answer_level_praise_at_zero(reason):
+    assert analysis.judge_score_consistency(0, reason) is False
+    assert analysis.judge_score_for_summary({"score": 0, "reason": reason, "consistency_version": 4}) is None
+
+
+def test_v3_history_keeps_the_recorded_consistency_policy():
+    reason = "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误。"
+    original = {"score": 0, "reason": reason, "consistency_version": 3}
+    assert analysis.judge_score_consistency(0, reason, version=3) is False
+    assert analysis.judge_score_for_summary(original) is None
+    assert original == {"score": 0, "reason": reason, "consistency_version": 3}
 
 
 def test_judge_score_for_summary_rejects_out_of_range_scores():
@@ -261,9 +315,10 @@ def test_the_recall_layer_reads_the_candidate_set_when_there_is_one():
     assert "交付口径" in without["detail"]["R"]
 
 
-def test_capability_summary_excludes_unanswerable_questions_from_retrieval_metrics():
+@pytest.mark.parametrize("answerability", ["unanswerable", "insufficient_evidence"])
+def test_capability_summary_excludes_unanswerable_questions_from_retrieval_metrics(answerability):
     items = [
-        _item(answerability="unanswerable", retrieval_image_ids=["a.jpg"]),
+        _item(answerability=answerability, retrieval_image_ids=["a.jpg"]),
         _item(
             qa_id="q2",
             retrieval_image_ids=["a.jpg"],
@@ -486,3 +541,105 @@ def test_judge_summary_rejects_boolean_and_derives_explicit_string_without_chang
     old["reason"] = "judge_error: failed"
     old["judge_status"] = "failed"
     assert judge_score_for_summary(old) is None
+
+
+@pytest.mark.parametrize("answerability", ["unanswerable", " INSUFFICIENT_EVIDENCE "])
+def test_refusal_exclusion_covers_typed_candidate_ranking_and_read_projections(answerability):
+    import copy
+
+    refusal = _item(
+        answerability=answerability,
+        retrieval_media_refs=[{"media_type": "image", "media_id": "a.jpg"}],
+        retrieval_image_ids=["a.jpg"],
+        predicted_file_names=[],
+        retrieval_recall=0.0,
+        candidate_retrieval_recall=0.0,
+        media_retrieval_counts={"gt": 100, "predicted": 100, "matched": 0},
+        image_retrieval_counts={"gt": 100, "predicted": 100, "matched": 0},
+        video_retrieval_counts={"gt": 100, "predicted": 100, "matched": 0},
+        candidate_retrieval_counts={"gt": 100, "predicted": 100, "matched": 0},
+        image_ranking=analysis.ranking_metrics([], {("image", "a.jpg")}),
+    )
+    ordinary = _item(
+        qa_id="partial",
+        answerability="partially_answerable",
+        retrieval_media_refs=[{"media_type": "image", "media_id": "b.jpg"}],
+        **{
+            f"{prefix}_retrieval_counts": {"gt": 1, "predicted": 1, "matched": 1}
+            for prefix in ("media", "image", "video", "candidate")
+        },
+        image_ranking=analysis.ranking_metrics([("image", "b.jpg")], {("image", "b.jpg")}),
+    )
+    before = copy.deepcopy(refusal)
+    summary = analysis.capability_summary([refusal, ordinary])
+    assert summary["retrieval_excluded_unanswerable_count"] == 1
+    for prefix in ("media", "image", "video", "candidate"):
+        assert summary[f"{prefix}_retrieval_recall_micro"] == 1
+    assert summary["image_ranking"]["mrr"] == 1
+    assert summary["judge_valid_count"] == 2
+    assert analysis.capability_summary([refusal])["retrieval_recall_micro"] is None
+    assert analysis.capability_summary([refusal])["candidate_retrieval_recall_micro"] is None
+    hydrated = analysis.hydrate_qa_metadata(refusal, {})
+    assert hydrated["retrieval_metrics_applicable"] is False
+    assert hydrated["retrieval_recall"] is None
+    assert hydrated["candidate_retrieval_recall"] is None
+    assert hydrated["image_ranking"] == {}
+    assert hydrated["attribution"]["layers"]["R"] == "na"
+    assert analysis.item_summary(refusal, 0)["media_retrieval_recall"] is None
+    assert analysis.item_summary(refusal, 0)["retrieval_metrics_applicable"] is False
+    assert refusal == before
+
+
+@pytest.mark.parametrize("answerability", ["answerable", "partially_answerable", "not_applicable", ""])
+def test_retrieval_eligibility_preserves_other_questions(answerability):
+    assert analysis.retrieval_metric_eligible({"answerability": answerability})
+
+
+def test_recomputed_summary_drops_saved_refusal_candidate_and_ranking_values():
+    refusal = _item(
+        answerability="insufficient_evidence",
+        candidate_retrieval_counts={"gt": 1, "predicted": 1, "matched": 1},
+        image_ranking=analysis.ranking_metrics([("image", "a.jpg")], {("image", "a.jpg")}),
+    )
+    state = {
+        "items": [refusal],
+        "summary": {"candidate_retrieval_recall_micro": 1.0, "image_ranking": {"mrr": 1.0}},
+    }
+    assert analysis.effective_summary(state)["candidate_retrieval_recall_micro"] is None
+    assert analysis.effective_summary(state)["image_ranking"] is None
+
+
+def test_multiturn_summary_uses_first_message_without_overwriting_question():
+    item = {
+        "question": "是国庆在河北那次。",
+        "turn_status": "complete",
+        "runtime_turns": [
+            {"index": 0, "message": "找婚礼舞台留影"},
+            {"index": 1, "message": "是国庆在河北那次。"},
+        ],
+        "conversation_context_mode": "shared_conversation_id",
+    }
+    summary = analysis.item_summary(item, 8)
+    assert summary["display_question"] == "找婚礼舞台留影"
+    assert summary["conversation_turn_count"] == 2
+    assert summary["agent_status"] == "complete"
+    assert summary["question"] == item["question"]
+    assert analysis.hydrate_qa_metadata(item, {})["display_question"] == summary["display_question"]
+    assert "display_question" not in item
+
+
+def test_tool_binding_uses_successful_attempt_in_same_turn_only():
+    calls = [
+        {"conversation_turn": 0, "step_id": "step_1", "status": "complete"},
+        {"conversation_turn": 1, "step_id": "step_1", "status": "error"},
+        {"conversation_turn": 1, "step_id": "step_1", "status": "complete"},
+    ]
+    tools = [
+        {"conversation_turn": 1, "parent_step_id": "step_1", "model_call_index": 1},
+        {"conversation_turn": 2, "parent_step_id": "step_1", "model_call_index": 0},
+    ]
+    result = analysis.bind_tool_calls_to_model_rounds(tools, [], calls)
+    assert result[0]["model_call_index"] == 2
+    assert "model_call_index" not in result[1]
+    assert result[1]["round_binding_source"] == "unresolved"
+    assert tools[0]["model_call_index"] == 1

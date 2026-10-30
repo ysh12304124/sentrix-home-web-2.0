@@ -1,9 +1,4 @@
-"""Jetson 统一内存口径：nvmap 账本优先、残差兜底、零残差报不可用。
-
-1.0 的结论（``backend/jetson_telemetry.py:149-195``）：nvmap 是分配量、可读时权威；
-残差是驻留量，只在 L4T >= R36.4.7 有效。46 是 R36.4.3，nvmap.ko 不把 GPU 页记进
-进程 RSS，残差恒为 0；把这个 0 当真实值会漏掉约 79% 的占用。
-"""
+"""Jetson PSS and GPU allocation are independent; unknown ledgers stay missing."""
 
 from __future__ import annotations
 
@@ -12,85 +7,27 @@ import pytest
 from photobench.infrastructure.runtime import jetson_telemetry as jetson
 
 
-def test_nvmap_ledger_wins_when_readable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: {42: 2617.9})
-    gpu, source = jetson._process_gpu_memory_mib({42}, rss_mib=714.6, host_rss_mib=714.6)
-    assert gpu == 2617.9
-    assert source == "nvmap_iovmm"
+@pytest.mark.parametrize(
+    "ledger,pids,expected",
+    [
+        ({42: 2617.9}, {42}, 2617.9),
+        ({42: 5, 43: 7}, {42, 43}, 12),
+        ({}, {42}, 0),
+        (None, {42}, None),
+        ({42: 5}, set(), None),
+    ],
+)
+def test_nvmap_is_independent_allocation_not_rss_residual(ledger, pids, expected) -> None:
+    gpu, source = jetson._process_gpu_memory_mib(pids, ledger=ledger)
+    assert gpu == expected
+    assert source == ("nvmap_iovmm" if expected is not None else "unavailable")
 
 
-def test_residual_is_used_only_when_the_ledger_is_unreadable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: None)
-    gpu, source = jetson._process_gpu_memory_mib({42}, rss_mib=5370.0, host_rss_mib=1030.0)
-    assert gpu == 4340.0
-    assert source == "vmrss_residual"
-
-
-def test_a_zero_residual_is_unavailable_not_a_real_zero(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """46 的关键分支：差额 0 代表「没记账」，不是「没占用」。"""
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: None)
-    gpu, source = jetson._process_gpu_memory_mib({42}, rss_mib=714.6, host_rss_mib=714.6)
-    assert gpu is None
-    assert source == "unavailable"
-
-
-def test_missing_rss_or_host_rss_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: None)
-    assert jetson._process_gpu_memory_mib({42}, rss_mib=None, host_rss_mib=1.0) == (
-        None,
-        "unavailable",
-    )
-    assert jetson._process_gpu_memory_mib({42}, rss_mib=1.0, host_rss_mib=None) == (
-        None,
-        "unavailable",
-    )
-
-
-def test_unified_total_is_host_plus_gpu_without_double_counting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: {42: 2617.9})
-    data = jetson.unified_model_memory({42}, rss_mib=714.6, host_rss_mib=714.6)
-    assert data["model_process_system_memory_used_mib"] == 3332.5
-    assert data["model_process_host_memory_mib"] == 714.6
-    assert data["model_process_gpu_memory_mib"] == 2617.9
-    assert data["model_process_gpu_memory_source"] == "nvmap_iovmm"
-    assert data["model_process_system_memory_scope"] == "host_smaps_rss_plus_gpu_uma"
-
-
-def test_without_smaps_split_the_total_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: {42: 2617.9})
-    data = jetson.unified_model_memory({42}, rss_mib=714.6, host_rss_mib=None)
-    assert data["model_process_system_memory_used_mib"] is None
-    assert data["model_process_system_memory_scope"] == "host_smaps_rss_plus_gpu_uma"
-    assert data["model_process_gpu_memory_source"] == "unavailable"
-    assert data["model_process_host_memory_mib"] is None
-
-
-def test_no_inputs_writes_nothing() -> None:
-    assert jetson.unified_model_memory({42}, rss_mib=None, host_rss_mib=None) == {}
-
-
-def test_unified_metadata_replaces_the_legacy_pss_unit() -> None:
-    data = {
-        "model_process_host_memory_mib": 1670.84,
-        "model_process_gpu_memory_mib": 5094.35,
-    }
-    jetson.apply_jetson_memory_metadata(data)
-    assert data["memory_unit"] == "host_smaps_rss_plus_gpu_mib"
-    assert data["memory_scope"] == "host_smaps_rss_plus_gpu_uma"
-    assert data["memory_profile"]["method"] == "orin_smaps_rss_plus_gpu_uma_v1"
-
-
-def test_no_split_fields_keeps_the_legacy_unit() -> None:
-    data = {"memory_unit": "process_pss_uma_mib"}
-    jetson.apply_jetson_memory_metadata(data)
-    assert data["memory_unit"] == "process_pss_uma_mib"
-    assert "memory_profile" not in data
+def test_new_metadata_always_declares_separate_memory_and_gpu() -> None:
+    data = jetson.apply_jetson_memory_metadata({"memory_unit": "process_pss_uma_mib"})
+    assert data["memory_unit"] == "process_pss_mib"
+    assert data["memory_scope"] == "process_pss_separate_gpu_allocation"
+    assert data["memory_profile"]["method"] == "jetson_pss_and_nvmap_v3"
 
 
 def test_sampler_walks_each_process_once_even_when_device_stats_are_collected(monkeypatch):
@@ -130,8 +67,9 @@ def test_sampler_walks_each_process_once_even_when_device_stats_are_collected(mo
     sampler = GpuSampler(provider)
     sampler.sample_once()
     assert walks == ["/proc/42/smaps_rollup"]
-    assert sampler.samples[0]["model_process_host_memory_mib"] == 1
-    assert sampler.samples[0]["model_process_system_memory_used_mib"] == 4
+    assert sampler.samples[0]["model_process_host_memory_mib"] == 0.5
+    assert sampler.samples[0]["model_process_system_memory_used_mib"] == 0.5
+    assert sampler.samples[0]["model_process_gpu_memory_mib"] == 3
 
 
 def test_failed_optional_metrics_probe_never_reuses_previous_kv(monkeypatch):
@@ -232,7 +170,8 @@ def test_sudo_nvmap_probe_uses_short_timeout_and_returns_unavailable(monkeypatch
 
 
 def test_listener_cache_revalidates_socket_and_process_identity(monkeypatch, tmp_path):
-
+    clock = [100.0]
+    monkeypatch.setattr(jetson.time, "monotonic", lambda: clock[0])
     proc = tmp_path / "proc"
     (proc / "net").mkdir(parents=True)
     for pid in (1, 2, 3):
@@ -257,8 +196,9 @@ def test_listener_cache_revalidates_socket_and_process_identity(monkeypatch, tmp
     monkeypatch.setattr(jetson, "_socket_inodes", inodes)
     assert jetson._listening_ports_by_pid({"8100"}) == {1: {"8100"}}
     calls.clear()
+    clock[0] += 5
     assert jetson._listening_ports_by_pid({"8100"}) == {1: {"8100"}}
-    assert calls == [1], "cached topology should inspect only validated holders"
+    assert calls == [1], "unchanged verified sockets must not trigger periodic full fd scans"
     # gpu_stats checks only the model port; process_memory checks the whole
     # frozen topology. Alternating those queries must not evict each other.
     assert jetson._listening_ports_by_pid({"8100", "8106"}) == {1: {"8100"}, 2: {"8106"}}
@@ -272,6 +212,40 @@ def test_listener_cache_revalidates_socket_and_process_identity(monkeypatch, tmp
     identities[1] = "reused"
     sockets[1], sockets[3] = set(), {"100"}
     assert jetson._listening_ports_by_pid({"8100"}) == {3: {"8100"}}
+
+
+def test_listener_cache_checks_exact_fds_and_rediscovers_reused_descriptors(monkeypatch, tmp_path):
+    proc = tmp_path / "proc"
+    (proc / "net").mkdir(parents=True)
+    (proc / "net/tcp").write_text("header\n0: 0100007F:1FA4 0:0 0A 0 0 0 0 0 100\n")
+    (proc / "net/tcp6").write_text("header\n")
+    for pid in (1, 2):
+        (proc / str(pid) / "fd").mkdir(parents=True)
+        for fd in range(30):
+            (proc / str(pid) / "fd" / str(fd)).symlink_to(f"socket:[{pid * 1000 + fd}]")
+    listener = proc / "1/fd/31"
+    listener.symlink_to("socket:[100]")
+    monkeypatch.setattr(
+        jetson, "Path", lambda name: proc / str(name).removeprefix("/proc/") if str(name) != "/proc" else proc
+    )
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: str(pid))
+    monkeypatch.setattr(jetson, "_listener_cache", {})
+    reads = []
+    original = jetson.os.readlink
+
+    def readlink(path):
+        reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(jetson.os, "readlink", readlink)
+    assert jetson._listening_ports_by_pid({"8100"}) == {1: {"8100"}}
+    reads.clear()
+    assert jetson._listening_ports_by_pid({"8100"}) == {1: {"8100"}}
+    assert reads == [str(listener)], "unrelated open fds must not be traversed on a verified cache hit"
+    listener.unlink()
+    listener.symlink_to("socket:[999]")
+    (proc / "2/fd/31").symlink_to("socket:[100]")
+    assert jetson._listening_ports_by_pid({"8100"}) == {2: {"8100"}}
 
 
 def test_pid_identity_change_invalidates_collected_memory(monkeypatch):
@@ -306,6 +280,124 @@ def test_pid_identity_change_invalidates_collected_memory(monkeypatch):
     result, _ = memory_freshness({**data, "_t": 100.1})
     assert result["model_process_system_memory_used_mib"] is None
     assert result["product_stack_memory_mib"] is None
+
+
+def test_slow_topology_has_one_job_and_cannot_starve_memory_or_refresh_old_facts(monkeypatch):
+    import threading
+    import time
+
+    from photobench.domain.runtime.metrics import memory_freshness
+    from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+
+    gate, entered = threading.Event(), threading.Event()
+    calls = []
+    row = {"pid": 42, "start_ticks": "42", "rss_mib": 20, "listening_ports": [8100]}
+
+    def slow(ports):
+        calls.append(1)
+        entered.set()
+        gate.wait(10)
+        return [row]
+
+    monkeypatch.setattr(jetson, "_host_process_rows", slow)
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: "42")
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", lambda pid: (8, 10))
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 10240K\n")
+    original = time.monotonic() - 4
+    snapshot = {"started": original, "finished": original + 0.1, "value": [row]}
+    topology, memory = BoundedProbe(limit=1), BoundedProbe(limit=4)
+    try:
+        for _ in range(2):
+            start = time.monotonic()
+            data = jetson._augment_local_process_memory(
+                {},
+                model_pid=None,
+                endpoint_port="8100",
+                telemetry_services={"main_model": {"ports": [8100]}},
+                probe=memory,
+                topology_probe=topology,
+                topology_snapshot=snapshot,
+            )
+            assert time.monotonic() - start < 2.9
+            assert entered.is_set() and calls == [1]
+            assert data["memory_observations"]["topology"]["observed_at_monotonic"] == original
+            assert data["memory_observations"]["process:42:pss"]["status"] == "available"
+            normalized, _ = memory_freshness({**data, "_t": time.monotonic()})
+            assert normalized["product_stack_memory_mib"] is None
+            assert topology.pending_work() == ["topology"]
+    finally:
+        gate.set()
+
+
+def test_visual_load_smaps_finishes_within_bounded_window(monkeypatch):
+    import time
+
+    from photobench.domain.runtime.metrics import memory_freshness
+    from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+
+    row = {"pid": 42, "start_ticks": "42", "rss_mib": 20, "listening_ports": [8100]}
+    monkeypatch.setattr(jetson, "_host_process_rows", lambda ports: [row])
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: "42")
+
+    def smaps(pid):
+        time.sleep(0.75)
+        return 8, 10
+
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", smaps)
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 10240K\n")
+    start = time.monotonic()
+    data = jetson._augment_local_process_memory(
+        {},
+        model_pid=None,
+        endpoint_port="8100",
+        telemetry_services={"main_model": {"ports": [8100]}},
+        probe=BoundedProbe(limit=4),
+    )
+    assert 0.7 <= time.monotonic() - start < 2
+    normalized, _ = memory_freshness({**data, "_t": time.monotonic()})
+    assert normalized["memory_complete"] is True
+    assert normalized["model_process_host_memory_mib"] == 8
+
+
+@pytest.mark.parametrize("explicit_pid", [False, True])
+def test_delayed_topology_is_refreshed_before_memory_walk_ages_it_out(monkeypatch, explicit_pid):
+    import time
+
+    from photobench.domain.runtime.metrics import memory_freshness
+    from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+
+    row = {"pid": 42, "start_ticks": "42", "rss_mib": 20, "listening_ports": [8100]}
+
+    def topology(ports):
+        time.sleep(0.25)
+        return [row]
+
+    def smaps(pid):
+        time.sleep(0.75)
+        return 8, 10
+
+    monkeypatch.setattr(jetson, "_host_process_rows", topology)
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: "42")
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", smaps)
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 10240K\n")
+    snapshot = {"started": time.monotonic() - 2.5, "value": [row]}
+    main = {"ports": [8100], **({"pids": [42]} if explicit_pid else {})}
+    started = time.monotonic()
+    data = jetson._augment_local_process_memory(
+        {},
+        model_pid=None,
+        endpoint_port="8100",
+        telemetry_services={"main_model": main},
+        probe=BoundedProbe(limit=4),
+        topology_probe=BoundedProbe(limit=1),
+        topology_snapshot=snapshot,
+    )
+    assert data["memory_observations"]["topology"]["observed_at_monotonic"] >= started
+    normalized, _ = memory_freshness({**data, "_t": time.monotonic()})
+    assert normalized["memory_complete"] is True
 
 
 def test_probe_budget_stops_additional_smaps_and_does_not_claim_complete_memory(monkeypatch):
@@ -406,15 +498,38 @@ def test_scoped_process_inventory_reads_details_only_for_listeners_and_new_child
         "_listening_ports_by_pid",
         lambda ports: {1: {"8104"}, 8: {"8106"}} if not ports else {1: {"8104"}},
     )
+
+    def parents():
+        return {
+            int(p.name): int((p / "stat").read_text().rsplit(")", 1)[1].split()[1]) for p in proc.iterdir()
+        }
+
+    monkeypatch.setattr(jetson, "_process_parent_snapshot", parents)
+    identity_reads = []
+    identity = jetson._process_identity
+
+    def read_identity(pid):
+        identity_reads.append(pid)
+        return identity(pid)
+
+    monkeypatch.setattr(jetson, "_process_identity", read_identity)
     reads = []
     monkeypatch.setattr(jetson, "_process_rss_mib", lambda pid: reads.append(pid) or 10.0)
     monkeypatch.setattr(jetson, "_process_cmdline", lambda pid: "/usr/bin/llama-server --port 8104")
     rows = jetson._host_process_rows({"8104"})
     assert {r["pid"] for r in rows} == {1, 2, 3}
     assert set(reads) == {1, 2, 3}, "unrelated same-name models must not incur RSS/command probes"
+    assert 8 not in identity_reads, "port scope must not scan unrelated process stat files"
     write_stat(4, 1)
     assert {r["pid"] for r in jetson._host_process_rows({"8104"})} == {1, 2, 3, 4}
     assert {r["pid"] for r in jetson._host_process_rows()} == {1, 2, 3, 4, 8}
+
+    # Unavailable native snapshot must trigger complete proc ancestry discovery.
+    def unavailable():
+        raise OSError("ps unavailable")
+
+    monkeypatch.setattr(jetson, "_process_parent_snapshot", unavailable)
+    assert {r["pid"] for r in jetson._host_process_rows({"8104"})} == {1, 2, 3, 4}
 
     def reuse(pid):
         if pid == 2:
@@ -473,3 +588,181 @@ def test_port_inventory_optimization_preserves_non_port_service_selectors(monkey
     else:
         assert selections[0] is not None
         assert sampled == [1], "explicit port scope must not match unrelated same-name services"
+
+
+@pytest.mark.parametrize("changed_membership", [False, True])
+@pytest.mark.parametrize("topology_seconds,smaps_seconds", [(1.1, 0.3), (1.6, 0.3), (1.6, 1.4)])
+def test_topology_finishing_during_or_after_smaps_is_joined_with_identity_check(
+    monkeypatch, changed_membership, topology_seconds, smaps_seconds
+):
+    import time
+
+    from photobench.domain.runtime.metrics import memory_freshness
+    from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+
+    row = {"pid": 42, "ppid": 1, "start_ticks": "42", "rss_mib": 20, "listening_ports": [8100]}
+    calls = []
+
+    def topology(ports):
+        calls.append(1)
+        time.sleep(topology_seconds)
+        fresh = [{**row, "rss_mib": 30}]
+        if changed_membership:
+            fresh.append({"pid": 43, "ppid": 42, "start_ticks": "43", "rss_mib": 5})
+        return fresh
+
+    def smaps(pid):
+        time.sleep(smaps_seconds)
+        return 8, 10
+
+    monkeypatch.setattr(jetson, "_host_process_rows", topology)
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: str(pid))
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", smaps)
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 10240K\n")
+    original = time.monotonic() - 1.8
+    snapshot = {"started": original, "finished": original + 0.1, "value": [row]}
+    probe = BoundedProbe(limit=1)
+    started = time.monotonic()
+    data = jetson._augment_local_process_memory(
+        {},
+        model_pid=None,
+        endpoint_port="8100",
+        telemetry_services={"main_model": {"ports": [8100]}},
+        probe=BoundedProbe(limit=4),
+        topology_probe=probe,
+        topology_snapshot=snapshot,
+    )
+    finished = time.monotonic()
+    assert topology_seconds - 0.05 < finished - started < topology_seconds + 0.35
+    assert calls == [1] and probe.pending_work() == [], "harvesting must not start extra work"
+    assert snapshot["started"] >= started
+    normalized, _ = memory_freshness({**data, "_t": finished})
+    if changed_membership:
+        assert normalized["memory_complete"] is False
+        assert data["memory_observations"]["topology"]["reason"] == "topology_changed_during_memory_read"
+        assert len(snapshot["value"]) == 2
+    else:
+        assert normalized["memory_complete"] is True
+        assert data["memory_observations"]["topology"]["observed_at_monotonic"] == snapshot["started"]
+        assert (
+            started <= data["memory_observations"]["process:42:pss"]["observed_at_monotonic"] < started + 0.5
+        )
+        assert data["model_system_processes"][0]["rss_mib"] == 30
+
+
+def test_previous_topology_finishing_during_memory_launches_current_successor(monkeypatch):
+    import threading
+    import time
+
+    from photobench.domain.runtime.metrics import memory_freshness
+    from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+
+    row = {"pid": 42, "ppid": 1, "start_ticks": "42", "rss_mib": 20, "listening_ports": [8100]}
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def topology(ports):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(10)
+        return [{**row, "rss_mib": 30}]
+
+    def smaps(pid):
+        # The old discovery cannot finish until memory starts: serial waiting
+        # would consume the initial deadline before reaching this signal.
+        release.set()
+        time.sleep(0.2)
+        return 8, 10
+
+    monkeypatch.setattr(jetson, "_host_process_rows", topology)
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: str(pid))
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", smaps)
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 10240K\n")
+    probe = BoundedProbe(limit=1)
+    probe.collect({"topology": lambda: topology({"8100"})}, budget=0)
+    assert entered.wait(1)
+    original = time.monotonic() - 1.8
+    snapshot = {"started": original, "finished": original + 0.1, "value": [row]}
+    started = time.monotonic()
+    try:
+        data = jetson._augment_local_process_memory(
+            {},
+            model_pid=None,
+            endpoint_port="8100",
+            telemetry_services={"main_model": {"ports": [8100]}},
+            probe=BoundedProbe(limit=4),
+            topology_probe=probe,
+            topology_snapshot=snapshot,
+        )
+        assert time.monotonic() - started < 0.8
+        assert calls == [1, 1] and probe.pending_work() == []
+        assert snapshot["started"] >= started
+        normalized, _ = memory_freshness({**data, "_t": time.monotonic()})
+        assert normalized["memory_complete"] is True
+        assert data["memory_observations"]["process:42:pss"]["observed_at_monotonic"] < snapshot["started"]
+    finally:
+        release.set()
+
+
+def test_gpu_thermal_sensor_reads_only_gpu_and_preserves_idle_missing(monkeypatch, tmp_path):
+    import errno
+    import os
+
+    cpu = tmp_path / "thermal_zone0"
+    gpu = tmp_path / "thermal_zone7"
+    cpu.mkdir()
+    gpu.mkdir()
+    (cpu / "type").write_text("cpu-thermal\n")
+    (cpu / "temp").write_text("65000\n")
+    (gpu / "type").write_text("gpu-thermal\n")
+    (gpu / "temp").write_text("49562\n")
+    value = jetson._gpu_temperature(tmp_path)
+    assert value["temperature_c"] == 49.562
+    assert value["gpu_temperature_sensor"] == str(gpu / "temp")
+    assert value["gpu_temperature_method"] == "jetson_gpu_thermal_sysfs"
+    (gpu / "temp").write_text("-256000\n")
+    assert (
+        jetson._gpu_temperature(tmp_path)["resource_missing_reasons"]["temperature_c"]
+        == "gpu_temperature_invalid_reading"
+    )
+
+    def idle(fd, size):
+        raise BlockingIOError(errno.EAGAIN, os.strerror(errno.EAGAIN))
+
+    monkeypatch.setattr(jetson.os, "read", idle)
+    missing = jetson._gpu_temperature(tmp_path)
+    assert missing["temperature_c"] is None
+    assert (
+        missing["resource_missing_reasons"]["temperature_c"]
+        == "gpu_temperature_sensor_temporarily_unavailable"
+    )
+
+
+def test_gpu_temperature_uses_its_own_observation_age_and_source():
+    from photobench.domain.runtime.metrics import device_freshness, resource_records
+
+    sample = {
+        "protocol_version": "photobench-resource-telemetry-v1",
+        "source": "jetson_local_pss",
+        "_t": 100.0,
+        "temperature_c": 49.562,
+        "cpu_temperature_c": 65,
+        "device_observed_at_monotonic": 90.0,
+        "gpu_temperature_observed_at_monotonic": 99.9,
+        "gpu_temperature_method": "jetson_gpu_thermal_sysfs",
+    }
+    fresh, rejected = device_freshness(sample)
+    assert fresh["temperature_c"] == 49.562
+    assert fresh["cpu_temperature_c"] is None
+    assert "temperature_c" not in rejected
+    record = resource_records(fresh)["gpu_temperature"]
+    assert record["method"] == "jetson_gpu_thermal_sysfs"
+    assert record["observed_at_monotonic"] == 99.9
+    assert record["status"] == "available"
+    expired, rejected = device_freshness({**sample, "_t": 105.0, "device_observed_at_monotonic": 105.0})
+    assert expired["temperature_c"] is None
+    assert rejected == ["temperature_c"]
+    assert resource_records(expired)["gpu_temperature"]["reason"] == "gpu_temperature_observation_expired"

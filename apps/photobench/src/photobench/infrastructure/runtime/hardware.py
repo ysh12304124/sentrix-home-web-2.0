@@ -1,14 +1,7 @@
-"""CPU 温度读数——**只搬 1.0 ``backend/hardware.py`` 里被运行时提供者用到的那一个函数**。
+"""Host CPU sampling and temperature reads for local telemetry providers.
 
-1.0 的 ``hardware.py``（137 行）一共有五个公开函数，只有 ``read_cpu_temperature_c``
-被 ``runtime_providers.py`` 用到（``HostNvidiaTelemetryProvider.gpu_stats`` 在
-nvidia-smi 之外补一个 CPU 温度）。其余四个（``collect_gpu`` / ``collect_cpu`` /
-``collect_memory`` / ``collect_hardware``）服务的是 ``run_qa_benchmark`` 写 run meta，
-归 S9b 的编排侧，本切片不搬、也不在这里预留。
-
-它是 ``/sys/class/hwmon`` 的读操作，与 ``nvidia-smi`` 同性质，所以同样只能落在
-infrastructure（``domain-purity`` 与 ``application-purity`` 都禁止 domain/application
-碰系统文件系统）。
+CPU utilization is the all-core ratio reported by psutil. Temperature reads
+select CPU sensors from hwmon; GPU and storage sensors remain separate.
 """
 
 from __future__ import annotations
@@ -16,11 +9,30 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+import psutil
+
 # 153 是 AMD k10temp 的 Tctl，Intel 板子是 coretemp，Orin 可能暴露 cpu-thermal。
 # NVMe / 网卡 / amdgpu 的传感器一律忽略——把它们当成 CPU 温度比读不到更糟。
 _CPU_HWMON_NAMES = ("k10temp", "coretemp", "cpu_thermal", "cpu-thermal")
 # 同一颗芯片可能有多个 temp*_input（Tctl / Tccd / 各核心），按标签挑一个。
 _CPU_TEMP_LABELS = ("tctl", "tdie", "package id 0", "cpu")
+
+
+class HostCpuSampler:
+    """All-core CPU busy ratio; the first observation only initializes the interval."""
+
+    def __init__(self) -> None:
+        self._primed = False
+
+    def sample(self) -> float | None:
+        try:
+            value = float(psutil.cpu_percent(interval=None))
+        except (OSError, RuntimeError):
+            return None
+        if not self._primed:
+            self._primed = True
+            return None
+        return value if 0 <= value <= 100 else None
 
 
 def read_cpu_temperature_c(root: Path | None = None) -> float | None:

@@ -46,7 +46,12 @@ from sentrix.domain.assistant.tools import MAX_DELIVERED_PHOTOS
 from sentrix.domain.identity.ports import FaceRepository, PersonCropRenderer
 from sentrix.domain.media.inspection import CERTAINTY_SUPPORTED
 from sentrix.domain.media.models import Observation
-from sentrix.domain.media.ports import AssetRepository, ObservationRepository, PhotoInspector
+from sentrix.domain.media.ports import (
+    AssetRepository,
+    ObservationRepository,
+    PhotoInspector,
+    RecordedPhotoInspector,
+)
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.fact_query import FactRejection
 
@@ -810,14 +815,24 @@ class AssistantToolbox:
                     crop_path = None
                     target_bbox = None
 
+        model_observations: list[dict[str, Any]] = []
         try:
-            parsed = self._photo_inspector.inspect(
+            inspect = (
+                self._photo_inspector.inspect_recorded
+                if isinstance(self._photo_inspector, RecordedPhotoInspector)
+                else self._photo_inspector.inspect
+            )
+            inspected = inspect(
                 asset.path,
                 asked,
                 faces=[dataclasses.asdict(row) for row in manifest],
                 target_person=target_person,
                 crop=crop_path,
             )
+            if isinstance(inspected, tuple):
+                parsed, model_observations = inspected
+            else:
+                parsed = inspected
         finally:
             # 临时件由调用方删（``render_person_crop`` 的契约）。
             if crop_path:
@@ -825,7 +840,11 @@ class AssistantToolbox:
 
         if parsed is None:
             return ToolOutcome(
-                observation={"failure_reason": "model_unavailable", "asset_id": asset_id},
+                observation={
+                    "failure_reason": "model_unavailable",
+                    "asset_id": asset_id,
+                    "model_call_observations": model_observations,
+                },
                 model_visible={"error": "model_unavailable", "message": "模型不可用，这次没能复核这张照片。"},
                 failure_reason="model_unavailable",
                 blocks=EvidenceType.VISUAL_OBSERVATION,
@@ -866,6 +885,7 @@ class AssistantToolbox:
                 "target_face_id": target_face.face_id if target_face else "",
                 "target_face_status": target_status,
                 "target_bbox": target_bbox,
+                "model_call_observations": model_observations,
                 "confirms_visual_only": not identities,
                 "unconfirmed_people_count": unconfirmed,
             },

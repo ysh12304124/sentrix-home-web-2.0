@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from sentrix.domain.media.models import (
     Asset,
@@ -238,6 +238,21 @@ class PhotoInspector(Protocol):
         target_person: str = "",
         crop: str | Path | None = None,
     ) -> dict[str, object] | None: ...
+
+
+@runtime_checkable
+class RecordedPhotoInspector(Protocol):
+    """Optional inspection facts, scoped to this invocation (never shared mutable history)."""
+
+    def inspect_recorded(
+        self,
+        path: str | Path,
+        question: str,
+        *,
+        faces: Sequence[Mapping[str, object]] = (),
+        target_person: str = "",
+        crop: str | Path | None = None,
+    ) -> tuple[dict[str, object] | None, list[dict[str, Any]]]: ...
 
 
 class AssetObserver(Protocol):
@@ -509,4 +524,22 @@ class AudioRepository(Protocol):
 
     def save_probe(self, asset_id: str, probe: AudioProbe) -> None:
         """把探测结果并进 ``assets.metadata_json``。**必须在资产行落库之后调**（外键）。"""
+        ...
+
+
+class OperationControl(Protocol):
+    def start(self, operation_id: str) -> None:
+        """Register before side effects; duplicate/capacity raises ValueError/OverflowError."""
+        ...
+
+    def request_cancel(self, operation_id: str) -> dict[str, str | bool]:
+        """Idempotently request cancellation; unknown ID raises KeyError."""
+        ...
+
+    def check(self, operation_id: str) -> None:
+        """Raise OperationCancelled at a safe boundary; unknown raises KeyError."""
+        ...
+
+    def finish(self, operation_id: str) -> None:
+        """Acknowledge worker exit, never just a cancellation request."""
         ...

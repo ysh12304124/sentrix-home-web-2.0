@@ -176,6 +176,7 @@ def test_a_plain_reply_is_parsed(server: str):
     result = chat_model(server).complete(messages(), TOOL_SPECS)
 
     assert result.content == "这是你要的海边照片。"
+    assert result.diagnostics["streamed"] is False
     assert result.tool_calls == ()
     assert result.wants_tools is False
     assert (result.prompt_tokens, result.completion_tokens) == (11, 3)
@@ -675,3 +676,22 @@ def test_an_answer_without_any_channel_is_untouched(server: str):
 
     assert result.content == "  这是你要的海边照片。  "
     assert result.thought == ""
+
+
+def test_diagnostics_preserve_actual_tokens_and_preflight_does_not_send(server: str):
+    _Handler.response = reply("answer")
+    result = context_model(server).complete(messages(), ())
+    assert result.prompt_tokens == 11 and result.completion_tokens == 3
+    assert result.diagnostics["request_sent"] is True
+    assert result.diagnostics["http_status"] == 200
+    assert result.diagnostics["context_window_tokens"] == CONTEXT_TOKENS
+    assert result.diagnostics["output_budget_tokens"] > 0
+    before = len(_Handler.received)
+    with pytest.raises(PromptTooLongError) as exc:
+        context_model(server).complete(
+            [ChatMessage(ChatRole.SYSTEM, "系统"), ChatMessage(ChatRole.USER, "问" * 20000)], ()
+        )
+    assert len(_Handler.received) == before
+    assert exc.value.diagnostics["request_sent"] is False
+    assert exc.value.diagnostics["error_category"] == "context_output_insufficient"
+    assert exc.value.diagnostics["prompt_tokens_estimated"] > CONTEXT_TOKENS
