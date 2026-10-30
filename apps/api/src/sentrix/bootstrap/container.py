@@ -272,15 +272,10 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
-        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "window").strip().lower()
+        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_lowrank").strip().lower()
         video_scene_planner = None
         if video_algorithm == "svd_lowrank":
-            source_root = os.getenv("SENTRIX_SVD_SOURCE_ROOT", "").strip()
-            if not source_root:
-                raise ValueError("SENTRIX_SVD_SOURCE_ROOT is required for svd_lowrank")
-            video_scene_planner = SVDLowRankScenePlanner(
-                Path(source_root), settings.media_dir / "derived" / "svd"
-            )
+            video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
         place_aliases = load_place_aliases()

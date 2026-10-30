@@ -1,0 +1,16 @@
+# CPU-only SVD / low-rank keyframe route. Existing route parameters are not here.
+sample_fps: 2.0
+resize: [160, 90]
+window_seconds: 8.0
+stride_seconds: 2.0
+energy_threshold: 0.90
+min_rank: 1
+max_rank: 16
+min_event_seconds: 2.0
+boundary_quantile: 0.78
+dedup_similarity: 0.985
+score_weights:
+  reconstruction: 0.40
+  subspace: 0.30
+  spectrum: 0.20
+  coverage: 0.10

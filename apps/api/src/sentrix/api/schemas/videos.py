@@ -84,6 +84,7 @@ class VideoScenePayload(BaseModel):
     source_start_sec: float | None = None
     source_end_sec: float | None = None
     speech_segments: list[SpeechSegmentPayload] = Field(default_factory=list)
+    keyframe_timestamps_sec: list[float] = Field(default_factory=list)
 
 
 class KeyframeAssetPayload(BaseModel):

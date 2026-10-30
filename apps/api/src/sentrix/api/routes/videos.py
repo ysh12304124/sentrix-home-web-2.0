@@ -83,20 +83,26 @@ def _video_payload(asset: Asset, probe: VideoProbe | None) -> VideoPayload:
     )
 
 
-def _scene_payload(event: EventRecord) -> VideoScenePayload:
+def _scene_payload(
+    event: EventRecord, keyframe_timestamps_sec: list[float] | None = None
+) -> VideoScenePayload:
     raw_segments = event.source_metadata.get("speech_segments", [])
-    speech_segments = [
-        {
-            "start_sec": segment["start_sec"],
-            "end_sec": segment["end_sec"],
-            "text": segment["text"],
-        }
-        for segment in raw_segments
-        if isinstance(segment, dict)
-        and isinstance(segment.get("start_sec"), (int, float))
-        and isinstance(segment.get("end_sec"), (int, float))
-        and isinstance(segment.get("text"), str)
-    ] if isinstance(raw_segments, list) else []
+    speech_segments = (
+        [
+            {
+                "start_sec": segment["start_sec"],
+                "end_sec": segment["end_sec"],
+                "text": segment["text"],
+            }
+            for segment in raw_segments
+            if isinstance(segment, dict)
+            and isinstance(segment.get("start_sec"), (int, float))
+            and isinstance(segment.get("end_sec"), (int, float))
+            and isinstance(segment.get("text"), str)
+        ]
+        if isinstance(raw_segments, list)
+        else []
+    )
     return VideoScenePayload(
         id=event.id,
         scope_id=event.scope_id,
@@ -115,7 +121,27 @@ def _scene_payload(event: EventRecord) -> VideoScenePayload:
         source_start_sec=event.source_start_sec,
         source_end_sec=event.source_end_sec,
         speech_segments=speech_segments,
+        keyframe_timestamps_sec=sorted(keyframe_timestamps_sec or []),
     )
+
+
+def _video_scenes_payload(asset_id: str, container: Container) -> list[VideoScenePayload]:
+    events = container.event_repository.list_video_scenes(asset_id)
+    frame_times: dict[int, list[float]] = {}
+    for derived in container.video_repository.list_derived(asset_id):
+        if (
+            derived.derived_kind == "video_keyframe"
+            and derived.source_scene_index is not None
+            and derived.source_timestamp_sec is not None
+        ):
+            frame_times.setdefault(derived.source_scene_index, []).append(derived.source_timestamp_sec)
+    return [
+        _scene_payload(
+            event,
+            frame_times.get(event.source_scene_index, []) if event.source_scene_index is not None else [],
+        )
+        for event in events
+    ]
 
 
 def _keyframe_payload(derived: DerivedAsset) -> KeyframeAssetPayload:
@@ -147,7 +173,7 @@ def get_video(asset_id: str, container: Container = Depends(get_container)) -> V
     asset = _require_video(asset_id, container)
     return VideoDetailResponse(
         video=_video_payload(asset, container.video_repository.probe(asset_id)),
-        scenes=[_scene_payload(item) for item in container.event_repository.list_video_scenes(asset_id)],
+        scenes=_video_scenes_payload(asset_id, container),
     )
 
 
@@ -156,7 +182,7 @@ def get_video_scenes(asset_id: str, container: Container = Depends(get_container
     _require_video(asset_id, container)
     return VideoScenesResponse(
         video_asset_id=asset_id,
-        scenes=[_scene_payload(item) for item in container.event_repository.list_video_scenes(asset_id)],
+        scenes=_video_scenes_payload(asset_id, container),
     )
 
 
@@ -174,7 +200,10 @@ def get_video_scene(scene_id: str, container: Container = Depends(get_container)
     source_probe = container.video_repository.probe(event.source_asset_id) if source_video else None
     source_meta = source_probe.metadata if source_probe else None
     return VideoSceneDetailResponse(
-        event=_scene_payload(event),
+        event=_scene_payload(
+            event,
+            [item.source_timestamp_sec for item in keyframes if item.source_timestamp_sec is not None],
+        ),
         keyframe_assets=[_keyframe_payload(item) for item in keyframes],
         source_video=(
             SourceVideoPayload(

@@ -63,6 +63,7 @@ describe("资产详情", () => {
         scenes: [{
           id: "scene-1",
           title: "视频场景 1",
+          keyframe_timestamps_sec: [5.3, 9.1],
           speech_segments: [{ start_sec: 4.2, end_sec: 6.8, text: "加入鸡肉" }],
         }],
       }),
@@ -75,6 +76,7 @@ describe("资产详情", () => {
     );
     expect(await screen.findByText("加入鸡肉")).toBeTruthy();
     expect(screen.getByText("00:04–00:06")).toBeTruthy();
+    expect(screen.getByText(/关键帧 00:05/)).toBeTruthy();
   });
 
   it("音频渲染 audio 控件并走 /preview", () => {

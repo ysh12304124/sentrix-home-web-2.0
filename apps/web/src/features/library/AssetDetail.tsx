@@ -203,7 +203,13 @@ function VideoSpeechTranscript({
   onSeek: (seconds: number) => void;
 }) {
   const segments = (scenes ?? [])
-    .flatMap((scene) => scene.speech_segments.map((segment) => ({ ...segment, sceneTitle: scene.title })))
+    .flatMap((scene) => scene.speech_segments.map((segment) => ({
+      ...segment,
+      sceneTitle: scene.title,
+      alignedKeyframes: (scene.keyframe_timestamps_sec ?? []).filter(
+        (timestamp) => timestamp >= segment.start_sec && timestamp <= segment.end_sec,
+      ),
+    })))
     .sort((a, b) => a.start_sec - b.start_sec);
   return (
     <section className="asset-video-speech" aria-label="视频语音转写">
@@ -219,7 +225,12 @@ function VideoSpeechTranscript({
               <button type="button" onClick={() => onSeek(segment.start_sec)}>
                 <time>{formatVideoTime(segment.start_sec)}–{formatVideoTime(segment.end_sec)}</time>
                 <span>{segment.text}</span>
-                <small>{segment.sceneTitle}</small>
+                <small>
+                  {segment.sceneTitle}
+                  {segment.alignedKeyframes.map((timestamp) => (
+                    <span key={timestamp}> · 关键帧 {formatVideoTime(timestamp)}</span>
+                  ))}
+                </small>
               </button>
             </li>
           ))}
