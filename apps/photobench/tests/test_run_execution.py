@@ -1935,3 +1935,106 @@ def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(mo
             for worker in execution._background_threads:
                 worker.join(timeout=2)
     assert not any(worker.is_alive() for worker in execution._background_threads)
+
+
+def test_resume_recovers_missing_judges_without_reexecuting_prior_agents(monkeypatch):
+    import copy
+
+    from fakes_execution import FakeHttpClient
+
+    from photobench.application.run_execution.judge import JudgeRunner
+
+    keys = ["zero", "old-failed", "missing-a", "missing-b", "missing-c", "new"]
+    rows = [{"qa_id": key, "answer": "ref"} for key in keys]
+    execution, _, _, _, _ = _execution(albums=FakeAlbums(manifest=_manifest(), qa_rows=rows))
+    runner = JudgeRunner(http=FakeHttpClient([]), judge_url="fake", judge_model="fake")
+    scored = []
+    monkeypatch.setattr(runner, "judge", lambda question, *a, **kw: scored.append(question) or {"score": 2})
+    monkeypatch.setattr(
+        runner, "judge_task_action", lambda *a, **kw: {"actual_action": "answer", "correct": True}
+    )
+    monkeypatch.setattr(execution, "_judge", runner)
+    prior = [
+        {
+            "qa_id": key,
+            "execution_status": "completed",
+            "answer": key,
+            "judge_status": "completed" if key == "zero" else "failed",
+            "runtime_turns": [
+                {
+                    "message": key,
+                    "answer": key,
+                    "expected_action": "answer",
+                    "task_judge": {"actual_action": "answer", "correct": True},
+                    "judge": {"score": 0 if key == "zero" else None},
+                    "evidence_judge": {"reason": "not_applicable", "score": None},
+                }
+            ],
+        }
+        for key in keys[:-1]
+        if key != "old-failed"
+    ]
+    prior.insert(
+        1,
+        {"qa_id": "old-failed", "execution_status": "failed", "judge_status": "skipped", "error": "original"},
+    )
+    before = copy.deepcopy(prior)
+    called = []
+
+    def evaluate(row, *_):
+        called.append(row["qa_id"])
+        return {
+            "qa_id": row["qa_id"],
+            "execution_status": "completed",
+            "answer": "new",
+            "runtime_turns": [{"message": "new", "answer": "new", "expected_action": "answer"}],
+        }
+
+    monkeypatch.setattr(execution, "_evaluate_one", evaluate)
+    state = RunState({"scope_id": "s", "album_id": ALBUM, "qa_snapshot": {"rows": rows}})
+    execution._phase_qa_eval(state, _request(prior_items=prior, repair_missing_judges=True))
+    assert called == ["new"]
+    assert sorted(scored) == ["missing-a", "missing-b", "missing-c", "new"]
+    assert prior == before
+    assert state.data["items"][0] == before[0]
+    assert state.data["items"][1] == before[1]
+    assert len(state.data["items"]) == 6
+    assert state.data["phases"]["qa_eval"]["judge_completed"] == 5
+    assert state.data["run_valid"] is False  # inherited execution failure remains visible
+
+
+def test_resume_keeps_inherited_answers_when_preflight_fails(monkeypatch):
+    import copy
+
+    execution, client, *_ = _execution()
+    prior = [
+        {
+            "qa_id": "q1",
+            "answer": "original",
+            "execution_status": "completed",
+            "judge_status": "failed",
+            "runtime_turns": [{"answer": "original"}],
+        }
+    ]
+    before = copy.deepcopy(prior)
+    monkeypatch.setattr(
+        execution,
+        "_sync_sentrix_endpoint",
+        lambda _: (_ for _ in ()).throw(RuntimeError("configuration mismatch")),
+    )
+    state = execution.execute(
+        _request(
+            mode="reuse",
+            scope_id="original-scope",
+            prior_items=prior,
+            resume_context={
+                "resumed_from": "original-run",
+                "source_input_integrity": {"qa_sha256": "original-r2"},
+            },
+        )
+    )
+    assert state["status"] == "failed"
+    assert state["items"] == before
+    assert state["resume_context"]["resumed_from"] == "original-run"
+    assert state["input_integrity"]["qa_sha256"] == "original-r2"
+    assert not any(name in {"start_turn", "seed_person", "import_directory"} for name in client.call_names())

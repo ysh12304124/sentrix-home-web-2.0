@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import json
 import os
 import random
@@ -606,11 +607,50 @@ class JudgeRunner:
 
     # ---- 一个 item 的编排 ---------------------------------------------------
 
+    @staticmethod
+    def _valid_result(value: Any, kind: str) -> bool:
+        if not isinstance(value, dict) or value.get("judge_status") == "failed":
+            return False
+        if kind == "task_judge":
+            return isinstance(value.get("correct"), bool) and value.get("actual_action") in {
+                "answer",
+                "refuse",
+                "clarify",
+                "answer_and_refuse",
+                "none",
+            }
+        if kind == "evidence_judge" and value.get("applicable") is False:
+            return value.get("judge_status") == "completed"
+        return type(value.get("score")) in {int, float} and value["score"] in {0, 1, 2}
+
+    def missing_judge_fields(self, record: Mapping[str, Any]) -> tuple[str, ...]:
+        """Only labeled, answered turns can need Judge recovery; zero is a valid score."""
+        if not str(record.get("answer") or "").strip():
+            return ()
+        expected = record.get("expected_action")
+        kinds: list[str] = []
+        if expected in ANSWER_QUALITY_RUBRICS:
+            kinds.extend(("task_judge", "judge"))
+        if (
+            self.evidence_enabled
+            and record.get("predicted_images")
+            and (record.get("task_judge") or {}).get("actual_action") != "clarify"
+        ):
+            kinds.append("evidence_judge")
+        return tuple(kind for kind in kinds if not self._valid_result(record.get(kind), kind))
+
+    def needs_judge_recovery(self, item: Mapping[str, Any]) -> bool:
+        return item.get("execution_status") == "completed" and any(
+            self.missing_judge_fields(record) for record in item.get("runtime_turns") or []
+        )
+
     def judge_item(
         self,
         item: dict[str, Any],
         row: Mapping[str, Any],
         assets_by_name: Mapping[str, list[dict[str, Any]]],
+        *,
+        only_missing: bool = False,
     ) -> dict[str, Any]:
         """1.0 ``_judge_item``（``:3588``）去掉 2.0 没有的计时段。
 
@@ -624,7 +664,19 @@ class JudgeRunner:
         conversation = row.get("conversation") or []
         reference = str(item.get("reference_answer") or row.get("answer") or "")
         turn_records = item.get("runtime_turns") or []
+
+        def assign(record: dict[str, Any], kind: str, value: dict[str, Any]) -> None:
+            if only_missing and kind in record:
+                record.setdefault("judge_recovery_history", []).append(
+                    {"kind": kind, "previous": copy.deepcopy(record[kind]), "replaced_at": now_iso()}
+                )
+            record[kind] = value
+
         for index, record in enumerate(turn_records):
+            missing = self.missing_judge_fields(record) if only_missing else ()
+            if only_missing and not missing:
+                continue
+
             expected = record.get("expected_action")
             turn_definition = (
                 conversation[index]
@@ -639,24 +691,29 @@ class JudgeRunner:
                     else reference
                 )
             conv_ctx = turn_records[: index + 1]
-            record["task_judge"] = self.judge_task_action(
-                record["message"],
-                record["answer"],
-                expected,
-                record.get("agent_status"),
-                record.get("termination_reason"),
-                task_type=turn_definition.get("task_type", row.get("task_type")),
-                question_type=turn_definition.get("question_type", row.get("question_type")),
-                answerability=turn_definition.get("answerability", row.get("answerability")),
-                reference=turn_reference,
-                conversation=conv_ctx,
-            )
+            if not only_missing or "task_judge" in missing:
+                assign(
+                    record,
+                    "task_judge",
+                    self.judge_task_action(
+                        record["message"],
+                        record["answer"],
+                        expected,
+                        record.get("agent_status"),
+                        record.get("termination_reason"),
+                        task_type=turn_definition.get("task_type", row.get("task_type")),
+                        question_type=turn_definition.get("question_type", row.get("question_type")),
+                        answerability=turn_definition.get("answerability", row.get("answerability")),
+                        reference=turn_reference,
+                        conversation=conv_ctx,
+                    ),
+                )
             # 同一轮的回答质量与图片证据两个调用**并行**（1.0 的注释）。
             should_judge_evidence = (
                 self.evidence_enabled
                 and record.get("predicted_images")
                 and record.get("answer")
-                and record["task_judge"].get("actual_action") != "clarify"
+                and (record.get("task_judge") or {}).get("actual_action") != "clarify"
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 quality_future = (
@@ -671,7 +728,7 @@ class JudgeRunner:
                         answerability=turn_definition.get("answerability", row.get("answerability")),
                         conversation=conv_ctx,
                     )
-                    if expected in ANSWER_QUALITY_RUBRICS
+                    if expected in ANSWER_QUALITY_RUBRICS and (not only_missing or "judge" in missing)
                     else None
                 )
                 evidence_future = (
@@ -683,15 +740,23 @@ class JudgeRunner:
                         assets_by_name,
                         conversation=conv_ctx,
                     )
-                    if should_judge_evidence
+                    if should_judge_evidence and (not only_missing or "evidence_judge" in missing)
                     else None
                 )
-            record["judge"] = (
-                quality_future.result() if quality_future else {"score": None, "reason": "not_labeled"}
-            )
-            record["evidence_judge"] = (
-                evidence_future.result() if evidence_future else {"score": None, "reason": "not_applicable"}
-            )
+            if not only_missing or "judge" in missing:
+                assign(
+                    record,
+                    "judge",
+                    quality_future.result() if quality_future else {"score": None, "reason": "not_labeled"},
+                )
+            if not only_missing or "evidence_judge" in missing:
+                assign(
+                    record,
+                    "evidence_judge",
+                    evidence_future.result()
+                    if evidence_future
+                    else {"score": None, "reason": "not_applicable"},
+                )
 
         task_judges = [record.get("task_judge") or {} for record in turn_records]
         task_judge = task_judges[-1] if task_judges else {"actual_action": None, "correct": None}
@@ -702,7 +767,22 @@ class JudgeRunner:
             else {"score": None, "reason": "not_applicable"}
         )
         judge_ms = round((time.perf_counter() - started) * 1000, 1)
-        all_judge_outputs = [judge, evidence_judge, *task_judges]
+        if only_missing:
+            item.setdefault("judge_recovery", []).append(
+                {
+                    "previous_judge_ms": item.get("judge_ms"),
+                    "previous_judged_at": item.get("judged_at"),
+                    "previous_judge_status": item.get("judge_status"),
+                    "recovery_ms": judge_ms,
+                    "recovered_at": now_iso(),
+                }
+            )
+            judge_ms += float(item.get("judge_ms") or 0)
+        all_judge_outputs = [
+            value
+            for record in turn_records
+            for value in (record.get("judge"), record.get("evidence_judge"), record.get("task_judge"))
+        ]
         # 任何一个子判分 failed，item 的 judge_status 就是 failed——读侧靠它区分
         # 「真的打了 0 分」与「根本没打成」。
         judge_terminal_status = (
@@ -711,6 +791,7 @@ class JudgeRunner:
                 isinstance(value, dict) and value.get("judge_status") == "failed"
                 for value in all_judge_outputs
             )
+            or any(self.missing_judge_fields(record) for record in turn_records)
             else "completed"
         )
         item.update(

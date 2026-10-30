@@ -902,3 +902,44 @@ def test_automatic_analysis_is_enqueued_only_after_execution_released(tmp_path: 
     while not seen and time.monotonic() < deadline:
         time.sleep(0.01)
     assert seen == response["run_ids"]
+
+
+def test_resume_records_lineage_and_explicit_configured_product_revision(tmp_path, monkeypatch):
+    captured = []
+    gate = threading.Event()
+    saved = _cancelled_state()
+    saved["runtime_snapshot"] = {
+        "sentrix_url": "http://original:8291",
+        "model_base_url": "http://original:8100/v1",
+        "required_build_revision": "old-product",
+        "embedding": {"mode": "original"},
+    }
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=lambda request: captured.append(request) or FakeExecution(request, gate),
+    )
+    configured = {
+        **suites._config.public_runtime_connection_config(),
+        "product_build_revision": "reviewed-product",
+    }
+    monkeypatch.setattr(suites._config, "public_runtime_connection_config", lambda: configured)
+    try:
+        result = suites.resume_run("run-1", {"product_build_revision": "reviewed-product"})
+        request = captured[0]
+        assert result["resumed_from"] == "run-1"
+        assert request.repair_missing_judges is True
+        assert request.resume_context["source_runtime_snapshot"]["required_build_revision"] == "old-product"
+        assert request.runtime_snapshot.connection()["required_build_revision"] == "reviewed-product"
+        assert request.runtime_snapshot.connection()["embedding"] == {"mode": "original"}
+        assert saved["runtime_snapshot"]["required_build_revision"] == "old-product"
+    finally:
+        gate.set()
+
+
+def test_resume_rejects_unconfigured_product_revision_and_non_boolean_recovery(tmp_path):
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": _cancelled_state()}))
+    with pytest.raises(InvalidRequestError, match="configured product build"):
+        suites.resume_run("run-1", {"product_build_revision": "unchecked"})
+    with pytest.raises(InvalidRequestError, match="boolean"):
+        suites.resume_run("run-1", {"repair_missing_judges": "yes"})

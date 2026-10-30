@@ -383,7 +383,7 @@ class RunSuites:
 
     # ---- resume -------------------------------------------------------------
 
-    def resume_run(self, run_id: str) -> dict[str, Any]:
+    def resume_run(self, run_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """``POST /api/runs/{id}/resume``（1.0 ``resume_run`` ``:7488``）。
 
         **与 ``reuse`` 共用同一块地基**：两者都是「绑到一个已经存在的 scope 上、
@@ -394,10 +394,20 @@ class RunSuites:
         这也正是取消掉的题必须标 ``scheduled`` 而不能标 ``failed`` 的原因——
         标 failed 的话它们会被当成「已跑完」，续跑时永远跳过（2026-10-15 改的）。
 
-        2.0 此前直接回 501（``api/routes/suites.py``），理由是「scope 由导入内部 ensure，
-        没有复用已存在 scope 这条路」。那条理由随 ``mode=reuse`` 一起消失了。
+        同时按轮次补缺失的 Judge 结果，成功子评分和失败尝试保留。
+        ``product_build_revision`` 可显式选择已配置的产品版本；原版本来源存入
+        ``resume_context``，运行前仍须通过产品配置与版本核验。
         """
         self._require_inactive()
+        payload = payload or {}
+        repair_missing = payload.get("repair_missing_judges", True)
+        if not isinstance(repair_missing, bool):
+            raise InvalidRequestError("repair_missing_judges must be a boolean")
+        target_revision = str(payload.get("product_build_revision") or "").strip()
+        if target_revision and target_revision != self._config.public_runtime_connection_config().get(
+            "product_build_revision"
+        ):
+            raise InvalidRequestError("resume product_build_revision must match the configured product build")
         try:
             saved = self._store.load_state(run_id)
         except KeyError as exc:
@@ -445,6 +455,10 @@ class RunSuites:
             if isinstance(item, dict)
             and str(item.get("execution_status") or "") not in {"scheduled", "running"}
         )
+        prior_ids = [str(item.get("qa_id")) for item in prior_items]
+        frozen_ids = {str(row.get("qa_id")) for row in snapshot["rows"]}
+        if len(prior_ids) != len(set(prior_ids)) or not set(prior_ids) <= frozen_ids:
+            raise InvalidRequestError("saved results do not uniquely match the frozen QA snapshot")
         model_profile = str(saved.get("model_profile") or "")
         new_run_id = (
             f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
@@ -465,6 +479,18 @@ class RunSuites:
             judge_url=str(saved.get("judge_url") or ""),
             judge_model=str(saved.get("judge_model") or ""),
             prior_items=prior_items,
+            repair_missing_judges=repair_missing,
+            resume_context={
+                "resumed_from": run_id,
+                "source_status": status,
+                "source_build_revision": saved.get("build_revision"),
+                "source_runtime_snapshot": saved.get("runtime_snapshot"),
+                "source_input_integrity": saved.get("input_integrity"),
+                "qa_definition_sha256": snapshot["definition_sha256"],
+                "inherited_qa_ids": [item.get("qa_id") for item in prior_items],
+                "repair_missing_judges": repair_missing,
+                "selected_product_build_revision": target_revision or None,
+            },
             frozen_qa_snapshot=snapshot,
         )
         prior_snapshot = saved.get("runtime_snapshot")
@@ -477,7 +503,10 @@ class RunSuites:
             # A resumed run is a new execution/build, with the original dependency/budget facts.
             inherited = dict(
                 prior_snapshot,
-                required_build_revision=prior_snapshot.get("product_build_revision")
+                product_build_revision=target_revision or prior_snapshot.get("product_build_revision"),
+                required_build_revision=target_revision
+                or prior_snapshot.get("product_build_revision")
+                or prior_snapshot.get("required_build_revision")
                 or (self._build_revision if self._build_revision != "development" else None),
             )
             request = replace(
@@ -518,6 +547,7 @@ class RunSuites:
             "scope_id": scope_id,
             # 带回来的题数——调用方据此判断续跑到底省了多少。
             "resumed_items": len(prior_items),
+            "repair_missing_judges": repair_missing,
         }
 
     # ---- 取消 / 删除 --------------------------------------------------------

@@ -236,6 +236,8 @@ class RunRequest:
     #: 1.0 的 ``resume_state``（``:7560-7564`` 把整份旧 state 塞进新 run），
     #: 2.0 只带 items 那一格——其余字段（相位、硬件快照）属于那一次运行，不该被覆盖。
     prior_items: tuple[Mapping[str, Any], ...] = ()
+    repair_missing_judges: bool = False
+    resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
     import_timeout: int = 7200
     turn_timeout: int = 900
@@ -653,6 +655,7 @@ class RunExecution:
             }
         return {
             "qa_snapshot": snapshot,
+            "resume_context": copy.deepcopy(request.resume_context),
             "metrics_contract_version": 2,
             "build_revision": self.runtime_snapshot.build_revision
             if self.runtime_snapshot
@@ -696,10 +699,16 @@ class RunExecution:
             or None,
             "rejudge": None,
             "memory_profile": None,
-            "input_integrity": self.albums.integrity(
-                album_id,
-                manifest,
-                "" if request.mode == "build" or request.frozen_qa_snapshot is not None else request.qa_set,
+            "input_integrity": (
+                copy.deepcopy(request.resume_context["source_input_integrity"])
+                if request.resume_context and request.resume_context.get("source_input_integrity")
+                else self.albums.integrity(
+                    album_id,
+                    manifest,
+                    ""
+                    if request.mode == "build" or request.frozen_qa_snapshot is not None
+                    else request.qa_set,
+                )
             ),
             "hardware_snapshots": {"start": None, "end": None},
             "status": "pending",
@@ -707,7 +716,7 @@ class RunExecution:
             "started_at": None,
             "finished_at": None,
             "phases": {},
-            "items": [],
+            "items": [dict(item) for item in request.prior_items],
             "summary": {},
             "run_valid": None if request.mode == "build" else False,
             "fatal_error": None,
@@ -2091,7 +2100,16 @@ class RunExecution:
         }
         pending_rows = [(index, row) for index, row in enumerate(rows) if index not in items]
         judge_futures: dict[concurrent.futures.Future[dict[str, Any]], int] = {}
-        judge_done = sum(item.get("judge_status") in {"completed", "failed"} for item in items.values())
+        recovery_indices = {
+            index
+            for index, item in items.items()
+            if request.repair_missing_judges and judge is not None and judge.needs_judge_recovery(item)
+        }
+        recovery_queue = iter(sorted(recovery_indices))
+        judge_done = sum(
+            item.get("judge_status") in {"completed", "failed"} and index not in recovery_indices
+            for index, item in items.items()
+        )
 
         def record_progress() -> None:
             # One locked checkpoint for items and both counter locations. Legacy readers
@@ -2133,6 +2151,8 @@ class RunExecution:
             begin, begin_iso = time.perf_counter(), now_iso()
             try:
                 assert judge is not None
+                if request.repair_missing_judges and str(item.get("qa_id")) in prior_by_qa:
+                    return judge.judge_item(copy.deepcopy(item), row, assets_by_name, only_missing=True)
                 return judge.judge_item(copy.deepcopy(item), row, assets_by_name)
             finally:
                 with judge_bounds_lock:
@@ -2145,7 +2165,22 @@ class RunExecution:
             if judge is not None
             else None
         )
+
+        def fill_recovery_slots() -> None:
+            nonlocal judge_phase_started
+            if judge_pool is None or state.cancelled:
+                return
+            while len(judge_futures) < judge_concurrency:
+                index = next(recovery_queue, None)
+                if index is None:
+                    break
+                if judge_phase_started is None:
+                    judge_phase_started = time.perf_counter()
+                    state.record_phase("qa_eval", "judge_phase_started_at", now_iso())
+                judge_futures[judge_pool.submit(run_judge, items[index], rows[index])] = index
+
         try:
+            fill_recovery_slots()
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=concurrency, thread_name_prefix="qa-agent"
             ) as executor:
@@ -2197,10 +2232,17 @@ class RunExecution:
                             except Exception as exc:  # noqa: BLE001
                                 with state.lock:
                                     items[index]["judge_status"] = "failed"
-                                    items[index]["judge"] = {"score": None, "reason": f"judge_error: {exc}"}
+                                    if index in recovery_indices:
+                                        items[index].setdefault("judge_recovery_errors", []).append(str(exc))
+                                    else:
+                                        items[index]["judge"] = {
+                                            "score": None,
+                                            "reason": f"judge_error: {exc}",
+                                        }
                             judge_done += 1
                             record_progress()
                             state.persist()
+                            fill_recovery_slots()
                             fill_agent_slots()
                             continue
                         future = completed_future

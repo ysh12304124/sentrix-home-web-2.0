@@ -479,3 +479,63 @@ def test_mixed_action_validation_does_not_accept_unknown_action():
     )
     assert result["actual_action"] is None and result["correct"] is None
     assert result["judge_status"] == "failed"
+
+
+def test_missing_only_preserves_successful_turns_and_archives_failed_attempts():
+    import copy
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    item = _multi_turn_item()
+    item["execution_status"] = "completed"
+    for turn in item["runtime_turns"]:
+        turn["task_judge"] = {"actual_action": "answer", "correct": True, "raw_text": "original task"}
+        turn["judge"] = {"score": 0, "raw_text": "original zero"}
+        turn["evidence_judge"] = {"score": None, "reason": "not_applicable"}
+    missing = {"score": None, "judge_status": "failed", "attempts": [{"error": "old HTTP429"}]}
+    item["runtime_turns"][1]["judge"] = copy.deepcopy(missing)
+    original = copy.deepcopy(item)
+    runner = _runner(http)
+    assert runner.needs_judge_recovery(item)
+    runner.judge_item(item, {"answer": "红色"}, {}, only_missing=True)
+    assert len(http.calls) == 1
+    assert item["runtime_turns"][0] == original["runtime_turns"][0]
+    assert item["runtime_turns"][1]["task_judge"] == original["runtime_turns"][1]["task_judge"]
+    assert item["runtime_turns"][1]["evidence_judge"] == original["runtime_turns"][1]["evidence_judge"]
+    assert item["runtime_turns"][1]["judge_recovery_history"][0]["previous"] == missing
+    assert item["judge"]["score"] == 2
+    assert not runner.needs_judge_recovery(item)
+
+
+def test_missing_only_retries_earlier_turn_even_when_final_score_is_valid():
+    http = FakeHttpClient([judge_reply('{"actual_action":"answer","reason":"回答"}')])
+    item = _multi_turn_item()
+    item["execution_status"] = "completed"
+    for turn in item["runtime_turns"]:
+        turn.update(task_judge={"actual_action": "answer", "correct": True}, judge={"score": 1})
+    item["runtime_turns"][0]["task_judge"] = {"correct": None, "judge_status": "failed"}
+    runner = _runner(http)
+    assert runner.needs_judge_recovery(item)
+    runner.judge_item(item, {"answer": "红色"}, {}, only_missing=True)
+    assert len(http.calls) == 1
+    assert item["judge"]["score"] == 1
+    assert item["judge_status"] == "completed"
+
+
+def test_missing_only_skips_unlabeled_answerless_and_inapplicable_evidence():
+    runner = _runner(FakeHttpClient([]), evidence_enabled=True)
+    for record in [
+        {"answer": "", "expected_action": "answer"},
+        {"answer": "unlabeled", "expected_action": None},
+        {
+            "answer": "answer",
+            "expected_action": "answer",
+            "predicted_images": [{}],
+            "task_judge": {"actual_action": "answer", "correct": False},
+            "judge": {"score": 0},
+            "evidence_judge": {"applicable": False, "judge_status": "completed"},
+        },
+    ]:
+        assert runner.missing_judge_fields(record) == ()
+    assert not runner.needs_judge_recovery(
+        {"execution_status": "failed", "runtime_turns": [{"answer": "partial", "expected_action": "answer"}]}
+    )
