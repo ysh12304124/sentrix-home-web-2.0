@@ -36,7 +36,7 @@ describe("QaItemCard · 工具召回图与模型使用图是两个口径", () =>
       // 故意不给 predicted_*：模型没有显式交付。
     });
 
-    expect(screen.getByText("工具召回图片（1）")).not.toBeNull();
+    expect(screen.getByText("工具召回关键帧图片（1）")).not.toBeNull();
     expect(screen.getByText("模型使用图片（0）")).not.toBeNull();
     expect(screen.getByText("回答依据图片为空（模型未选择交付图）")).not.toBeNull();
 
@@ -51,7 +51,7 @@ describe("QaItemCard · 工具召回图与模型使用图是两个口径", () =>
       predicted_media: [{ media_type: "image", media_id: "used.jpg", asset_id: "used-1", file_name: "used.jpg" }],
     });
 
-    expect(screen.getByText("工具召回图片（0）")).not.toBeNull();
+    expect(screen.getByText("工具召回关键帧图片（0）")).not.toBeNull();
     expect(screen.getByText("检索未返回可识别媒体")).not.toBeNull();
     expect(screen.getByText("模型使用图片（1）")).not.toBeNull();
     expect(screen.getAllByAltText("used.jpg")).toHaveLength(1);
@@ -65,7 +65,7 @@ describe("QaItemCard · 工具召回图与模型使用图是两个口径", () =>
       predicted_media: [{ media_type: "image", media_id: "used.jpg", asset_id: "used-1", file_name: "used.jpg" }],
     });
 
-    expect(screen.getByText("工具召回图片（1）")).not.toBeNull();
+    expect(screen.getByText("工具召回关键帧图片（1）")).not.toBeNull();
     expect(screen.getByText("模型使用图片（1）")).not.toBeNull();
     expect(screen.getByAltText("cand.jpg")).not.toBeNull();
     expect(screen.getByAltText("used.jpg")).not.toBeNull();
@@ -122,4 +122,33 @@ it('已召回但未交付的GT不误标为检索未召回', () => {
     gt_media:[{media_type:'image',media_id:'candidate.jpg',file_name:'candidate.jpg',matched:false}]});
   expect(screen.getByText('· 未交付')).toBeTruthy();
   expect(screen.queryByText('· 未召回')).toBeNull();
+});
+
+describe("QaItemCard · 检索证据显示实际关键帧与 ASR 文本", () => {
+  it("视频检索结果带关键帧资产时显示真实帧图片", () => {
+    renderCard({
+      index: 0,
+      question: "画面里谁在发言",
+      retrieved_candidate_media: [{ media_type: "video", media_id: "meeting_room_01", file_name: "meeting_room_01.mp4", asset_id: "video-1", source_keyframe_asset_id: "keyframe-1", source_timestamp_sec: 1511.5 }],
+    });
+    expect(screen.getByText("工具召回关键帧图片（1）")).not.toBeNull();
+    expect(screen.getByAltText("检索关键帧 1511.5s").getAttribute("src")).toContain("/assets/keyframe-1/file");
+  });
+
+  it("只显示检索工具实际返回的 ASR 文本与时间", () => {
+    renderCard({
+      index: 0,
+      question: "会议里说了什么",
+      tool_trace: [{ tool: "get_photo", result: { photos: [{ speech_evidence: [{ start_sec: 62, end_sec: 66, text: "我们下周再讨论" }] }] } }],
+    });
+    expect(screen.getByText("工具召回语音转写（1）")).not.toBeNull();
+    expect(screen.getByText("我们下周再讨论")).not.toBeNull();
+    expect(screen.getByText("1:02–1:06")).not.toBeNull();
+  });
+
+  it("没有工具返回的 ASR 结果时不从 QA 或答案文本伪造转写", () => {
+    renderCard({ index: 0, question: "语音里提到什么", answer: "参考答案里不应该出现", reference_answer: "参考答案里不应该出现" });
+    expect(screen.getByText("检索工具没有返回 ASR 转写文本")).not.toBeNull();
+    expect(screen.queryByText("工具召回语音转写（1）")).toBeNull();
+  });
 });

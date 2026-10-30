@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     # **整方案切换**，不是两个槽各切各的。默认 wemm，153 不设此变量即行为不变。
     # 可选值与模型/维度见 ``domain/retrieval/scheme.py`` 的 ``SCHEMES``。
     embedding_scheme: str = "wemm"
+    # Controlled ablation for video-memory experiments. False keeps timestamp-overlap
+    # ASR assignment and skips semantic cross-modal attention.
+    cross_modal_attention_enabled: bool = True
     # legacy 方案的视觉侧车（chinese-clip ViT-L-14，768 维）。模型已在 130 上，
     # 由 ``scripts/maintenance/legacy_clip_sidecar.py`` 拉起（默认 8103）。
     legacy_clip_url: str = "http://127.0.0.1:8103"

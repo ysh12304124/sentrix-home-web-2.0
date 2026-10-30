@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import json
+
 from sentrix.application.assistant.run_turn import (
+    _compact_latest_preview_round_trip,
     _drop_oldest_tool_round_trip,
     _round_trip_spans,
 )
@@ -84,3 +87,33 @@ def test_dropped_history_keeps_tool_call_id_pairing():
     }
     actual = {message.tool_call_id for message in result if message.role is ChatRole.TOOL}
     assert actual == expected
+
+
+def test_compacts_latest_preview_and_preserves_handles_and_transcript():
+    payload = {"group_photo_rows":[{"handle":"p1","group_size":3}],"preview":[
+        {"handle":"p1","captured_at":"2026-10-01T10:00:00","scene_hint":"office meeting",
+         "evidence_summary":"An office meeting; office meeting","level":"high","people":[],
+         "speech_evidence":[{"start_sec":1.0,"end_sec":4.0,"text":"We are glad you joined us.","speaker":""}]}]}
+    original = messages([assistant("s1","search_memories"),tool("s1-0",json.dumps(payload))])
+    result = _compact_latest_preview_round_trip(original)
+    assert result is not None
+    compacted = json.loads(result[-1].content)
+    row = compacted["preview"][0]
+    assert row["handle"] == "p1"
+    assert row["captured_at"] == "2026-10-01T10:00:00"
+    assert row["speech_evidence"][0]["text"] == "We are glad you joined us."
+    assert "scene_hint" not in row and "level" not in row and "people" not in row
+    assert "group_photo_rows" not in compacted
+    assert original[-1].content == json.dumps(payload)
+
+
+def test_progressively_shortens_visual_summary_without_truncating_speech():
+    payload = {"preview":[{"handle":"p1","evidence_summary":"visual " * 100,
+        "speech_evidence":[{"start_sec":2,"end_sec":8,"text":"exact transcript"}]}]}
+    current = messages([assistant("s1","search_memories"),tool("s1-0",json.dumps(payload))])
+    first = _compact_latest_preview_round_trip(current)
+    second = _compact_latest_preview_round_trip(first or [])
+    assert first is not None and second is not None
+    row = json.loads(second[-1].content)["preview"][0]
+    assert len(row["evidence_summary"]) < 450
+    assert row["speech_evidence"][0]["text"] == "exact transcript"

@@ -364,11 +364,15 @@ class Container:
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
             cross_modal_embedder=(
-                visual_embedder
-                if settings.embedding_scheme == "legacy"
-                else ChineseClipSidecarEmbedder(
-                    settings.legacy_clip_url,
-                    timeout_s=settings.legacy_clip_timeout_s,
+                None
+                if not settings.cross_modal_attention_enabled
+                else (
+                    visual_embedder
+                    if settings.embedding_scheme == "legacy"
+                    else ChineseClipSidecarEmbedder(
+                        settings.legacy_clip_url,
+                        timeout_s=settings.legacy_clip_timeout_s,
+                    )
                 )
             ),
             text_embedder=text_embedder,
