@@ -162,6 +162,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/audio-transcription:
+    get:
+      tags:
+      - media
+      summary: Get Audio Transcription
+      operationId: get_audio_transcription_api_v1_assets__asset_id__audio_transcription_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTranscriptionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/audio-transcription/reprocess:
+    post:
+      tags:
+      - media
+      summary: Reprocess Audio Transcription
+      description: '同步重跑一条音频，或视频中的音轨。
+
+
+        项目当前没有任务队列；因此第一版明确同步执行，并由 sidecar 内部限制为单并发。
+
+        失败会记录 failed 修订，但不会删掉上一版已经通过门禁的检索投影。'
+      operationId: reprocess_audio_transcription_api_v1_assets__asset_id__audio_transcription_reprocess_post
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTranscriptionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/assets/{asset_id}/file:
     get:
       tags:
@@ -2448,6 +2506,149 @@ components:
       - asset_id
       - file_name
       title: AttachmentSummary
+    AudioEvidenceExcerpt:
+      properties:
+        start_ms:
+          type: integer
+          title: Start Ms
+        end_ms:
+          type: integer
+          title: End Ms
+        text:
+          type: string
+          title: Text
+        is_anchor:
+          type: boolean
+          title: Is Anchor
+          default: false
+        speaker_label:
+          type: string
+          title: Speaker Label
+          default: ''
+      type: object
+      required:
+      - start_ms
+      - end_ms
+      - text
+      title: AudioEvidenceExcerpt
+    AudioTranscriptSegmentResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        start_ms:
+          type: integer
+          title: Start Ms
+        end_ms:
+          type: integer
+          title: End Ms
+        raw_text:
+          type: string
+          title: Raw Text
+        normalized_text:
+          type: string
+          title: Normalized Text
+        confidence_raw:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence Raw
+        alignment_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Alignment Score
+        quality_status:
+          type: string
+          title: Quality Status
+        quality_reasons:
+          items:
+            type: string
+          type: array
+          title: Quality Reasons
+        searchable:
+          type: boolean
+          title: Searchable
+        local_speaker_label:
+          type: string
+          title: Local Speaker Label
+        speaker_confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Speaker Confidence
+      type: object
+      required:
+      - id
+      - start_ms
+      - end_ms
+      - raw_text
+      - normalized_text
+      - confidence_raw
+      - alignment_score
+      - quality_status
+      - quality_reasons
+      - searchable
+      - local_speaker_label
+      - speaker_confidence
+      title: AudioTranscriptSegmentResponse
+    AudioTranscriptionResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        asset_id:
+          type: string
+          title: Asset Id
+        status:
+          type: string
+          title: Status
+        model_name:
+          type: string
+          title: Model Name
+        model_version:
+          type: string
+          title: Model Version
+        config_hash:
+          type: string
+          title: Config Hash
+        language:
+          type: string
+          title: Language
+        raw_text:
+          type: string
+          title: Raw Text
+        accepted_text:
+          type: string
+          title: Accepted Text
+        quality_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Quality Score
+        error_message:
+          type: string
+          title: Error Message
+        segments:
+          items:
+            $ref: '#/components/schemas/AudioTranscriptSegmentResponse'
+          type: array
+          title: Segments
+      type: object
+      required:
+      - id
+      - asset_id
+      - status
+      - model_name
+      - model_version
+      - config_hash
+      - language
+      - raw_text
+      - accepted_text
+      - quality_score
+      - error_message
+      - segments
+      title: AudioTranscriptionResponse
     BatchConfirmFailure:
       properties:
         person_id:
@@ -2821,6 +3022,14 @@ components:
           - type: string
           - type: 'null'
           title: Embeddings Error
+        asr:
+          type: string
+          title: Asr
+        asr_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asr Error
         runtime_configuration:
           additionalProperties: true
           type: object
@@ -2832,6 +3041,7 @@ components:
       - build_revision
       - database
       - embeddings
+      - asr
       - runtime_configuration
       title: DiagnosticsResponse
     EntityDetailAppearance:
@@ -4783,6 +4993,11 @@ components:
           type: boolean
           title: Audio Probed
           default: false
+        audio_transcription_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Audio Transcription Status
       type: object
       required:
       - asset_id
@@ -5722,6 +5937,22 @@ components:
             type: number
           type: object
           title: Raw Scores
+        audio_start_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Audio Start Ms
+        audio_end_ms:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Audio End Ms
+        audio_context:
+          items:
+            $ref: '#/components/schemas/AudioEvidenceExcerpt'
+          type: array
+          title: Audio Context
+          default: []
       type: object
       required:
       - asset

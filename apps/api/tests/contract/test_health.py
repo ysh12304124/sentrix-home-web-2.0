@@ -25,6 +25,7 @@ def test_health_returns_ok(client: TestClient):
         "build_revision": "development",
         "database": "ok",
         "embeddings": "ok",
+        "asr": "ok",
     }
 
 

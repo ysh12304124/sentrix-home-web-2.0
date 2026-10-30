@@ -3,8 +3,7 @@
 走真容器 + 真 SQLite，只把 ffprobe 适配器换成 conftest 里的 ``FakeAudioMetadataReader``
 （与视频那条路同一条理由：契约测试不把「这台机器有没有 ffprobe」变成断言的前置条件）。
 
-**不验转写**——用户裁决②「音频不转写，只做入库与播放」，`observations` 没有
-``transcript`` 列，``compose_text`` 保持七字段（``s8-deviations.md`` §1.1）。
+转写走独立假 ASR，验证原始证据与可信检索投影分离；不依赖本机 FunASR 模型。
 """
 
 from __future__ import annotations
@@ -13,7 +12,10 @@ import dataclasses
 
 from fastapi.testclient import TestClient
 
+from sentrix.domain.media.transcription import AsrResult, AsrSegment
+
 AUDIO_BYTES = b"fake-m4a-bytes"
+VIDEO_BYTES = b"fake-mp4-with-audio-track"
 
 
 def import_audio(
@@ -22,6 +24,14 @@ def import_audio(
     return client.post(
         "/api/v1/media/import",
         files={"file": (name, AUDIO_BYTES, content_type)},
+        data={"scope_id": "album1"},
+    )
+
+
+def import_video(client: TestClient):
+    return client.post(
+        "/api/v1/media/import",
+        files={"file": ("meeting.mp4", VIDEO_BYTES, "video/mp4")},
         data={"scope_id": "album1"},
     )
 
@@ -36,6 +46,7 @@ def test_importing_audio_reports_that_it_was_probed(client: TestClient):
 
     assert body["media_type"] == "audio"
     assert body["audio_probed"] is True
+    assert body["audio_transcription_status"] == "completed"
 
 
 def test_a_successful_probe_lands_the_metadata_on_the_asset(client: TestClient):
@@ -112,6 +123,7 @@ def test_a_failed_probe_still_imports_and_is_visible(client: TestClient):
     body = response.json()
     assert body["media_type"] == "audio"
     assert body["audio_probed"] is False
+    assert body["audio_transcription_status"] == "completed"
 
     with container.database.connect() as connection:
         row = connection.execute(
@@ -144,3 +156,83 @@ def test_audio_is_reachable_by_file_name_and_media_type(client: TestClient):
     excluded = client.get("/api/v1/search", params={"q": "录音", "media_type": "image"})
     assert excluded.status_code == 200
     assert excluded.json()["items"] == []
+
+
+def test_audio_transcript_is_stored_and_searchable(client: TestClient):
+    body = import_audio(client, name="memo.m4a").json()
+
+    transcription = client.get(f"/api/v1/assets/{body['asset_id']}/audio-transcription")
+    assert transcription.status_code == 200
+    payload = transcription.json()
+    assert payload["raw_text"] == "今天去公园散步。"
+    assert payload["accepted_text"] == "今天去公园散步。"
+    assert payload["segments"][0]["searchable"] is True
+    assert payload["segments"][0]["start_ms"] == 0
+    assert payload["segments"][0]["local_speaker_label"] == "0"
+    assert payload["segments"][0]["speaker_confidence"] == 0.91
+
+    search = client.get("/api/v1/search", params={"q": "公园散步"})
+    assert search.status_code == 200
+    assert [item["asset"]["id"] for item in search.json()["items"]] == [body["asset_id"]]
+    assert search.json()["items"][0]["audio_start_ms"] == 0
+    assert search.json()["items"][0]["audio_end_ms"] == 1800
+
+
+def test_video_audio_track_is_transcribed_stored_and_searchable(client: TestClient):
+    """视频原片由 ASR sidecar 自行抽音轨，证据与检索结果仍归属源视频资产。"""
+    response = import_video(client)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["media_type"] == "video"
+    assert body["audio_transcription_status"] == "completed"
+
+    transcription = client.get(f"/api/v1/assets/{body['asset_id']}/audio-transcription")
+    assert transcription.status_code == 200
+    payload = transcription.json()
+    assert payload["asset_id"] == body["asset_id"]
+    assert payload["raw_text"] == "今天去公园散步。"
+    assert payload["segments"][0]["start_ms"] == 0
+    assert payload["segments"][0]["end_ms"] == 1800
+
+    search = client.get("/api/v1/search", params={"q": "公园散步"})
+    assert search.status_code == 200
+    source_hit = next(item for item in search.json()["items"] if item["asset"]["id"] == body["asset_id"])
+    assert source_hit["asset"]["media_type"] == "video"
+    assert source_hit["audio_start_ms"] == 0
+    assert source_hit["audio_end_ms"] == 1800
+
+    reprocessed = client.post(f"/api/v1/assets/{body['asset_id']}/audio-transcription/reprocess")
+    assert reprocessed.status_code == 200
+    assert reprocessed.json()["accepted_text"] == "今天去公园散步。"
+
+
+def test_uncertain_transcript_is_preserved_but_does_not_pollute_search(client: TestClient):
+    class UncertainAsr:
+        available = True
+        load_error = ""
+
+        def transcribe(self, path):
+            return AsrResult(
+                model_name="fake-asr",
+                model_version="1",
+                config_hash="uncertain",
+                language="zh",
+                raw_text="火星污染测试词",
+                segments=(AsrSegment(0, 1500, "火星污染测试词", confidence_raw=0.1),),
+            )
+
+    client.app.state.container = dataclasses.replace(
+        client.app.state.container, audio_transcriber=UncertainAsr()
+    )
+    body = import_audio(client, name="memo.m4a").json()
+
+    payload = client.get(f"/api/v1/assets/{body['asset_id']}/audio-transcription").json()
+    assert payload["raw_text"] == "火星污染测试词"
+    assert payload["accepted_text"] == ""
+    assert payload["segments"][0]["quality_status"] == "uncertain"
+    assert payload["segments"][0]["searchable"] is False
+
+    search = client.get("/api/v1/search", params={"q": "火星污染测试词"})
+    assert search.status_code == 200
+    assert search.json()["items"] == []

@@ -79,6 +79,24 @@ class SqliteVectorRepository:
                 ),
             )
 
+    def delete_source(self, *, space: str, source_type: str, source_id: str, model_name: str) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM memory_vectors WHERE space = ? AND source_type = ?"
+                " AND source_id = ? AND model_name = ?",
+                (space, source_type, source_id, model_name),
+            )
+            return int(cursor.rowcount)
+
+    def delete_for_asset(self, *, source_type: str, asset_id: str) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM memory_vectors WHERE source_type = ?"
+                " AND json_extract(metadata_json, '$.asset_id') = ?",
+                (source_type, asset_id),
+            )
+            return int(cursor.rowcount)
+
     def update_metadata(
         self, *, space: str, source_type: str, source_id: str, metadata: dict[str, object]
     ) -> int:

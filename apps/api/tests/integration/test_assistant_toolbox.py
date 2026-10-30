@@ -28,6 +28,7 @@ from sentrix.domain.assistant.models import PersonProfile, PersonRelationship
 from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet
 from sentrix.domain.identity.models import ENTITY_STATUS_CONFIRMED, FACE_VALIDITY_VERIFIED
 from sentrix.domain.media.models import Asset, AssetStatus, GpsPoint, MediaType, Observation
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
 from sentrix.domain.places.aliases import EMPTY_ALIASES
 from sentrix.domain.places.models import (
     AdminArea,
@@ -620,6 +621,41 @@ def test_the_fused_evidence_class_survives_retrieval(toolbox):
     assert set(stored.evidence_classes) == set(stored.asset_ids)
     # 这个夹具的候选全部来自视觉通道（semantic），所以一条 anchor 都不该有。
     assert set(stored.evidence_classes.values()) == {"semantic"}
+
+
+def test_audio_anchor_and_neighbors_are_visible_after_result_set_round_trip(toolbox):
+    build, result_sets = toolbox
+    result_sets.add(
+        ResultSet(
+            id="rs_audio_context",
+            scope_id=SCOPE,
+            query="在拉面店点了什么",
+            asset_ids=("asset_1",) * PAGE_SIZE + ("asset_0",),
+            created_at=NOW,
+            audio_evidence={
+                "asset_0": (
+                    AudioEvidenceExcerpt(1_000, 2_000, "I ordered", False),
+                    AudioEvidenceExcerpt(2_000, 4_000, "classic tonkotsu ramen", True),
+                    AudioEvidenceExcerpt(4_000, 5_000, "for dinner", False),
+                )
+            },
+        )
+    )
+
+    outcome = build.execute(
+        "get_result_page",
+        {"result_set_id": "rs_audio_context", "page": 2},
+        scope_id=SCOPE,
+        now=NOW,
+    )
+
+    evidence = outcome.model_visible["preview"][0]["audio_evidence"]
+    assert [item["text"] for item in evidence] == [
+        "I ordered",
+        "classic tonkotsu ramen",
+        "for dinner",
+    ]
+    assert [item["is_anchor"] for item in evidence] == [False, True, False]
 
 
 def test_the_preview_keys_are_always_present(toolbox):

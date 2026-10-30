@@ -304,6 +304,7 @@ class AssistantToolbox:
             asset_ids=tuple(hit.asset_id for hit in result.hits),
             created_at=now,
             evidence_classes={hit.asset_id: hit.evidence_class for hit in result.hits},
+            audio_evidence={hit.asset_id: hit.audio_context for hit in result.hits if hit.audio_context},
         )
         self._result_sets.add(result_set)
         channel_trace = [
@@ -508,6 +509,18 @@ class AssistantToolbox:
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
+            # 音频锚点与其相邻语境直接进入模型可见 preview。视觉摘要和音频证据并列，
+            # 不预先让任一模态覆盖另一模态；is_anchor 让模型知道哪一句真正命中了查询。
+            "audio_evidence": [
+                {
+                    "start_ms": segment.start_ms,
+                    "end_ms": segment.end_ms,
+                    "text": segment.text,
+                    "is_anchor": segment.is_anchor,
+                    "speaker_label": segment.local_speaker_label,
+                }
+                for segment in entry.audio_evidence
+            ],
         }
 
     def _people_count(self, asset_id: str) -> int:

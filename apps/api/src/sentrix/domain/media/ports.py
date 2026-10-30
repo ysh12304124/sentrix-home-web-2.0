@@ -24,6 +24,11 @@ from sentrix.domain.media.models import (
     VideoMetadata,
 )
 from sentrix.domain.media.scenes import SceneWindow
+from sentrix.domain.media.transcription import (
+    AsrResult,
+    AudioTranscription,
+    AudioTranscriptSegment,
+)
 
 SUPPORTED_IMAGE_SUFFIXES = frozenset(
     {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".tif", ".tiff"}
@@ -97,6 +102,10 @@ class ObservationRepository(Protocol):
     def list_scope(self, scope_id: str, *, limit: int) -> Sequence[Observation]: ...
 
     def enrich(self, observation_id: str, *, semantics: ObservationSemantics) -> Observation: ...
+
+    def enrich_transcript(self, observation_id: str, *, transcript_text: str) -> Observation:
+        """替换可信转写投影并自增 revision；不得改写图片语义字段。"""
+        ...
 
     def latest_ocr_text(self, asset_id: str) -> str:
         """这张照片**最近一次**观察里已经存下来的图内文字。没有就是空串。
@@ -525,6 +534,41 @@ class AudioRepository(Protocol):
     def save_probe(self, asset_id: str, probe: AudioProbe) -> None:
         """把探测结果并进 ``assets.metadata_json``。**必须在资产行落库之后调**（外键）。"""
         ...
+
+
+class AudioTranscriber(Protocol):
+    """包含音轨的音频或视频文件 → 带时间戳的 ASR 结果。
+
+    端口只描述能力，FunASR 模型运行在独立 sidecar；API 进程不 import torch，也不
+    管理模型生命周期。不可用或响应损坏时实现必须抛 ``AudioTranscriptionError``，
+    由导入用例按“增强失败不阻断资产入库”处理。
+    """
+
+    @property
+    def available(self) -> bool: ...
+
+    @property
+    def load_error(self) -> str: ...
+
+    def transcribe(self, path: Path) -> AsrResult: ...
+
+
+class AudioTranscriptionError(RuntimeError):
+    """ASR sidecar 不可用、超时或返回了无效响应。"""
+
+
+class AudioTranscriptionRepository(Protocol):
+    """音频转写权威存储。Observation/FTS/向量都只是它的派生投影。"""
+
+    def save(
+        self,
+        transcription: AudioTranscription,
+        segments: Sequence[AudioTranscriptSegment],
+    ) -> None: ...
+
+    def latest_for_asset(self, asset_id: str) -> AudioTranscription | None: ...
+
+    def list_segments(self, transcription_id: str) -> Sequence[AudioTranscriptSegment]: ...
 
 
 class OperationControl(Protocol):

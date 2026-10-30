@@ -133,7 +133,7 @@ class SqliteAssetRepository:
 
 _OBSERVATION_COLUMNS = (
     "id, scope_id, asset_id, source_type, captured_at, confidence, caption, place, activity,"
-    " event_type, ocr_text, objects_json, clothing_json, people_json, facts_json, revision,"
+    " event_type, ocr_text, transcript_text, objects_json, clothing_json, people_json, facts_json, revision,"
     " created_at, updated_at"
 )
 
@@ -238,6 +238,7 @@ def row_to_observation(row: sqlite3.Row) -> Observation:
         activity=row["activity"],
         event_type=row["event_type"],
         ocr_text=row["ocr_text"] or "",
+        transcript_text=row["transcript_text"] or "",
         objects=_json_list(row["objects_json"]),
         clothing=_json_list(row["clothing_json"]),
         people=_json_people(row["people_json"]),
@@ -254,9 +255,9 @@ class SqliteObservationRepository:
         with self._database.connect() as connection, connection:
             connection.execute(
                 "INSERT INTO observations (id, scope_id, asset_id, source_type, captured_at,"
-                " confidence, caption, place, activity, event_type, ocr_text, objects_json,"
+                " confidence, caption, place, activity, event_type, ocr_text, transcript_text, objects_json,"
                 " clothing_json, people_json, facts_json, revision, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     observation.id,
                     observation.scope_id,
@@ -269,6 +270,7 @@ class SqliteObservationRepository:
                     observation.activity,
                     observation.event_type,
                     observation.ocr_text,
+                    observation.transcript_text,
                     json.dumps(list(observation.objects), ensure_ascii=False),
                     json.dumps(list(observation.clothing), ensure_ascii=False),
                     json.dumps(
@@ -356,6 +358,24 @@ class SqliteObservationRepository:
                     observation_id,
                 ),
             )
+        enriched = self.get(observation_id)
+        if enriched is None:
+            raise KeyError(observation_id)
+        return enriched
+
+    def enrich_transcript(self, observation_id: str, *, transcript_text: str) -> Observation:
+        """只更新可信转写投影；内容未变化时不制造新的 revision。"""
+        normalized = transcript_text.strip()
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE observations SET transcript_text = ?,"
+                " revision = revision + CASE WHEN transcript_text <> ? THEN 1 ELSE 0 END,"
+                " updated_at = CASE WHEN transcript_text <> ? THEN datetime('now') ELSE updated_at END"
+                " WHERE id = ?",
+                (normalized, normalized, normalized, observation_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(observation_id)
         enriched = self.get(observation_id)
         if enriched is None:
             raise KeyError(observation_id)

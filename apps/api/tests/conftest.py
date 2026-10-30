@@ -11,6 +11,7 @@ from sentrix.domain.assistant.models import ChatMessage, ModelReply
 from sentrix.domain.identity.models import FaceDetection
 from sentrix.domain.media.models import AudioMetadata, VideoMetadata
 from sentrix.domain.media.ports import ObservationSemantics
+from sentrix.domain.media.transcription import AsrResult, AsrSegment
 from sentrix.domain.retrieval import scheme
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.main import create_app
@@ -156,6 +157,30 @@ class FakeAudioMetadataReader:
         )
 
 
+class FakeAudioTranscriber:
+    available = True
+    load_error = ""
+
+    def transcribe(self, path):
+        return AsrResult(
+            model_name="fake-asr",
+            model_version="1",
+            config_hash="fake-config",
+            language="zh",
+            raw_text="今天去公园散步。",
+            segments=(
+                AsrSegment(
+                    0,
+                    1800,
+                    "今天去公园散步。",
+                    confidence_raw=0.95,
+                    local_speaker_label="0",
+                    speaker_confidence=0.91,
+                ),
+            ),
+        )
+
+
 class FakeVideoTranscoder:
     """把「转码」换成写一个可辨认的假文件，让交付分支可断言。规则与真适配器一致：
     H.264 **不转**（返回 None），其余才落一个转码件。"""
@@ -262,6 +287,7 @@ def isolated_app(settings):
         video_transcoder=FakeVideoTranscoder(),
         # 音频探测同理（S8c）：真实现起 ffprobe 子进程。
         audio_metadata_reader=FakeAudioMetadataReader(),
+        audio_transcriber=FakeAudioTranscriber(),
         # 抽帧同理：真实现起 ffmpeg。这里给的是「每个场景一张真 JPEG」的假件，
         # 所以契约测试能走完整条「导入视频 → 场景成型 → 关键帧落库」的链。
         video_keyframe_extractor=FakeVideoKeyframeExtractor(),

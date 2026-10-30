@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # W1：检索用的统一多模态嵌入侧车（WeMM-Embedding-2B，2048 维）。与 8100 的 VLM、
     # 8101 的 bge 同一条口径——2.0 不管理模型进程的生命周期，只连它。
     wemm_url: str = "http://127.0.0.1:8102"
+    # 音频转写侧车。模型常驻在独立进程，API 只通过 HTTP 调用；未启动时音频仍可入库，
+    # 但转写会以 failed 证据记录并在日志中显式降级。
+    asr_url: str = "http://127.0.0.1:8104"
+    asr_timeout_s: float = 300.0
 
     # ---- 嵌入方案（2026-10-20：为 16 GB Mac mini 恢复 legacy 回退） ----------------
     # **整方案切换**，不是两个槽各切各的。默认 wemm，153 不设此变量即行为不变。

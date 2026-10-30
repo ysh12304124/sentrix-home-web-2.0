@@ -46,14 +46,32 @@ class FakeVectors:
     def upsert(self, record: VectorRecord) -> None:
         self.records.append(record)
 
-    def has_vector(self, *, space, source_type, source_id, model_name) -> bool:
-        return any(
-            item.space == space
-            and item.source_type == source_type
-            and item.source_id == source_id
-            and item.model_name == model_name
-            for item in self.records
+    def get(self, *, space, source_type, source_id, model_name=None):
+        return next(
+            (
+                item
+                for item in reversed(self.records)
+                if item.space == space
+                and item.source_type == source_type
+                and item.source_id == source_id
+                and (model_name is None or item.model_name == model_name)
+            ),
+            None,
         )
+
+    def delete_source(self, *, space, source_type, source_id, model_name):
+        before = len(self.records)
+        self.records = [
+            item
+            for item in self.records
+            if not (
+                item.space == space
+                and item.source_type == source_type
+                and item.source_id == source_id
+                and item.model_name == model_name
+            )
+        ]
+        return before - len(self.records)
 
 
 def make_observation(**overrides) -> Observation:
@@ -155,6 +173,18 @@ def test_second_call_is_idempotent():
     assert outcome.reason == "already_indexed"
     assert len(embedder.calls) == 1, "幂等命中不该再嵌一次"
     assert len(vectors.records) == 3
+
+
+def test_new_revision_removes_old_vectors_before_embedding_failure():
+    """重转写后不能在新嵌入失败时继续召回旧 ASR 文本。"""
+    index, embedder, vectors = build()
+    index.index(make_observation(revision=1), "evt_old")
+    embedder.vector = []
+
+    outcome = index.index(make_observation(revision=2, transcript_text="新的音频转写"), "evt_new")
+
+    assert outcome.reason == "embedding_unavailable"
+    assert vectors.records == []
 
 
 def test_empty_text_does_not_call_the_sidecar():

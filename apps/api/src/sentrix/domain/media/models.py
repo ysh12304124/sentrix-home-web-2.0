@@ -296,6 +296,9 @@ class Observation:
     activity: str = ""
     event_type: str = ""
     ocr_text: str = ""
+    # 只放通过音频质量门禁的文本。ASR 原文、可疑片段与时间戳的权威来源是
+    # audio_transcriptions / audio_transcript_segments；这一列只是可重建的检索投影。
+    transcript_text: str = ""
     objects: tuple[str, ...] = ()
     clothing: tuple[str, ...] = ()
     # 这条观察里**已确认**的人的名字快照。写入者是 ``EntityRepository.link_confirmed_mention``

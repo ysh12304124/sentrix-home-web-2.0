@@ -224,7 +224,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 |---|---|---|---|
 | `OperationControl` | `domain/media/ports.py` | `start/request_cancel/check/finish`，有界登记与真实退出确认 | `InProcessOperationControl` |
 | `AssetRepository` | `domain/media/ports.py:71` | `add/get/list_by_scope/find_by_hash/update_status` | `SqliteAssetRepository` |
-| `ObservationRepository` | `:89` | `add/get/list_by_asset/list_scope/enrich/latest_ocr_text/latest_people_snapshot` | `SqliteObservationRepository` |
+| `ObservationRepository` | `:89` | `add/get/list_by_asset/list_scope/enrich/enrich_transcript/latest_ocr_text/latest_people_snapshot` | `SqliteObservationRepository` |
 | `VlmObserver` | `:184` | `model_id`、`observe(path) -> ObservationSemantics \| None` | `OpenAIVlmObserver` |
 | `PhotoInspector` | `:201` | `model_id`、`inspect(path, question, faces, target_person, crop)` | `OpenAIPhotoInspector` |
 | `AssetObserver` | `:242` | `prepare/commit/observe` | `ObserveAsset`（application） |
@@ -237,12 +237,15 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `VideoRepository` | `:378` | `save_probe/save_processing_seconds/probe/list_derived/add_derived/cleanup_derivatives` | `SqliteVideoRepository` |
 | `AudioMetadataReader` | `:452` | `read(path) -> AudioMetadata` | `FfprobeAudioMetadataReader` |
 | `AudioRepository` | `:489` | `save_probe` | `SqliteAudioRepository` |
+| `AudioTranscriber` | `:516` | `available/load_error/transcribe(path) -> AsrResult` | `FunAsrSidecarTranscriber` |
+| `AudioTranscriptionRepository` | `:538` | `save/latest_for_asset/list_segments` | `SqliteAudioTranscriptionRepository` |
 | `MediaTypeResolver` | `:293` | `resolve(content_type, file_name)` | **无实现/未装配** |
 
 **关键契约**
 
 - `VlmObserver.observe` 失败一律返回 `None`，**不抛**；导入不能因为观察失败而中断。
 - `VideoMetadataReader.read` / `AudioMetadataReader.read` 失败必须抛 `ValueError`，调用方落 `video_probe_error`。
+- `AudioTranscriber.transcribe` 失败抛 `AudioTranscriptionError`；`TranscribeAudio` 捕获并落 failed 证据，资产导入仍成功。
 - `VideoTranscoder` 返回 `None` 表示“已是 H.264，无需转码”，不是失败。
 - `VideoKeyframeExtractor.extract` 失败必须抛；半套场景不可接受。
 - `AssetObserver` 的 `prepare` 只推理不写库，`commit` 才写库；顺序反了会产生重复事件/重复簇。
@@ -253,7 +256,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 |---|---|---|---|
 | `LexicalIndex` | `domain/retrieval/ports.py:76` | `refresh_from_observation/rebuild_scope/count` | `SqliteLexicalIndex` |
 | `LexicalSearch` | `:93` | `search_fts/exact_assets/assets_for_person` | 同一实例 |
-| `VectorRepository` | `:113` | `upsert/has_vector/update_metadata/get/search_exact/count` | `SqliteVectorRepository` |
+| `VectorRepository` | `:113` | `upsert/delete_source/delete_for_asset/has_vector/update_metadata/get/search_exact/count` | `SqliteVectorRepository` |
 | `VectorIndex` | `:168` | `upsert/search/count/status` | `QdrantVectorIndex` |
 | `AssetVisualIndexer` | `:218` | `prepare/commit/index` | `IndexAssetVisual`（application） |
 | `VisualEmbedder` | `:234` | `model_id`、`dimension`、`embed_image`、`embed_query` | `WeMMSidecarEmbedder` |
@@ -751,7 +754,7 @@ class AlbumSource(Protocol):
 | 语义 | 端口 | 规则 |
 |---|---|---|
 | **fail-open（返回 None/空）** | `VlmObserver`、`PhotoInspector`、`PersonVision`、`AssetObserver`、`PlaceResolver`、`Admin/NearestResolver`、`MetadataReader` | 失败不能阻断主链路；必须 warning |
-| **fail-closed（抛异常）** | `ChatModel`、`VideoMetadataReader`、`AudioMetadataReader`、`VideoTranscoder`、`VideoKeyframeExtractor`、`VectorIndex`、`FaceDetector`（CUDA 缺失） | 失败必须让调用方看见 |
+| **fail-closed（抛异常）** | `ChatModel`、`VideoMetadataReader`、`AudioMetadataReader`、`AudioTranscriber`、`VideoTranscoder`、`VideoKeyframeExtractor`、`VectorIndex`、`FaceDetector`（CUDA 缺失） | 失败必须让调用方看见；ASR 由应用用例捕获后显式落 failed，不让 HTTP 细节泄漏 |
 | **返回 None = 不存在** | 各 Repository 的 `get`、`find_*`、`lookup` | 不得用 None 表示错误 |
 | **返回 False/空集 = 查无结果** | `AssetPlaceIndex`、`LexicalSearch` | 不等于“人没有照片” |
 
@@ -867,6 +870,8 @@ def test_chat_model_maps_prompt_too_long():
 | `SENTRIX_API_PORT` | 端口 | `8191` | API | 否 |
 | `SENTRIX_VLM_BASE_URL` | OpenAI 兼容端点 | `http://127.0.0.1:8100/v1` | Chat/VLM/PersonVision/PhotoInspector | 否（缺失则助手不可用） |
 | `SENTRIX_WEMM_URL` | WeMM 侧车 | `http://127.0.0.1:8102` | wemm 方案 | 否（缺失降级） |
+| `SENTRIX_ASR_URL` | FunASR 侧车 | `http://127.0.0.1:8104` | 音频转写 | 否（缺失时音频仍入库，转写 failed） |
+| `SENTRIX_ASR_TIMEOUT_S` | 单条音频转写超时 | `300` | 音频转写 | 否 |
 | `SENTRIX_EMBEDDING_SCHEME` | **嵌入方案**：`wemm`（默认）/ `legacy` | `wemm` | 视觉+文本两条向量通道 | 否 |
 | `SENTRIX_TEXT_EMBEDDER_URL` | bge-m3 侧车 | `http://127.0.0.1:8101` | legacy 方案文本 | 否 |
 | `SENTRIX_LEGACY_CLIP_URL` | chinese-clip 侧车 | `http://127.0.0.1:8103` | legacy 方案视觉 | 否 |
@@ -1089,7 +1094,7 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 
 ### 9.3 冻结/不实现能力
 
-- ASR / 转写 / `transcript` 列不存在；
+- ASR 已实现为独立 sidecar；原始证据在独立表，`Observation.transcript_text` 只投影通过质量门禁的文本。第一版同步执行，不引入 batch/job；
 - OCR 只有导入期 `ocr_text` 一条路，没有独立 PaddleOCR 适配器或 VLM 回退；
 - 导入支持按 operation_id 协作取消（2026-10-23新增）；仍无持久 batch/job 队列；
 - 无云端大模型入口（评测可配，产品侧不内置）；

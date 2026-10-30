@@ -26,6 +26,8 @@ class ImportResponse(BaseModel):
     # 音频有没有真的走到 ffprobe（S8c T521）。与 ``video_probed`` 同一个可观测面：
     # 「音频收下了但什么都没发生」原先在响应里完全看不出来。音频以外恒为 False。
     audio_probed: bool = False
+    # completed / review / failed；适用于音频与视频音轨，其余媒体或 ASR 未接线时为空。
+    audio_transcription_status: str | None = None
 
 
 class AssetSummary(BaseModel):
@@ -48,3 +50,33 @@ class AssetSummary(BaseModel):
 
 class AssetListResponse(BaseModel):
     items: list[AssetSummary]
+
+
+class AudioTranscriptSegmentResponse(BaseModel):
+    id: str
+    start_ms: int
+    end_ms: int
+    raw_text: str
+    normalized_text: str
+    confidence_raw: float | None
+    alignment_score: float | None
+    quality_status: str
+    quality_reasons: list[str]
+    searchable: bool
+    local_speaker_label: str
+    speaker_confidence: float | None
+
+
+class AudioTranscriptionResponse(BaseModel):
+    id: str
+    asset_id: str
+    status: str
+    model_name: str
+    model_version: str
+    config_hash: str
+    language: str
+    raw_text: str
+    accepted_text: str
+    quality_score: float | None
+    error_message: str
+    segments: list[AudioTranscriptSegmentResponse]

@@ -16,10 +16,12 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from sentrix.domain.assistant.result_set import ResultSet
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
 from sentrix.infrastructure.persistence.database import Database
 
 
 def _row_to_result_set(row: sqlite3.Row) -> ResultSet:
+    raw_audio = json.loads(row["audio_evidence_json"] or "{}")
     return ResultSet(
         id=row["id"],
         scope_id=row["scope_id"],
@@ -27,6 +29,21 @@ def _row_to_result_set(row: sqlite3.Row) -> ResultSet:
         asset_ids=tuple(json.loads(row["asset_ids_json"] or "[]")),
         created_at=datetime.fromisoformat(row["created_at"]),
         evidence_classes=dict(json.loads(row["evidence_classes_json"] or "{}")),
+        audio_evidence={
+            str(asset_id): tuple(
+                AudioEvidenceExcerpt(
+                    start_ms=int(item.get("start_ms") or 0),
+                    end_ms=int(item.get("end_ms") or 0),
+                    text=str(item.get("text") or ""),
+                    is_anchor=bool(item.get("is_anchor")),
+                    local_speaker_label=str(item.get("speaker_label") or ""),
+                )
+                for item in items
+                if isinstance(item, dict)
+            )
+            for asset_id, items in raw_audio.items()
+            if isinstance(items, list)
+        },
     )
 
 
@@ -38,14 +55,30 @@ class SqliteResultSetRepository:
         with self._database.connect() as connection, connection:
             connection.execute(
                 "INSERT OR REPLACE INTO agent_result_sets"
-                " (id, scope_id, query, asset_ids_json, evidence_classes_json, total, created_at)"
-                " VALUES (?,?,?,?,?,?,?)",
+                " (id, scope_id, query, asset_ids_json, evidence_classes_json, audio_evidence_json,"
+                " total, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     result_set.id,
                     result_set.scope_id,
                     result_set.query,
                     json.dumps(list(result_set.asset_ids)),
                     json.dumps(dict(result_set.evidence_classes)),
+                    json.dumps(
+                        {
+                            asset_id: [
+                                {
+                                    "start_ms": item.start_ms,
+                                    "end_ms": item.end_ms,
+                                    "text": item.text,
+                                    "is_anchor": item.is_anchor,
+                                    "speaker_label": item.local_speaker_label,
+                                }
+                                for item in items
+                            ]
+                            for asset_id, items in result_set.audio_evidence.items()
+                        },
+                        ensure_ascii=False,
+                    ),
                     len(result_set.asset_ids),
                     result_set.created_at.isoformat(),
                 ),

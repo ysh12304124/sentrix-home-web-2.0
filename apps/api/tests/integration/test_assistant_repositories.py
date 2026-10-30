@@ -16,6 +16,7 @@ from sentrix.domain.assistant.models import (
     TurnStatus,
 )
 from sentrix.domain.assistant.result_set import ResultSet
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
 from sentrix.infrastructure.persistence.repositories.conversations import (
     SqliteConversationRepository,
 )
@@ -294,6 +295,31 @@ def test_the_evidence_classes_survive_a_round_trip(result_sets):
     assert loaded.evidence_classes == {"asset_1": "anchor", "asset_2": "semantic"}
     assert loaded.page(1).entries[0].evidence_class == "anchor"
     assert loaded.page(1).entries[1].evidence_class == "semantic"
+
+
+def test_audio_evidence_survives_a_round_trip(result_sets):
+    result_sets.add(
+        ResultSet(
+            id="rs_audio",
+            scope_id="home",
+            query="拉面店点了什么",
+            asset_ids=("asset_1",),
+            created_at=NOW,
+            audio_evidence={
+                "asset_1": (
+                    AudioEvidenceExcerpt(1_000, 2_000, "I ordered", False, "speaker_0"),
+                    AudioEvidenceExcerpt(2_000, 4_000, "classic tonkotsu ramen", True, "speaker_0"),
+                )
+            },
+        )
+    )
+
+    loaded = result_sets.get("rs_audio")
+
+    assert loaded is not None
+    assert loaded.audio_evidence["asset_1"][1].text == "classic tonkotsu ramen"
+    assert loaded.audio_evidence["asset_1"][1].is_anchor is True
+    assert loaded.page(1).entries[0].audio_evidence == loaded.audio_evidence["asset_1"]
 
 
 def test_a_result_set_without_levels_reads_back_as_unknown_not_semantic(result_sets):

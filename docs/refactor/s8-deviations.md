@@ -23,6 +23,10 @@ S8 的设计文档定义是「**FunASR 音频、关键帧/场景切分、派生�
 
 ### 1.1 去掉 FunASR 音频转写（**唯一一条实质偏离**）
 
+> **状态：已被 2026-10-22 的用户裁决取代。** 下表保留为历史决策记录。当前实现恢复
+> 音频转写，但不恢复 1.0 的进程内模型：改为独立 FunASR sidecar + 分段质量门禁 +
+> 独立权威表，只有 accepted 文本进入 `Observation.transcript_text` 与检索投影。
+
 | 项 | 内容 |
 |---|---|
 | **出处** | 设计文档 `:513`：`S8 \| 音频与视频 \| FunASR 音频、关键帧/场景切分、派生帧可回溯原视频秒数 \| 导入视频，场景成型、能跳回原片` |
@@ -163,6 +167,8 @@ S8a 交付「元数据 + 血缘列能用 + 能播 + 路由通」，不建场景�
 S8c 交付「音频能导入、能读元数据、能播」，**不转写**（§1.1）。下面每条都指到具体的一处
 代码或一件 1.0 没有的东西，**没有一条是凭喜好**。
 
+这一节描述 2026-10-04 的 S8c 历史切片；转写能力的现状见 §6。
+
 ### 5.1 音频元数据是 **NEW-2.0**，1.0 没有对应物
 
 | 项 | 内容 |
@@ -222,3 +228,24 @@ audio」。实测：
 音频的检索面（词法文件名锚点 + `media_type=audio` 结构化条件）在
 `tests/contract/test_audio_routes.py::test_audio_is_reachable_by_file_name_and_media_type`
 里钉住。
+
+---
+
+## 6. 音频理解第一版（2026-10-22，取代 §1.1）
+
+用户重新裁决为“实现 ASR，但先不做摘要、情绪识别和说话人识别”。与 1.0 的差异如下：
+
+| 项 | 1.0 | 当前第一版 |
+|---|---|---|
+| 模型进程 | 主 API 进程内 import FunASR | 独立 8104 sidecar，API 只走 HTTP |
+| 原始结果 | 直接写 Observation | `audio_transcriptions` + `audio_transcript_segments` 权威表 |
+| 质量控制 | 无 | 分段 accepted / uncertain / rejected；仅 accepted 可检索 |
+| Observation | 原始 `transcript` | `transcript_text` 只保存可信投影 |
+| 检索 | 整段文本向量 | 复用 FTS/text_ann，另写带起止毫秒的 `audio_segment` 向量 |
+| 失败 | 可能让资产 failed | ASR 记 failed，音频资产仍成功入库，`/health` 报 ASR 降级 |
+| 重跑 | 无修订模型 | 模型/配置/门禁版本组成修订指纹；重跑撤掉旧分段向量再建 |
+
+设计要求原本写“导入只排队、worker 后台跑”。当前项目仍没有统一 job/queue 基础设施，
+所以第一版沿用同步 `prepare → commit`，sidecar 内固定单并发。这个偏离是显式的：不会用
+FastAPI 内存 BackgroundTasks 冒充可恢复任务。等项目引入持久化 job 后，再把同一个
+`TranscribeAudio.prepare/commit` 用例挂到 worker，权威表和检索投影不需要改。

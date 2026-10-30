@@ -3,27 +3,40 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from sentrix.api.deps import get_container
-from sentrix.api.schemas.media import AssetListResponse, AssetSummary, ImportResponse
+from sentrix.api.schemas.media import (
+    AssetListResponse,
+    AssetSummary,
+    AudioTranscriptionResponse,
+    AudioTranscriptSegmentResponse,
+    ImportResponse,
+)
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
 from sentrix.application.media.import_assets import ImportAssets, ImportRequest
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
 from sentrix.application.media.observe_asset import ObserveAsset
+from sentrix.application.media.transcribe_audio import TranscribeAudio
 from sentrix.application.memories.assign_events import AssignEvents, EventVisualSimilarity
 from sentrix.application.memories.build_graph import BuildMemoryGraph
 from sentrix.application.memories.maintain_facts import MaintainFacts
+from sentrix.application.retrieval.index_audio_transcript import IndexAudioTranscriptSegments
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import Asset, MediaType, Observation
+from sentrix.domain.media.transcription import (
+    AudioTranscription,
+    AudioTranscriptSegment,
+    TranscriptionStatus,
+)
 from sentrix.domain.memories.graph import GraphBuildStats
 
 router = APIRouter(tags=["media"])
@@ -87,6 +100,7 @@ async def import_media(
         video_probed=result.video_probed,
         video_scenes=result.video_scenes,
         audio_probed=result.audio_probed,
+        audio_transcription_status=result.audio_transcription_status,
     )
 
 
@@ -232,9 +246,22 @@ def _build_importer(
         # 分开接会让「整册导入的音频不读元数据」以「单张能读到、批量读不到」的形式出现。
         audio_metadata=container.audio_metadata_reader,
         audio_repository=container.audio_repository,
+        audio_transcriber=_build_audio_transcriber(container),
         # 抽帧链（S8b T511–T513）。只有导入那条实例拿得到它；关键帧那条实例传 None，
         # 从根上杜绝「关键帧再去抽一层关键帧」的递归。
         video_scene_extractor=video_scene_extractor,
+    )
+
+
+def _build_audio_transcriber(container: Container) -> TranscribeAudio:
+    return TranscribeAudio(
+        transcriber=container.audio_transcriber,
+        transcriptions=container.audio_transcription_repository,
+        observations=container.observation_repository,
+        segment_indexer=IndexAudioTranscriptSegments(
+            embedder=container.text_embedder,
+            vectors=container.vector_repository,
+        ).index,
     )
 
 
@@ -342,6 +369,102 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
     return to_summary(asset)
+
+
+@router.get(
+    "/assets/{asset_id}/audio-transcription",
+    response_model=AudioTranscriptionResponse,
+)
+def get_audio_transcription(
+    asset_id: str, container: Container = Depends(get_container)
+) -> AudioTranscriptionResponse:
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type not in (MediaType.AUDIO, MediaType.VIDEO):
+        raise HTTPException(status_code=409, detail="asset has no transcribable audio track")
+    transcription, segments = _build_audio_transcriber(container).latest(asset_id)
+    if transcription is None:
+        raise HTTPException(status_code=404, detail="audio transcription not found")
+    return _transcription_response(transcription, segments)
+
+
+@router.post(
+    "/assets/{asset_id}/audio-transcription/reprocess",
+    response_model=AudioTranscriptionResponse,
+)
+def reprocess_audio_transcription(
+    asset_id: str, container: Container = Depends(get_container)
+) -> AudioTranscriptionResponse:
+    """同步重跑一条音频，或视频中的音轨。
+
+    项目当前没有任务队列；因此第一版明确同步执行，并由 sidecar 内部限制为单并发。
+    失败会记录 failed 修订，但不会删掉上一版已经通过门禁的检索投影。
+    """
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type not in (MediaType.AUDIO, MediaType.VIDEO):
+        raise HTTPException(status_code=409, detail="asset has no transcribable audio track")
+    observations = container.observation_repository.list_by_asset(asset_id)
+    if not observations:
+        raise HTTPException(status_code=409, detail="media observation not found")
+
+    use_case = _build_audio_transcriber(container)
+    prepared = use_case.prepare(asset)
+    observation = use_case.commit(observations[0], prepared)
+    if prepared is not None and prepared.transcription.status is not TranscriptionStatus.FAILED:
+        events = container.event_repository.events_for_observations((observation.id,))
+        event_id = next(
+            (event for event, observation_ids in events.items() if observation.id in observation_ids),
+            None,
+        )
+        IndexObservationText(
+            embedder=container.text_embedder,
+            vectors=container.vector_repository,
+        ).index(observation, event_id)
+        container.lexical_index.refresh_from_observation(observation)
+
+    transcription, segments = use_case.latest(asset_id)
+    if transcription is None:
+        raise HTTPException(status_code=500, detail="audio transcription was not persisted")
+    return _transcription_response(transcription, segments)
+
+
+def _transcription_response(
+    transcription: AudioTranscription,
+    segments: Sequence[AudioTranscriptSegment],
+) -> AudioTranscriptionResponse:
+    return AudioTranscriptionResponse(
+        id=transcription.id,
+        asset_id=transcription.asset_id,
+        status=transcription.status.value,
+        model_name=transcription.model_name,
+        model_version=transcription.model_version,
+        config_hash=transcription.config_hash,
+        language=transcription.language,
+        raw_text=transcription.raw_text,
+        accepted_text=transcription.accepted_text,
+        quality_score=transcription.quality_score,
+        error_message=transcription.error_message,
+        segments=[
+            AudioTranscriptSegmentResponse(
+                id=segment.id,
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+                raw_text=segment.raw_text,
+                normalized_text=segment.normalized_text,
+                confidence_raw=segment.confidence_raw,
+                alignment_score=segment.alignment_score,
+                quality_status=segment.quality_status.value,
+                quality_reasons=list(segment.quality_reasons),
+                searchable=segment.searchable,
+                local_speaker_label=segment.local_speaker_label,
+                speaker_confidence=segment.speaker_confidence,
+            )
+            for segment in segments
+        ],
+    )
 
 
 def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Response:

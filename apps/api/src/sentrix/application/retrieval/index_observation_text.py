@@ -28,12 +28,14 @@
 
 1.0 拼的是八个字段：``caption`` / ``activity`` / ``place`` / ``ocr_text`` /
 ``transcript`` / ``clothing`` / ``facts`` / ``detail.visible_details``。
-2.0 的 ``Observation`` 缺两个：
+2.0 当前只缺一个：
 
-- ``transcript`` —— 视频/音频的转写，属于 S8（设计 §8）。**不是遗漏，是那一侧还没做**；
 - ``detail.visible_details`` —— 2.0 把它提升成了结构化的 ``objects`` 元组
   （``Observation`` 的字段注释：S4 把散在 ``*_json`` 里的语义字段提升成正式成员）。
   取 ``objects`` 而不是重新解析 JSON blob，正是那次提升要解决的问题。
+
+音频转写在 2.0 中保存于 ``Observation.transcript_text``。它不是 ASR 原始证据的
+权威存储，而是通过质量门禁后、供现有文本索引消费的可信投影。
 
 **所以文本内容与 1.0 不完全相同**，这会让同一张图的向量与 1.0 不可比。
 本切片接受这一点：2.0 与 1.0 的向量本来就不该混用（模型与维度都不同），
@@ -83,6 +85,7 @@ def compose_text(observation: Observation) -> str:
             observation.activity,
             observation.place,
             observation.ocr_text,
+            observation.transcript_text,
             " ".join(observation.clothing),
             facts_text,
             " ".join(observation.objects),
@@ -103,10 +106,27 @@ class IndexObservationText:
         if not text:
             # 1.0 拼完可能得到空串（一条什么都没观察到的观察）。空串不该去打一次
             # sidecar——那是一次注定拿到零向量的往返。
+            self._vectors.delete_source(
+                space=scheme.SEMANTIC_SPACE,
+                source_type=OBSERVATION_SOURCE,
+                source_id=observation.id,
+                model_name=self._embedder.model_id,
+            )
+            self._vectors.delete_source(
+                space=scheme.EPISODIC_SPACE,
+                source_type=OBSERVATION_SOURCE,
+                source_id=observation.id,
+                model_name=self._embedder.model_id,
+            )
             return TextIndexOutcome(indexed=False, reason="empty_text")
 
-        if self._already_indexed(observation):
+        existing = self._existing_record(observation)
+        if existing and existing.metadata.get("source_revision") == observation.revision:
             return TextIndexOutcome(indexed=True, reason="already_indexed")
+
+        # 文本投影已经变化时，旧向量比“暂时没有向量”更危险：嵌入服务此刻若不可用，
+        # 旧 ASR 文本仍会继续被召回。因此先清掉旧 revision，再尝试生成新向量。
+        self._delete_previous(observation, existing)
 
         vector = self._embedder.embed_query(text)
         if not vector:
@@ -129,18 +149,36 @@ class IndexObservationText:
         # 所以这里留一条退路：没有事件就只写观察那两行，语义空间照样可检索。
         return TextIndexOutcome(indexed=True, rows=len(records), reason="" if event_id else "no_event")
 
-    def _already_indexed(self, observation: Observation) -> bool:
-        """幂等：``semantic/observation`` 那一行在就算写过。
+    def _existing_record(self, observation: Observation) -> VectorRecord | None:
+        """读取幂等锚点：``semantic/observation`` 是整批向量的权威代表。
 
         **只查一行**：三行是同一次调用写的，任何一行在就说明整批写过。
         三行分别查会让判定依赖写入顺序，而写入顺序不是契约。
         """
-        return self._vectors.has_vector(
+        return self._vectors.get(
             space=scheme.SEMANTIC_SPACE,
             source_type=OBSERVATION_SOURCE,
             source_id=observation.id,
             model_name=self._embedder.model_id,
         )
+
+    def _delete_previous(self, observation: Observation, existing: VectorRecord | None) -> None:
+        """删除旧文本投影及其旧事件边，避免重处理失败时继续召回过期 ASR。"""
+        for space in (scheme.SEMANTIC_SPACE, scheme.EPISODIC_SPACE):
+            self._vectors.delete_source(
+                space=space,
+                source_type=OBSERVATION_SOURCE,
+                source_id=observation.id,
+                model_name=self._embedder.model_id,
+            )
+        old_event_id = str(existing.metadata.get("event_id", "")) if existing else ""
+        if old_event_id:
+            self._vectors.delete_source(
+                space=scheme.EPISODIC_SPACE,
+                source_type=EVENT_SOURCE,
+                source_id=old_event_id,
+                model_name=self._embedder.model_id,
+            )
 
     def _records(
         self, observation: Observation, event_id: str | None, vector: tuple[float, ...]
@@ -148,7 +186,7 @@ class IndexObservationText:
         # 字段逐个写出来而不用 ``**common``：字典展开会让 mypy 把值推成 ``object``，
         # 于是 ``VectorRecord`` 的每个字段都成了 arg-type 错误——而那条错误指向的是
         # 展开处，不是真正写错的那个字段名。
-        def record(space: str, source_type: str, source_id: str, metadata: dict[str, str]) -> VectorRecord:
+        def record(space: str, source_type: str, source_id: str, metadata: dict[str, object]) -> VectorRecord:
             return VectorRecord(
                 scope_id=observation.scope_id,
                 space=space,
@@ -159,7 +197,11 @@ class IndexObservationText:
                 metadata=metadata,
             )
 
-        observation_meta = {"asset_id": observation.asset_id, "event_id": event_id or ""}
+        observation_meta = {
+            "asset_id": observation.asset_id,
+            "event_id": event_id or "",
+            "source_revision": observation.revision,
+        }
         records = [
             record(scheme.EPISODIC_SPACE, OBSERVATION_SOURCE, observation.id, dict(observation_meta)),
             record(scheme.SEMANTIC_SPACE, OBSERVATION_SOURCE, observation.id, dict(observation_meta)),
