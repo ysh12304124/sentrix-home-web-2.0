@@ -358,6 +358,7 @@ class ConfigService:
             "embedding": self._runtime.get("embedding") or {},
             "product": self._runtime.get("product") or [],
             "product_settings": dict(self._runtime.get("product_settings") or {}),
+            "product_build_revision": str(self._runtime.get("product_build_revision") or ""),
         }
 
     def public_config(self) -> dict[str, Any]:
@@ -419,7 +420,7 @@ class ConfigService:
         if not values["judge_model"]:
             raise InvalidRequestError("Judge model is required")
         # 同一份 runtime_connection.json 里保留服务拓扑；遥测/API 都读它。
-        for key in ("embedding", "product", "product_settings"):
+        for key in ("embedding", "product", "product_settings", "product_build_revision"):
             if key in self._runtime:
                 values[key] = self._runtime[key]
         if "product_settings" in payload:

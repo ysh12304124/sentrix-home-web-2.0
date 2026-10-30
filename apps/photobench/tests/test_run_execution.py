@@ -28,12 +28,25 @@ from fakes_execution import (
 )
 
 from photobench.application.deploy.service import SentrixModelSwitch
-from photobench.application.run_execution.service import RunExecution, RunRequest
+from photobench.application.run_execution.service import RunExecution, RunRequest, freeze_runtime_request
 from photobench.application.run_execution.state import RunState
 from photobench.domain.runs.execution import RunCancelledError
 
 ALBUM = "album-x"
 QA_SET = "qa-1"
+
+
+@pytest.mark.parametrize("product_revision", ["product-release", "", None])
+def test_runtime_freezes_product_revision_separately_from_benchmark_revision(product_revision):
+    connection = {"product_build_revision": product_revision}
+    request = freeze_runtime_request(_request(), connection, "benchmark-release")
+    assert request.runtime_snapshot is not None
+    assert request.runtime_snapshot.build_revision == "benchmark-release"
+    assert request.runtime_snapshot.connection()["required_build_revision"] == (
+        product_revision or "benchmark-release"
+    )
+    connection["product_build_revision"] = "later-product"
+    assert request.runtime_snapshot.connection()["product_build_revision"] == product_revision
 
 
 def _manifest() -> dict[str, Any]:

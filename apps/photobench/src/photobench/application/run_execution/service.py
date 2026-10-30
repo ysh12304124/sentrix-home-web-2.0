@@ -266,6 +266,7 @@ def freeze_runtime_request(
             "embedding",
             "product",
             "product_settings",
+            "product_build_revision",
         )
     }
     if request.model_base_url and request.model_base_url.rstrip("/") != str(
@@ -282,7 +283,8 @@ def freeze_runtime_request(
             "turn_timeout": request.turn_timeout,
             "qa_concurrency": request.qa_concurrency,
         },
-        required_build_revision=revision if revision != "development" else None,
+        required_build_revision=connection.get("product_build_revision")
+        or (revision if revision != "development" else None),
     )
     return replace(request, runtime_snapshot=RunRuntimeSnapshot(json.dumps(frozen), revision))
 

@@ -477,9 +477,8 @@ class RunSuites:
             # A resumed run is a new execution/build, with the original dependency/budget facts.
             inherited = dict(
                 prior_snapshot,
-                required_build_revision=self._build_revision
-                if self._build_revision != "development"
-                else None,
+                required_build_revision=prior_snapshot.get("product_build_revision")
+                or (self._build_revision if self._build_revision != "development" else None),
             )
             request = replace(
                 request,

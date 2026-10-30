@@ -709,6 +709,7 @@ def test_resume_inherits_topology_and_budgets_instead_of_current_configuration(t
         "vllm_manager_url": "",
         "embedding": {"mode": "split_text_image", "image_url": "http://original:8103"},
         "product_settings": {"deployment_profile": "mac"},
+        "product_build_revision": "original-product-release",
         "execution_budgets": {"import_timeout": 86400, "qa_concurrency": 2, "turn_timeout": 700},
     }
 
@@ -724,6 +725,7 @@ def test_resume_inherits_topology_and_budgets_instead_of_current_configuration(t
         assert request.runtime_snapshot.connection()["embedding"] == saved["runtime_snapshot"]["embedding"]
         assert (request.import_timeout, request.qa_concurrency, request.turn_timeout) == (86400, 2, 700)
         assert request.snapshot_source == "resumed_run"
+        assert request.runtime_snapshot.connection()["required_build_revision"] == "original-product-release"
     finally:
         gate.set()
 

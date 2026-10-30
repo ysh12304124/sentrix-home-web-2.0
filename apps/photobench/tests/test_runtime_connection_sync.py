@@ -42,6 +42,7 @@ def test_save_preserves_service_topology_in_runtime_connection(tmp_path: Path) -
             {
                 "model_base_url": "http://127.0.0.1:8100/v1",
                 "endpoint_model": "old",
+                "product_build_revision": "product-release",
                 "embedding": {"mode": "split_text_image", "text_url": "http://127.0.0.1:8101"},
                 "product": [
                     {"id": "sentrix_api", "ports": [8191]},
@@ -65,6 +66,8 @@ def test_save_preserves_service_topology_in_runtime_connection(tmp_path: Path) -
     saved = json.loads((tmp_path / "runtime_connection.json").read_text(encoding="utf-8"))
     assert saved["model_base_url"] == "http://127.0.0.1:8103/v1"
     assert saved["endpoint_model"] == "qwen35-mixed-3p1"
+    assert saved["product_build_revision"] == "product-release"
+    assert service.public_runtime_connection_config()["product_build_revision"] == "product-release"
     assert saved["embedding"]["text_url"] == "http://127.0.0.1:8101"
     assert {"id": "sentrix_api", "ports": [8291]} in saved["product"]
     assert {"id": "photobench", "ports": [8872]} in saved["product"]
