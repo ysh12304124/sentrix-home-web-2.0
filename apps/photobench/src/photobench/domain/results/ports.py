@@ -83,6 +83,10 @@ class RunResultWriter(Protocol):
         """
         ...
 
+    def write_telemetry_view(self, run_id: str, view: dict[str, Any]) -> None:
+        """Atomically publish the small live view independently of answer checkpoints."""
+        ...
+
     def reset_gpu_samples(self, run_id: str) -> None:
         """把 ``gpu_samples.jsonl`` 截空并建出目录（1.0 ``:2105``）。
 

@@ -352,7 +352,7 @@ def test_failed_legacy_export_does_not_accumulate_obsolete_checkpoints(tmp_path,
     def fail_copy(*args, **kwargs):
         raise OSError("legacy export unwritable")
 
-    monkeypatch.setattr(store.shutil, "copyfile", fail_copy)
+    monkeypatch.setattr(store, "copy_export", fail_copy)
     for index in range(5):
         writer.write_snapshot("r", {"run_id": "r", "status": "completed", "items": [], "counter": index})
     assert store.FileRunStore(tmp_path).load_state("r")["counter"] == 4

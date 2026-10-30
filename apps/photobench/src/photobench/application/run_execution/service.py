@@ -752,7 +752,7 @@ class RunExecution:
         )
 
     def _sample_writer(self, state: RunState) -> Callable[[dict[str, Any]], None]:
-        """采样回调：打相位标签、追加 JSONL、并维护 run.json 的实时视图。
+        """采样回调：打相位标签、追加 JSONL、更新内存实时视图。
 
         1.0 ``_persist_gpu_sample``（``:2110``）的三段在这里逐段对应：
 
@@ -779,7 +779,6 @@ class RunExecution:
                 apply_live_sample(live, sample, phase, label, tail=LIVE_TELEMETRY_TAIL_POINTS)
                 if sample.get("llama_server_args") and not state.data.get("llama_server_args"):
                     state.data["llama_server_args"] = sample.get("llama_server_args")
-            state.persist()
 
         return on_sample
 
@@ -807,7 +806,18 @@ class RunExecution:
             current = state.data.setdefault("phases", {}).get("gpu_metrics") or {}
             if current.get("status") not in {"done", "skipped"} and not state.data.get("finished_at"):
                 state.data["phases"]["gpu_metrics"] = partial
-        state.persist()
+            else:
+                return
+            view = copy.deepcopy(
+                {
+                    "run_id": state.run_id,
+                    "started_at": state.data.get("started_at"),
+                    "telemetry_live": state.data.get("telemetry_live", {}),
+                    "gpu_metrics": partial,
+                    "llama_server_args": state.data.get("llama_server_args"),
+                }
+            )
+        self.writer.write_telemetry_view(state.run_id, view)
 
     def _sampling_enabled(self) -> bool:
         return os.environ.get("PHOTOBENCH_DISABLE_GPU_SAMPLING", "0") != "1"
