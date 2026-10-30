@@ -1,4 +1,4 @@
-"""FunASR sidecar 的 HTTP 客户端；模型不加载进 API 进程。"""
+"""通用 ASR sidecar HTTP 客户端；FunASR/Whisper 都实现同一份契约。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from sentrix.domain.media.ports import AudioTranscriptionError
 from sentrix.domain.media.transcription import AsrResult, AsrSegment
 
 
-class FunAsrSidecarTranscriber:
+class AsrSidecarTranscriber:
     """低并发 ASR 适配器。
 
     导入相册会并行 prepare，多张音频可能同时到这里。信号量把 ASR 限制为 1，避免
@@ -127,3 +127,7 @@ def _optional_float(value: object) -> float | None:
         return float(str(value))
     except ValueError as error:
         raise AudioTranscriptionError(f"ASR sidecar 分数字段不是数字: {value!r}") from error
+
+
+# 保留旧名字，避免外部装配与已有测试在切换 Whisper 时被迫同步改名。
+FunAsrSidecarTranscriber = AsrSidecarTranscriber

@@ -19,7 +19,9 @@ class QaMetadataSource(Protocol):
     """``qa_id`` → 数据集侧元信息的只读映射。"""
 
     def metadata_by_qa_id(self) -> dict[str, dict[str, Any]]:
-        """返回 ``{qa_id: {字段: 值}}``。
+        """返回 ``{album_id\0qa_set\0qa_sha256\0qa_id: {字段: 值}}``。
+
+        不允许仅按 QA ID 从不同集合或版本补齐历史标签。
 
         1.0 在 ``OrchestratorRepository.__init__`` 里建这张表（``:4885``），一次扫描、
         进程内常驻；2.0 保持「进程内建一次」的语义，但由 application 在需要时惰性触发

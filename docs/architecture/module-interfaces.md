@@ -222,6 +222,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 
 | 端口 | 定义 | 方法摘要 | 当前实现 |
 |---|---|---|---|
+| `OperationControl` | `domain/media/ports.py` | `start/request_cancel/check/finish`，有界登记与真实退出确认 | `InProcessOperationControl` |
 | `AssetRepository` | `domain/media/ports.py:71` | `add/get/list_by_scope/find_by_hash/update_status` | `SqliteAssetRepository` |
 | `ObservationRepository` | `:89` | `add/get/list_by_asset/list_scope/enrich/enrich_transcript/latest_ocr_text/latest_people_snapshot` | `SqliteObservationRepository` |
 | `VlmObserver` | `:184` | `model_id`、`observe(path) -> ObservationSemantics \| None` | `OpenAIVlmObserver` |
@@ -339,6 +340,9 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 |---|---|---|
 | `AlbumSource` | `domain/datasets/ports.py:33` | `manifest/qa_rows/read_file/import_target/integrity/list_album_ids/media_file` |
 | `QaMetadataSource` | `:18` | QA 元数据读取 |
+| `ManagedTelemetryWork` | `domain/runtime/ports.py` | 可选 `start_sampling/stop_sampling`，采样器启动前准备资源，采样线程finally关闭；未退出仍由pending_work报告 |
+| `OwnedTelemetryWork` | `domain/runtime/ports.py` | 可选 `pending_work`，报告仍在运行的探测 |
+| `CancellableOperations` | `domain/sentrix/ports.py` | 可选 `cancel_operation`，请求并复查产品协作取消 |
 | `SentrixClient` | `domain/sentrix/ports.py:59` | 主产品 HTTP 语义端口（`API_PREFIX="/api/v1"`） |
 | `JsonHttpClient` | `domain/http/ports.py:61` | 原始 JSON HTTP |
 | `InferenceProvider` | `domain/runtime/ports.py:37` | `health/list_models/chat/chat_stream/token_count/capabilities/max_concurrency` |
@@ -658,6 +662,13 @@ T006 Judge一致性v2：新增可选`judge.consistency_version=2`，规则仍在
 历史无版本继续v1，不回填未保存的重问分数。数字字符串score按domain统一v1规则确定转换，拒绝bool及非有限/小数/越界/混合文本；记录score_normalization_version/score_normalization及attempts原响应。历史明确原文可生成带源哈希的score_derivation，保留原分/状态；执行、读取、汇总共用规则。接口契约、列表/详情投影及前端类型同步。
 
 Judge实时进度：`phases.qa_eval.progress`为规范计数，阶段外层同值兼容；Judge终态包含失败、跳过单列，有效评分数独立。Agent/Judge任一完成即由application提交同一检查点，不等全部Agent结束。前端缺失计数显示未知，不回写历史。详见指标契约的T006 Judge实时进度。
+
+AI辅助分析复用Judge的provider思考开关策略（豆包thinking.disabled，其余enable_thinking=false），
+请求策略计入配置指纹，策略变化后新建分析任务，原报告保留。
+
+重评分归档题目及逐轮原质量、行为和证据判分；当前Judge状态随新判分刷新。
+重评分仅覆盖回答质量和任务行为，证据统一标记not_applicable，原证据保留在history；
+原run终态及执行相位保持，错误分析新报告读取当前评分，历史报告仍可追溯。
 
 #### 4.12.2 换推理后端
 
@@ -1085,7 +1096,7 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 
 - ASR 已实现为独立 sidecar；原始证据在独立表，`Observation.transcript_text` 只投影通过质量门禁的文本。第一版同步执行，不引入 batch/job；
 - OCR 只有导入期 `ocr_text` 一条路，没有独立 PaddleOCR 适配器或 VLM 回退；
-- 无导入取消、无 batch/job；
+- 导入支持按 operation_id 协作取消（2026-10-23新增）；仍无持久 batch/job 队列；
 - 无云端大模型入口（评测可配，产品侧不内置）；
 - 记忆画像的模型同步留空；
 - 关系假设 / 角色假设 / 实体合并 / 洞察运行 / 主动建议等能力冻结。
@@ -1257,3 +1268,45 @@ Judge一致性v3进一步限定为明确“模型/助手的回答/答案/结论�
 保留同步 `POST /api/v1/imports`，新增可选 `operation_id` 和独立 `GET /api/v1/imports/{operation_id}/progress`。产品仅输出通用处理事实；`completed = imported + deduplicated + failed`，`total` 为实际扫描并应用 limit 后的支持媒体数，扫描前为 null。媒体计数完成后仍依次进行事件总结、参与者刷新、家庭图谱、人物画像，只有同步请求完成才终态。updated_at 是步骤更新时间，observed_at 是查询时间，不能互换。查询不会重放导入。
 
 由 domain ImportProgressStore 端口、application TrackImport 和 bootstrap 装配的有界进程内适配器实现；最多32个活跃跟踪、128条终态，重启或淘汰后404。重复在册ID409，容量不足429，均发生在副作用前。此能力不是持久作业队列，不承诺跨进程查询或取消产品执行。PhotoBench 使用运行快照中的同一客户端，每秒轮询、单次3秒超时，保存最后事实及查询故障；不盲重试导入POST。旧服务无进度时明确不可用。
+
+
+## T006 2026-10-23 协作取消与遥测探测
+
+详细契约及测试边界见[取消、调用事实与采样优化](../refactor/2026-10-23-cancellation-trace-deviations.md)。domain端口、application编排、infrastructure探测及bootstrap装配分层不变；产品同步导入配合协作取消，不引入持久队列。停止全部只请求测评相关任务停止，pending与worker真正退出分开。原始历史、null、TTL和3秒覆盖门槛保持；新运行的L2调用事实纳入真实模型调用统计，旧记录不补造。四机更新前重新核验占用，只激活授权8291/8872。受影响设备真实回归须使用新SHA，不能复用旧run标成新版。
+
+
+### T006 2026-10-24 终态汇总修复
+
+八种运行总状态和端口/schema保持不变；QA/Judge最终失败及缺分统一由domain.runs.execution.qa_completion_errors判断，application负责取消优先、池回收与done/partial/failed发布；详情见[运行终态汇总规则](photobench-metrics-contract.md#t006-2026-10-24-运行终态汇总规则)。不将历史attempt错误当最终失败，不重写历史run，不影响产品层。
+
+## PhotoBench 错误分析（2026-10-24）
+
+`AnalysisBackend`为独立派生任务端口，`ErrorAnalysis`编排，bootstrap装配。分析不改变测评状态/评分/GT，单spawn进程并发1、测评优先，纳入取消/退出确认与重启恢复。API、事件/案例/报告类型、分母与来源契约见[错误分析设计](photobench-error-analysis.md)。Agent的`ModelReply`和`ModelServiceError`追加可选diagnostics，调用投影追加唯一ID及恢复关联，不更改现有执行策略。
+
+### 2026-10-28 resident memory formula version
+
+TelemetryProvider signatures and JSON shapes remain unchanged. Existing optional
+`memory_accounting`, `memory_unit`, `system_memory_scope`, `memory_observations`
+and dependencies carry formula version and raw evidence. Apple resident v2
+uses independent, complete, identity-verified group summaries; local Jetson
+system v2 counts non-free physical RAM including caches. Domain owns formulas,
+infrastructure owns collection, application preserves observations and TTL.
+History retains original accounting; device/allocation estimates are not
+relabeled as physically deduplicated totals. See photobench-metrics-contract.md.
+
+
+### 2026-10-29 PhotoBench 对话与调用轨迹
+
+只读QA摘要增加display_question、conversation_turn_count、conversation_context_mode，原question保留；状态补读已存turn_status。工具按同轮父调用/步骤绑定，重试IO按attempt精确对应。ClaimReview增加可选model_call指标，RunTurn统一记录成功与失败核验调用；不改变任务决策。2.0 Agent墙钟与外部Judge耗时独立。契约、历史兼容边界及验证见[轨迹对齐说明](../refactor/2026-10-29-agent-trace-alignment.md)。
+
+
+### 2026-10-29 PhotoBench分析端口增量
+
+`AnalysisBackend`保留现有方法，新增`view(job_id, filters, page, page_size)`与`evidence(job_id, index)`。
+view统一范围统计与分页；evidence读取报告的不可变快照。不存在返回KeyError，状态/快照不可用返回ValueError，API映射沿既有错误契约。
+AI业务提示词与抽样/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
+新增API/OpenAPI和前端类型同步，详见[错误分析接口](photobench-error-analysis.md)。
+
+### 2026-10-29 阶段计时只读展示
+
+阶段卡按内容自然撑高；媒体导入首屏只保留数量、失败和请求墙钟，登记累计与范围说明按需展开。流水线核心标题显示pipeline_core实际经过时间，prepare为跨媒体准备时间累计，不能当父阶段墙钟或计算占比。收尾汇总participant_projection/memory_graph/family_graph/person_insights四个顺序执行段，causal_graph为memory_graph包含项，不重复计算；缺少任一独立段计时则不补零。两组占比均以timings.total为分母；不改run持久记录。

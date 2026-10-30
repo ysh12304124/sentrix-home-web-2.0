@@ -158,7 +158,12 @@ class PipelineProcessResponse(BaseModel):
     lexical_terms: int
     video_scenes: int
     summarized: int
-    timings: dict[str, float] = {}
+    timings: dict[str, float] = Field(
+        default_factory=dict,
+        description="Stage seconds: *_wall is earliest start to latest end; *_start_seconds and "
+        "*_end_seconds are relative to pipeline start. Unsuffixed legacy task totals remain cumulative; "
+        "overlapping spans and their shares must not be added.",
+    )
     failures: list[ImportFailure]
     memory_graph: MemoryGraphBuildResponse | None = None
     insights: InsightCounts | None = None

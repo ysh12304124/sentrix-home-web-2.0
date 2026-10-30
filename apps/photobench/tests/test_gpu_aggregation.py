@@ -9,8 +9,11 @@
 
 from __future__ import annotations
 
+import json
+
 from photobench.domain.runs.analysis import (
     aggregate_gpu_samples,
+    apply_live_sample,
     attach_gpu_sample_history,
 )
 
@@ -67,3 +70,20 @@ def test_dynamic_runtime_keys_survive_history_attach() -> None:
         ['{"_t": 1.0, "runtime_requests_running": 2, "kv_cache_host_used_mib": 512.0, "ignored_field": 9}'],
     )
     assert live["latest"] == {"runtime_requests_running": 2, "kv_cache_host_used_mib": 512.0}
+
+
+def test_full_history_preserves_related_gpu_peak_before_downsampling() -> None:
+    samples = [
+        {"_t": index, "benchmark_process_gpu_memory_mib": 16000 if index == 1 else 0} for index in range(554)
+    ]
+    live: dict = {}
+    for sample in samples:
+        apply_live_sample(live, sample, "qa_eval", "QA")
+    live_peak = live["peak"]["benchmark_process_gpu_memory_mib"]
+    attach_gpu_sample_history(live, [json.dumps(sample) for sample in samples])
+    assert len(live["history"]) == 240
+    assert not any(point["benchmark_process_gpu_memory_mib"] == 16000 for point in live["history"])
+    assert live["peak"]["benchmark_process_gpu_memory_mib"] == live_peak == 16000
+    stats = live["field_stats"]["benchmark_process_gpu_memory_mib"]
+    assert stats["peak"] == 16000 and stats["valid_count"] == 554
+    assert aggregate_gpu_samples(samples)["benchmark_process_gpu_memory_mib"] == stats

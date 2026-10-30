@@ -143,12 +143,12 @@ describe("itemParseRate（1.0 :575-579）", () => {
   it("total 缺省 → 未记录；total=0 仍是有效值", () => {
     expect(itemParseRate({})).toBe("未记录");
     expect(itemParseRate({ agent_stability: { json_parse_total: 0 } })).toBe(
-      "0/0 次模型输出解析为合法动作 (-)",
+      "模型动作 JSON：无解析调用",
     );
   });
   it("有值 → success/total (rate)", () => {
     expect(itemParseRate({ agent_stability: { json_parse_total: 10, json_parse_success: 8, json_parse_rate: 0.8 } })).toBe(
-      "8/10 次模型输出解析为合法动作 (80.0%)",
+      "模型动作 JSON：8/10 成功（80.0%）",
     );
   });
 });
@@ -192,4 +192,19 @@ describe("isDirectEvidence（1.0 :712-717）", () => {
     expect(isDirectEvidence(item, { media_id: "album1/photos/a.jpg", media_type: "image" })).toBe(true);
     expect(isDirectEvidence(item, "z.jpg")).toBe(false);
   });
+});
+
+it("2.0 实际轮次与题面轮次合并，实际状态和回答优先", () => {
+  expect(conversationTurns({ conversation: [{ message: "题面", expected_action: "answer" }], runtime_turns: [{ message: "实际", turn_status: "complete", answer: "已有回答" }] })).toEqual([{ message: "实际", expected_action: "answer", turn_status: "complete", answer: "已有回答" }]);
+});
+
+it.each(["unanswerable", " INSUFFICIENT_EVIDENCE "])("%s 带历史GT和零分仍显示不适用", (answerability) => {
+  expect(itemRetrievalMetrics({ answerability, retrieval_image_ids: ["a.jpg"], retrieval_recall: 0 })).toBe("不适用：不可回答题不计入检索指标");
+});
+
+it('解析统计读取原生工具字段，按已存计数求比率', () => {
+  expect(itemParseRate({agent_stability:{tool_argument_json_total:4,tool_argument_json_success:3,tool_argument_json_rate:1}})).toBe('工具参数 JSON：3/4 成功（75.0%）');
+  expect(itemParseRate({agent_stability:{tool_argument_json_total:4}})).toBe('工具参数 JSON：共 4 次，成功数未记录');
+  expect(itemParseRate({agent_stability:{tool_argument_json_total:0}})).toBe('工具参数 JSON：无解析调用');
+  expect(itemParseRate({agent_stability:{tool_argument_json_total:2,tool_argument_json_success:2,json_parse_total:1,json_parse_success:0}})).toBe('工具参数 JSON：2/2 成功（100.0%）；模型动作 JSON：0/1 成功（0.0%）');
 });

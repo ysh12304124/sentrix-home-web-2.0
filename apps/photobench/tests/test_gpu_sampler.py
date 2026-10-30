@@ -74,7 +74,7 @@ def test_sampler_uses_absolute_schedule_and_skips_missed_ticks(monkeypatch, work
             assert delay > 0
             now[0] += delay
 
-    sampler = GpuSampler(FakeTelemetry())
+    sampler = GpuSampler(FakeTelemetry(), interval=0.5)
     sampler._stop = Stop()
 
     def sample(**kwargs):
@@ -112,6 +112,63 @@ def test_slow_publishing_does_not_hold_sampling_lock_and_stops_cleanly(monkeypat
         sampler.stop()
     assert not sampler._thread.is_alive()
     assert not sampler._publisher.is_alive()
+
+
+def test_sampler_owns_managed_probe_until_the_sampling_loop_exits(monkeypatch):
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+
+    class Managed(FakeTelemetry):
+        events = []
+
+        def start_sampling(self):
+            self.events.append("start")
+
+        def stop_sampling(self):
+            assert release.is_set()
+            self.events.append("stop")
+
+    provider = Managed()
+    sampler = GpuSampler(provider)
+
+    def loop():
+        assert provider.events == ["start"]
+        entered.set()
+        assert release.wait(2)
+
+    monkeypatch.setattr(sampler, "_sample_loop", loop)
+    sampler.start()
+    try:
+        assert entered.wait(2)
+        assert provider.events == ["start"]
+    finally:
+        release.set()
+        sampler.stop()
+    assert provider.events == ["start", "stop"]
+    assert sampler.pending_work() == []
+
+
+def test_managed_probe_cleanup_runs_when_sampling_loop_raises(monkeypatch):
+    class Managed(FakeTelemetry):
+        closed = False
+
+        def start_sampling(self):
+            pass
+
+        def stop_sampling(self):
+            self.closed = True
+
+    provider = Managed()
+    sampler = GpuSampler(provider)
+
+    def broken():
+        raise RuntimeError("sampling loop failure")
+
+    monkeypatch.setattr(sampler, "_sample_loop", broken)
+    with pytest.raises(RuntimeError, match="sampling loop failure"):
+        sampler._run()
+    assert provider.closed
 
 
 def test_jetson_cpu_gpu_split_fields_survive_the_sample_mapping():

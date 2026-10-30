@@ -5,11 +5,29 @@ import type { Mock } from "vitest";
 import type { Run } from "../../api/types.ts";
 import type { RejudgeCardProps } from "./RejudgeCard.tsx";
 import { RunDetail } from "./RunDetail.tsx";
+import type { MemoryLayerPanelProps } from "../memory/MemoryLayerPanel.tsx";
 
 // 夹具口径：fatal_error 有 / 无；导出勾选三种组合；mode build / 非 build。
 // 1.0 参考 `App.vue:3039-3058`。
 
 afterEach(cleanup);
+
+it("切换运行和轮询更新时分析入口与记忆面板保持独立", () => {
+  const memory: MemoryLayerPanelProps = {
+    run: null, manifests: [], qaDetails: {}, qaPageItems: [],
+    memoryEffectiveness: null, keyframeAnalysis: null, summary: null,
+    chainDetail: null, onOpenChainNode: vi.fn(), onCloseChainDetail: vi.fn(),
+  };
+  const props = {
+    exportScores: [], onExportScoresChange: vi.fn(), onExportTraces: vi.fn(),
+    onExportSftTraces: vi.fn(), rejudge: rejudgeProps(), memory,
+  };
+  const view = render(<RunDetail {...props} activeRun={run()} />);
+  for (const id of ["r2", "r2", "r1", "r1"]) {
+    view.rerender(<RunDetail {...props} activeRun={run({run_id: id})} />);
+    expect(screen.getAllByRole("button", {name: "错误分析 展开"})).toHaveLength(1);
+  }
+});
 
 function run(overrides: Partial<Run> = {}): Run {
   return { run_id: "r1", mode: "full", status: "done", ...overrides };

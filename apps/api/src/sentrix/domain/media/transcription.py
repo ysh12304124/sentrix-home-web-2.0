@@ -79,6 +79,21 @@ class AudioTranscriptSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class AudioEvidenceExcerpt:
+    """送入回答模型的一段音频证据。
+
+    ``is_anchor`` 区分真正由向量检索命中的片段与仅用于补足语境的相邻片段；相邻片段
+    不参与召回打分，也不能反过来抬高所属资产的排名。
+    """
+
+    start_ms: int
+    end_ms: int
+    text: str
+    is_anchor: bool = False
+    local_speaker_label: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class AudioTranscription:
     id: str
     asset_id: str

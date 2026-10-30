@@ -37,6 +37,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 DIMENSION = 768
 CONTEXT_LENGTH = 52
 
@@ -69,6 +72,7 @@ _lock = threading.Lock()
 # ═══════════════════════════════════════════════════════════
 # 后端探测
 # ═══════════════════════════════════════════════════════════
+
 
 def _resolve_onnx_paths() -> tuple[Path, Path]:
     """返回 ONNX 模型路径（环境变量 > 默认路径）。"""
@@ -110,19 +114,21 @@ def _detect_backend() -> str:
 # ONNX 后端
 # ═══════════════════════════════════════════════════════════
 
+
 def _pick_onnx_providers() -> list[str]:
     """根据环境变量或可用 EP 选择 ONNX Runtime execution providers。"""
     requested = os.getenv("SENTRIX_LEGACY_CLIP_DEVICE", "auto").strip().lower()
     if requested == "cpu":
         return ["CPUExecutionProvider"]
     import onnxruntime as ort
+
     available = ort.get_available_providers()
     if "CUDAExecutionProvider" in available:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
 
 
-def _preprocess_image_numpy(img: "Image.Image") -> "np.ndarray":
+def _preprocess_image_numpy(img: Image.Image) -> np.ndarray:
     """PIL Image → FP16 numpy array，shape (1, 3, 224, 224)。
 
     等价于 torchvision.transforms.Compose([
@@ -137,7 +143,7 @@ def _preprocess_image_numpy(img: "Image.Image") -> "np.ndarray":
     _MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
     _STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
 
-    img = img.convert("RGB").resize((_INPUT_SIZE, _INPUT_SIZE), Image.BICUBIC)
+    img = img.convert("RGB").resize((_INPUT_SIZE, _INPUT_SIZE), Image.Resampling.BICUBIC)
     arr = np.asarray(img, dtype=np.float32) / 255.0
     arr = np.transpose(arr, (2, 0, 1))
     arr = (arr - _MEAN[:, None, None]) / _STD[:, None, None]
@@ -215,23 +221,26 @@ def _embed_query_onnx(text: str) -> list[float]:
     if _txt_session is None:
         raise RuntimeError(_error or "text model not loaded")
     from cn_clip.clip import tokenize
+
     tokens = tokenize([str(text)], context_length=CONTEXT_LENGTH).numpy()
     with _lock:
         out = _txt_session.run(None, {"text": tokens})[0]
     return _normalize_numpy(out.astype(np.float32).flatten())
 
 
-def _normalize_numpy(vec: "np.ndarray") -> list[float]:
+def _normalize_numpy(vec: np.ndarray) -> list[float]:
     import numpy as np
+
     norm = float(np.linalg.norm(vec))
     if norm > 0:
         vec = vec / norm
-    return vec.tolist()
+    return [float(value) for value in vec.tolist()]
 
 
 # ═══════════════════════════════════════════════════════════
 # PyTorch 后端
 # ═══════════════════════════════════════════════════════════
+
 
 def _pick_torch_device() -> str:
     """PyTorch 设备选择：CUDA → MPS → CPU。"""
@@ -239,6 +248,7 @@ def _pick_torch_device() -> str:
     if requested and requested != "auto":
         return requested
     import torch
+
     if torch.cuda.is_available():
         return "cuda"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -310,6 +320,7 @@ def _normalize_list(values: list[float]) -> list[float]:
 # 统一入口（根据后端分发）
 # ═══════════════════════════════════════════════════════════
 
+
 def _load() -> None:
     """根据探测结果加载对应后端。ONNX 失败时尝试回退到 PyTorch。"""
     global _backend, _error
@@ -324,7 +335,7 @@ def _load() -> None:
             onnx_error = _error
             checkpoint = _resolve_torch_checkpoint()
             if checkpoint.is_file():
-                print(f"[CLIP] ONNX 失败，回退到 PyTorch 后端...")
+                print("[CLIP] ONNX 失败，回退到 PyTorch 后端...")
                 _backend = BACKEND_TORCH
                 _load_torch()
             else:
@@ -355,6 +366,7 @@ def _is_loaded() -> bool:
 # ═══════════════════════════════════════════════════════════
 # HTTP Handler
 # ═══════════════════════════════════════════════════════════
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:
@@ -429,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
 # ═══════════════════════════════════════════════════════════
 # 入口
 # ═══════════════════════════════════════════════════════════
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

@@ -769,6 +769,9 @@ def test_l3_verifies_an_unbound_count_and_allows_a_corrected_answer(env, monkeyp
 
     assert "2 张" in result.answer
     assert len(model.claim_calls) == 1
+    calls = _turns.get(turn_id).trace["model_calls"]
+    assert len([call for call in calls if call["call_type"] == "claim_verifier"]) == 1
+    assert len(calls) == len(model.calls) + len(model.planner_calls) + len(model.claim_calls)
     assert result.termination_reason is TerminationReason.ANSWERED_WITH_GAP
 
 
@@ -1726,6 +1729,28 @@ def test_the_fallback_text_is_never_used_when_the_model_said_anything(env):
 
     assert "这一轮检索到" not in result.answer
     assert "提前结束" not in result.answer
+
+
+def test_owned_turn_cancel_before_model_call_has_real_cancelled_terminal(env):
+    from sentrix.infrastructure.media.operations import InProcessOperationControl
+
+    conversations, turns, conversation, _ = env
+    control = InProcessOperationControl()
+    model = ScriptedModel([final("should not run")])
+    run_turn = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=StubToolbox(),
+        operation_control=control,
+    )
+    turn_id = start(run_turn, conversation)
+    control.request_cancel("turn:" + turn_id)
+    result = run_turn.run(turn_id)
+    assert result.termination_reason == "cancelled"
+    assert result.answer == ""
+    assert not model.calls and not model.planner_calls
+    assert turns.get(turn_id).status == TurnStatus.CANCELLED
 
 
 # ---- 完整模型轨迹（include_debug） -----------------------------------------

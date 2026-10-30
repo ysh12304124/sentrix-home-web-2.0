@@ -149,6 +149,29 @@ def test_audio_segment_hit_keeps_its_time_range() -> None:
     assert result.hits[0].end_ms == 3400
 
 
+def test_weaker_audio_hit_does_not_attach_irrelevant_context_to_stronger_observation() -> None:
+    by_space = {
+        scheme.SEMANTIC_SPACE: [
+            hit("obs_1", 0.95, asset_id="asset_video", space=scheme.SEMANTIC_SPACE),
+            hit(
+                "aseg_1",
+                0.40,
+                asset_id="asset_video",
+                space=scheme.SEMANTIC_SPACE,
+                source_type="audio_segment",
+                metadata_extra={"start_ms": 12_000, "end_ms": 15_000},
+            ),
+        ]
+    }
+    index, _, _ = build(by_space)
+
+    result = index.execute(TextSearchRequest(text="红色背包", scope_id=SCOPE))
+
+    assert result.hits[0].asset_id == "asset_video"
+    assert result.hits[0].start_ms is None
+    assert result.hits[0].end_ms is None
+
+
 def test_scores_from_different_spaces_compete_together():
     """两个空间的分要放在一起比。分开排名会让「semantic 的第一名」永远压过
     「episodic 的第一名」，而它们本来就是同一个空间里的同一种相似度。"""

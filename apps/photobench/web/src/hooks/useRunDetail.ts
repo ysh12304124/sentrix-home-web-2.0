@@ -90,6 +90,24 @@ export interface RunDetailOptions {
 export type RunDetailApi = ReturnType<typeof useRunDetail>;
 
 const EMPTY_REVIEW: ReviewDraft = { verdict: "", note: "" };
+const FULL_HISTORY_REFRESH_MS = 15_000;
+const TERMINAL_STATUSES = new Set(["completed", "completed_with_errors", "failed", "cancelled", "interrupted"]);
+
+// Full reads cover the entire run at reduced resolution. Between them, append
+// the new raw tail without replacing the beginning of the curve or stale-copying metrics.
+function retainFullHistory(previous: Run | null, payload: Run): Run {
+  if (payload.history_mode === "full" || previous?.run_id !== payload.run_id || previous.history_mode !== "full") return payload;
+  const history = previous.telemetry_live?.history;
+  const tail = payload.telemetry_live?.history;
+  if (!history?.length || !tail) return payload;
+  let last = Number(history.at(-1)?.t);
+  const appended = tail.filter(point => typeof point.t === "number" && point.t > last).map(point => {
+    const gap = Number(point.t) - last > 3;
+    last = Number(point.t);
+    return gap ? { ...point, gap_before: true } : point;
+  });
+  return { ...payload, history_mode: "full", telemetry_live: { ...payload.telemetry_live, history: [...history, ...appended] } };
+}
 
 function defaultNotify(message: string): void {
   window.alert(message);
@@ -134,7 +152,8 @@ export function useRunDetail(options: RunDetailOptions) {
 
   // 1.0 用 ref 值做同步防重入（`reviewSaving.value` / `rejudgeSubmitting.value` 在
   // 同一 tick 内阻塞二次调用），state 只负责渲染。
-  const detailRequest = useRef<{ controller: AbortController; runId: string; full: boolean } | null>(null);
+  const detailRequest = useRef<{ controller: AbortController; runId: string } | null>(null);
+  const historyRead = useRef<{ runId: string; at: number; lastTime: number; terminal: boolean } | null>(null);
   const analysisOpen = useRef(false);
   useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const reviewSavingRef = useRef(false);
@@ -216,34 +235,41 @@ export function useRunDetail(options: RunDetailOptions) {
     [activeRunIdRef],
   );
 
-  /** Ordinary polling reads only a checkpoint; heavy analyses follow panel expansion. */
+  /** Load the whole timeline automatically; cheap polls append its latest tail. */
   const loadActiveRun = useCallback(
-    async ({ resetPage = false, includeHistory = false }: { resetPage?: boolean; includeHistory?: boolean } = {}) => {
+    async ({ resetPage = false, includeHistory }: { resetPage?: boolean; includeHistory?: boolean } = {}) => {
       const runId = activeRunIdRef.current;
       if (!runId) return;
       const pending = detailRequest.current;
-      if (!includeHistory && !resetPage && pending?.runId === runId && pending.full && !pending.controller.signal.aborted) return;
+      if (!includeHistory && !resetPage && pending?.runId === runId && !pending.controller.signal.aborted) return;
       pending?.controller.abort();
       const controller = new AbortController();
-      detailRequest.current = { controller, runId, full: includeHistory };
+      const known = historyRead.current?.runId === runId ? historyRead.current : null;
+      let full = includeHistory ?? (resetPage || !known || Date.now() - known.at >= FULL_HISTORY_REFRESH_MS);
+      detailRequest.current = { controller, runId };
       let payload: Run;
       try {
-        payload = await api<Run>(`/runs/${encodeURIComponent(runId)}?include_history=${includeHistory}`, {
+        const read = (withHistory: boolean) => api<Run>(`/runs/${encodeURIComponent(runId)}?include_history=${withHistory}`, {
           timeoutMs: 60000, signal: controller.signal,
         });
+        payload = await read(full);
+        if (controller.signal.aborted || activeRunIdRef.current !== runId) return;
+        const firstTailTime = payload.telemetry_live?.history?.[0]?.t;
+        // A suspended tab may have missed the rolling window. Re-read the whole
+        // timeline rather than inventing a sampling gap. Always finish with a full read.
+        if (!full && ((TERMINAL_STATUSES.has(payload.status || "") && !known?.terminal) ||
+            (typeof firstTailTime === "number" && known && firstTailTime > known.lastTime + 3))) {
+          full = true;
+          payload = await read(true);
+        }
       } finally {
         if (detailRequest.current?.controller === controller) detailRequest.current = null;
       }
       if (controller.signal.aborted || activeRunIdRef.current !== runId) return;
-      setActiveRun((previous) => {
-        // Same committed revision: retain the explicitly loaded full curve across cheap polls.
-        // A changed checkpoint requires a fresh full read rather than mixing revisions.
-        if (!includeHistory && previous?.run_id === runId && previous.history_mode === "full" &&
-            typeof payload.read_revision === "string" && previous.read_revision === payload.read_revision) {
-          return { ...payload, history_mode: "full", telemetry_live: previous.telemetry_live, phases: previous.phases };
-        }
-        return payload;
-      });
+      historyRead.current = { runId, at: full ? Date.now() : known?.at ?? 0,
+        lastTime: Number(payload.telemetry_live?.history?.at(-1)?.t ?? known?.lastTime ?? 0),
+        terminal: full ? TERMINAL_STATUSES.has(payload.status || "") : known?.terminal ?? false };
+      setActiveRun(previous => retainFullHistory(previous, payload));
       updateRunSummary?.(runId, effectiveRunSummary(payload));
       if (resetPage) {
         analysisOpen.current = false;

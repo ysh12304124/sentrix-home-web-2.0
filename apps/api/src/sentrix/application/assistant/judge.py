@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,8 +26,9 @@ from sentrix.application.assistant.debug_trace import (
     model_reply_payload,
 )
 from sentrix.domain.assistant.judge import JudgeVerdict, build_messages, parse_verdict, verdict_from_payload
-from sentrix.domain.assistant.models import ChatMessage, ChatRole
+from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply
 from sentrix.domain.assistant.ports import ChatModel
+from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.assistant.judge")
 
@@ -42,6 +43,7 @@ class FaithfulnessJudge:
         query: str,
         answer: str,
         transcript: Sequence[ChatMessage],
+        complete: Callable[[Sequence[ChatMessage]], ModelReply] | None = None,
         include_debug: bool = False,
         step_id: str = "judge",
     ) -> JudgeVerdict:
@@ -71,7 +73,9 @@ class FaithfulnessJudge:
             }
         try:
             # 评审不带工具：它要的是一段裁决 JSON，不是一次工具往返。
-            reply = self._model.complete(messages, ())
+            reply = complete(messages) if complete is not None else self._model.complete(messages, ())
+        except OperationCancelled:
+            raise
         except Exception as error:
             log.warning("L2 评审调用失败，按忠实放行", exc_info=True)
             if debug_call is not None:

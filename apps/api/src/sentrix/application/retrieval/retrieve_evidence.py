@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
+from sentrix.application.retrieval.expand_audio_context import ExpandAudioContext
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
 from sentrix.application.retrieval.retrieve_graph import GRAPH_CHANNEL, RetrieveGraph
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
@@ -55,6 +56,7 @@ from sentrix.application.retrieval.retrieve_visual import (
     VisualSearchResult,
 )
 from sentrix.domain.media.models import MediaType
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.fusion import DEFAULT_CHANNEL_WEIGHTS, fuse
 from sentrix.domain.retrieval.models import CandidateHit, ChannelTrace, FusedCandidate
@@ -125,6 +127,7 @@ class EvidenceHit:
     evidence_class: str = "semantic"
     audio_start_ms: int | None = None
     audio_end_ms: int | None = None
+    audio_context: tuple[AudioEvidenceExcerpt, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +222,8 @@ class RetrieveEvidence:
         text: RetrieveTextAnn,
         conditions: EvaluateConditions | None = None,
         graph: RetrieveGraph | None = None,
+        audio_context: ExpandAudioContext | None = None,
+        max_audio_context_hits: int = 2,
     ) -> None:
         self._visual = visual
         self._lexical = lexical
@@ -227,6 +232,8 @@ class RetrieveEvidence:
         self._text = text
         self._conditions = conditions
         self._graph = graph
+        self._audio_context = audio_context
+        self._max_audio_context_hits = max(0, max_audio_context_hits)
 
     def execute(self, request: EvidenceRequest) -> EvidenceResult:
         text = request.text.strip()
@@ -458,19 +465,41 @@ class RetrieveEvidence:
         primary_asset_ids = tuple(candidate.asset_id for candidate in primary_fused[:limit])
         fused_asset_ids = tuple(candidate.asset_id for candidate in fused[:limit])
 
-        return EvidenceResult(
-            hits=tuple(
+        hits: list[EvidenceHit] = []
+        expanded = 0
+        for candidate in fused[:limit]:
+            audio_start_ms, audio_end_ms = audio_locations.get(candidate.asset_id, (None, None))
+            context: tuple[AudioEvidenceExcerpt, ...] = ()
+            if (
+                self._audio_context is not None
+                and expanded < self._max_audio_context_hits
+                and audio_start_ms is not None
+                and audio_end_ms is not None
+            ):
+                try:
+                    context = self._audio_context.execute(
+                        asset_id=candidate.asset_id,
+                        anchor_start_ms=audio_start_ms,
+                        anchor_end_ms=audio_end_ms,
+                    )
+                except Exception as error:  # noqa: BLE001 - 上下文是可降级增强
+                    log.warning("扩展音频上下文失败，本次只交付时间锚点: %s", error)
+                expanded += 1
+            hits.append(
                 EvidenceHit(
                     asset_id=candidate.asset_id,
                     score=candidate.score,
                     channels=dict(candidate.channels),
                     raw_scores=dict(candidate.raw_scores),
                     evidence_class=candidate.evidence_class,
-                    audio_start_ms=audio_locations.get(candidate.asset_id, (None, None))[0],
-                    audio_end_ms=audio_locations.get(candidate.asset_id, (None, None))[1],
+                    audio_start_ms=audio_start_ms,
+                    audio_end_ms=audio_end_ms,
+                    audio_context=context,
                 )
-                for candidate in fused[:limit]
-            ),
+            )
+
+        return EvidenceResult(
+            hits=tuple(hits),
             backend=visual_box[0].backend if visual_box else "none",
             degraded=visual_box[0].degraded if visual_box else False,
             degraded_reason=visual_box[0].degraded_reason if visual_box else "",

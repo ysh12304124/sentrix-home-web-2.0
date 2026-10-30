@@ -92,6 +92,18 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
     body = processed.json()
     assert body["processed"] == 2
     assert body["failures"] == []
+    for stage in ("source_memory_prepare", "source_memory_commit", "event_summarize"):
+        timings = body["timings"]
+        assert timings[stage + "_wall"] >= 0
+        assert timings[stage + "_end_seconds"] >= timings[stage + "_start_seconds"] >= 0
+        assert (
+            abs(
+                timings[stage + "_wall"]
+                - (timings[stage + "_end_seconds"] - timings[stage + "_start_seconds"])
+            )
+            <= 0.002
+        )
+        assert timings[stage + "_end_seconds"] <= timings["pipeline_core"] + 0.001
     assert body["timings"]["source_memory_prepare"] >= 0
     assert body["timings"]["source_memory_commit"] >= 0
     assert body["timings"]["memory_graph"] >= 0
@@ -128,6 +140,18 @@ def test_video_keyframes_and_their_memories_wait_for_pipeline(client: TestClient
     body = processed.json()
     assert body["processed"] == 1
     assert body["video_scenes"] == 1
+    for stage in (
+        "total",
+        "scene_planning",
+        "scene_write",
+        "keyframe_extraction",
+        "keyframe_asset_write",
+        "keyframe_memory",
+    ):
+        timings = body["timings"]
+        assert timings["video_" + stage + "_wall"] >= 0
+        assert timings["video_" + stage + "_wall"] <= timings["video_total_wall"] + 0.001
+        assert timings["video_" + stage + "_end_seconds"] <= timings["pipeline_core"] + 0.001
     assert body["timings"]["video_keyframe_extraction"] >= 0
     assert body["timings"]["video_keyframe_memory"] >= 0
     assert len(client.get(f"/api/v1/videos/{asset_id}").json()["scenes"]) == 1

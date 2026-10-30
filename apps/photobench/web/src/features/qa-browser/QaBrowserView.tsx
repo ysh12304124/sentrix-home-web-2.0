@@ -17,6 +17,7 @@
  *   3. 1.0 的 `lightbox` 是 app 根级的共享元素（`:3767-3772`，runs 视图也用）；2.0 由
  *      组合层（`App.tsx`）持有，本切片把点击目标经 `onOpenMedia` 上抛，不再自己渲染一份。
  */
+import { taxonomyLabel } from "../../lib/qaTaxonomy.ts";
 import { useEffect, useRef } from "react";
 
 import type { ManifestSummary } from "../../api/types.ts";
@@ -88,6 +89,20 @@ export function QaBrowserView({ sentrixUrl = "", manifests = [], onOpenMedia }: 
         onRefresh={qa.loadQaBrowser}
       />
 
+      <div className="qa-browser-toolbar">
+        <label>内容大类<select aria-label="内容大类" value={qa.qaTask} onChange={e => { qa.setQaTask(e.target.value); qa.setQaSubtype(""); }}>
+          <option value="">全部大类</option>
+          {[...new Set(qaBrowserItems.map(x => x.task_type).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
+        </select></label>
+        <label>细分题型<select aria-label="细分题型" value={qa.qaSubtype} onChange={e => qa.setQaSubtype(e.target.value)}>
+          <option value="">全部小类</option>
+          {[...new Set(qaBrowserItems.filter(x => !qa.qaTask || x.task_type === qa.qaTask).map(x => x.question_type).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
+        </select></label>
+        <label>行为预期<select aria-label="行为预期" value={qa.qaAction} onChange={e => qa.setQaAction(e.target.value)}>
+          <option value="">全部行为</option>
+          {[...new Set(qaBrowserItems.map(x => x.expected_action).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
+        </select></label>
+      </div>
       {qa.qaBrowserLoading ? (
         <div className="qa-browser-empty">正在加载数据集…</div>
       ) : (

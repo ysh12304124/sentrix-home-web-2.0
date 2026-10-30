@@ -312,3 +312,119 @@ def test_a_real_writer_gets_a_serializable_state(tmp_path):
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk["run_id"] == "run_test"
     assert on_disk["status"] == state["status"]
+
+
+def test_evaluate_pre_cancel_never_creates_product_conversation():
+    execution, _ = _execution()
+    execution._state = RunState({"status": "running"})
+    execution.request_cancel("test")
+    with pytest.raises(RunCancelledError):
+        execution._evaluate_one({"qa_id": "q1", "question": "hello"}, "scope", {}, _request())
+    assert not any(name == "start_conversation" for name, _ in execution.client.calls)
+
+
+def test_cancelled_phase_submits_only_the_active_window_and_keeps_qa_ids():
+    execution, _ = _execution()
+    rows = [{"qa_id": f"q{i}", "question": "hello"} for i in range(40)]
+    execution.albums = FakeAlbums(manifest={"album_id": ALBUM}, qa_rows=rows)
+    state = RunState(
+        {
+            **{"status": "running", "scope_id": "s", "album_id": ALBUM, "phases": {}},
+            "qa_snapshot": {"rows": execution.albums.qa_rows(ALBUM, "qa-1")},
+        }
+    )
+    execution._state = state
+    started = []
+
+    def evaluate(row, *_args):
+        started.append(row["qa_id"])
+        execution.request_cancel("test")
+        raise RunCancelledError("stop")
+
+    execution._evaluate_one = evaluate
+    execution._probe_endpoint_health = lambda: None
+    with pytest.raises(RunCancelledError):
+        execution._phase_qa_eval(state, _request(qa_concurrency=1))
+    assert started == ["q0"]
+    assert [item["qa_id"] for item in state.get("items")] == [f"q{i}" for i in range(40)]
+    assert all(item["execution_status"] == "scheduled" for item in state.get("items"))
+    assert not state.get("run_valid")
+
+
+def test_product_pending_cleanup_blocks_release_until_acknowledged():
+    execution, writer = _execution()
+
+    class Client(FakeSentrixClient):
+        stopped = False
+
+        def cancel_operation(self, **kwargs):
+            return {"cleanup_status": "stopped" if self.stopped else "pending"}
+
+    client = Client()
+    execution.client = client
+    execution._state = RunState(
+        {
+            "run_id": "run_test",
+            "status": "cancelled",
+            "cleanup": {
+                "status": "stop_pending",
+                "operations": [{"kind": "turn", "operation_id": "a", "cleanup_status": "pending"}],
+            },
+        },
+        run_id="run_test",
+    )
+    assert execution.refresh_cleanup() is False
+    client.stopped = True
+    assert execution.refresh_cleanup() is True
+    assert writer.last_state()["cleanup"]["status"] == "stopped"
+
+
+def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows():
+    import threading
+
+    execution, _ = _execution()
+    execution.albums = FakeAlbums(
+        manifest={"album_id": ALBUM}, qa_rows=[{"qa_id": f"q{i}", "question": "test"} for i in range(20)]
+    )
+    state = RunState(
+        {
+            **{"status": "running", "scope_id": "s", "album_id": ALBUM, "phases": {}},
+            "qa_snapshot": {"rows": execution.albums.qa_rows(ALBUM, "qa-1")},
+        }
+    )
+    execution._state = state
+    entered, release = threading.Event(), threading.Event()
+    started, errors = [], []
+
+    def evaluate(row, *_args):
+        started.append(row["qa_id"])
+        return {"qa_id": row["qa_id"], "answer": "a", "execution_status": "completed"}
+
+    class Judge:
+        def judge_item(self, item, *_args):
+            entered.set()
+            assert release.wait(5)
+            return {**item, "judge_status": "completed", "judge": {"score": 1}}
+
+    execution._evaluate_one = evaluate
+    execution._judge = Judge()
+    execution._probe_endpoint_health = lambda: None
+
+    def run():
+        try:
+            execution._phase_qa_eval(state, _request(qa_concurrency=1))
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        assert len(started) <= 3
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert not errors
+    assert len(started) == len(state.get("items")) == 20
+    assert state.get("phases")["qa_eval"]["agent_phase_wall_ms"] > 0

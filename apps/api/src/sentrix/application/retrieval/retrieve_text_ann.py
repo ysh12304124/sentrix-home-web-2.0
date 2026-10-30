@@ -201,15 +201,18 @@ class RetrieveTextAnn:
             # **观察行**缺 asset_id 才是异常：命中了却交付不出来，在结果条数上表现为
             # 「少几张图」——最容易没人发现的那种错。
             log.warning("文本召回有 %d 条观察命中缺少 asset_id，已丢弃", unmapped)
+        # 只有音频片段本身是该资产最强的文本证据（允许浮点并列）时才向上交付
+        # 时间锚点。否则一个很弱的音频尾部命中会给视觉/Observation 强命中的资产
+        # 附上一段无关对白，扩展上下文反而污染回答模型。
+        rows: list[tuple[str, float, Mapping[str, object]]] = []
+        for asset_id, (score, _metadata) in best.items():
+            audio = best_audio_location.get(asset_id)
+            audio_metadata: Mapping[str, object] = {}
+            if audio is not None and audio[0] >= score - 1e-9:
+                audio_metadata = audio[1]
+            rows.append((asset_id, score, audio_metadata))
         return sorted(
-            (
-                (
-                    asset_id,
-                    score,
-                    best_audio_location.get(asset_id, (score, metadata))[1],
-                )
-                for asset_id, (score, metadata) in best.items()
-            ),
+            rows,
             key=lambda item: item[1],
             reverse=True,
         )

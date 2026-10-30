@@ -100,25 +100,25 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
 export function GraphQualityPanel({ quality }: { quality: GraphQuality | null }) {
   if (!quality) {
     return (
-      <section className="phase-card result-phase-card graph-quality-panel">
-        <h3 className="phase-title">图记忆质量</h3>
+      <details className="phase-card result-phase-card graph-quality-panel">
+        <summary className="phase-title"><b>图记忆质量</b></summary>
         <p className="metric-calc-time">图质量指标读取中…</p>
-      </section>
+      </details>
     );
   }
   if (quality.status === "unavailable") {
     return (
-      <section className="phase-card result-phase-card graph-quality-panel">
-        <h3 className="phase-title">图记忆质量</h3>
+      <details className="phase-card result-phase-card graph-quality-panel">
+        <summary className="phase-title"><b>图记忆质量</b></summary>
         <p className="metric-calc-time">暂不可用：{String(quality.reason || "读取失败")}</p>
-      </section>
+      </details>
     );
   }
   const graph = quality.graph || {};
   const face = quality.face_clustering || {};
   return (
-    <section className="phase-card result-phase-card graph-quality-panel">
-      <h3 className="phase-title"><b>图记忆质量</b></h3>
+    <details className="phase-card result-phase-card graph-quality-panel">
+      <summary className="phase-title"><b>图记忆质量</b></summary>
       <p className="metric-calc-time">
         {graph.reference_mode === "source_consistency"
           ? "可验边参考集从 2.0 记忆来源字段重建，不读取图中已生成的边。无独立人工边 GT，P/R/F1 仅表示构图投影一致性；视觉与因果推断边不计入。"
@@ -131,6 +131,6 @@ export function GraphQualityPanel({ quality }: { quality: GraphQuality | null })
 
       <h4>按问题类型的图记忆 QA 表现</h4>
       <QuestionTypeTable rows={quality.graph_qa_by_type || []} />
-    </section>
+    </details>
   );
 }

@@ -334,6 +334,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/active-work:
+    get:
+      tags:
+      - suites
+      summary: Active Work
+      description: Live run/auxiliary ownership; cancellation acknowledgement is not
+        worker exit.
+      operationId: active_work_api_v1_active_work_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkStatusResponse'
+  /api/v1/active-work/cleanup:
+    post:
+      tags:
+      - suites
+      summary: Refresh Cleanup
+      description: Bounded recheck of previously requested cancellation, preserving
+        failed evidence.
+      operationId: refresh_cleanup_api_v1_active_work_cleanup_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkStatusResponse'
   /api/v1/runs/{run_id}/items:
     get:
       tags:
@@ -383,6 +413,13 @@ paths:
           type: string
           default: ''
           title: Task Type
+      - name: question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Question Type
       - name: tag
         in: query
         required: false
@@ -628,6 +665,1096 @@ paths:
           type: string
           default: ''
           title: Min Score
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/analysis:
+    post:
+      tags:
+      - error-analysis
+      summary: Create
+      operationId: create_api_v1_runs__run_id__analysis_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalysisRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - error-analysis
+      summary: Latest
+      operationId: latest_api_v1_runs__run_id__analysis_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/analyses:
+    get:
+      tags:
+      - error-analysis
+      summary: History
+      operationId: history_api_v1_runs__run_id__analyses_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AnalysisJob'
+                title: Response History Api V1 Runs  Run Id  Analyses Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}:
+    get:
+      tags:
+      - error-analysis
+      summary: Job
+      operationId: job_api_v1_analyses__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}/cancel:
+    post:
+      tags:
+      - error-analysis
+      summary: Cancel
+      operationId: cancel_api_v1_analyses__job_id__cancel_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisJob'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}/cases:
+    get:
+      tags:
+      - error-analysis
+      summary: Cases
+      operationId: cases_api_v1_analyses__job_id__cases_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - html
+          - json
+          - csv
+          type: string
+          default: html
+          title: Format
+      - name: score
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - '0'
+          - '1'
+          - '2'
+          - None
+          - low
+          type: string
+          default: ''
+          title: Score
+      - name: recovery
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - recovered
+          - not_recovered
+          - unknown
+          type: string
+          default: ''
+          title: Recovery
+      - name: anomaly
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - 'yes'
+          - 'no'
+          type: string
+          default: ''
+          title: Anomaly
+      - name: content_unit
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - qa
+          - turn
+          type: string
+          default: ''
+          title: Content Unit
+      - name: behavior_result
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - correct
+          - incorrect
+          - missing
+          type: string
+          default: ''
+          title: Behavior Result
+      - name: turn
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Turn
+      - name: index
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Index
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 500
+          default: ''
+          title: Q
+      - name: code
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Code
+      - name: question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Question Type
+      - name: expected_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Expected Action
+      - name: actual_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Actual Action
+      - name: execution
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - normal
+          - failed
+          - cancelled
+          - unknown
+          type: string
+          default: ''
+          title: Execution
+      - name: task_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Task Type
+      - name: angle
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Angle
+      - name: difficulty
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Difficulty
+      - name: answerability
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Answerability
+      - name: media_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Media Type
+      - name: conversation_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Conversation Type
+      - name: ability_family
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Family
+      - name: ability_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Type
+      - name: ability_taxonomy_version
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Taxonomy Version
+      - name: benchmark_group
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Benchmark Group
+      - name: content_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Type
+      - name: content_subtype
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Subtype
+      - name: test_scenario
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Test Scenario
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Tool Name
+      - name: issue_kind
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Issue Kind
+      - name: failure_reason
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Failure Reason
+      - name: component
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Component
+      - name: signal
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Signal
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CasePage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}/view:
+    get:
+      tags:
+      - error-analysis
+      summary: View
+      operationId: view_api_v1_analyses__job_id__view_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - html
+          - json
+          - csv
+          type: string
+          default: html
+          title: Format
+      - name: score
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - '0'
+          - '1'
+          - '2'
+          - None
+          - low
+          type: string
+          default: ''
+          title: Score
+      - name: recovery
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - recovered
+          - not_recovered
+          - unknown
+          type: string
+          default: ''
+          title: Recovery
+      - name: anomaly
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - 'yes'
+          - 'no'
+          type: string
+          default: ''
+          title: Anomaly
+      - name: content_unit
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - qa
+          - turn
+          type: string
+          default: ''
+          title: Content Unit
+      - name: behavior_result
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - correct
+          - incorrect
+          - missing
+          type: string
+          default: ''
+          title: Behavior Result
+      - name: turn
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Turn
+      - name: index
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Index
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 500
+          default: ''
+          title: Q
+      - name: code
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Code
+      - name: question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Question Type
+      - name: expected_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Expected Action
+      - name: actual_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Actual Action
+      - name: execution
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - normal
+          - failed
+          - cancelled
+          - unknown
+          type: string
+          default: ''
+          title: Execution
+      - name: task_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Task Type
+      - name: angle
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Angle
+      - name: difficulty
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Difficulty
+      - name: answerability
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Answerability
+      - name: media_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Media Type
+      - name: conversation_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Conversation Type
+      - name: ability_family
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Family
+      - name: ability_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Type
+      - name: ability_taxonomy_version
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Taxonomy Version
+      - name: benchmark_group
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Benchmark Group
+      - name: content_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Type
+      - name: content_subtype
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Subtype
+      - name: test_scenario
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Test Scenario
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Tool Name
+      - name: issue_kind
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Issue Kind
+      - name: failure_reason
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Failure Reason
+      - name: component
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Component
+      - name: signal
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Signal
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}/evidence/{index}:
+    get:
+      tags:
+      - error-analysis
+      summary: Evidence
+      operationId: evidence_api_v1_analyses__job_id__evidence__index__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Index
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceSnapshot'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/analyses/{job_id}/export:
+    get:
+      tags:
+      - error-analysis
+      summary: Export
+      operationId: export_api_v1_analyses__job_id__export_get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Page Size
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - html
+          - json
+          - csv
+          type: string
+          default: html
+          title: Format
+      - name: score
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - '0'
+          - '1'
+          - '2'
+          - None
+          - low
+          type: string
+          default: ''
+          title: Score
+      - name: recovery
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - recovered
+          - not_recovered
+          - unknown
+          type: string
+          default: ''
+          title: Recovery
+      - name: anomaly
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - 'yes'
+          - 'no'
+          type: string
+          default: ''
+          title: Anomaly
+      - name: content_unit
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - qa
+          - turn
+          type: string
+          default: ''
+          title: Content Unit
+      - name: behavior_result
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - correct
+          - incorrect
+          - missing
+          type: string
+          default: ''
+          title: Behavior Result
+      - name: turn
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Turn
+      - name: index
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Index
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 500
+          default: ''
+          title: Q
+      - name: code
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Code
+      - name: question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Question Type
+      - name: expected_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Expected Action
+      - name: actual_action
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Actual Action
+      - name: execution
+        in: query
+        required: false
+        schema:
+          enum:
+          - ''
+          - normal
+          - failed
+          - cancelled
+          - unknown
+          type: string
+          default: ''
+          title: Execution
+      - name: task_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Task Type
+      - name: angle
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Angle
+      - name: difficulty
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Difficulty
+      - name: answerability
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Answerability
+      - name: media_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Media Type
+      - name: conversation_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Conversation Type
+      - name: ability_family
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Family
+      - name: ability_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Type
+      - name: ability_taxonomy_version
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Ability Taxonomy Version
+      - name: benchmark_group
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Benchmark Group
+      - name: content_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Type
+      - name: content_subtype
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Content Subtype
+      - name: test_scenario
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Test Scenario
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Tool Name
+      - name: issue_kind
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Issue Kind
+      - name: failure_reason
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Failure Reason
+      - name: component
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Component
+      - name: signal
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Signal
       responses:
         '200':
           description: Successful Response
@@ -940,6 +2067,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/qa-taxonomy:
+    get:
+      tags:
+      - datasets
+      summary: Qa Taxonomy
+      description: The versioned dictionary used by QA files, filters and analysis.
+      operationId: qa_taxonomy_api_v1_qa_taxonomy_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QaTaxonomyResponse'
   /api/v1/memory-spaces:
     get:
       tags:
@@ -1010,6 +2151,805 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AnalysisFacet:
+      properties:
+        value:
+          type: string
+          title: Value
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - value
+      - count
+      title: AnalysisFacet
+    AnalysisJob:
+      properties:
+        status:
+          type: string
+          title: Status
+        job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        processed:
+          type: integer
+          title: Processed
+          default: 0
+        stale:
+          type: boolean
+          title: Stale
+          default: false
+        report:
+          anyOf:
+          - $ref: '#/components/schemas/AnalysisReport'
+          - $ref: '#/components/schemas/ComparisonReport'
+          - $ref: '#/components/schemas/DiagnosisReport'
+          - type: 'null'
+          title: Report
+      additionalProperties: true
+      type: object
+      required:
+      - status
+      title: AnalysisJob
+    AnalysisReport:
+      properties:
+        schema_version:
+          type: integer
+          title: Schema Version
+        rule_version:
+          type: integer
+          title: Rule Version
+        generated_at:
+          type: number
+          title: Generated At
+        source:
+          additionalProperties: true
+          type: object
+          title: Source
+        result_fingerprint:
+          type: string
+          title: Result Fingerprint
+        gt_fingerprint:
+          type: string
+          title: Gt Fingerprint
+        ability_taxonomy_versions:
+          items:
+            type: string
+          type: array
+          title: Ability Taxonomy Versions
+        ability_labels:
+          additionalProperties:
+            type: string
+          type: object
+          title: Ability Labels
+        annotation_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Annotation Fingerprint
+        group_partitions:
+          additionalProperties:
+            additionalProperties:
+              $ref: '#/components/schemas/GroupPartition'
+            type: object
+          type: object
+          title: Group Partitions
+        group_errors:
+          items:
+            $ref: '#/components/schemas/GroupError'
+          type: array
+          title: Group Errors
+        turn_groups:
+          additionalProperties:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+          type: object
+          title: Turn Groups
+        item_count:
+          type: integer
+          title: Item Count
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        denominators:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Denominators
+        groups:
+          additionalProperties:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+          type: object
+          title: Groups
+        errors:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Errors
+        behavior_groups:
+          items:
+            $ref: '#/components/schemas/BehaviorGroup'
+          type: array
+          title: Behavior Groups
+        behavior_scenarios:
+          items:
+            $ref: '#/components/schemas/BehaviorGroup'
+          type: array
+          title: Behavior Scenarios
+        behavior_matrix:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Behavior Matrix
+        heatmap:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Heatmap
+        ability_heatmap:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Ability Heatmap
+        definitions:
+          items:
+            type: string
+          type: array
+          title: Definitions
+      additionalProperties: true
+      type: object
+      required:
+      - schema_version
+      - rule_version
+      - generated_at
+      - source
+      - result_fingerprint
+      - gt_fingerprint
+      - item_count
+      - counts
+      - denominators
+      - groups
+      - errors
+      - behavior_matrix
+      - heatmap
+      - definitions
+      title: AnalysisReport
+    AnalysisRequest:
+      properties:
+        kind:
+          type: string
+          enum:
+          - rules
+          - compare
+          - ai
+          title: Kind
+          default: rules
+        parent_job:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Job
+        left_job:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Left Job
+        right_job:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Right Job
+        indices:
+          items:
+            type: integer
+          type: array
+          maxItems: 5000
+          title: Indices
+        provider_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Id
+        mode:
+          type: string
+          enum:
+          - overview
+          - cases
+          title: Mode
+          default: cases
+        scope:
+          type: string
+          enum:
+          - run
+          - filter
+          - selection
+          title: Scope
+          default: selection
+        filters:
+          additionalProperties:
+            type: string
+          type: object
+          title: Filters
+        max_cases:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Max Cases
+          default: 12
+        resume_job:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resume Job
+        summary_only:
+          type: boolean
+          title: Summary Only
+          default: false
+      type: object
+      title: AnalysisRequest
+    AnalysisView:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/CaseReference'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        summary:
+          $ref: '#/components/schemas/AnalysisReport'
+        issues:
+          items:
+            $ref: '#/components/schemas/IssueGroup'
+          type: array
+          title: Issues
+        tools:
+          items:
+            $ref: '#/components/schemas/ToolSummary'
+          type: array
+          title: Tools
+        facets:
+          additionalProperties:
+            items:
+              $ref: '#/components/schemas/AnalysisFacet'
+            type: array
+          type: object
+          title: Facets
+        ability_tree:
+          additionalProperties:
+            items:
+              type: string
+            type: array
+          type: object
+          title: Ability Tree
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      - summary
+      - issues
+      - tools
+      - facets
+      - ability_tree
+      title: AnalysisView
+    AnomalyEvent:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        code:
+          type: string
+          title: Code
+        label:
+          type: string
+          title: Label
+        source:
+          type: string
+          title: Source
+        turn:
+          type: integer
+          title: Turn
+        step_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Step Id
+        recovery:
+          type: string
+          enum:
+          - recovered
+          - not_recovered
+          - unknown
+          title: Recovery
+        basis:
+          type: string
+          title: Basis
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role
+        diagnostics:
+          additionalProperties: true
+          type: object
+          title: Diagnostics
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        component:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Component
+        issue_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Kind
+        failure_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Reason
+        tool_call_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Call Id
+        parent_step_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Step Id
+        model_call_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Call Id
+        call_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Call Key
+        evidence_refs:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Evidence Refs
+        related_event_ids:
+          items:
+            type: string
+          type: array
+          title: Related Event Ids
+      additionalProperties: true
+      type: object
+      required:
+      - event_id
+      - code
+      - label
+      - source
+      - turn
+      - recovery
+      - basis
+      title: AnomalyEvent
+    BehaviorGroup:
+      properties:
+        value:
+          type: string
+          title: Value
+        total:
+          type: integer
+          title: Total
+        valid:
+          type: integer
+          title: Valid
+        correct:
+          type: integer
+          title: Correct
+        incorrect:
+          type: integer
+          title: Incorrect
+        missing:
+          type: integer
+          title: Missing
+      type: object
+      required:
+      - value
+      - total
+      - valid
+      - correct
+      - incorrect
+      - missing
+      title: BehaviorGroup
+    CasePage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/CaseReference'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      title: CasePage
+    CaseReference:
+      properties:
+        index:
+          type: integer
+          title: Index
+        qa_id:
+          type: string
+          title: Qa Id
+        question:
+          type: string
+          title: Question
+        answer:
+          type: string
+          title: Answer
+        reference_answer:
+          type: string
+          title: Reference Answer
+        score:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Score
+        execution:
+          type: string
+          title: Execution
+        dimensions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Dimensions
+        events:
+          items:
+            $ref: '#/components/schemas/AnomalyEvent'
+          type: array
+          title: Events
+        turns:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Turns
+        missing:
+          items:
+            type: string
+          type: array
+          title: Missing
+        signals:
+          items:
+            type: string
+          type: array
+          title: Signals
+      additionalProperties: true
+      type: object
+      required:
+      - index
+      - qa_id
+      - question
+      - answer
+      - reference_answer
+      - score
+      - execution
+      - dimensions
+      - events
+      - turns
+      - missing
+      - signals
+      title: CaseReference
+    ComparisonReport:
+      properties:
+        comparable:
+          type: boolean
+          title: Comparable
+        sources:
+          additionalProperties: true
+          type: object
+          title: Sources
+        differences:
+          items:
+            type: string
+          type: array
+          title: Differences
+        missing_configuration:
+          items:
+            type: string
+          type: array
+          title: Missing Configuration
+        duplicates:
+          items:
+            type: string
+          type: array
+          title: Duplicates
+        pairing_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Pairing Counts
+        quality_changes:
+          anyOf:
+          - additionalProperties:
+              type: integer
+            type: object
+          - type: 'null'
+          title: Quality Changes
+        rows:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Rows
+        note:
+          type: string
+          title: Note
+      additionalProperties: true
+      type: object
+      required:
+      - comparable
+      - sources
+      - differences
+      - missing_configuration
+      - duplicates
+      - pairing_counts
+      - quality_changes
+      - rows
+      - note
+      title: ComparisonReport
+    ContentTask:
+      properties:
+        label:
+          type: string
+          title: Label
+        subtypes:
+          additionalProperties:
+            type: string
+          type: object
+          title: Subtypes
+      type: object
+      required:
+      - label
+      - subtypes
+      title: ContentTask
+    DiagnosisReport:
+      properties:
+        parent_job:
+          type: string
+          title: Parent Job
+        model:
+          type: string
+          title: Model
+        provider_id:
+          type: string
+          title: Provider Id
+        requested:
+          type: integer
+          title: Requested
+        covered:
+          type: integer
+          title: Covered
+        cases:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Cases
+        note:
+          type: string
+          title: Note
+        schema_version:
+          type: integer
+          title: Schema Version
+          default: 1
+        scope:
+          additionalProperties: true
+          type: object
+          title: Scope
+        coverage:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Coverage
+        issues:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Issues
+        facts:
+          additionalProperties: true
+          type: object
+          title: Facts
+        overview:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Overview
+        requests:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Requests
+        stage:
+          type: string
+          title: Stage
+          default: cases
+        prompt_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Prompt Version
+        configuration_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Configuration Fingerprint
+        sample_indices:
+          items:
+            type: integer
+          type: array
+          title: Sample Indices
+        summary_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary Status
+        summary_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary Error
+      additionalProperties: true
+      type: object
+      required:
+      - parent_job
+      - model
+      - provider_id
+      - requested
+      - covered
+      - cases
+      - note
+      title: DiagnosisReport
+    EvidenceSnapshot:
+      properties:
+        evidence_locations:
+          additionalProperties:
+            type: string
+          type: object
+          title: Evidence Locations
+        job_id:
+          type: string
+          title: Job Id
+        index:
+          type: integer
+          title: Index
+        result_fingerprint:
+          type: string
+          title: Result Fingerprint
+        item:
+          additionalProperties: true
+          type: object
+          title: Item
+      type: object
+      required:
+      - evidence_locations
+      - job_id
+      - index
+      - result_fingerprint
+      - item
+      title: EvidenceSnapshot
+    GroupError:
+      properties:
+        unit:
+          type: string
+          enum:
+          - qa
+          - turn
+          title: Unit
+        dimension:
+          type: string
+          title: Dimension
+        value:
+          type: string
+          title: Value
+        code:
+          type: string
+          title: Code
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - unit
+      - dimension
+      - value
+      - code
+      - count
+      title: GroupError
+    GroupPartition:
+      properties:
+        total:
+          type: integer
+          title: Total
+        labeled:
+          type: integer
+          title: Labeled
+          default: 0
+        unknown:
+          type: integer
+          title: Unknown
+          default: 0
+        not_applicable:
+          type: integer
+          title: Not Applicable
+          default: 0
+        multi_labeled:
+          type: integer
+          title: Multi Labeled
+          default: 0
+        exclusive:
+          type: boolean
+          title: Exclusive
+        exhaustive:
+          type: boolean
+          title: Exhaustive
+      type: object
+      required:
+      - total
+      - exclusive
+      - exhaustive
+      title: GroupPartition
     HTTPValidationError:
       properties:
         detail:
@@ -1094,6 +3034,73 @@ components:
       additionalProperties: true
       type: object
       title: ImportObservationProjection
+    IssueGroup:
+      properties:
+        component:
+          type: string
+          title: Component
+        group_id:
+          type: string
+          title: Group Id
+        tool_name:
+          type: string
+          title: Tool Name
+        code:
+          type: string
+          title: Code
+        label:
+          type: string
+          title: Label
+        failure_reason:
+          type: string
+          title: Failure Reason
+        issue_kind:
+          type: string
+          title: Issue Kind
+        affected_items:
+          type: integer
+          title: Affected Items
+        affected_calls:
+          type: integer
+          title: Affected Calls
+        low_score_items:
+          type: integer
+          title: Low Score Items
+        indices:
+          items:
+            type: integer
+          type: array
+          title: Indices
+        event_ids:
+          items:
+            type: string
+          type: array
+          title: Event Ids
+        events:
+          type: integer
+          title: Events
+        recovery:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Recovery
+      type: object
+      required:
+      - component
+      - group_id
+      - tool_name
+      - code
+      - label
+      - failure_reason
+      - issue_kind
+      - affected_items
+      - affected_calls
+      - low_score_items
+      - indices
+      - event_ids
+      - events
+      - recovery
+      title: IssueGroup
     JudgeObservation:
       properties:
         score:
@@ -1392,8 +3399,163 @@ components:
       additionalProperties: true
       type: object
       title: PhaseProgressProjection
+    QaTaxonomyResponse:
+      properties:
+        version:
+          type: string
+          title: Version
+        schema_version:
+          type: string
+          title: Schema Version
+        tasks:
+          additionalProperties:
+            $ref: '#/components/schemas/ContentTask'
+          type: object
+          title: Tasks
+        actions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Actions
+        answerability:
+          additionalProperties:
+            type: string
+          type: object
+          title: Answerability
+        difficulty:
+          additionalProperties:
+            type: string
+          type: object
+          title: Difficulty
+        special:
+          additionalProperties:
+            type: string
+          type: object
+          title: Special
+      type: object
+      required:
+      - version
+      - schema_version
+      - tasks
+      - actions
+      - answerability
+      - difficulty
+      - special
+      title: QaTaxonomyResponse
     RunItemObservation:
       properties:
+        display_question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Question
+        conversation_turn_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Conversation Turn Count
+        conversation_context_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Conversation Context Mode
+        agent_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Status
+        task_type:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Task Type
+        question_type:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Question Type
+        expected_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expected Action
+        answerability:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Answerability
+        injection:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Injection
+        difficulty:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Difficulty
+        qa_schema_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qa Schema Version
+        taxonomy_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Taxonomy Version
+        ability_taxonomy_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ability Taxonomy Version
+        ability_family_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ability Family Ids
+        ability_primary_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ability Primary Ids
+        ability_supporting_ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ability Supporting Ids
+        benchmark_group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Benchmark Group
+        dialogue_management:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dialogue Management
+        classification_content_sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Classification Content Sha256
+        dataset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dataset Version
         judge:
           anyOf:
           - $ref: '#/components/schemas/JudgeObservation'
@@ -1440,6 +3602,12 @@ components:
             type: object
           - type: 'null'
           title: Persistence
+        cleanup:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Cleanup
         metrics_contract_version:
           anyOf:
           - type: integer
@@ -1576,6 +3744,31 @@ components:
       additionalProperties: true
       type: object
       title: TelemetryProjection
+    ToolSummary:
+      properties:
+        tool_name:
+          type: string
+          title: Tool Name
+        recorded_calls:
+          type: integer
+          title: Recorded Calls
+        using_items:
+          type: integer
+          title: Using Items
+        affected_items:
+          type: integer
+          title: Affected Items
+        affected_calls:
+          type: integer
+          title: Affected Calls
+      type: object
+      required:
+      - tool_name
+      - recorded_calls
+      - using_items
+      - affected_items
+      - affected_calls
+      title: ToolSummary
     ValidationError:
       properties:
         loc:
@@ -1602,3 +3795,26 @@ components:
       - msg
       - type
       title: ValidationError
+    WorkStatusResponse:
+      properties:
+        work:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Work
+        cleanup_status:
+          type: string
+          title: Cleanup Status
+        errors:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Errors
+      type: object
+      required:
+      - work
+      - cleanup_status
+      title: WorkStatusResponse

@@ -171,6 +171,8 @@ class ImportResult:
     # ASR 的最终状态；非音频/视频或未接 ASR 时为 None。视频由 sidecar 用 ffmpeg
     # 抽取音轨，证据仍归属源视频。转写失败不阻断资产入库，但不能静默。
     audio_transcription_status: str | None = None
+    # 上游导入流水线的单调时钟区间；与 timings 并存，前者保留并发阶段的真实重叠。
+    timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +439,7 @@ class ImportAssets:
         commit_started = time.perf_counter()
         processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
+        commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
         video_scenes = self._extract_video_scenes(asset)
@@ -476,6 +479,10 @@ class ImportAssets:
                 "source_memory_commit": round(memory_commit_seconds, 3),
                 **{f"video_{key}": value for key, value in video_scenes.timings.items()},
                 "total": round(time.perf_counter() - total_started, 3),
+            },
+            timing_spans={
+                "source_memory_commit": (commit_started, commit_finished),
+                **{f"video_{key}": value for key, value in video_scenes.timing_spans.items()},
             },
         )
 

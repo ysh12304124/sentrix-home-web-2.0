@@ -39,7 +39,7 @@ from photobench.infrastructure.runtime.providers import (
     normalize_service_url,
 )
 
-MEMINFO = "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n"
+MEMINFO = "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\nMemFree:         4096000 kB\n"
 
 
 @pytest.fixture(autouse=True)
@@ -309,8 +309,8 @@ def test_manager_system_memory_is_host_ram_in_mib(
     monkeypatch.setattr(providers, "Path", path_reader({"/proc/meminfo": MEMINFO}))
     data = ManagerTelemetryProvider("manager:8500").system_memory()["data"]
     assert data["system_memory_total_mib"] == 16000
-    assert data["system_memory_used_mib"] == 8000
-    assert data["system_memory_scope"] == "host_all_processes"
+    assert data["system_memory_used_mib"] == 12000
+    assert data["system_memory_scope"] == "linux_physical_nonfree_including_cache_v2"
 
 
 def test_linux_system_memory_reports_unavailable_without_meminfo(
@@ -340,21 +340,30 @@ def test_host_nvidia_never_claims_every_gpu_process_is_the_model(
     shell.on_run = lambda command, **kwargs: CompletedProcess()
     provider = HostNvidiaTelemetryProvider(endpoint_url="http://127.0.0.1:8100/v1")
     result = provider.process_memory()
-    assert result["status"] == "unavailable"
-    assert result["reason"] == "matching_gpu_process_not_found"
+    assert result["data"]["model_process_gpu_memory_mib"] is None
+    assert result["data"]["model_process_system_memory_used_mib"] is None
 
 
-def test_vllm_provider_separates_the_model_from_other_gpu_processes(
-    shell: FakeSubprocess, no_host_processes: None
-) -> None:
-    shell.on_run = lambda command, **kwargs: CompletedProcess(
-        "999001, VLLM::EngineCore, 2048\n999002, python, 512\n"
+def test_vllm_provider_separates_the_model_from_other_gpu_processes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        providers,
+        "_host_process_rows",
+        lambda: [{"pid": 100, "identity": "vllm serve", "listening_ports": ["8100"]}],
     )
-    data = VllmTelemetryProvider().process_memory()["data"]
-    assert data["process_memory_used_mib"] == 2048
-    assert data["other_processes_memory_mib"] == 512
-    assert data["all_processes_memory_mib"] == 2560
-    assert data["all_processes_scope"] == "gpu_compute_processes"
+    monkeypatch.setattr(providers, "_process_pss_mib", lambda pid: 123)
+    monkeypatch.setattr(
+        HostNvidiaTelemetryProvider,
+        "_gpu_processes",
+        lambda self: {0: [{"pid": 100, "used_memory_mib": 2048}, {"pid": 200, "used_memory_mib": 512}]},
+    )
+    data = VllmTelemetryProvider(endpoint_url="http://localhost:8100").process_memory()["data"]
+    assert data["model_process_gpu_memory_mib"] == 2048
+    assert data["model_process_system_memory_used_mib"] == 123
+    assert data["product_stack_gpu_memory_mib"] == 2048
+    assert data["all_processes"] == [
+        {"gpu_index": 0, "pid": 100, "used_memory_mib": 2048},
+        {"gpu_index": 0, "pid": 200, "used_memory_mib": 512},
+    ]
 
 
 def test_framework_providers_carry_their_process_hint() -> None:
@@ -366,33 +375,53 @@ def test_framework_providers_carry_their_process_hint() -> None:
     assert OllamaTelemetryProvider().kv_cache()["status"] == "not_applicable"
 
 
-def test_host_nvidia_gpu_stats_parses_rows_and_adds_cpu_temperature(
-    shell: FakeSubprocess, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shell.on_run = lambda command, **kwargs: CompletedProcess("0, 55, 4096, 24576, 61, 220.5, 1800\n")
+def test_host_nvidia_gpu_stats_uses_nvml_and_adds_cpu_temperature(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    class Nvml:
+        NVMLError = RuntimeError
+        NVML_TEMPERATURE_GPU = 0
+
+        def nvmlDeviceGetCount(self):
+            return 1
+
+        def nvmlDeviceGetHandleByIndex(self, index):
+            return index
+
+        def nvmlDeviceGetMemoryInfo(self, handle):
+            return SimpleNamespace(used=4096 * 1048576, total=24576 * 1048576)
+
+        def nvmlDeviceGetUtilizationRates(self, handle):
+            return SimpleNamespace(gpu=55)
+
+        def nvmlDeviceGetTemperature(self, handle, sensor):
+            return 61
+
+        def nvmlDeviceGetPowerUsage(self, handle):
+            return 220500
+
+    monkeypatch.setattr(HostNvidiaTelemetryProvider, "_nvml", lambda self: Nvml())
     monkeypatch.setattr(providers, "read_cpu_temperature_c", lambda: 44.5)
     data = HostNvidiaTelemetryProvider().gpu_stats()["data"]
-    assert data["gpus"] == [
-        {
-            "index": 0,
-            "gpu_utilization_pct": 55.0,
-            "memory_used_mib": 4096.0,
-            "memory_total_mib": 24576.0,
-            "temperature_c": 61.0,
-            "power_draw_w": 220.5,
-            "sm_clock_mhz": 1800.0,
-        }
-    ]
+    gpu = data["gpus"][0]
+    assert gpu["memory_used_mib"] == gpu["device_gpu_memory_mib"] == 4096
+    assert gpu["gpu_utilization_pct"] == 55
+    assert gpu["temperature_c"] == 61
+    assert gpu["power_draw_w"] == 220.5
+    assert gpu["power_scope"] == "gpu_device"
     assert data["cpu_temperature_c"] == 44.5
     assert data["memory_scope"] == "gpu_device"
 
 
-def test_host_nvidia_gpu_stats_failure_is_reported_not_raised(shell: FakeSubprocess) -> None:
-    shell.on_run = lambda command, **kwargs: (_ for _ in ()).throw(OSError("no nvidia-smi"))
+def test_host_nvidia_gpu_stats_failure_is_reported_not_raised(monkeypatch) -> None:
+    def missing(self):
+        raise OSError("NVML unavailable")
+
+    monkeypatch.setattr(HostNvidiaTelemetryProvider, "_nvml", missing)
     result = HostNvidiaTelemetryProvider().gpu_stats()
     assert result["status"] == "unavailable"
-    assert result["source"] == "host_nvidia_smi"
-    assert "no nvidia-smi" in result["error"]
+    assert result["source"] == "host_nvml"
+    assert "NVML unavailable" in result["error"]
 
 
 # ---- 宿主进程归属（_augment_host_process_memory） ---------------------------------

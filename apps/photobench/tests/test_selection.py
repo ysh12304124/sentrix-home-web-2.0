@@ -189,12 +189,13 @@ def test_tegrastats_line_parsing_covers_ram_gpu_power_and_temperature():
 
     **区分力**：四条规则各断言一次——一个只解析 RAM 的实现会在另外三条上返回空。
     """
-    parsed = _parse_tegrastats_line("RAM 1234/8192MB GR3D_FREQ 45% VDD_GPU_SOC 7000mW tj@55.5C cpu@40.25C")
+    parsed = _parse_tegrastats_line("RAM 1234/8192MB GR3D_FREQ 45% VDD_GPU_SOC 7000mW gpu@55.5C cpu@40.25C")
     assert parsed["system_memory_used_mib"] == 1234
     assert parsed["system_memory_total_mib"] == 8192
     assert parsed["system_memory_available_mib"] == 8192 - 1234
     assert parsed["gpu_utilization_pct"] == 45
-    assert parsed["power_draw_w"] == 7.0
+    assert parsed["power_draw_w"] is None
+    assert parsed["power_rails_w"]["VDD_GPU_SOC"] == 7.0
     assert parsed["temperature_c"] == 55.5
     assert parsed["cpu_temperature_c"] == 40.25
 
@@ -210,7 +211,7 @@ def test_jetson_gpu_stats_always_returns_one_uma_gpu_row(monkeypatch: pytest.Mon
 
     S9b-2 的真机采样为空就是因为选了 ``UnavailableTelemetryProvider``（没有 ``gpus``）。
     这里把进程探测与设备读数全部替换成常量，断言的是**响应信封的形状**：
-    ``status=available`` 且 ``data.gpus[0].memory_unit == process_pss_uma_mib``——
+    ``status=available`` 且 ``data.gpus[0].memory_unit == process_pss_mib``——
     一个漏掉 ``gpus`` 的实现会让采样器静默地一个点都不采。
     """
     import photobench.infrastructure.runtime.jetson_telemetry as jetson_module
@@ -240,7 +241,7 @@ def test_jetson_gpu_stats_always_returns_one_uma_gpu_row(monkeypatch: pytest.Mon
     assert result["status"] == "available"
     assert result["source"] == "jetson_local_pss"
     assert len(result["data"]["gpus"]) == 1
-    assert result["data"]["gpus"][0]["memory_unit"] == "process_pss_uma_mib"
+    assert result["data"]["gpus"][0]["memory_unit"] == "process_pss_mib"
     memory = provider.process_memory()
     assert memory["data"]["root_pid"] == 4242
     assert memory["data"]["process_memory_used_mib"] == 1234.5
@@ -273,19 +274,19 @@ def test_a_probe_failure_never_reports_a_zero_memory(monkeypatch: pytest.MonkeyP
     """探不到进程时**撤掉**内存读数并写明原因——0 是一个合法的测量值，不是「没读到」。"""
     provider = LocalJetsonLlamaCppTelemetryProvider(endpoint_url="http://127.0.0.1:8100")
 
-    def missing() -> int:
-        raise ValueError("no llama-server is listening on port 8100")
+    from photobench.infrastructure.runtime import jetson_telemetry as jetson
 
-    monkeypatch.setattr(provider, "_pid", missing)
+    monkeypatch.setattr(jetson, "_host_process_rows", lambda *_args: [])
     monkeypatch.setattr(provider, "_device", lambda: {})
     result = provider.gpu_stats()
     assert result["status"] == "available"
-    # 进程内存不在 gpu_stats 的信封里（那一条只给「设备读数 + 一行 gpus」），
-    # 它在 process_memory() 那份里。这里直接读提供者留下的那份内部读数——
-    # 走 process_memory() 会真的去扫 /proc，而这条用例要断的是「探不到时写了什么」。
-    data = provider._last_memory["data"]  # type: ignore[attr-defined]
-    assert "process_memory_used_mib" not in data
-    assert data["pss_error"]
+    # Device reads no longer perform a second PID discovery. Verify the public
+    # process envelope independently: unknown allocation must remain unavailable.
+    memory = provider.process_memory()
+    data = memory["data"]
+    assert data["process_memory_used_mib"] is None
+    assert data["model_process_system_memory_used_mib"] is None
+    assert data["memory_observations"]["topology"]["status"] != "available"
 
 
 def test_the_sample_row_shape_is_what_the_aggregator_branches_on():

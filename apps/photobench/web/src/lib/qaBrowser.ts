@@ -1,3 +1,4 @@
+import { taxonomyLabels } from "./qaTaxonomy.ts";
 // 移植自 1.0 `services/photobench/frontend/src/App.vue`（只读，唯一权威）中
 // QA 数据集浏览视图用到的标签函数。每个函数尾注了 1.0 的行号。
 //
@@ -29,14 +30,14 @@ export function qaTypeLabel(t: unknown): string {
     jailbreak_attempt: "越狱尝试",
   };
   const key = typeof t === "string" ? t : "";
-  return labels[key] || key || "未分类";
+  return taxonomyLabels[key] || labels[key] || key || "未分类";
 }
 
 /** 1.0 `:2792-2794` —— 未命中回**原值**，空/缺省回 `-`（与 `qaTypeLabel` 的 `未分类` 不同）。 */
 export function qaActionBadge(a: unknown): string {
   const labels: Record<string, string> = { answer: "回答", refuse: "拒答", clarify: "澄清" };
   const key = typeof a === "string" ? a : "";
-  return labels[key] || key || "-";
+  return taxonomyLabels[key] || labels[key] || key || "-";
 }
 
 /** 1.0 `:2795-2797` —— 未命中回**原值**，空/缺省回 `-`。 */
@@ -50,7 +51,7 @@ export function qaAnswerabilityLabel(v: unknown): string {
     mixed: "混合",
   };
   const key = typeof v === "string" ? v : "";
-  return labels[key] || key || "-";
+  return taxonomyLabels[key] || labels[key] || key || "-";
 }
 
 /** 1.0 `:2821-2823` —— 只有 `clarify` 走「澄清示例」，其余（含缺省）都是「参考回答」。 */

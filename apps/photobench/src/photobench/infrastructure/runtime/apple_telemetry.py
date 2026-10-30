@@ -1,26 +1,10 @@
-"""Apple Silicon 统一内存遥测——Mac mini M4 上「模型占了多少内存」的唯一口径。
+"""Apple Silicon telemetry with separately versioned resident group accounting.
 
-移植自 1.0 ``backend/apple_telemetry.py``（418 行，基线提交 2d2cee7c）。
-
-**为什么不能用 RSS。** M4 没有独立显存，``ps`` 的 RSS 会漏掉 Metal/GPU 的分配；
-但只用 ``proc_pid_rusage`` 的 ``phys_footprint`` 也不够——llama-server 用 mmap 加载
-GGUF，这部分文件页不计入 footprint。逐进程占用取**两半之和**：
-``phys_footprint + 已映射的模型权重文件``。**这是进程的提交占用，不是「只算 GPU」
-的内存**——两者的差别要说清，否则读表的人会把它当成显存。产品总量是相关进程
-占用的和，**不做** Orin 那套「VmRSS 减 Rss」的修正。
-
-**宿主已用内存跟活动监视器的口径一致**：active + wired + 被压缩器占用的页。
-inactive 与 speculative 的文件缓存不算在内。
-
-**GPU 利用率**优先取 macmon 的 ``gpu_active_ratio``，其次才是 AGXAccelerator 的
-``Device Utilization %``。CPU/GPU 温度与系统功耗来自 ``macmon pipe -i 1000``
-——它在 Apple Silicon 上不需要 root。**没装 macmon 时这几位就缺席，不用 0 顶替**。
-``macmon pipe -s 10`` 只是一次有限探测；本模块把**一个 pipe 开到进程生命周期结束**。
-
-**落在 infrastructure 的理由与 providers 同：** 起子进程（``macmon`` / ``ps`` /
-``lsof`` / ``ioreg`` / ``vm_stat`` / ``sysctl``）、``ctypes`` 调 ``libproc``、读
-``/proc`` 之外的 macOS 接口——``domain-purity`` 与 ``application-purity`` 都禁止
-domain/application 碰这些。协议在 ``photobench.domain.runtime.ports``。
+System RAM includes resident caches. Model/product estimates use footprint's
+cross-process deduplicated summary: dirty - swapped + clean + reclaimable.
+Compressed/swapped logical pages and file mapping lengths are never added.
+The physical compressor store remains part of system RAM, without inventing
+per-process physical attribution. GPU counters remain device diagnostics.
 """
 
 from __future__ import annotations
@@ -34,6 +18,7 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -45,10 +30,16 @@ from photobench.domain.runtime.metrics import (
     APPLE_POWER_LIMIT_W,
     APPLE_TEMPERATURE_MAX_C,
     APPLE_TEMPERATURE_MIN_C,
+    MEMORY_OBSERVATION_TTL_SECONDS,
+    RESOURCE_TELEMETRY_VERSION,
     apple_power,
+    apple_resident_bytes,
     apple_temperature,
-    component_total,
+    memory_freshness,
+    physical_memory_used,
 )
+from photobench.infrastructure.runtime.bounded_probe import BoundedProbe
+from photobench.infrastructure.runtime.hardware import HostCpuSampler
 from photobench.infrastructure.runtime.telemetry_scope import (
     dedupe_rows as _dedupe_rows,
 )
@@ -111,7 +102,7 @@ def is_apple_silicon() -> bool:
 
 
 def parse_vm_stat(text: str, page_size: int, total_bytes: int | None = None) -> dict[str, Any] | None:
-    """``vm_stat`` 输出 → 已用内存。三项缺一就返回 ``None``，**不补 0**。"""
+    """Physical non-free RAM including caches; missing counters stay unknown."""
     pages: dict[str, int] = {}
     for line in text.splitlines():
         name, sep, rest = line.partition(":")
@@ -124,20 +115,19 @@ def parse_vm_stat(text: str, page_size: int, total_bytes: int | None = None) -> 
             pages[name.strip().lower()] = int(token[0])
         except ValueError:
             continue
-    needed = ("pages active", "pages wired down", "pages occupied by compressor")
-    if any(key not in pages for key in needed) or page_size <= 0:
+    free = pages.get("pages free")
+    used_mib = physical_memory_used(
+        total_bytes / 1048576 if total_bytes else None,
+        free * page_size / 1048576 if free is not None and page_size > 0 else None,
+    )
+    if used_mib is None or total_bytes is None or free is None:
         return None
-    used_bytes = (
-        pages["pages active"] + pages["pages wired down"] + pages["pages occupied by compressor"]
-    ) * page_size
-    data: dict[str, Any] = {
-        "system_memory_used_mib": round(used_bytes / 1048576, 2),
-        "system_memory_scope": "apple_app_wired_compressed",
+    return {
+        "system_memory_used_mib": used_mib,
+        "system_memory_total_mib": round(total_bytes / 1048576, 2),
+        "system_memory_available_mib": round(free * page_size / 1048576, 2),
+        "system_memory_scope": "apple_physical_nonfree_including_cache_v2",
     }
-    if total_bytes and total_bytes > 0:
-        data["system_memory_total_mib"] = round(total_bytes / 1048576, 2)
-        data["system_memory_available_mib"] = round(max(0, total_bytes - used_bytes) / 1048576, 2)
-    return data
 
 
 def _finite_float(value: Any) -> float | None:
@@ -332,7 +322,7 @@ class _MacmonStream:
             return
         proc.terminate()
         try:
-            proc.wait(timeout=2)
+            proc.wait(timeout=0.2)
         except subprocess.TimeoutExpired:
             proc.kill()
 
@@ -411,94 +401,6 @@ class _RUsageInfoV0(ctypes.Structure):
     ]
 
 
-_PROC_PIDREGIONPATHINFO = 8
-_MAXPATHLEN = 1024
-# 4096 是刻意大于 macOS 27 实际写回的 1272 字节：未来结构体变大也不会越界，
-# 这里只读稳定的前缀。缓冲区给小了会让 proc_pidinfo 返回 0/ENOMEM。
-_REGION_BUFFER_BYTES = 4096
-# 只认真正的模型权重文件。同一台 Mac 上逐区扫还会看到 torch/paddle 的懒映射
-# 动态库和被打开却从未触碰的 blob；全算进去曾让产品总量虚高 3.6 GiB。
-_WEIGHT_FILE_SUFFIXES = (".gguf", ".ggml", ".safetensors", ".onnx", ".mlmodel", ".mlpackage")
-
-
-class _VinfoStat(ctypes.Structure):
-    _fields_ = [
-        ("vst_dev", ctypes.c_uint32),
-        ("vst_mode", ctypes.c_uint16),
-        ("vst_nlink", ctypes.c_uint16),
-        ("vst_ino", ctypes.c_uint64),
-        ("vst_uid", ctypes.c_uint32),
-        ("vst_gid", ctypes.c_uint32),
-        ("vst_atime", ctypes.c_int64),
-        ("vst_atimensec", ctypes.c_int64),
-        ("vst_mtime", ctypes.c_int64),
-        ("vst_mtimensec", ctypes.c_int64),
-        ("vst_ctime", ctypes.c_int64),
-        ("vst_ctimensec", ctypes.c_int64),
-        ("vst_birthtime", ctypes.c_int64),
-        ("vst_birthtimensec", ctypes.c_int64),
-        ("vst_size", ctypes.c_int64),
-        ("vst_blocks", ctypes.c_int64),
-        ("vst_blksize", ctypes.c_int32),
-        ("vst_flags", ctypes.c_uint32),
-        ("vst_gen", ctypes.c_uint32),
-        ("vst_rdev", ctypes.c_uint32),
-        # macOS 27 在这里比旧文档的布局宽 8 字节。下面只读 pri_* 与 vip_path，
-        # 两者都在稳定前缀里；但总大小必须对，因为它决定 vip_path 的偏移。
-        ("vst_qspare", ctypes.c_int32 * 4),
-    ]
-
-
-class _Fsid(ctypes.Structure):
-    _fields_ = [("val", ctypes.c_int32 * 2)]
-
-
-class _VnodeInfo(ctypes.Structure):
-    _fields_ = [
-        ("vi_stat", _VinfoStat),
-        ("vi_type", ctypes.c_int),
-        ("vi_pad", ctypes.c_int),
-        ("vi_fsid", _Fsid),
-    ]
-
-
-class _VnodeInfoPath(ctypes.Structure):
-    _fields_ = [("vip_vi", _VnodeInfo), ("vip_path", ctypes.c_char * _MAXPATHLEN)]
-
-
-class _ProcRegionInfo(ctypes.Structure):
-    _fields_ = [
-        ("pri_protection", ctypes.c_uint32),
-        ("pri_max_protection", ctypes.c_uint32),
-        ("pri_inheritance", ctypes.c_uint32),
-        ("pri_flags", ctypes.c_uint32),
-        ("pri_offset", ctypes.c_uint64),
-        ("pri_behavior", ctypes.c_uint32),
-        ("pri_user_wired_count", ctypes.c_uint32),
-        ("pri_user_tag", ctypes.c_uint32),
-        ("pri_pages_resident", ctypes.c_uint32),
-        ("pri_pages_shared_now_private", ctypes.c_uint32),
-        ("pri_pages_swapped_out", ctypes.c_uint32),
-        ("pri_pages_dirtied", ctypes.c_uint32),
-        ("pri_ref_count", ctypes.c_uint32),
-        ("pri_shadow_depth", ctypes.c_uint32),
-        ("pri_share_mode", ctypes.c_uint32),
-        ("pri_private_pages_resident", ctypes.c_uint32),
-        ("pri_shared_pages_resident", ctypes.c_uint32),
-        ("pri_obj_id", ctypes.c_uint32),
-        ("pri_depth", ctypes.c_uint32),
-        ("pri_address", ctypes.c_uint64),
-        ("pri_size", ctypes.c_uint64),
-    ]
-
-
-class _ProcRegionWithPathInfo(ctypes.Structure):
-    _fields_ = [
-        ("prp_prinfo", _ProcRegionInfo),
-        ("prp_vip", _VnodeInfoPath),
-    ]
-
-
 _LIBPROC: Any = None
 _LIBPROC_LOCK = threading.Lock()
 
@@ -513,101 +415,91 @@ def _libproc() -> Any:
             ctypes.POINTER(_RUsageInfoV0),
         ]
         library.proc_pid_rusage.restype = ctypes.c_int
-        try:
-            library.proc_pidinfo.argtypes = [
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_uint64,
-                ctypes.c_void_p,
-                ctypes.c_int,
-            ]
-            library.proc_pidinfo.restype = ctypes.c_int
-        except AttributeError:  # pragma: no cover - libproc always exports it
-            pass
         _LIBPROC = library
     return _LIBPROC
 
 
-def _phys_footprint_bytes(pid: int) -> int | None:
-    """活动监视器口径的进程 footprint，不是「只算 GPU」的内存。
-
-    flavor 0 是 ``rusage_info_v0``，它本身就已经含 ``phys_footprint``；用更新的
-    flavor 会写一个更大的结构体、撑爆这里的缓冲区。**结构体与库句柄留在模块级**：
-    每次调用都重新定义它们，在 macOS 上第二次调用会崩（1.0 的注释，照搬）。
-    """
+def _process_identity(pid: int) -> int | None:
     try:
         info = _RUsageInfoV0()
         with _LIBPROC_LOCK:
-            rc = _libproc().proc_pid_rusage(int(pid), 0, ctypes.byref(info))
-            footprint = int(info.ri_phys_footprint)
-        if rc != 0 or footprint <= 0:
-            return None
-        return footprint
+            result = _libproc().proc_pid_rusage(int(pid), 0, ctypes.byref(info))
+        return int(info.ri_proc_start_abstime) if result == 0 and info.ri_proc_start_abstime else None
     except (OSError, AttributeError, ValueError):
         return None
 
 
-def _process_bytes(footprint: int, weight_map: int) -> int | None:
-    """Capacity estimate: footprint plus file mappings, not physical residency."""
-    if footprint <= 0:
+def parse_footprint(payload: Any, pids: set[int]) -> dict[str, int] | None:
+    """Accept only complete, matching group summaries; normalize units once."""
+    if not isinstance(payload, dict) or payload.get("errors"):
         return None
-    total = component_total([footprint, weight_map])
-    return int(total) if total is not None else None
+    processes = payload.get("processes")
+    if not isinstance(processes, list) or any(not isinstance(row, dict) for row in processes):
+        return None
+    actual = [row.get("pid") for row in processes]
+    if any(type(pid) is not int for pid in actual) or set(actual) != pids or len(actual) != len(pids):
+        return None
+    scale = payload.get("bytes per unit")
+    expected = {"byte": 1, "bytes": 1, "page": payload.get("page size"), "pages": payload.get("page size")}
+    if type(scale) is not int or scale <= 0 or expected.get(str(payload.get("unit"))) != scale:
+        return None
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    total = summary.get("total")
+    if not isinstance(total, dict):
+        return None
+    components = {}
+    for key in ("dirty", "swapped", "clean", "reclaimable"):
+        value = total.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        components[key] = value * scale
+    return components if apple_resident_bytes(components) is not None else None
 
 
-def _weight_map_bytes(pid: int) -> int | None:
-    """该进程映射的模型权重文件字节数；没有映射时为 0。
-
-    llama-server 用 mmap 加载 GGUF，这些页正是 ``phys_footprint`` 不记的那一半。
-    ``PROC_PIDREGIONPATHINFO`` 对进程属主可读，所以既不需要 root，也不需要子进程。
-    只认权重后缀：全文件映射会把 torch/paddle 动态库和从未触碰的 blob 一起算进去。
-    """
+def _resident_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    started = time.monotonic()
+    pids = {int(row["pid"]) for row in rows}
+    identities = {pid: _process_identity(pid) for pid in pids}
+    result: dict[str, Any] = {
+        "source": "footprint_group",
+        "status": "unavailable",
+        "observed_at_monotonic": started,
+        "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+        "pids": sorted(pids),
+        "process_identities": identities,
+    }
     try:
-        walker = getattr(_libproc(), "proc_pidinfo", None)
-        if walker is None:
-            return None
-        raw = ctypes.create_string_buffer(_REGION_BUFFER_BYTES)
-        address = 0
-        total = 0
-        while True:
-            with _LIBPROC_LOCK:
-                ctypes.set_errno(0)
-                written = walker(
-                    int(pid),
-                    _PROC_PIDREGIONPATHINFO,
-                    address,
-                    raw,
-                    _REGION_BUFFER_BYTES,
-                )
-            if written <= 0:
-                if ctypes.get_errno() in {1, 3, 13}:  # EPERM, ESRCH, EACCES
-                    return None
-                break
-            info = _ProcRegionWithPathInfo.from_buffer_copy(raw, 0)
-            path = info.prp_vip.vip_path.decode("utf-8", "replace")
-            if path.endswith(_WEIGHT_FILE_SUFFIXES):
-                total += int(info.prp_prinfo.pri_size)
-            size = int(info.prp_prinfo.pri_size)
-            if size == 0:
-                break
-            address = int(info.prp_prinfo.pri_address) + size
-        return total
-    except (OSError, AttributeError, ValueError):
-        return None
-
-
-def _occupancy_bytes(pid: int, *, components: dict[str, Any] | None = None) -> int | None:
-    """进程占用 = footprint + 已映射的权重文件。"""
-    private = _phys_footprint_bytes(pid)
-    if private is None:
-        return None
-    weights = _weight_map_bytes(pid)
-    if components is not None:
-        components.update(
-            footprint_mib=round(private / 1048576, 3),
-            mapped_weights_mib=round(weights / 1048576, 3) if weights is not None else None,
-        )
-    return _process_bytes(private, weights) if weights is not None else None
+        if not pids or any(identity is None for identity in identities.values()):
+            result["reason"] = "process_identity_unavailable"
+            return result
+        with tempfile.TemporaryDirectory(prefix="photobench-footprint-") as directory:
+            target = Path(directory) / "group.json"
+            command = ["/usr/bin/footprint", "--swapped", "-f", "bytes", "-j", str(target)]
+            for pid in sorted(pids):
+                command.extend(["-p", str(pid)])
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=0.8, check=False)
+            if completed.returncode != 0:
+                result["reason"] = "footprint_failed"
+                return result
+            components = parse_footprint(json.loads(target.read_text()), pids)
+        if components is None:
+            result["reason"] = "footprint_incomplete_or_invalid"
+        elif any(_process_identity(pid) != identity for pid, identity in identities.items()):
+            result["reason"] = "process_identity_changed"
+        else:
+            result.update(
+                status="available",
+                components_bytes=components,
+                resident_bytes=apple_resident_bytes(components),
+            )
+        return result
+    except (OSError, ValueError, subprocess.SubprocessError):
+        result["reason"] = "footprint_unavailable_or_timeout"
+        return result
+    finally:
+        result["finished_at_monotonic"] = time.monotonic()
 
 
 def _run_text(command: list[str], timeout: float = 3) -> str:
@@ -635,15 +527,15 @@ def _run_text(command: list[str], timeout: float = 3) -> str:
 
 
 def _page_size() -> int:
-    text = _run_text(["sysctl", "-n", "hw.pagesize"], timeout=2).strip()
+    text = _run_text(["sysctl", "-n", "hw.pagesize"], timeout=0.2).strip()
     try:
         return int(text)
     except ValueError:
-        return 16384
+        return 0
 
 
 def _total_bytes() -> int | None:
-    text = _run_text(["sysctl", "-n", "hw.memsize"], timeout=2).strip()
+    text = _run_text(["sysctl", "-n", "hw.memsize"], timeout=0.2).strip()
     try:
         return int(text)
     except ValueError:
@@ -651,7 +543,7 @@ def _total_bytes() -> int | None:
 
 
 def _process_rows() -> list[dict[str, Any]]:
-    text = _run_text(["ps", "-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="], timeout=3)
+    text = _run_text(["ps", "-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="], timeout=0.6)
     rows: list[dict[str, Any]] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -685,7 +577,7 @@ def _listening_ports(ports: set[str]) -> dict[int, set[str]]:
     command = ["lsof", "-nP", "-sTCP:LISTEN", "-Fpn"]
     for port in sorted(ports):
         command.extend(["-iTCP:" + port])
-    text = _run_text(command, timeout=4)
+    text = _run_text(command, timeout=0.6)
     found: dict[int, set[str]] = {}
     pid: int | None = None
     for line in text.splitlines():
@@ -721,8 +613,8 @@ def _is_model_process(row: dict[str, Any], endpoint_port: str) -> bool:
 class LocalAppleUnifiedTelemetryProvider:
     """本机 Apple Silicon 遥测。三个方法的 ``status`` 口径见 domain 的 ``TelemetryProvider``。
 
-    两处缓存（1.0 的：设备采样 1 秒、端口扫描 2 秒）都是**为了不被采样本身拖慢评测**：
-    ``ioreg`` / ``vm_stat`` / ``lsof`` 都不便宜，而 GpuSampler 是 0.5 秒一跳。
+    设备读数缓存1秒并保留来源时间；进程与监听端口逐轮发现。
+    两个驻留组独立、有界采集，缺失或过期值留空。
     """
 
     source = "apple_unified"
@@ -730,6 +622,8 @@ class LocalAppleUnifiedTelemetryProvider:
     def __init__(self, endpoint_url: str = "", *, telemetry_services: Mapping[str, Any] | None = None):
         self.telemetry_services = telemetry_services
         parsed = urlparse(endpoint_url or "")
+        self.endpoint_url = f"{parsed.scheme}://{parsed.netloc}"
+        self._cpu = HostCpuSampler()
         self.port = str(parsed.port or "")
         self._last_memory: dict[str, Any] = {"status": "unavailable", "reason": "not_sampled"}
         self._device_sample: dict[str, Any] = {}
@@ -737,6 +631,7 @@ class LocalAppleUnifiedTelemetryProvider:
         self._ports_by_pid: dict[int, set[str]] = {}
         self._last_port_probe = 0.0
         self._system_baseline_mib: float | None = None
+        self._memory_probe = BoundedProbe(limit=2)
 
     def _device(self) -> dict[str, Any]:
         if self._device_sample and time.monotonic() - self._last_device_probe < 1.0:
@@ -757,9 +652,28 @@ class LocalAppleUnifiedTelemetryProvider:
             sample.update(_MACMON.latest())
             return sample
         self._last_device_probe = time.monotonic()
-        sample = parse_agx_performance(_run_text(["ioreg", "-r", "-c", "AGXAccelerator", "-l"], timeout=3))
+        gpu_started = time.monotonic()
+        sample = parse_agx_performance(_run_text(["ioreg", "-r", "-c", "AGXAccelerator", "-l"], timeout=0.3))
+        sample["device_gpu_memory_mib"] = sample.get("gpu_allocated_unified_memory_mib")
+        sample["gpu_observation"] = {
+            "source": "ioreg_alloc_system_memory",
+            "status": "available" if sample.get("device_gpu_memory_mib") is not None else "unavailable",
+            "observed_at_monotonic": gpu_started,
+            "finished_at_monotonic": time.monotonic(),
+            "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+        }
         sample.update(_MACMON.latest())
-        memory = parse_vm_stat(_run_text(["vm_stat"], timeout=3), _page_size(), _total_bytes())
+        system_started = time.monotonic()
+        memory = parse_vm_stat(_run_text(["vm_stat"], timeout=0.3), _page_size(), _total_bytes())
+        sample["system_observation"] = {
+            "source": "vm_stat",
+            "status": "available" if memory else "unavailable",
+            "observed_at_monotonic": system_started,
+            "finished_at_monotonic": time.monotonic(),
+            "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+            "total_mib": memory.get("system_memory_total_mib") if memory else None,
+            "free_mib": memory.get("system_memory_available_mib") if memory else None,
+        }
         if memory:
             sample.update(memory)
         self._device_sample = sample
@@ -772,8 +686,10 @@ class LocalAppleUnifiedTelemetryProvider:
 
     def _augment(self) -> dict[str, Any]:
         device = self._device()
+        topology_started = time.monotonic()
         ports = self._ports()
         rows = _process_rows()
+        topology_finished = time.monotonic()
         for row in rows:
             row["listening_ports"] = sorted(ports.get(row["pid"], set()), key=int)
         scope = self.telemetry_services if self.telemetry_services is not None else _load_telemetry_services()
@@ -808,93 +724,109 @@ class LocalAppleUnifiedTelemetryProvider:
             product_rows = [
                 row for row in sentrix_rows if row["pid"] not in {r["pid"] for r in auxiliary_rows}
             ]
-        observations: dict[int, dict[str, Any]] = {}
-        for row in _dedupe_rows(sentrix_rows + model_rows):
-            parts: dict[str, Any] = {}
-            occupancy = _occupancy_bytes(row["pid"], components=parts)
-            parts["occupancy_mib"] = None if occupancy is None else round(occupancy / 1048576, 2)
-            observations[row["pid"]] = parts
-        for row in sentrix_rows + model_rows + product_rows + auxiliary_rows:
-            row.update(observations[row["pid"]])
-        data: dict[str, Any] = {"memory_accounting": "apple_capacity_estimate"}
-        model_complete = bool(model_rows) and all(row.get("occupancy_mib") is not None for row in model_rows)
-        if scope:
-            model_complete = model_complete and service_resolved(rows, main_spec)
-        else:
-            model_complete = model_complete and len(model_rows) == 1
-        if model_complete:
-            data["root_pid"] = next(
-                (row["pid"] for row in model_rows if self.port in {str(p) for p in row["listening_ports"]}),
-                model_rows[0]["pid"],
-            )
-            for component in ("footprint_mib", "mapped_weights_mib"):
-                data[f"model_process_{component}"] = round(sum(row[component] for row in model_rows), 2)
-            data["model_process_system_memory_used_mib"] = round(
-                sum(row["occupancy_mib"] for row in model_rows), 2
-            )
-            data["process_memory_used_mib"] = data["model_process_system_memory_used_mib"]
-            data["model_process_system_memory_scope"] = "apple_phys_footprint_plus_mapped_weights"
-            data["process_memory_scope"] = "apple_phys_footprint_plus_mapped_weights"
-            data["model_system_processes"] = model_rows
-        # 求和前要求**每一个**相关进程的占用都在：少一个就整段不写，
-        # 因为「和」在缺项时是一个看起来正常、实际偏小的假数字。
+        model_complete = bool(model_rows) and (
+            service_resolved(rows, main_spec) if scope else len(model_rows) == 1
+        )
         roles_complete = not scope or all(
             service_resolved(rows, spec)
             for spec in [dict(scope.get("sentrix") or {}), profile, *(scope.get("product") or [])]
             if isinstance(spec, dict)
         )
-        sentrix_complete = (
-            roles_complete
-            and (bool(sentrix_rows) or bool(scope))
-            and all(row.get("occupancy_mib") is not None for row in sentrix_rows)
-        )
-        if sentrix_complete:
-            sentrix = round(sum(row["occupancy_mib"] for row in sentrix_rows), 2)
-            data["sentrix_stack_pss_mib"] = sentrix
-            data["sentrix_product_pss_mib"] = round(sum(row["occupancy_mib"] for row in product_rows), 2)
-            data["sentrix_auxiliary_model_pss_mib"] = round(
-                sum(row["occupancy_mib"] for row in auxiliary_rows), 2
-            )
-            data["sentrix_stack_pss_scope"] = "apple_phys_footprint_plus_mapped_weights_excluding_model"
-        data["memory_complete"] = bool(sentrix_complete and model_complete)
-        if sentrix_complete and model_complete:
-            product = round(sum(row["occupancy_mib"] for row in sentrix_rows + model_rows), 2)
-            data["product_stack_memory_mib"] = product
-            for component in ("footprint_mib", "mapped_weights_mib"):
-                values = [row.get(component) for row in sentrix_rows + model_rows]
-                data[f"product_stack_{component}"] = (
-                    round(sum(float(value) for value in values if isinstance(value, (int, float))), 3)
-                    if all(isinstance(value, (int, float)) for value in values)
-                    else None
-                )
-            data["benchmark_process_memory_used_mib"] = product
-            data["benchmark_process_memory_scope"] = "apple_phys_footprint_plus_mapped_weights_related"
-            data["benchmark_processes"] = [
-                {
-                    "pid": row["pid"],
-                    "process_name": row["process_name"],
-                    "occupancy_mib": row["occupancy_mib"],
-                    "listening_ports": row["listening_ports"],
-                }
-                for row in (sentrix_rows + model_rows)[:50]
-            ]
+        groups = {"model": model_rows, "product": _dedupe_rows(sentrix_rows + model_rows)}
+        eligible = {"model": model_complete, "product": bool(model_complete and roles_complete)}
+        readers = {
+            name: (lambda group=group: _resident_group(group))
+            for name, group in groups.items()
+            if eligible[name]
+        }
+        ready = self._memory_probe.collect(readers, budget=0.9)
+        observations: dict[str, Any] = {
+            "topology": {
+                "source": "ps_lsof",
+                "status": "available" if rows else "unavailable",
+                "observed_at_monotonic": topology_started,
+                "finished_at_monotonic": topology_finished,
+                "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+                "process_count": len(rows),
+            }
+        }
+        data: dict[str, Any] = {
+            "protocol_version": RESOURCE_TELEMETRY_VERSION,
+            "memory_accounting": "apple_footprint_resident_v2",
+            "memory_unit": "apple_resident_mib",
+            "memory_profile": {"method": "apple_footprint_resident_v2"},
+            "memory_observation_version": 1,
+            "memory_observations": observations,
+            "memory_dependencies": {
+                "model_process_system_memory_used_mib": ["topology", "model"],
+                "model_process_memory_used_mib": ["topology", "model"],
+                "product_stack_memory_mib": ["topology", "product"],
+                "benchmark_process_memory_used_mib": ["topology", "product"],
+            },
+        }
+        for name, group in groups.items():
+            observation = dict(ready.get(name, {}).get("value") or {})
+            identities = observation.get("process_identities") or {}
+            if not eligible[name]:
+                observation.update(status="unavailable", reason="service_scope_unresolved")
+            elif not observation:
+                observation.update(status="unavailable", reason="footprint_pending_or_failed")
+            elif observation.get("status") == "available" and (
+                set(observation.get("pids") or []) != {row["pid"] for row in group}
+                or any(_process_identity(int(pid)) != identity for pid, identity in identities.items())
+            ):
+                observation.update(status="unavailable", reason="group_membership_or_identity_changed")
+            observations[name] = observation
+            value = observation.get("resident_bytes") if observation.get("status") == "available" else None
+            mib = round(value / 1048576, 3) if value is not None else None
+            if name == "model":
+                data["model_process_system_memory_used_mib"] = mib
+                data["process_memory_used_mib"] = mib
+                data["model_process_memory_used_mib"] = mib
+                data["model_process_system_memory_scope"] = "apple_footprint_group_resident_v2"
+                data["process_memory_scope"] = "apple_footprint_group_resident_v2"
+                data["model_system_processes"] = [
+                    {key: row.get(key) for key in ("pid", "process_name", "listening_ports")} for row in group
+                ]
+            else:
+                data["product_stack_memory_mib"] = mib
+                data["benchmark_process_memory_used_mib"] = mib
+                data["benchmark_process_memory_scope"] = "apple_footprint_group_resident_v2"
+                data["benchmark_processes"] = [
+                    {key: row.get(key) for key in ("pid", "process_name", "listening_ports")} for row in group
+                ]
+        data["memory_complete"] = all(observations[name].get("status") == "available" for name in groups)
+        observations["device_gpu"] = device.get("gpu_observation") or {}
+        data["model_process_gpu_memory_mib"] = None
+        data["product_stack_gpu_memory_mib"] = None
+        data["device_gpu_memory_mib"] = device.get("device_gpu_memory_mib")
+        data["resource_missing_reasons"] = {
+            "model_process_gpu_memory_mib": "runtime_does_not_expose_process_gpu_bytes",
+            "product_stack_gpu_memory_mib": "runtime_does_not_expose_process_gpu_bytes",
+        }
+        data["memory_dependencies"]["device_gpu_memory_mib"] = ["device_gpu"]
+
+        if model_complete:
+            data["root_pid"] = model_rows[0]["pid"]
         used = device.get("system_memory_used_mib")
-        # 基线取**第一次采到的**已用量：之后的 delta 才是「这次评测让机器多用了多少」。
+        # 相对首个有效系统采样的变化，包含本机其他负载。
         if self._system_baseline_mib is None and isinstance(used, (int, float)):
             self._system_baseline_mib = float(used)
         if self._system_baseline_mib is not None and isinstance(used, (int, float)):
             data["system_memory_baseline_mib"] = round(self._system_baseline_mib, 2)
             data["system_memory_delta_mib"] = round(float(used) - self._system_baseline_mib, 2)
-        data["memory_unit"] = "apple_phys_footprint_plus_mapped_weights_mib"
-        data["memory_profile"] = {"method": "apple_phys_footprint_plus_mapped_weights_v1"}
         return data
+
+    def pending_work(self) -> list[str]:
+        return self._memory_probe.pending_work()
 
     def gpu_stats(self) -> dict[str, Any]:
         device = self._device()
-        gpu: dict[str, Any] = {"index": 0, "memory_unit": "apple_phys_footprint_plus_mapped_weights_mib"}
+        gpu: dict[str, Any] = {"index": 0, "memory_unit": "apple_resident_mib"}
         for key in (
             "gpu_utilization_pct",
             "gpu_allocated_unified_memory_mib",
+            "device_gpu_memory_mib",
             "gpu_in_use_unified_memory_mib",
             "temperature_c",
             "cpu_temperature_c",
@@ -908,12 +840,31 @@ class LocalAppleUnifiedTelemetryProvider:
         ):
             if key in device:
                 gpu[key] = device[key]
-        return {"status": "available", "source": self.source, "data": {"gpus": [gpu]}}
+        gpu["memory_observations"] = {"device_gpu": device.get("gpu_observation") or {}}
+        gpu["memory_dependencies"] = {"device_gpu_memory_mib": ["device_gpu"]}
+        return {
+            "status": "available",
+            "source": self.source,
+            "data": {
+                "gpus": [gpu],
+                "protocol_version": RESOURCE_TELEMETRY_VERSION,
+                "memory_accounting": "apple_footprint_resident_v2",
+            },
+        }
 
     def process_memory(self) -> dict[str, Any]:
         data = self._augment()
         data.update({key: value for key, value in self._device().items() if key not in data})
-        data["pss_sampled_at_monotonic"] = time.monotonic()
+        observed = [item.get("observed_at_monotonic") for item in data["memory_observations"].values()]
+        data["pss_sampled_at_monotonic"] = min(
+            (t for t in observed if isinstance(t, (int, float))), default=None
+        )
+        data["memory_observations"]["system"] = data.get("system_observation") or {}
+        for key in ("system_memory_used_mib", "system_memory_total_mib", "system_memory_available_mib"):
+            data["memory_dependencies"][key] = ["system"]
+        data, _ = memory_freshness({**data, "_t": time.monotonic()})
+        data.pop("_t", None)
+        data["process_memory_used_mib"] = data.get("model_process_memory_used_mib")
         self._last_memory = {"status": "available", "source": self.source, "data": data}
         return self._last_memory
 
@@ -926,16 +877,15 @@ class LocalAppleUnifiedTelemetryProvider:
             "system_memory_total_mib",
             "system_memory_available_mib",
             "system_memory_scope",
+            "system_observation",
         )
-        return {
-            "status": "available",
-            "source": "vm_stat",
-            "data": {key: data[key] for key in keys if key in data},
-        }
+        result = {key: data[key] for key in keys if key in data}
+        result.update(cpu_utilization_pct=self._cpu.sample(), cpu_observed_at_monotonic=time.monotonic())
+        return {"status": "available", "source": "vm_stat", "data": result}
 
     def kv_cache(self) -> dict[str, Any]:
         return {
-            "status": "not_applicable",
+            "status": "unavailable",
             "source": "apple_unified",
-            "reason": "unified_memory_has_no_discrete_kv_pool",
+            "reason": "runtime_does_not_expose_kv_bytes",
         }

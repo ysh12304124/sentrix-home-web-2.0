@@ -17,6 +17,7 @@ export interface StartActionsProps extends StartDisabledInput {
   onDeleteScopeAfterRunChange: (next: boolean) => void;
   onStart: () => void;
   onStop: () => void;
+  stopping?: boolean;
 }
 
 export function StartActions(props: StartActionsProps) {
@@ -60,7 +61,7 @@ export function StartActions(props: StartActionsProps) {
       >
         {buttonLabel}
       </button>
-      <button className="btn warn" type="button" disabled={!hasRunning} onClick={onStop}>
+      <button className="btn warn" type="button" disabled={Boolean(props.stopping)} onClick={onStop}>
         停止全部
       </button>
       {reason && reason !== buttonLabel && <span className="config-help">{reason}</span>}
