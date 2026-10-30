@@ -89,9 +89,11 @@ def test_execution_failure_reads_both_status_and_termination_reason():
 
 
 def test_thinking_is_disabled_differently_for_volces_and_local():
-    """1.0 ``:231``：豆包用 ``thinking``，其余用 ``enable_thinking``。"""
+    """Ark 与本地 chat template 使用各自支持的推理开关参数。"""
     assert thinking_kwargs("https://ark.cn-beijing.volces.com/api/v3") == {"thinking": {"type": "disabled"}}
-    assert thinking_kwargs("http://127.0.0.1:8100/v1") == {"enable_thinking": False}
+    assert thinking_kwargs("http://127.0.0.1:8100/v1") == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
 
 
 # ---- 回答质量判分 ---------------------------------------------------------
