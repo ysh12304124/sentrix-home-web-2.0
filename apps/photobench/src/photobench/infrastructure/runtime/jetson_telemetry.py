@@ -724,7 +724,7 @@ def _augment_local_process_memory(
                     else ("smaps_component_unreadable" if value is None else None)
                 ),
             )
-    for row in sentrix_rows + model_rows + product_rows + auxiliary_rows:
+    for row in selected_rows + sentrix_rows + model_rows + product_rows + auxiliary_rows:
         row["pss_mib"], row["smaps_rss_mib"] = observations[int(row["pid"])]
     model_pids = {row["pid"] for row in model_rows}
     model_pss = _sum_mib(model_rows, "pss_mib")
@@ -826,7 +826,18 @@ def _augment_local_process_memory(
     data["benchmark_process_gpu_memory_mib"] = data["product_stack_gpu_memory_mib"]
     data["benchmark_process_gpu_memory_scope"] = "nvmap_related_pid_allocations"
     data["benchmark_processes"] = [
-        {key: row.get(key) for key in ("pid", "process_name", "rss_mib", "pss_mib", "listening_ports")}
+        {
+            key: row.get(key)
+            for key in (
+                "pid",
+                "start_ticks",
+                "process_name",
+                "rss_mib",
+                "smaps_rss_mib",
+                "pss_mib",
+                "listening_ports",
+            )
+        }
         for row in selected_rows
     ]
     data["memory_complete"] = (

@@ -428,7 +428,7 @@ def _process_identity(pid: int) -> int | None:
 
 
 def _phys_footprint_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Read kernel phys_footprint for unique model service PIDs."""
+    """Read each unique service PID; retain successful details if a peer exits."""
     result: dict[str, Any] = {
         "source": "proc_pid_rusage_phys_footprint",
         "status": "unavailable",
@@ -437,22 +437,43 @@ def _phys_footprint_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "pids": sorted({int(row["pid"]) for row in rows}),
         "process_identities": {},
         "phys_footprint_by_pid": {},
+        "process_memory_details": {},
     }
     try:
         if not result["pids"]:
             result["reason"] = "service_scope_unresolved"
             return result
         for pid in result["pids"]:
-            info = _RUsageInfoV0()
-            with _LIBPROC_LOCK:
-                code = _libproc().proc_pid_rusage(pid, 0, ctypes.byref(info))
-            if code != 0 or not info.ri_proc_start_abstime or info.ri_proc_exit_abstime:
-                result["reason"] = "phys_footprint_unavailable"
-                return result
-            result["process_identities"][pid] = int(info.ri_proc_start_abstime)
-            result["phys_footprint_by_pid"][pid] = int(info.ri_phys_footprint)
-        if any(_process_identity(pid) != identity for pid, identity in result["process_identities"].items()):
-            result["reason"] = "process_identity_changed"
+            detail: dict[str, Any] = {
+                "source": "proc_pid_rusage_phys_footprint",
+                "status": "unavailable",
+                "reason": "phys_footprint_unavailable",
+                "phys_footprint_bytes": None,
+                "observed_at_monotonic": time.monotonic(),
+                "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
+            }
+            try:
+                info = _RUsageInfoV0()
+                with _LIBPROC_LOCK:
+                    code = _libproc().proc_pid_rusage(pid, 0, ctypes.byref(info))
+                if code == 0 and info.ri_proc_start_abstime and not info.ri_proc_exit_abstime:
+                    identity = int(info.ri_proc_start_abstime)
+                    detail["process_start_abstime"] = identity
+                    if _process_identity(pid) == identity:
+                        value = int(info.ri_phys_footprint)
+                        detail.update(status="available", reason=None, phys_footprint_bytes=value)
+                        result["process_identities"][pid] = identity
+                        result["phys_footprint_by_pid"][pid] = value
+                    else:
+                        detail["reason"] = "process_identity_changed"
+            except (OSError, AttributeError, ValueError):
+                pass
+            finally:
+                detail["finished_at_monotonic"] = time.monotonic()
+                result["process_memory_details"][pid] = detail
+        failed = [d for d in result["process_memory_details"].values() if d["status"] != "available"]
+        if failed:
+            result["reason"] = failed[0]["reason"]
             return result
         result.update(status="available", phys_footprint_bytes=sum(result["phys_footprint_by_pid"].values()))
         return result
@@ -503,6 +524,7 @@ def _resident_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "ttl_seconds": MEMORY_OBSERVATION_TTL_SECONDS,
         "pids": sorted(pids),
         "process_identities": identities,
+        "process_memory_details": _phys_footprint_group(rows)["process_memory_details"],
     }
     try:
         if not pids or any(identity is None for identity in identities.values()):
@@ -534,6 +556,35 @@ def _resident_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return result
     finally:
         result["finished_at_monotonic"] = time.monotonic()
+
+
+def _process_memory_rows(rows: list[dict[str, Any]], observation: dict[str, Any]) -> list[dict[str, Any]]:
+    """PID diagnostics use kernel phys_footprint, independent of product group residency."""
+    details = observation.get("process_memory_details") or {}
+    result = []
+    for row in _dedupe_rows(rows):
+        detail = dict(details.get(row["pid"]) or {})
+        if not detail:
+            detail.update(
+                status="unavailable", reason="process_memory_not_recorded", phys_footprint_bytes=None
+            )
+        if detail.get("status") == "available":
+            if _process_identity(row["pid"]) != detail.get("process_start_abstime"):
+                detail.update(
+                    status="unavailable", reason="process_identity_changed", phys_footprint_bytes=None
+                )
+            elif time.monotonic() - detail["observed_at_monotonic"] > MEMORY_OBSERVATION_TTL_SECONDS:
+                detail.update(status="unavailable", reason="observation_expired", phys_footprint_bytes=None)
+        value = detail.get("phys_footprint_bytes") if detail.get("status") == "available" else None
+        result.append(
+            {
+                **{key: row.get(key) for key in ("pid", "ppid", "process_name", "listening_ports")},
+                "phys_footprint_bytes": value,
+                "phys_footprint_mib": round(value / 1048576, 3) if value is not None else None,
+                "memory_observation": detail,
+            }
+        )
+    return result
 
 
 def _run_text(command: list[str], timeout: float = 3) -> str:
@@ -827,16 +878,12 @@ class LocalAppleUnifiedTelemetryProvider:
                 data["model_process_memory_used_mib"] = mib
                 data["model_process_system_memory_scope"] = "proc_pid_rusage_phys_footprint"
                 data["process_memory_scope"] = "proc_pid_rusage_phys_footprint"
-                data["model_system_processes"] = [
-                    {key: row.get(key) for key in ("pid", "process_name", "listening_ports")} for row in group
-                ]
+                data["model_system_processes"] = _process_memory_rows(group, observation)
             else:
                 data["product_stack_memory_mib"] = mib
                 data["benchmark_process_memory_used_mib"] = mib
                 data["benchmark_process_memory_scope"] = "apple_footprint_group_resident_v2"
-                data["benchmark_processes"] = [
-                    {key: row.get(key) for key in ("pid", "process_name", "listening_ports")} for row in group
-                ]
+                data["benchmark_processes"] = _process_memory_rows(group, observation)
         data["memory_complete"] = all(observations[name].get("status") == "available" for name in groups)
         observations["device_gpu"] = device.get("gpu_observation") or {}
         data["model_process_gpu_memory_mib"] = None

@@ -30,6 +30,49 @@ def test_new_metadata_always_declares_separate_memory_and_gpu() -> None:
     assert data["memory_profile"]["method"] == "jetson_pss_and_nvmap_v3"
 
 
+@pytest.mark.parametrize("missing_pid", [None, 43])
+def test_exported_process_details_match_same_pss_reads_and_survive_json(monkeypatch, missing_pid):
+    import json
+
+    rows = [
+        {"pid": pid, "start_ticks": str(pid), "listening_ports": [port], "rss_mib": 99}
+        for pid, port in [(42, 8100), (43, 8291), (44, 8101)]
+    ]
+    monkeypatch.setattr(jetson, "_host_process_rows", lambda ports: rows)
+    monkeypatch.setattr(jetson, "_process_start_ticks", lambda pid: str(pid))
+    reads = []
+
+    def smaps(pid):
+        reads.append(pid)
+        return (None, None) if pid == missing_pid else (pid / 2, pid)
+
+    monkeypatch.setattr(jetson, "_process_smaps_memory_mib", smaps)
+    monkeypatch.setattr(jetson, "_nvmap_cache", {"at": float("-inf"), "table": None})
+    monkeypatch.setattr(jetson, "_read_nvmap_clients", lambda: "llama 0 42 1024K\n")
+    scope = {
+        "main_model": {"ports": [8100]},
+        "sentrix": {"ports": [8291]},
+        "product": [{"ports": [8291]}],
+        "embedding": {"mode": "test", "profiles": {"test": {"ports": [8101]}}},
+    }
+    sample = jetson._augment_local_process_memory(
+        {}, model_pid=None, endpoint_port="8100", telemetry_services=scope
+    )
+    saved = json.loads(json.dumps(sample))
+    details = saved["benchmark_processes"]
+    assert sorted(reads) == [42, 43, 44]
+    assert len(details) == 3
+    for row in details:
+        assert row["pss_mib"] == (None if row["pid"] == missing_pid else row["pid"] / 2)
+        assert row["smaps_rss_mib"] == (None if row["pid"] == missing_pid else row["pid"])
+        assert row["start_ticks"] == str(row["pid"])
+    if missing_pid is None:
+        assert saved["product_stack_memory_mib"] == sum(row["pss_mib"] for row in details)
+    else:
+        assert saved["product_stack_memory_mib"] is None
+        assert saved["model_process_system_memory_used_mib"] == 21
+
+
 def test_sampler_walks_each_process_once_even_when_device_stats_are_collected(monkeypatch):
     import builtins
     import io

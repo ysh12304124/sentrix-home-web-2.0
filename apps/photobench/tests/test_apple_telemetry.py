@@ -15,6 +15,7 @@ from photobench.infrastructure.runtime import apple_telemetry as apple
 from photobench.infrastructure.runtime import providers
 
 MIB = 1048576
+_REAL_PHYS_FOOTPRINT_GROUP = apple._phys_footprint_group
 
 VM_STAT = """\
 Mach Virtual Memory Statistics: (page size of 16384 bytes)
@@ -353,6 +354,68 @@ def test_phys_footprint_failure_remains_unknown(monkeypatch):
     result = apple._phys_footprint_group([{"pid": 2}])
     assert result["status"] == "unavailable"
     assert "phys_footprint_bytes" not in result
+
+
+@pytest.mark.parametrize("failed_pid", [None, 3])
+def test_phys_footprint_keeps_each_pid_and_partial_success_after_serialization(monkeypatch, failed_pid):
+    import json
+    from types import SimpleNamespace
+
+    calls = []
+
+    def read(pid, flavor, pointer):
+        calls.append(pid)
+        pointer._obj.ri_phys_footprint = pid * MIB
+        pointer._obj.ri_proc_start_abstime = pid * 100
+        return -1 if pid == failed_pid else 0
+
+    monkeypatch.setattr(apple, "_libproc", lambda: SimpleNamespace(proc_pid_rusage=read))
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
+    rows = [{"pid": 2}, {"pid": 3}, {"pid": 2}]
+    observation = apple._phys_footprint_group(rows)
+    saved = json.loads(json.dumps(apple._process_memory_rows(rows, observation)))
+    assert calls == [2, 3]
+    assert len(saved) == 2
+    assert saved[0]["phys_footprint_bytes"] == 2 * MIB
+    assert saved[0]["memory_observation"]["status"] == "available"
+    if failed_pid:
+        assert saved[1]["phys_footprint_bytes"] is None
+        assert saved[1]["memory_observation"]["reason"] == "phys_footprint_unavailable"
+        assert observation["status"] == "unavailable"
+        assert "phys_footprint_bytes" not in observation
+    else:
+        assert sum(row["phys_footprint_bytes"] for row in saved) == observation["phys_footprint_bytes"]
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: 999)
+    changed = apple._process_memory_rows(rows, observation)
+    assert changed[0]["phys_footprint_bytes"] is None
+    assert changed[0]["memory_observation"]["reason"] == "process_identity_changed"
+
+
+def test_mac_product_keeps_per_pid_kernel_details_with_independent_group_total(apple_host, monkeypatch):
+    from types import SimpleNamespace
+
+    def read(pid, flavor, pointer):
+        pointer._obj.ri_phys_footprint = pid * MIB
+        pointer._obj.ri_proc_start_abstime = pid * 100
+        return 0
+
+    monkeypatch.setattr(apple, "_libproc", lambda: SimpleNamespace(proc_pid_rusage=read))
+    monkeypatch.setattr(apple, "_phys_footprint_group", _REAL_PHYS_FOOTPRINT_GROUP)
+
+    def resident(rows):
+        result = resident_observation(rows, 700)
+        result["process_memory_details"] = apple._phys_footprint_group(rows)["process_memory_details"]
+        return result
+
+    monkeypatch.setattr(apple, "_resident_group", resident)
+    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
+    assert data["model_process_system_memory_used_mib"] == 200
+    assert data["product_stack_memory_mib"] == 700
+    assert {row["pid"]: row["phys_footprint_mib"] for row in data["benchmark_processes"]} == {
+        100: 100,
+        200: 200,
+    }
+    assert data["model_system_processes"][0]["phys_footprint_bytes"] == 200 * MIB
 
 
 def footprint_payload(pids=(42,), scale=1):
