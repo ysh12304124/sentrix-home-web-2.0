@@ -851,7 +851,10 @@ class RunSuites:
                 "turn_count": len(fields),
                 "subscore_count": sum(map(len, fields.values())),
             }
-        old_revision = (state.get("runtime_snapshot") or {}).get("product_build_revision")
+        source_runtime = state.get("runtime_snapshot") or {}
+        old_revision = source_runtime.get("product_build_revision") or source_runtime.get(
+            "required_build_revision"
+        )
         current_revision = self._config.public_runtime_connection_config().get("product_build_revision")
         return {
             "run_id": run_id,

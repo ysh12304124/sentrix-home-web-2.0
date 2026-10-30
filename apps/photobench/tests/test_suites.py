@@ -1089,3 +1089,12 @@ def test_unscored_early_turn_does_not_inherit_valid_last_turn_score(tmp_path):
     row["runtime_turns"][1]["task_judge"] = {"correct": True, "actual_action": "answer"}
     selection = RunSuites._recovery_selection(state, "unscored")
     assert selection == {(0, 0): ("judge", "task_judge")}
+
+
+def test_recovery_plan_reads_legacy_frozen_required_product_revision(tmp_path):
+    state = _judged_state()
+    state["runtime_snapshot"] = {"required_build_revision": "original-product"}
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    plan = suites.recovery_plan("run-1")
+    assert plan["source_product_build_revision"] == "original-product"
+    assert plan["product_version_changed"] is True
