@@ -131,6 +131,7 @@ export function App({ initialLoading = false }: AppProps) {
     onDirty: configApi.markConnectionConfigDirty,
   });
 
+  const [judgeUseGtImages, setJudgeUseGtImages] = useState(false);
   const [deleteScopeAfterRun, setDeleteScopeAfterRun] = useState(false);
   const [suiteRunning, setSuiteRunning] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxTarget | null>(null);
@@ -261,6 +262,7 @@ export function App({ initialLoading = false }: AppProps) {
         sentrix_url: configApi.sentrixUrl.trim(),
         judge_url: configApi.judgeUrl.trim(),
         judge_model: configApi.judgeModel.trim(),
+        judge_use_gt_images: judgeUseGtImages,
         judge_provider_id: configApi.judgeProviderId,
         ...(configApi.judgeApiKeyDirty ? { judge_api_key: configApi.judgeApiKey } : {}),
         vllm_target_id: configApi.vllmTargetId,
@@ -386,6 +388,7 @@ export function App({ initialLoading = false }: AppProps) {
               album={{ selectedAlbum, setSelectedAlbum, selectedQa, setSelectedQa }}
               start={{
                 ...startInput,
+                judgeUseGtImages, onJudgeUseGtImagesChange: setJudgeUseGtImages,
                 deleteScopeAfterRun,
                 onDeleteScopeAfterRunChange: setDeleteScopeAfterRun,
                 onStart: () => {

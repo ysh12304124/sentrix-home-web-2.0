@@ -294,6 +294,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/recovery-plan:
+    get:
+      tags:
+      - suites
+      summary: Recovery Plan
+      description: 原任务续跑题数、产品版本和各补评范围的题/轮/评分项计数，只读。
+      operationId: recovery_plan_api_v1_runs__run_id__recovery_plan_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runs/{run_id}/resume:
     post:
       tags:

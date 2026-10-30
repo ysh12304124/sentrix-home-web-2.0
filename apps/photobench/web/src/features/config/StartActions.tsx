@@ -18,6 +18,8 @@ export interface StartActionsProps extends StartDisabledInput {
   onStart: () => void;
   onStop: () => void;
   stopping?: boolean;
+  judgeUseGtImages?: boolean;
+  onJudgeUseGtImagesChange?: (value: boolean) => void;
 }
 
 export function StartActions(props: StartActionsProps) {
@@ -36,6 +38,10 @@ export function StartActions(props: StartActionsProps) {
 
   return (
     <div className="actions">
+      {runMode !== "build" && <label className="config-help">
+        <input type="checkbox" checked={props.judgeUseGtImages ?? false} disabled={suiteRunning || hasRunning} onChange={event => props.onJudgeUseGtImagesChange?.(event.target.checked)} />
+        使用 GT 图片辅助评分（仅给 Judge；不附视频）
+      </label>}
       {runMode === "full" && (
         <label
           className={`btn danger delete-scope-toggle${deleteScopeAfterRun ? " active" : ""}${

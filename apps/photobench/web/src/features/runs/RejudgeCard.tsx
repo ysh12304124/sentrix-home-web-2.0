@@ -17,7 +17,7 @@
 import { useEffect, useRef } from "react";
 
 import type { RejudgeTask } from "../../api/types.ts";
-import type { PromptKindMeta } from "../../hooks/useRunDetail.ts";
+import type { PromptKindMeta, RejudgeScope, RecoveryPlan } from "../../hooks/useRunDetail.ts";
 import { statusLabel } from "../../lib/format.ts";
 
 /**
@@ -31,6 +31,11 @@ const PROMPT_KIND_LABELS: Record<string, string> = {
 };
 
 export interface RejudgeCardProps {
+  scope?: RejudgeScope;
+  onScopeChange?: (scope: RejudgeScope) => void;
+  judgeUseGtImages?: boolean;
+  onJudgeUseGtImagesChange?: (value: boolean) => void;
+  recoveryPlan?: RecoveryPlan | null;
   activeRejudge: RejudgeTask | null;
   judgePromptKinds: PromptKindMeta[];
   activePromptKind: string;
@@ -52,7 +57,7 @@ export interface RejudgeCardProps {
 }
 
 export function RejudgeCard({
-  activeRejudge,
+  activeRejudge, scope = "missing", onScopeChange, judgeUseGtImages = false, onJudgeUseGtImagesChange, recoveryPlan,
   judgePromptKinds,
   activePromptKind,
   onSwitchPromptKind,
@@ -92,6 +97,19 @@ export function RejudgeCard({
           <span className={"phase-status " + (activeRejudge.status || "")}>{statusLabel(activeRejudge.status)}</span>
         ) : null}
       </div>
+      <div className="recovery-options">
+        <label>评分范围
+          <select aria-label="评分范围" value={scope} disabled={running || rejudgeSubmitting} onChange={event => onScopeChange?.(event.target.value as RejudgeScope)}>
+            <option value="missing">仅评分失败或未评分</option>
+            <option value="failed">仅评分失败</option>
+            <option value="unscored">仅未评分</option>
+            <option value="all">重新评分全部答案</option>
+          </select>
+        </label>
+        <label><input type="checkbox" checked={judgeUseGtImages} disabled={running || rejudgeSubmitting} onChange={event => onJudgeUseGtImagesChange?.(event.target.checked)} /> 使用 GT 图片辅助评分</label>
+        <p className="muted small">需要支持图片输入的 Judge。图片只提供给 Judge，不传给答题模型。只附标注的图片，不附视频；图片缺失或读取失败会记录为评分失败。补评保留已有有效分数，含 0 分；已有结果保留原评分模式。</p>
+        {recoveryPlan?.scoring?.[scope] ? <p>所选范围：{recoveryPlan.scoring[scope].qa_count} 题 · {recoveryPlan.scoring[scope].turn_count} 轮 · {recoveryPlan.scoring[scope].subscore_count} 项评分</p> : null}
+      </div>
       <div className="prompt-kind-tabs">
         {judgePromptKinds.map((meta) => {
           const kind = meta.kind || "";
@@ -129,16 +147,17 @@ export function RejudgeCard({
           <button className="btn ghost compact" disabled={running} onClick={onResetPrompt}>
             恢复默认
           </button>
-          <button className="btn compact" disabled={!canRejudge || rejudgeSubmitting} onClick={() => onRequestRejudge()}>
-            {running ? "重新评分中…" : "重新评分全部 QA"}
+          <button className="btn compact" disabled={!canRejudge || rejudgeSubmitting || recoveryPlan?.scoring?.[scope]?.turn_count === 0} onClick={() => onRequestRejudge()}>
+            {running ? "重新评分中…" : (scope === "all" ? "重新评分全部 QA" : "补评所选范围")}
           </button>
         </div>
       </div>
       {activeRejudge ? (
         <div className="rejudge-progress">
+          {"judge_use_gt_images" in activeRejudge ? <p className="muted small">本次重评分：{activeRejudge.judge_use_gt_images ? "GT 图片辅助" : "文字 GT"}</p> : null}
           <div className="rejudge-progress-meta">
             <span>
-              {activeRejudge.completed || 0}/{activeRejudge.total || 0} 题
+              {activeRejudge.completed || 0}/{activeRejudge.total || 0} 轮
             </span>
             <span>
               失败 {Number(activeRejudge.failed || 0)} · {rejudgePercent}%

@@ -1156,3 +1156,11 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .resource-definition-notes li { margin:6px 0; }
 
 .live-telemetry-card { min-width:0; }
+
+.recovery-options { display:flex; flex-direction:column; align-items:flex-start; gap:10px; min-width:0; }
+.recovery-options label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; max-width:100%; }
+.recovery-options p { margin:2px 0; overflow-wrap:anywhere; }
+.recovery-options code { overflow-wrap:anywhere; white-space:normal; }
+.recovery-options select { max-width:100%; padding:6px; }
+.rejudge-card { min-width:0; }
+@media(max-width:600px) { .rejudge-actions { flex-wrap:wrap; } .recovery-options .btn { max-width:100%; white-space:normal; } }

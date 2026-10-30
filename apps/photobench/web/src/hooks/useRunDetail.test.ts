@@ -28,6 +28,7 @@ function mount(activeRunId: string | null = "r1") {
 
 beforeEach(() => {
   apiMock.mockReset();
+  apiMock.mockResolvedValue({});
   postMock.mockReset();
 });
 
@@ -375,7 +376,7 @@ it("定期重读全程控制曲线点数，终态自动补齐", async () => {
   apiMock.mockResolvedValueOnce(runDetail({ status: "completed", history_mode: "checkpoint" }))
     .mockResolvedValueOnce(runDetail({ status: "completed", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 20 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
-  expect(apiMock.mock.calls.slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
+  expect(apiMock.mock.calls.filter(([path]) => !path.endsWith("/recovery-plan")).slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 0 }, { t: 20 }]);
 });
 
@@ -386,7 +387,7 @@ it("后台暂停错过窗口时补读全程，切换测评不会混入旧曲线"
   apiMock.mockResolvedValueOnce(runDetail({ status: "running", history_mode: "checkpoint", telemetry_live: { history: [{ t: 200 }, { t: 300 }] } }))
     .mockResolvedValueOnce(runDetail({ status: "running", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 300 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
-  expect(apiMock.mock.calls.slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
+  expect(apiMock.mock.calls.filter(([path]) => !path.endsWith("/recovery-plan")).slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
   ref.current = "r2";
   apiMock.mockResolvedValueOnce(runDetail({ run_id: "r2", status: "running", history_mode: "full", telemetry_live: { history: [{ t: 50 }, { t: 60 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
@@ -414,4 +415,27 @@ it("切换测评后迟到的旧详情不会覆盖新测评或污染后续历史�
   await act(async () => { await result.current.loadActiveRun(); });
   expect(apiMock.mock.calls.at(-1)?.[0]).toBe("/runs/r2?include_history=false");
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 100 }, { t: 200 }, { t: 201 }]);
+});
+
+it("确认时使用已冻结的范围/GT模式/提示词，重复确认只发一次", async () => {
+  apiMock.mockResolvedValue(runDetail());
+  postMock.mockResolvedValue({});
+  const {result}=mount();
+  await act(async()=>{await result.current.loadActiveRun(); result.current.setRejudgePrompt("original");});
+  act(()=>{result.current.setRejudgeScope("failed");result.current.setJudgeUseGtImages(true);});
+  act(()=>{result.current.requestRejudge({judge_model:" old-model "});});
+  act(()=>{result.current.setRejudgeScope("all");result.current.setJudgeUseGtImages(false);result.current.setRejudgePrompt("changed");});
+  await act(async()=>{await Promise.all([result.current.confirmRejudge({judge_model:"new-model"}),result.current.confirmRejudge()]);});
+  expect(postMock).toHaveBeenCalledTimes(1);
+  expect(postMock).toHaveBeenCalledWith("/runs/r1/rejudge",expect.objectContaining({scope:"failed",judge_use_gt_images:true,system_prompt:"original",judge_model:"old-model"}));
+});
+
+it("切换任务后不能把旧确认提交给新任务", async()=>{
+  apiMock.mockResolvedValue(runDetail());
+  const {result,ref}=mount();
+  await act(async()=>{await result.current.loadActiveRun(); result.current.setRejudgePrompt("p");});
+  act(()=>{result.current.requestRejudge();});
+  ref.current="r2";
+  await act(async()=>{await result.current.confirmRejudge();});
+  expect(postMock).not.toHaveBeenCalled();
 });

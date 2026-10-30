@@ -248,6 +248,7 @@ class RunRequest:
     judge_api_key: str = ""
     judge_prompts: Mapping[str, str | None] = field(default_factory=dict)
     evidence_judge_enabled: bool = False
+    judge_use_gt_images: bool = False
     runtime_snapshot: RunRuntimeSnapshot | None = None
     snapshot_source: str = "creation_config"
 
@@ -306,6 +307,7 @@ class JudgeSettings:
     task_judge_prompt: str | None = None
     evidence_judge_prompt: str | None = None
     evidence_enabled: bool = False
+    judge_use_gt_images: bool = False
 
 
 #: 端点探活的重试次数与间隔。一次瞬断（4/4 slot 饱和时服务端可能直接断开新连接）
@@ -697,6 +699,8 @@ class RunExecution:
             "judge_model": request.judge_model
             or (self.judge_settings.judge_model if self.judge_settings else "")
             or None,
+            "judge_use_gt_images": request.judge_use_gt_images,
+            "evidence_judge_enabled": request.evidence_judge_enabled,
             "rejudge": None,
             "memory_profile": None,
             "input_integrity": (
@@ -755,6 +759,7 @@ class RunExecution:
             evidence_enabled=bool(
                 request.evidence_judge_enabled or (defaults.evidence_enabled if defaults else False)
             ),
+            judge_use_gt_images=request.judge_use_gt_images,
             sentrix_url=request.sentrix_url,
             cancel=state.cancel_event,
             inline_images=self.inline_images,

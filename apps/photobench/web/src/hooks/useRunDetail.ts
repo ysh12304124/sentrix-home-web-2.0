@@ -35,6 +35,20 @@ import type {
   RunSummary,
 } from "../api/types.ts";
 
+export type RejudgeScope = "missing" | "failed" | "unscored" | "all";
+export interface RecoveryPlan {
+  run_id: string;
+  can_resume: boolean;
+  remaining_qa_count: number;
+  inherited_qa_count: number;
+  scope_id?: string;
+  product_version_changed: boolean;
+  source_product_build_revision?: string;
+  current_product_build_revision?: string;
+  judge_use_gt_images: boolean;
+  scoring: Record<RejudgeScope, { qa_count: number; turn_count: number; subscore_count: number }>;
+}
+
 /** 1.0 `activeRunId` ref 的同步视图；由 `useRuns` 持有并传入。 */
 export interface ActiveRunIdRef {
   current: string | null;
@@ -146,6 +160,13 @@ export function useRunDetail(options: RunDetailOptions) {
     evidence: "",
   });
   const [rejudgePrompt, setRejudgePrompt] = useState("");
+  const [rejudgeScope, setRejudgeScope] = useState<RejudgeScope>("missing");
+  const [judgeUseGtImages, setJudgeUseGtImages] = useState(false);
+  const [recoveryPlan, setRecoveryPlan] = useState<RecoveryPlan | null>(null);
+  const [recoveryPlanError, setRecoveryPlanError] = useState("");
+  const [recoveryPlanRevision, setRecoveryPlanRevision] = useState(0);
+  const reloadRecoveryPlan = useCallback(() => setRecoveryPlanRevision(value => value + 1), []);
+  const pendingRejudge = useRef<{ runId: string; body: Record<string, unknown> } | null>(null);
   const [rejudgeSubmitting, setRejudgeSubmitting] = useState(false);
   /** 1.0 `startRejudge` 的 `window.confirm` 抽成「待确认动作」，让 UI 自己弹。 */
   const [rejudgeConfirmation, setRejudgeConfirmation] = useState<{ message: string } | null>(null);
@@ -158,6 +179,25 @@ export function useRunDetail(options: RunDetailOptions) {
   useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const reviewSavingRef = useRef(false);
   const rejudgeSubmittingRef = useRef(false);
+
+  useEffect(() => {
+    setRecoveryPlan(null);
+    setRecoveryPlanError("");
+    setJudgeUseGtImages(false);
+    setRejudgeScope("missing");
+    pendingRejudge.current = null;
+    setRejudgeConfirmation(null);
+  }, [activeRunId]);
+  useEffect(() => {
+    const runId = activeRun?.run_id;
+    if (!runId || !TERMINAL_STATUSES.has(activeRun.status || "") || activeRun.rejudge?.status === "running") return;
+    let stale = false;
+    setRecoveryPlanError("");
+    void api<RecoveryPlan>(`/runs/${encodeURIComponent(runId)}/recovery-plan`, { timeoutMs: 60000 })
+      .then(plan => { if (!stale && activeRunIdRef.current === runId) setRecoveryPlan(plan); })
+      .catch(error => { if (!stale && activeRunIdRef.current === runId) { setRecoveryPlan(null); setRecoveryPlanError((error as Error).message); } });
+    return () => { stale = true; };
+  }, [activeRun?.run_id, activeRun?.status, activeRun?.rejudge?.status, activeRunIdRef, recoveryPlanRevision]);
 
   const emit = notify ?? defaultNotify;
 
@@ -448,7 +488,7 @@ export function useRunDetail(options: RunDetailOptions) {
     () =>
       Boolean(
         (activeRun?.item_count || activeRun?.summary?.completed) &&
-          !["running", "pending"].includes(String(activeRun?.status)) &&
+          !["running", "pending", "cancelling"].includes(String(activeRun?.status)) &&
           activeRejudge?.status !== "running" &&
           rejudgePrompt.trim(),
       ),
@@ -460,22 +500,35 @@ export function useRunDetail(options: RunDetailOptions) {
    * 1.0 `:2584-2585` 的守卫与置位，`confirmRejudge()` 才执行 confirm 分支里的 POST，
    * `cancelRejudge()` 取消。UI 自行弹窗，测试也不必 mock `window.confirm`。
    */
-  const requestRejudge = useCallback((): boolean => {
+  const requestRejudge = useCallback((judge: RejudgeJudgeConfig = {}): boolean => {
     if (!canRejudge || rejudgeSubmittingRef.current) return false;
+    const runId = activeRunIdRef.current;
+    if (!runId || activeRun?.run_id !== runId || pendingRejudge.current) return false;
+    pendingRejudge.current = { runId, body: {
+      ...judge,
+      ...(judge.judge_url !== undefined ? {judge_url: judge.judge_url.trim()} : {}),
+      ...(judge.judge_model !== undefined ? {judge_model: judge.judge_model.trim()} : {}),
+      scope: rejudgeScope, judge_use_gt_images: judgeUseGtImages,
+      system_prompt: promptDrafts.answer_quality || rejudgePrompt,
+      task_system_prompt: promptDrafts.task_decision || undefined,
+      evidence_system_prompt: promptDrafts.evidence || undefined,
+    } };
     setRejudgeConfirmation({
-      message: `仅使用现有 ${activeRun?.item_count || 0} 条 Agent 回答重新调用 Judge。旧评分将保留在历史记录中，确定开始？`,
+      message: `仅使用现有 ${activeRun?.item_count || 0} 条 Agent 回答重新调用 Judge。范围：${({missing:"仅失败或未评分",failed:"仅评分失败",unscored:"仅未评分",all:"全部重评"})[rejudgeScope]}；${judgeUseGtImages ? "使用 GT 图片辅助评分" : "仅文字 GT"}。已有有效评分在补评时保留，替换项归档。确定开始？`,
     });
     return true;
-  }, [canRejudge, activeRun]);
+  }, [canRejudge, activeRun, activeRunIdRef, rejudgeScope, judgeUseGtImages, promptDrafts, rejudgePrompt]);
 
-  const cancelRejudge = useCallback(() => setRejudgeConfirmation(null), []);
+  const cancelRejudge = useCallback(() => { pendingRejudge.current = null; setRejudgeConfirmation(null); }, []);
 
   /** 1.0 `:2583-2601` confirm 分支的主体。`judge` 对应 1.0 的连接配置区。 */
   const confirmRejudge = useCallback(
     async (judge: RejudgeJudgeConfig = {}) => {
       setRejudgeConfirmation(null);
-      const runId = activeRunIdRef.current;
-      if (!runId) return;
+      const pending = pendingRejudge.current;
+      pendingRejudge.current = null;
+      if (!pending || pending.runId !== activeRunIdRef.current || rejudgeSubmittingRef.current) return;
+      const runId = pending.runId;
       rejudgeSubmittingRef.current = true;
       setRejudgeSubmitting(true);
       setError?.("");
@@ -485,9 +538,7 @@ export function useRunDetail(options: RunDetailOptions) {
           judge_model: (judge.judge_model || "").trim(),
           judge_provider_id: judge.judge_provider_id || "",
           ...(judge.judge_api_key ? { judge_api_key: judge.judge_api_key } : {}),
-          system_prompt: promptDrafts.answer_quality || rejudgePrompt,
-          task_system_prompt: promptDrafts.task_decision || undefined,
-          evidence_system_prompt: promptDrafts.evidence || undefined,
+          ...pending.body,
         });
         await onRunsReloaded?.();
         await loadActiveRun();
@@ -502,8 +553,6 @@ export function useRunDetail(options: RunDetailOptions) {
     [
       activeRunIdRef,
       setError,
-      promptDrafts,
-      rejudgePrompt,
       onRunsReloaded,
       loadActiveRun,
       onRejudgeStarted,
@@ -512,6 +561,7 @@ export function useRunDetail(options: RunDetailOptions) {
 
   return {
     activeRun,
+    recoveryPlan, recoveryPlanError, reloadRecoveryPlan, rejudgeScope, setRejudgeScope, judgeUseGtImages, setJudgeUseGtImages,
     setActiveRun,
     keyframeAnalysis,
     keyframeAnalysisLoading,

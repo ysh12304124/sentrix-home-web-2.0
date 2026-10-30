@@ -943,3 +943,149 @@ def test_resume_rejects_unconfigured_product_revision_and_non_boolean_recovery(t
         suites.resume_run("run-1", {"product_build_revision": "unchecked"})
     with pytest.raises(InvalidRequestError, match="boolean"):
         suites.resume_run("run-1", {"repair_missing_judges": "yes"})
+
+
+def test_missing_rejudge_preserves_valid_zero_and_only_repairs_failed_subscore(tmp_path):
+    import copy
+
+    state = _judged_state()
+    turn = state["items"][0]["runtime_turns"][0]
+    turn["reference_answer"] = "a.jpg"
+    turn["task_judge"] = {"correct": True, "actual_action": "answer", "raw_text": "original"}
+    turn["evidence_judge"] = {"score": 2, "reason": "original"}
+    zero = copy.deepcopy(turn["judge"])
+    task = copy.deepcopy(turn["task_judge"])
+    turn["judge"] = {"score": None, "judge_status": "failed", "raw_text": "invalid json"}
+    # A second valid zero-score turn must remain byte-for-byte unchanged.
+    second = copy.deepcopy(turn)
+    second["judge"] = zero
+    state["items"][0]["runtime_turns"].append(second)
+    before = copy.deepcopy(second)
+    second["reference_answer"] = "a.jpg"
+    before = copy.deepcopy(second)
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"回答正确"}')])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    response = suites.start_rejudge("run-1", {"system_prompt": "score", "scope": "missing"})
+    assert response["total"] == 1
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert state["items"][0]["runtime_turns"][1] == before
+    assert turn["task_judge"] == task
+    assert turn["judge"]["score"] == 2
+    assert turn["judge_history"][0]["judge"]["raw_text"] == "invalid json"
+    assert turn["evidence_judge"]["score"] == 2
+    assert len(http.payloads()) == 1
+    assert state["items"][0]["judge"] == zero
+
+
+@pytest.mark.parametrize("scope,selected", [("failed", (0,)), ("unscored", (1,)), ("missing", (0, 1))])
+def test_rejudge_scope_filters_each_turn_and_subscore(tmp_path, scope, selected):
+    import copy
+
+    state = _judged_state()
+    row = state["items"][0]
+    first = row["runtime_turns"][0]
+    first["task_judge"] = {"correct": False, "actual_action": "refuse"}
+    first["judge"] = {"score": None, "judge_status": "failed", "reason": "bad JSON"}
+    second = copy.deepcopy(first)
+    second["judge"] = {"score": None, "status": "pending"}
+    second["reference_answer"] = "a.jpg"
+    first["reference_answer"] = "a.jpg"
+    row["runtime_turns"].append(second)
+    before = copy.deepcopy(row["runtime_turns"])
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}') for _ in selected])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    assert suites.recovery_plan("run-1")["scoring"][scope]["turn_count"] == len(selected)
+    suites.start_rejudge("run-1", {"system_prompt": "p", "scope": scope})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    for index, turn in enumerate(row["runtime_turns"]):
+        assert turn["task_judge"] == before[index]["task_judge"]
+        if index not in selected:
+            assert turn == before[index]
+        else:
+            assert turn["judge"]["score"] == 2
+    assert len(http.payloads()) == len(selected)
+
+
+@pytest.mark.parametrize("body", [{"scope": "other"}, {"judge_use_gt_images": "false"}])
+def test_rejudge_rejects_invalid_controls_without_mutation(tmp_path, body):
+    import copy
+
+    state = _judged_state()
+    before = copy.deepcopy(state)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    with pytest.raises(InvalidRequestError):
+        suites.start_rejudge("run-1", {"system_prompt": "p", **body})
+    assert state == before
+
+
+def test_recovery_scope_skips_execution_failures_empty_answers_and_unlabeled(tmp_path):
+    import copy
+
+    state = _judged_state()
+    row = state["items"][0]
+    failed = copy.deepcopy(row)
+    failed["execution_status"] = "failed"
+    empty = copy.deepcopy(row)
+    empty["runtime_turns"][0]["answer"] = ""
+    unlabeled = copy.deepcopy(row)
+    unlabeled["expected_action"] = None
+    unlabeled["runtime_turns"][0]["expected_action"] = None
+    state["items"] = [failed, empty, unlabeled]
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    assert suites.recovery_plan("run-1")["scoring"]["missing"]["turn_count"] == 0
+    with pytest.raises(InvalidRequestError):
+        suites.start_rejudge("run-1", {"system_prompt": "p", "scope": "missing"})
+
+
+def test_gt_rejudge_uses_frozen_gt_not_agent_predictions(tmp_path):
+    import copy
+    from types import SimpleNamespace
+
+    state = _judged_state()
+    frozen = {
+        "qa_id": "q1",
+        "answer": "海边",
+        "expected_action": "answer",
+        "answer_evidence_image_ids": ["a.jpg"],
+    }
+    state["qa_snapshot"] = {"rows": [frozen], "definition_sha256": qa_fingerprint([frozen])}
+    snapshot = copy.deepcopy(state["qa_snapshot"])
+    turn = state["items"][0]["runtime_turns"][0]
+    turn.update(
+        judge={"score": None, "judge_status": "failed"},
+        task_judge={"correct": True, "actual_action": "answer"},
+        predicted_images=[{"asset_id": "wrong"}],
+    )
+    refs = []
+
+    def inline(_url, images, _assets):
+        refs.extend(images)
+        return [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="}}]
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": state}),
+        http=http,
+        inline_images=inline,
+        sentrix=SimpleNamespace(
+            list_assets=lambda **_: [{"id": "gt-only", "file_name": "a.jpg", "media_type": "image"}]
+        ),
+    )
+    suites.start_rejudge("run-1", {"system_prompt": "p", "scope": "missing", "judge_use_gt_images": True})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert [ref["asset_id"] for ref in refs] == ["gt-only"]
+    assert turn["judge"]["gt_images"]["source"] == "qa.answer_evidence"
+    assert state["qa_snapshot"] == snapshot
+    assert len(http.payloads()) == 1
+
+
+def test_unscored_early_turn_does_not_inherit_valid_last_turn_score(tmp_path):
+    state = _judged_state()
+    row = state["items"][0]
+    row["runtime_turns"].insert(
+        0, {"message": "第一轮", "answer": "回答", "expected_action": "answer", "reference_answer": "参考"}
+    )
+    row["runtime_turns"][1]["task_judge"] = {"correct": True, "actual_action": "answer"}
+    selection = RunSuites._recovery_selection(state, "unscored")
+    assert selection == {(0, 0): ("judge", "task_judge")}

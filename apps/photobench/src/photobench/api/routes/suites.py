@@ -83,6 +83,11 @@ def delete_run(request: Request, run_id: str) -> dict[str, Any]:
     return get_container(request).run_suites.delete_run(run_id)
 
 
+@router.get("/runs/{run_id}/recovery-plan")
+def recovery_plan(request: Request, run_id: str) -> dict[str, Any]:
+    return get_container(request).run_suites.recovery_plan(run_id)
+
+
 @router.post("/runs/{run_id}/resume", status_code=202)
 async def resume_run(request: Request, run_id: str) -> dict[str, Any]:
     """``POST /api/runs/{id}/resume``（1.0 ``:7768`` → ``resume_run`` ``:7488``）。

@@ -11,6 +11,7 @@
  * 1.0 里 RunsTable 与 RunDetail 是 `<main class="app-shell">` 下的兄弟节点（中间没有包装层），
  * 所以这里返回 fragment，不加多余 DOM。
  */
+import { ResumeCard } from "./ResumeCard.tsx";
 import type { RejudgeJudgeConfig } from "../../hooks/useRunDetail.ts";
 import type { UseRunsApi } from "../../hooks/useRuns.ts";
 import type { MemoryLayerPanelProps } from "../memory/MemoryLayerPanel.tsx";
@@ -62,6 +63,7 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
       />
       <RunDetail
         activeRun={runs.activeRun}
+        recovery={runs.activeRun && <ResumeCard key={runs.activeRun.run_id} error={runs.recoveryPlanError} onRetry={runs.reloadRecoveryPlan} plan={runs.recoveryPlan?.run_id === runs.activeRun.run_id ? runs.recoveryPlan : null} busy={runs.hasRunning || runs.resuming} onResume={body => { if (runs.activeRun) void runs.resumeRun(runs.activeRun.run_id, body); }} />}
         exportScores={runs.exportScores}
         onExportScoresChange={runs.setExportScores}
         onExportTraces={runs.exportTraces}
@@ -70,6 +72,9 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
         graphQuality={runs.graphQuality}
         rejudge={{
           activeRejudge: runs.activeRejudge,
+          scope: runs.rejudgeScope, onScopeChange: runs.setRejudgeScope,
+          judgeUseGtImages: runs.judgeUseGtImages, onJudgeUseGtImagesChange: runs.setJudgeUseGtImages,
+          recoveryPlan: runs.recoveryPlan?.run_id === runs.activeRun?.run_id ? runs.recoveryPlan : null,
           judgePromptKinds: runs.judgePromptKinds,
           activePromptKind: runs.activePromptKind,
           onSwitchPromptKind: runs.switchPromptKind,
@@ -78,10 +83,10 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
           judgeModel,
           onSavePrompt: () => saveJudgePrompt(runs.activePromptKind, runs.rejudgePrompt),
           onResetPrompt: runs.resetJudgePrompt,
-          canRejudge: runs.canRejudge,
+          canRejudge: runs.canRejudge && !runs.hasRunning && !runs.resuming,
           rejudgeSubmitting: runs.rejudgeSubmitting,
           rejudgeConfirmation: runs.rejudgeConfirmation,
-          onRequestRejudge: runs.requestRejudge,
+          onRequestRejudge: () => runs.requestRejudge(judgeConfig),
           onConfirmRejudge: () => {
             void runs.confirmRejudge(judgeConfig);
           },

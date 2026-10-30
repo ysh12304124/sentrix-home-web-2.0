@@ -25,6 +25,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import random
@@ -40,7 +41,7 @@ from photobench.domain.runs.analysis import (
     judge_score_consistency,
     now_iso,
 )
-from photobench.domain.runs.execution import RunCancelledError
+from photobench.domain.runs.execution import RunCancelledError, resolve_gt_media
 from photobench.domain.runs.judge import (
     ANSWER_QUALITY_RUBRICS,
     EVIDENCE_JUDGE_PROMPT,
@@ -53,6 +54,7 @@ from photobench.domain.runs.judge import (
     parse_judge_json,
     thinking_kwargs,
 )
+from photobench.domain.runs.judge_recovery import GT_IMAGE_PROMPT, gt_image_refs
 
 #: 1.0 的四个模块级常量（``:206-229``），同样由环境变量覆盖。
 JUDGE_RETRY_ATTEMPTS = max(1, int(os.environ.get("PHOTOBENCH_JUDGE_RETRY_ATTEMPTS", "6")))
@@ -88,6 +90,7 @@ class JudgeRunner:
         task_judge_prompt: str | None = None,
         evidence_judge_prompt: str | None = None,
         evidence_enabled: bool = False,
+        judge_use_gt_images: bool = False,
         sentrix_url: str = "",
         inline_images: InlineImages | None = None,
         cancel: threading.Event | None = None,
@@ -102,6 +105,7 @@ class JudgeRunner:
         self.task_judge_prompt = task_judge_prompt or TASK_JUDGE_PROMPT
         self.evidence_judge_prompt = evidence_judge_prompt or EVIDENCE_JUDGE_PROMPT
         self.evidence_enabled = bool(evidence_enabled)
+        self.judge_use_gt_images = judge_use_gt_images
         self.sentrix_url = str(sentrix_url or "")
         self.inline_images = inline_images
         #: 取消信号。**没有它时退化成 ``sleep``**——但主链的 judge 永远拿得到
@@ -270,6 +274,43 @@ class JudgeRunner:
             + "\n"
         )
 
+    def _gt_images(
+        self,
+        row: Mapping[str, Any],
+        turn: Mapping[str, Any],
+        assets_by_name: Mapping[str, list[dict[str, Any]]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        refs, source = gt_image_refs(row, turn)
+        images = [ref for ref in refs if ref["media_type"] == "image"]
+        resolved = resolve_gt_media(images, dict(assets_by_name), [])
+        audit: dict[str, Any] = {
+            "enabled": True,
+            "source": source,
+            "references": resolved,
+            "video_refs_omitted": sum(ref["media_type"] == "video" for ref in refs),
+            "status": "attached" if images else "no_gt_images",
+            "transform": {"format": "JPEG", "max_dimension": 896, "quality": 90},
+        }
+        content: list[dict[str, Any]] = []
+        for ref in resolved:
+            if ref["mapping_status"] != "ok" or not ref.get("asset_id"):
+                audit["status"] = "mapping_error"
+                continue
+            try:
+                attached = (
+                    self.inline_images(self.sentrix_url, [ref], assets_by_name) if self.inline_images else []
+                )
+                if len(attached) != 1:
+                    raise ValueError("GT image could not be attached")
+                url = attached[0]["image_url"]["url"]
+                ref["attached_data_url_sha256"] = hashlib.sha256(url.encode()).hexdigest()
+                ref["attachment_status"] = "attached"
+                content.extend([{"type": "text", "text": f"GT图片：{ref['media_id']}"}, attached[0]])
+            except Exception as exc:
+                ref.update(attachment_status="failed", error=str(exc))
+                audit["status"] = "attachment_error"
+        return content, audit
+
     def judge(
         self,
         question: str,
@@ -281,6 +322,9 @@ class JudgeRunner:
         task_type: str | None = None,
         question_type: str | None = None,
         answerability: str | None = None,
+        gt_row: Mapping[str, Any] | None = None,
+        gt_turn: Mapping[str, Any] | None = None,
+        assets_by_name: Mapping[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """1.0 ``_judge``（``:4238``）：回答质量 0/1/2。
 
@@ -304,12 +348,28 @@ class JudgeRunner:
             "只输出JSON："
             '{"score":0|1|2,"reason":"简短中文理由"}'
         )
+        image_audit: dict[str, Any] | None = None
+        content: str | list[dict[str, Any]] = judge_text
+        if self.judge_use_gt_images:
+            image_parts, image_audit = self._gt_images(gt_row or {}, gt_turn or {}, assets_by_name or {})
+            if image_audit["status"] in {"mapping_error", "attachment_error"}:
+                return {
+                    "score": None,
+                    "judge_status": "failed",
+                    "reason": "gt_image_" + image_audit["status"],
+                    "gt_images": image_audit,
+                    "input": None,
+                    "call_observations": [],
+                }
+            if image_parts:
+                prompt += GT_IMAGE_PROMPT
+                content = [{"type": "text", "text": judge_text}, *image_parts]
         payload = {
             "model": self.judge_model,
             "temperature": 0,
             "max_tokens": 1024,
             **thinking_kwargs(self.judge_url),
-            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": judge_text}],
+            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": content}],
         }
         attempts: list[dict[str, Any]] = []
         text = ""
@@ -369,6 +429,7 @@ class JudgeRunner:
                     ],
                 }
             return {
+                **({"gt_images": image_audit} if image_audit is not None else {}),
                 "call_observations": observations,
                 "score": score,
                 "score_normalization_version": JUDGE_SCORE_NORMALIZATION_VERSION,
@@ -384,6 +445,7 @@ class JudgeRunner:
         except Exception as exc:  # noqa: BLE001 — preserve received observations even if retry fails
             attempts.append({"input": payload, "error": str(exc)})
             return {
+                **({"gt_images": image_audit} if image_audit is not None else {}),
                 "call_observations": observations,
                 "score": None,
                 "score_normalization_version": JUDGE_SCORE_NORMALIZATION_VERSION,
@@ -609,7 +671,11 @@ class JudgeRunner:
 
     @staticmethod
     def _valid_result(value: Any, kind: str) -> bool:
-        if not isinstance(value, dict) or value.get("judge_status") == "failed":
+        if (
+            not isinstance(value, dict)
+            or value.get("judge_status") == "failed"
+            or value.get("status") == "failed"
+        ):
             return False
         if kind == "task_judge":
             return isinstance(value.get("correct"), bool) and value.get("actual_action") in {
@@ -727,6 +793,9 @@ class JudgeRunner:
                         question_type=turn_definition.get("question_type", row.get("question_type")),
                         answerability=turn_definition.get("answerability", row.get("answerability")),
                         conversation=conv_ctx,
+                        gt_row=row,
+                        gt_turn=turn_definition,
+                        assets_by_name=assets_by_name,
                     )
                     if expected in ANSWER_QUALITY_RUBRICS and (not only_missing or "judge" in missing)
                     else None

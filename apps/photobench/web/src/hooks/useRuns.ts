@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api/client.ts";
+import { api, post } from "../api/client.ts";
 import type { Run, RunPage, RunSummary } from "../api/types.ts";
 import { useRunDetail } from "./useRunDetail.ts";
 import type { RunDetailApi } from "./useRunDetail.ts";
@@ -254,8 +254,25 @@ export function useRuns(options: UseRunsOptions = {}) {
     [setActiveRunId, setActiveRun, loadRuns],
   );
 
+  const resumingRef = useRef(false);
+  const [resuming, setResuming] = useState(false);
+  const resumeRun = useCallback(async (runId: string, body: Record<string, unknown>) => {
+    if (resumingRef.current || hasRunningNow()) return;
+    resumingRef.current = true;
+    setResuming(true);
+    setError("");
+    try {
+      const result = await post<{run_id: string}>(`/runs/${encodeURIComponent(runId)}/resume`, body);
+      await loadRuns();
+      selectRun({run_id: result.run_id});
+      startPolling();
+    } catch (error) { setError((error as Error).message); }
+    finally { resumingRef.current = false; setResuming(false); }
+  }, [hasRunningNow, loadRuns, selectRun, startPolling]);
+
   return {
     runs,
+    resuming, resumeRun,
     runPage,
     activeRunId,
     error,

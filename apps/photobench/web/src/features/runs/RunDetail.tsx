@@ -76,6 +76,7 @@ function toggleScore(current: string[], value: string, checked: boolean): string
 }
 
 export interface RunDetailProps {
+  recovery?: ReactNode;
   activeRun: Run | null;
   exportScores: string[];
   onExportScoresChange: (scores: string[]) => void;
@@ -88,7 +89,7 @@ export interface RunDetailProps {
 }
 
 export function RunDetail({
-  activeRun,
+  activeRun, recovery,
   exportScores,
   onExportScoresChange,
   onExportTraces,
@@ -136,6 +137,7 @@ export function RunDetail({
           <p className="run-meta">
             开始 {fmtDate(activeRun.started_at)} · 总耗时 {duration(activeRun)}
             {runScopeMeta(activeRun)}
+            {"judge_use_gt_images" in activeRun ? ` · 评分设置：${activeRun.judge_use_gt_images ? "GT 图片辅助" : "文字 GT"}` : ""}
           </p>
           {activeRun.fatal_error ? (
             <div className="run-error-banner">
@@ -150,6 +152,7 @@ export function RunDetail({
               ) : null}
             </div>
           ) : null}
+          {recovery}
           {activeRun.mode !== "build" ? <RejudgeCard {...rejudge} /> : null}
           <PhaseList activeRun={activeRun} />
           <KeyMetrics run={activeRun} />
