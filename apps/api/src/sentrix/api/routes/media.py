@@ -162,6 +162,7 @@ def _build_video_scenes(container: Container, process_image: Callable[..., objec
         process_image=lambda asset, event_id: process_image(asset, forced_event_id=event_id),
         scene_planner=container.video_scene_planner,
         transcriber=container.audio_transcriber,
+        cross_modal_embedder=container.cross_modal_embedder,
     )
 
 

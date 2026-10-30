@@ -194,6 +194,7 @@ class Container:
     vector_repository: VectorRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
+    cross_modal_embedder: VisualEmbedder
     text_embedder: TextEmbedder
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
@@ -367,6 +368,14 @@ class Container:
             vector_repository=SqliteVectorRepository(database),
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
+            cross_modal_embedder=(
+                visual_embedder
+                if settings.embedding_scheme == "legacy"
+                else ChineseClipSidecarEmbedder(
+                    settings.legacy_clip_url,
+                    timeout_s=settings.legacy_clip_timeout_s,
+                )
+            ),
             text_embedder=text_embedder,
             embedding_health=embedding_health,
             place_resolver=OfflinePlaceResolver(
