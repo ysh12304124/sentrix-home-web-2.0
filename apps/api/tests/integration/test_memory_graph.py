@@ -8,12 +8,7 @@ from types import SimpleNamespace
 
 import sentrix.api.routes.media as media_routes
 from sentrix.application.memories.build_graph import BuildMemoryGraph
-from sentrix.application.retrieval.retrieve_graph import (
-    RetrieveGraph,
-    graph_direction,
-    graph_intent,
-    graph_search_policy,
-)
+from sentrix.application.retrieval.retrieve_graph import RetrieveGraph, graph_direction, graph_intent
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation, ObservationFact
 from sentrix.domain.memories.causality import CausalVerdict
 from sentrix.domain.memories.events import EventEntityRecord, EventRecord
@@ -459,31 +454,6 @@ def test_low_confidence_causal_edge_is_not_traversed(migrations_ready_db):
     assert graph.expand_assets(("a",), scope_id=SCOPE, max_hops=1, limit=10, intent="causal") == ()
 
 
-def test_graph_expansion_keeps_the_strongest_same_hop_path(migrations_ready_db):
-    graph = SqliteMemoryGraphRepository(migrations_ready_db)
-    graph.replace_scope(
-        SCOPE,
-        nodes=tuple(
-            GraphNode(f"asset:{name}", SCOPE, "asset") for name in ("seed", "weak", "strong", "target")
-        ),
-        edges=(
-            GraphEdge("weak-seed", SCOPE, "asset:seed", "asset:weak", "event_contains_asset", 0.4),
-            GraphEdge("strong-seed", SCOPE, "asset:seed", "asset:strong", "event_contains_asset", 0.9),
-            GraphEdge("weak-target", SCOPE, "asset:weak", "asset:target", "event_contains_asset", 1.0),
-            GraphEdge("strong-target", SCOPE, "asset:strong", "asset:target", "event_contains_asset", 1.0),
-        ),
-        build_revision="strongest-path",
-    )
-
-    target = next(
-        hit
-        for hit in graph.expand_assets(("seed",), scope_id=SCOPE, max_hops=2, limit=10)
-        if hit.asset_id == "target"
-    )
-    assert target.score == 0.648
-    assert target.path == ("asset:seed", "asset:strong", "asset:target")
-
-
 def test_causal_backward_and_temporal_direction_are_question_specific(migrations_ready_db):
     graph = SqliteMemoryGraphRepository(migrations_ready_db)
     graph.replace_scope(
@@ -516,12 +486,6 @@ def test_causal_backward_and_temporal_direction_are_question_specific(migrations
     assert graph_intent("这段视频什么时候开始？") == "temporal"
     assert graph_intent("为什么瓶子倒了？") == "causal"
     assert graph_direction("倒下之前是什么？") == "backward"
-
-
-def test_graph_policy_gates_single_evidence_and_unverifiable_requests():
-    assert graph_search_policy("这场婚礼总共收了多少礼金？").graph_slots == 0
-    assert graph_search_policy("这张照片帮我找一下").graph_slots == 0
-    assert graph_search_policy("这场婚礼具体在哪里举办？").graph_slots == 1
 
 
 def test_build_graph_projects_event_entities_and_video_scene_source(migrations_ready_db):

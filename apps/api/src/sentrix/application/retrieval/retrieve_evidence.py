@@ -96,11 +96,6 @@ class EvidenceRequest:
     """
 
     text: str
-    # Agent 可能会把用户问题压缩成几个检索词。primary 通道仍严格使用
-    # ``text``，但图策略需要保留原问题里的“单证据/不可验证/时序”等意图，
-    # 否则 ``多少钱`` 会退化成 ``礼金``，``找那张照片`` 会退化成一个泛化实体。
-    # 这是检索元数据，不会改变回答提示词或模型可见文本。
-    graph_question: str = ""
     # None = 跨全部相册（1.0 `db.py:1514` 的 `if scope_id:`）。原先默认 `"home-default"`，
     # 那是一个**具体的空间**——不传 scope 时去查它，而它在 2.0 的空库里不存在。
     scope_id: str | None = None
@@ -365,10 +360,7 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
-        graph_question = " ".join(
-            part.strip() for part in (request.graph_question, text) if part and part.strip()
-        )
-        graph_policy = graph_search_policy(graph_question, limit=limit)
+        graph_policy = graph_search_policy(text, limit=limit)
         if self._graph is not None:
             graph_started = time.monotonic()
             try:
@@ -376,7 +368,7 @@ class RetrieveEvidence:
                     seed_asset_ids=[candidate.asset_id for candidate in primary_fused[:limit]],
                     scope_id=request.scope_id,
                     limit=max(recall_limit, limit * 2),
-                    question=graph_question,
+                    question=text,
                     max_hops=graph_policy.max_hops,
                 )
                 channel_hits[GRAPH_CHANNEL] = graph_result.hits

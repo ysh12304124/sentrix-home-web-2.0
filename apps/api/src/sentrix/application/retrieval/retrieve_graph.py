@@ -13,46 +13,6 @@ GRAPH_CHANNEL = "graph"
 GRAPH_MAX_HOPS = 4
 GRAPH_MIN_PROMOTION_SCORE = 0.72
 
-_EXPLICIT_UNCERTAINTY_MARKERS = (
-    "证据不足",
-    "没有证据",
-    "无法确认",
-    "不能确认",
-    "无法判断",
-)
-# 这些问法要求金额、持续时长或人物姓名等“权威字段”。照片相似性和
-# 事件邻接可以帮助模型确认上下文，但不能凭空补出这些值；图结果只留
-# 在遥测/候选池，不应替换 primary 证据。这个门控对应 SELF-RAG 的
-# retrieve/no-retrieve 思路，但在本项目中保持确定性，不引入新的模型调用。
-_ANSWERABILITY_SENSITIVE_MARKERS = (
-    "多少钱",
-    "花了多少",
-    "花费",
-    "消费金额",
-    "收了多少",
-    "门票钱",
-    "小费",
-    "手续费",
-    "停留多久",
-    "排了多久",
-    "持续了多长",
-    "多长时间",
-    "叫什么名字",
-    "姓名",
-)
-# 单证据题的目标是找到/复核一张具体照片。图扩展的近邻通常是同一
-# 事件的其它照片，允许它晋升会稀释“这一张”的精确证据；仍保留 graph
-# candidate ids，便于诊断和后续显式翻页。
-_SINGLE_EVIDENCE_MARKERS = (
-    "帮找我一下照片",
-    "这张照片",
-    "那张照片",
-    "拍了一张照片",
-    "这张记录对应的照片",
-    "描述一下画面",
-    "画面内容",
-)
-
 
 def graph_intent(question: str) -> str:
     """按 hpq 的 object/action/temporal/scene/multi-hop 自适应路径选择。"""
@@ -121,9 +81,9 @@ def graph_search_policy(question: str, *, limit: int = 20) -> GraphSearchPolicy:
     """按查询意图收紧遍历深度和可晋升的图结果数量。
 
     PhotoBench 的 agent 会先把用户问题压缩成 ``馆陶县 婚礼`` 之类的检索词，
-    因而调用方应把原问题与压缩词一起传入。普通查询也跑图，但默认只走两跳、
-    最多晋升一个候选；时序/因果/多跳问题允许更深一层。证据不足、不可验证值
-    和单证据找图请求仍保留图轨迹，但不让图候选替换 primary 结果。
+    因而不能只依赖意图词来决定是否启用图。普通查询也跑图，但默认只走两跳、
+    最多晋升一个候选；时序/因果/多跳问题允许更深一层。证据不足类查询仍保留
+    图轨迹，但不让图候选替换 primary 结果。
     """
 
     value = question.casefold()
@@ -138,15 +98,9 @@ def graph_search_policy(question: str, *, limit: int = 20) -> GraphSearchPolicy:
         "general": (2, 1),
     }
     max_hops, max_slots = profiles[intent]
-    if any(token in value for token in _EXPLICIT_UNCERTAINTY_MARKERS):
+    if any(token in value for token in ("证据不足", "没有证据", "无法确认", "不能确认", "无法判断")):
         max_slots = 0
         reason = "uncertainty_query_no_promotion"
-    elif any(token in value for token in _ANSWERABILITY_SENSITIVE_MARKERS):
-        max_slots = 0
-        reason = "answerability_sensitive_no_promotion"
-    elif any(token in value for token in _SINGLE_EVIDENCE_MARKERS):
-        max_slots = 0
-        reason = "single_evidence_no_promotion"
     else:
         reason = f"intent_{intent}"
     safe_limit = max(1, int(limit))

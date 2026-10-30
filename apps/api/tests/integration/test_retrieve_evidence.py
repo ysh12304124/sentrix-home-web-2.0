@@ -345,12 +345,10 @@ class _RecordingGraph:
     def __init__(self) -> None:
         self.seeds: tuple[str, ...] = ()
         self.max_hops = 0
-        self.question = ""
 
     def execute(self, *, seed_asset_ids, scope_id, limit, question="", max_hops=GRAPH_MAX_HOPS):
         self.seeds = tuple(seed_asset_ids)
         self.max_hops = max_hops
-        self.question = question
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -376,22 +374,6 @@ def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(l
     assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
     assert result.fused_asset_ids == ("asset_b", "asset_graph")
-
-
-def test_graph_policy_receives_original_question_without_changing_primary_query(library):
-    graph = _RecordingGraph()
-    use_case = build(library, graph=graph)
-
-    use_case.execute(
-        EvidenceRequest(
-            text="礼金",
-            graph_question="这场婚礼总共收了多少礼金？",
-            scope_id=SCOPE,
-            limit=2,
-        )
-    )
-
-    assert graph.question == "这场婚礼总共收了多少礼金？ 礼金"
 
 
 def test_a_weak_graph_path_does_not_displace_primary_head(library):

@@ -211,7 +211,7 @@ class AssistantToolbox:
         question: str = "",
     ) -> ToolOutcome:
         if name == "search_memories":
-            return self._search(arguments, scope_id=scope_id, now=now, question=question)
+            return self._search(arguments, scope_id=scope_id, now=now)
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -288,25 +288,13 @@ class AssistantToolbox:
 
     # ---- search_memories ----------------------------------------------------
 
-    def _search(
-        self,
-        arguments: Mapping[str, Any],
-        *,
-        scope_id: str,
-        now: datetime,
-        question: str = "",
-    ) -> ToolOutcome:
+    def _search(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime) -> ToolOutcome:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("empty_query", "query 不能为空，请用用户问题里的实词。")
 
         result = self._retrieval.execute(
-            EvidenceRequest(
-                text=query,
-                graph_question=question,
-                scope_id=scope_id,
-                limit=_clamp_limit(arguments.get("limit")),
-            )
+            EvidenceRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
         )
         result_set = ResultSet(
             id=f"rs_{uuid.uuid4().hex[:12]}",
@@ -329,8 +317,7 @@ class AssistantToolbox:
             for trace in result.channel_trace
         ]
         graph_trace = next((trace for trace in channel_trace if trace["channel"] == "graph"), None)
-        graph_query = " ".join(part.strip() for part in (question, query) if part and part.strip())
-        graph_policy = graph_search_policy(graph_query)
+        graph_policy = graph_search_policy(query)
         return self._page_outcome(
             result_set,
             page_no=1,
