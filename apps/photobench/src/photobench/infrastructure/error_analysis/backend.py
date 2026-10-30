@@ -370,7 +370,11 @@ class FileAnalysisBackend:
             return export_auxiliary(report, job["kind"], format)
         report = json.loads((directory / "report.json").read_text())
         report["stale"] = self._stale(job)
-        cases = [c for c in lines(directory / "cases.jsonl") if matches(c, filters)]
+        cases = [
+            selected
+            for c in lines(directory / "cases.jsonl")
+            if (selected := select_case(c, filters)) is not None
+        ]
         view = filtered_view(cases, report, filters, 1, 100)
         report = {**report, **view["summary"], "issues": view["issues"], "all_items": report["item_count"]}
         return export_report(report, cases, format, filters)
