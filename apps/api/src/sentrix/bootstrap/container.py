@@ -319,6 +319,17 @@ class Container:
             visual_embedder = wemm_embedder
             text_embedder = wemm_embedder
             embedding_health = wemm_embedder
+        # **启动时推理测试**：2026-10-29 的教训——CLIP 侧车缺 `from PIL import Image`，
+        # `/health` 返回 ok，但实际推理时 NameError。健康检查只验证服务活着，
+        # 发现不了功能 broken。现在启动时做一次真实推理，确认端到端可用。
+        # 失败则 API 启动失败，明确报错。
+        smoke_ok, smoke_error = embedding_health.smoke_test()
+        if not smoke_ok:
+            raise RuntimeError(
+                f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
+                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+            )
+        log.info("嵌入方案启动测试通过（%s）", settings.embedding_scheme)
         log.info(
             "嵌入方案=%s 视觉=%s/%sd 文本=%s/%sd",
             settings.embedding_scheme,

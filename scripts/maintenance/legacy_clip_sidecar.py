@@ -36,9 +36,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
+
+if TYPE_CHECKING:
+    pass
 
 DIMENSION = 768
 CONTEXT_LENGTH = 52

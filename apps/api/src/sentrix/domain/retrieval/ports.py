@@ -341,3 +341,17 @@ class EmbeddingHealthProbe(Protocol):
 
     @property
     def load_error(self) -> str: ...
+
+    def smoke_test(self) -> tuple[bool, str]:
+        """启动时端到端推理测试：确认嵌入功能真正可用，而不是只检查服务活着。
+
+        **为什么在端口上。** ``available`` 只能回答"服务进程在不在"，不能回答"能不能
+        算出向量"——2026-10-29 CLIP 侧车缺 ``from PIL import Image``，``/health`` 返回
+        ok 但推理时 ``NameError``。把 ``smoke_test`` 放在端口上，两种方案（legacy / wemm）
+        都必须提供，``Container.build()`` 才能在启动时统一调用。
+
+        **失败语义：fail-closed。** 返回 ``(False, error_message)`` 表示测试失败，
+        调用方（``Container.build()``）应抛出 ``RuntimeError`` 阻止 API 启动。
+        不抛异常——返回结构化结果让调用方决定怎么处理。
+        """
+        ...

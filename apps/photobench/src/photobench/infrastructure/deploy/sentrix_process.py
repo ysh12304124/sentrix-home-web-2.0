@@ -15,8 +15,11 @@
 2. **PID 归属**：停一个「不是本进程起的」2.0 只能靠 ``lsof`` 按端口反查（见
    ``_discover_by_port``）——那是尽力而为，不是权威。S11 若给主 API 配了 pidfile /
    systemd 单元，应换成读那一个。
-3. **健康判据**：只看 ``GET /api/v1/health`` 回不回 ``ok``/``degraded``。**不看模型
-   端点**——2.0 自己不管理模型（设计口径），模型通不通是 ``model_deploy`` 相位的事。
+3. **健康判据**：看 ``GET /api/v1/health`` 的 ``status`` 是 ``ok``/``degraded``，
+   **且** ``embeddings`` 必须是 ``"ok"``。嵌入不可用时整轮数据会作废（视觉向量
+   全部写不进去，记忆图降级），必须启动时就拦住——2026-10-28 的教训。
+   **不看模型端点**——2.0 自己不管理模型（设计口径），模型通不通是 ``model_deploy``
+   相位的事。
 
 **为什么端点是「环境变量」而不是别的**：2.0 的 ``Settings``（``apps/api/src/sentrix/
 config.py``）用 ``env_prefix="SENTRIX_"`` 读 ``SENTRIX_VLM_BASE_URL``，那是**启动时**
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -42,6 +46,8 @@ from urllib.parse import urlparse
 from photobench.domain.deploy.ports import RestartOutcome
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.runtime.ports import RunRuntimeSnapshot
+
+log = logging.getLogger(__name__)
 
 
 def _snapshot_config_root(snapshot: RunRuntimeSnapshot, endpoint: str, directory: Path) -> Path:
@@ -262,6 +268,21 @@ class SubprocessSentrixProcess:
                     ):
                         if embedding.get(key):
                             env[name] = str(embedding[key])
+                elif mode is not None:
+                    # mode 存在但值不认识——不静默兜底，让产品 config.py 按 profile
+                    # 决定（server→wemm, mac→legacy）。记 warning 让运维看见。
+                    log.warning(
+                        "embedding.mode=%r 不认识（runtime_connection.json）；"
+                        "不设置 SENTRIX_EMBEDDING_SCHEME，由产品 profile 默认值决定。",
+                        mode,
+                    )
+                else:
+                    # mode 缺失——同样不替产品做业务决策。
+                    log.warning(
+                        "embedding.mode 未配置（runtime_connection.json）；"
+                        "不设置 SENTRIX_EMBEDDING_SCHEME，由产品 profile 默认值决定。"
+                        "建议在 runtime_connection.json 显式指定 embedding.mode。",
+                    )
             for key, name in (
                 ("deployment_profile", "SENTRIX_DEPLOYMENT_PROFILE"),
                 ("agent_wall_time_s", "SENTRIX_AGENT_WALL_TIME_S"),
@@ -314,7 +335,9 @@ class SubprocessSentrixProcess:
 
     def _await_health(self, timeout: float) -> tuple[bool, str]:
         """轮询 ``/api/v1/health`` 直到 200。``ok`` / ``degraded`` 都算起来了
-        （``degraded`` 只表示库有问题，进程是活的——1.0 也是这么判的）。"""
+        （``degraded`` 只表示库有问题，进程是活的——1.0 也是这么判的）。
+        **但嵌入功能必须可用**：如果 ``embeddings != "ok"``，启动失败。理由见
+        本模块 docstring 的教训——嵌入降级会让整轮数据作废却没人发现。"""
         deadline = self._clock() + timeout
         last_error = ""
         while self._clock() < deadline:
@@ -324,8 +347,21 @@ class SubprocessSentrixProcess:
                 last_error = str(exc)
             else:
                 if isinstance(body, dict) and body.get("status") in {"ok", "degraded"}:
-                    return True, ""
-                last_error = f"unexpected health payload: {body!r}"
+                    # **嵌入功能必须可用。** 2026-10-28 的教训：wemm 侧车没启动，
+                    # /health 返回 degraded + embeddings=unavailable，但 photobench
+                    # 认为 API 起来了，跑完整个 run 才发现视觉向量全没写进去。
+                    # 现在启动时就检查，不可用立即失败。
+                    if body.get("embeddings") != "ok":
+                        error_detail = body.get("embeddings_error") or "embeddings unavailable"
+                        last_error = (
+                            f"embedding health check failed: {error_detail}. "
+                            f"Check embedding config in runtime_connection.json"
+                        )
+                        # 继续轮询，给侧车一点启动时间
+                    else:
+                        return True, ""
+                else:
+                    last_error = f"unexpected health payload: {body!r}"
             self._sleep(self._poll_interval)
         return False, last_error or f"sentrix did not become healthy within {timeout}s"
 
