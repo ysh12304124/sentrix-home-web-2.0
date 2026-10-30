@@ -213,11 +213,30 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
       {extra ? GRAPHS.slice(1).map(graph => <ResourceGraph key={graph.title} {...{ graph, history, snapshots, sampledDown, revision }} />) : null}
     </details>
     <details className="metric-definition-panel"><summary>指标说明与采集状态</summary>
-      <p>Linux 进程内存取相关进程 PSS 合计；PSS 按比例分摊共享页。Mac 新采样的主模型内存直接读取内核 phys_footprint，按服务唯一 PID 汇总；历史记录保持原口径。整套产品仍为驻留估计。整机内存为总物理内存减空闲页，包含驻留缓存。</p>
-      <p>主模型显存统计所选推理服务进程组；产品显存统计主模型与嵌入、视觉等其他产品进程，并按进程去重。其他产品进程没有额外显存分配时，两者会相等。</p>
-      <p>153 显存来自 NVML；Orin 来自 nvmap 分配记录；Mac 仅显示 IORegistry 提供的整机显存参考值，当前模型服务未提供进程显存占用。统一内存设备上，显存表示 GPU 分配的共享内存，可能与进程内存重叠，两项不相加。产品显存来源不齐时留空。</p>
-      <p>P50 表示中位水平，P95 表示约 95% 的有效采样不超过该值；缺失值不参与统计。</p>
-      <p>目标每秒采样。来源超过 3 秒有效期即留空。Orin 的 GPU 温度直接读取系统 GPU 温度节点；节点暂时不可读时留空。利用率、温度、功率分别绘图，功率只表示标明的硬件范围。</p>
+      <div className="resource-definition-table-wrap" role="region" aria-label="各平台主模型内存与显存采集方法" tabIndex={0}>
+        <table className="resource-definition-table">
+          <caption>主模型占用：Σ 表示进程合计，相同 PID（进程编号）只计一次</caption>
+          <thead><tr><th scope="col">平台</th><th scope="col">主模型内存</th><th scope="col">主模型显存</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">3090（独立显卡）</th>
+              <td>读取 /proc 的 smaps_rollup。<br /><code>内存 = Σ 进程 PSS</code><br />PSS 按比例分摊共享内存页。</td>
+              <td>读取 NVIDIA NVML 的进程显存。<br /><code>显存 = Σ 当前显卡上模型进程的 usedGpuMemory</code><br />同一 PID 的计算与图形记录取较大值，避免重复。</td></tr>
+            <tr><th scope="row">NX / AGX（统一内存）</th>
+              <td>读取 /proc 的 smaps_rollup。<br /><code>内存 = Σ 进程 PSS</code></td>
+              <td>读取 nvmap iovmm/clients 的分配记录。<br /><code>显存 = Σ 模型进程的 nvmap 分配量</code><br />表示 GPU 分配的共享内存。</td></tr>
+            <tr><th scope="row">Mac mini（统一内存）</th>
+              <td>通过 proc_pid_rusage 读取内核 phys_footprint（进程物理内存负担）。<br /><code>内存 = Σ 进程 ri_phys_footprint</code></td>
+              <td>当前模型服务未提供进程级读数，显示“未记录”。IORegistry 的整机 GPU 分配量另作参考，包含其他应用。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul className="resource-definition-notes">
+        <li><strong>统计范围：</strong>主模型包含所选服务的相关进程；同一进程内的目标模型和草稿模型合并统计。产品包含主模型、产品后端、嵌入及视觉等服务，按 PID 去重。线程共享所属进程的内存，不单独求和。</li>
+        <li><strong>产品与整机：</strong>Linux 产品内存为各进程 PSS 合计；Mac 产品内存仍读取 footprint 进程组的驻留估计，公式为脏页 − 已换出页 + 干净页 + 可回收页（Dirty − Swapped + Clean + Reclaimable）。Mac 逐进程明细记录 phys_footprint，与该组统计的口径不同。整机内存为总物理内存减空闲页，包含缓存。</li>
+        <li><strong>显存与单位：</strong>产品显存对产品进程按上述平台方法统计，必要来源不齐时留空。NX、AGX、Mac 的 GPU 与 CPU 使用同一物理内存池，内存与显存可能重叠，不相加。1 GiB = 1024 MiB；1 MiB = 1,048,576 字节。</li>
+        <li><strong>采样与统计：</strong>目标每秒采样，来源超过 3 秒有效期即留空。峰值取有效采样最大值，P50 为中位数，P95 表示约 95% 的有效采样不超过该值；缺失值不补零。历史记录按该次保存的采集方法解释。</li>
+        <li><strong>温度与功率：</strong>NX / AGX 的 GPU 温度读取系统 GPU 温度节点。功率按图中标明的硬件范围解释。来源不可读时留空。</li>
+      </ul>
       {Object.entries(latest.resource_metrics ?? {}).filter(([, raw]) => (raw as Point).status !== "available").map(([key, raw]) =>
         <p key={key}>{RESOURCE_LABELS[key] ?? "资源指标"}：{GPU_TEMPERATURE_REASONS[(raw as Point).reason] ?? ((raw as Point).reason === "runtime_does_not_expose_process_gpu_bytes" ? "模型服务未提供进程显存占用" : (raw as Point).reason === "product_gpu_sources_incomplete" ? "产品显存来源未齐全" : "来源不可用或已过期")}</p>)}
       {diagnostics.map(row => <p key={row[0]}>{row[0]}：{row[1]} · {row[2]}</p>)}

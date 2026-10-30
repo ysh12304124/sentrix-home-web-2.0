@@ -260,24 +260,24 @@ export function telemetryObservationRows(run: unknown): MetricRow[] {
     const ages = sources.map(([, value]) => telemetryNumber(dict(value).age_seconds))
       .filter((age): age is number => age !== null && age >= 0);
     const unavailable = sources.filter(([, value]) => dict(value).fresh !== true).map(([key]) => key);
-    rows.push(["内存观测值龄", ages.length ? `${Math.max(...ages).toFixed(3)} s` : "不可用",
-      "采样时最老来源的值龄；缓存命中不刷新原观测时间"]);
+    rows.push(["内存数据距采集时间", ages.length ? `${Math.max(...ages).toFixed(3)} s` : "不可用",
+      "取最早来源的原始采集时间；复用缓存时不重置时间"]);
     rows.push(["内存来源有效性", `${sources.length - unavailable.length}/${sources.length}`,
-      unavailable.length ? `不可用或过期：${unavailable.join("、")}` : "所有已记录来源均新鲜；各合计另按必要依赖判定"]);
+      unavailable.length ? `不可用或过期：${unavailable.join("、")}` : "已记录来源均在有效期内；合计值须具备所需来源"]);
   }
   const diagnostics = dict(latest.sampling_diagnostics);
   const collection = telemetryNumber(diagnostics.collection_seconds);
   const lateness = telemetryNumber(diagnostics.schedule_lateness_seconds);
   if (Object.keys(diagnostics).length) {
-    rows.push(["采集 / 调度延迟", `${collection === null ? "不可用" : collection.toFixed(3) + " s"} / ${lateness === null ? "不可用" : lateness.toFixed(3) + " s"}`,
-      "单次采集耗时 / 相对单调时钟计划的延迟；不包含后续写盘回调"]);
+    rows.push(["采集耗时 / 采样延迟", `${collection === null ? "不可用" : collection.toFixed(3) + " s"} / ${lateness === null ? "不可用" : lateness.toFixed(3) + " s"}`,
+      "本次读取耗时 / 实际开始晚于计划的时间；写盘耗时另计"]);
   }
   const integrity = dict(gpuMetricsView(run).sampling_integrity);
   if (Object.keys(integrity).length) {
     const counts = ["callback_failures", "publisher_failures", "collection_failures"].map((key) => telemetryNumber(integrity[key]));
     const pending = Array.isArray(integrity.stop_pending_threads) ? integrity.stop_pending_threads : [];
-    rows.push(["采样记录 / 发布 / 采集异常", counts.map((value) => value === null ? "未记录" : String(value)).join(" / "),
-      pending.length ? `停止超时，线程待退出：${pending.join("、")}` : "异常计数独立于被测任务成败；跳过的采样周期另见覆盖统计"]);
+    rows.push(["写盘 / 发布 / 读取异常次数", counts.map((value) => value === null ? "未记录" : String(value)).join(" / "),
+      pending.length ? `停止超时，线程待退出：${pending.join("、")}` : "依次为写盘、发布与读取失败次数；跳过周期见覆盖统计"]);
   }
   return rows;
 }

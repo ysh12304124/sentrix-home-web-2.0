@@ -539,10 +539,10 @@ describe("telemetryObservationRows", () => {
         sampling_diagnostics: { collection_seconds: null, schedule_lateness_seconds: 0.25 },
       } },
     });
-    expect(rows.find((row) => row[0] === "内存观测值龄")?.[1]).toBe("3.200 s");
+    expect(rows.find((row) => row[0] === "内存数据距采集时间")?.[1]).toBe("3.200 s");
     expect(rows.find((row) => row[0] === "内存来源有效性")?.slice(1)).toEqual(["1/2", "不可用或过期：nvmap"]);
-    expect(rows.find((row) => row[0] === "采集 / 调度延迟")?.[1]).toBe("不可用 / 0.250 s");
-    expect(rows.find((row) => row[0] === "采样记录 / 发布 / 采集异常")?.slice(1)).toEqual([
+    expect(rows.find((row) => row[0] === "采集耗时 / 采样延迟")?.[1]).toBe("不可用 / 0.250 s");
+    expect(rows.find((row) => row[0] === "写盘 / 发布 / 读取异常次数")?.slice(1)).toEqual([
       "1 / 0 / 0", "停止超时，线程待退出：gpu-sampler",
     ]);
   });

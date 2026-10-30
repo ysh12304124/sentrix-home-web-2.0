@@ -1142,3 +1142,16 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .execution-phase-list .phase-name { min-width:0; }
 .execution-phase-list .phase-step,.execution-phase-list .phase-status { flex-shrink:0; }
 .execution-phase-list .phase-summary { overflow-wrap:anywhere; }
+
+.resource-definition-table-wrap { max-width:100%; overflow-x:auto; margin:8px 0; }
+.resource-definition-table { width:100%; min-width:600px; table-layout:fixed; border-collapse:collapse; font-size:12px; line-height:1.65; }
+.resource-definition-table caption { text-align:left; padding:4px 0 8px; color:var(--muted); }
+.resource-definition-table th, .resource-definition-table td { padding:9px 12px; border:1px solid #e5dcef; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+.resource-definition-table thead th { background:#f5f1fa; }
+.resource-definition-table tbody th { width:19%; }
+.resource-definition-table td { width:40.5%; }
+.resource-definition-table code { font-size:11px; white-space:normal; }
+.resource-definition-notes { padding-left:20px; font-size:12px; line-height:1.7; }
+.resource-definition-notes li { margin:6px 0; }
+
+.live-telemetry-card { min-width:0; }
