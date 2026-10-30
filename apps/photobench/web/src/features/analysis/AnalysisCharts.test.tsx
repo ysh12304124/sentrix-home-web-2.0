@@ -285,7 +285,7 @@ it("五类一级分布包含抗幻觉和抗注入，分母按题去重，二级�
   fireEvent.click(screen.getByRole("button", {name: "抗幻觉 满分（2分）案例"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({ability_family: "H", score: "2"}));
   fireEvent.click(screen.getByRole("button", {name: "展开二级能力"}));
-  expect(screen.getByText(/抗幻觉、抗注入攻击暂不细分/)).toBeTruthy();
+  expect(screen.getByText(/此历史报告的安全题二级标签未记录/)).toBeTruthy();
   expect(screen.getByRole("button", {name: "媒体定位与筛选 满分（2分）案例"})).toBeTruthy();
   expect(screen.getByText("100.0%")).toBeTruthy();
   expect(screen.queryByRole("option", {name: "抗幻觉"})).toBeNull();

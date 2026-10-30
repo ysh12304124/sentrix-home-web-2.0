@@ -399,9 +399,9 @@ export function TagAnalysis({
           ? `已标注 ${partition.labeled || 0} · 未标注 ${partition.unknown || 0} · 不适用 ${partition.not_applicable || 0} · 多标签 ${partition.multi_labeled || 0} ${noun}`
           : "旧报告未保存逐项分组检查，请重新生成规则分析。"}
         {dimension === "ability_type" &&
-          (r.ability_taxonomy_versions?.includes("ability-2026.10.29-v3")
-            ? "；v3二级包含抗幻觉和抗注入攻击；普通澄清轮不适用，历史版本按原标签统计。"
-            : "；抗幻觉、抗注入及普通澄清轮无二级能力。")}
+          (r.ability_labels?.H1 || r.ability_labels?.I1
+            ? "；抗幻觉、抗注入攻击的二级名称与一级一致；澄清轮不适用。旧v2安全标签按同名二级展示，原始快照保留。"
+            : "；此历史报告的安全题二级标签未记录；澄清轮不适用。")}
         {view === "composition" &&
           !canPie &&
           " 分组重叠或完整性未确认，使用条形图。"}

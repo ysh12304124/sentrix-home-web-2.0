@@ -10,15 +10,18 @@ from typing import Any
 
 from photobench.domain.datasets.ability_taxonomy import ABILITY_FIELDS, ability_dimensions, ability_labels
 from photobench.domain.error_analysis.taxonomy import (
+    ABILITY_DISPLAY_PROJECTION,
     QUALITY_DIMENSIONS,
+    analysis_ability_labels,
     category_value,
     content_subtypes,
     content_types,
+    project_case_abilities,
     scenarios,
 )
 from photobench.domain.runs.analysis import judge_score_for_summary, retrieval_metric_eligible
 
-RULE_VERSION = 10
+RULE_VERSION = 11
 TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
 NORMAL = {"answered", "answered_with_gap", "policy_refusal"}
 LABELS = {
@@ -661,7 +664,7 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
                         }
                     )
                 )
-    return {
+    case = {
         "judge_definitions": sorted(set(judge_definitions)),
         "agent_limits": agent_limits,
         "context_windows": context_windows,
@@ -746,6 +749,7 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
         "tool_json_invalid": sum(e["code"] == "tool_argument_json_invalid" for e in events),
         "retrieval_counts": {"candidate": retrieval, "delivery": delivery},
     }
+    return project_case_abilities(case)
 
 
 class Aggregator:
@@ -902,7 +906,8 @@ class Aggregator:
             "schema_version": 2,
             "rule_version": RULE_VERSION,
             "ability_taxonomy_versions": sorted(self.ability_versions),
-            "ability_labels": ability_labels(self.ability_versions),
+            "ability_labels": analysis_ability_labels(self.ability_versions),
+            "ability_display_projection": ABILITY_DISPLAY_PROJECTION,
             "source": {
                 **metadata,
                 "judge_definition_fingerprints": sorted(self.judge_definitions),
@@ -977,7 +982,7 @@ class Aggregator:
             ],
             "definitions": [
                 "能力标签按明确版本读取；题级是回答轮主能力并集，轮级采用本轮能力与得分。旧内容标签仍用原口径。",
-                "v3抗幻觉H/H1、抗注入攻击I/I1的两级名称相同；v2安全题保留无二级，v1保留原三类口径。普通澄清轮不计能力，支撑能力不计主标签。",
+                "抗幻觉H/H1、抗注入攻击I/I1的两级名称相同；v2已记录的H/I安全题在分析视图中同样归入H1/I1，原始标签快照保留。v1保留原三类口径，澄清轮不计二级，支撑能力不计主标签。",
                 "一级、二级能力分母分别按题或轮去重；多标签可重叠，历史未记录不推断。混合版本报告显式展示各版名称，标签代码汇总不得解释为同口径比较。",
                 "不适用、待核定、未记录题型单列，不进入有效内容题型的占比分母。",
                 "证据指纹与标签指纹分开保存；标签变化不会标成GT变化，标签不同不提供改善汇总。",

@@ -595,7 +595,7 @@ def test_task_aliases_merge_before_counting_and_filters_exports_share_the_catego
     cases = [case_from_item(row, i) for i, row in enumerate(raw)]
     r = report(cases)
     assert raw == before
-    assert r["rule_version"] == 10
+    assert r["rule_version"] == 11
     media, behavior = r["groups"]["content_type"]
     assert media == {
         "value": "T1_retrieve_media",
@@ -710,7 +710,7 @@ def test_content_behavior_and_scenarios_have_separate_denominators_and_preserve_
     assert matches(cases[0], {"score": "0", "behavior_result": "correct"})
     html = export_report(r, cases, "html", {})
     assert "行为判断" not in html and "按得分看内容题型" in html
-    assert "未标注内容题型" in html and "回答行为（按对话轮）" in html
+    assert "未标注内容题型" in html and "回答行为：预期与实际" in html
     assert "behavior_turns" in export_report(r, cases, "csv", {})
 
 

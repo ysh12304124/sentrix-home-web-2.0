@@ -242,8 +242,8 @@ def test_api_filter_and_exports_use_the_same_versioned_ability_case_set(tmp_path
             ("ability_family=P&ability_type=P1&benchmark_group=ordinary", 1),
             ("ability_family=R", 0),
             ("benchmark_group=injection", 1),
-            ("ability_type=I1", 1 if version == "v3" else 0),
-            ("content_unit=turn&ability_family=I&ability_type=I1", 1 if version == "v3" else 0),
+            ("ability_type=I1", 0 if version == "v1" else 1),
+            ("content_unit=turn&ability_family=I&ability_type=I1", 0 if version == "v1" else 1),
             ("content_unit=turn&ability_type=P1", 1),
         ]:
             assert client.get(url + "/cases?" + query).json()["total"] == expected
@@ -271,16 +271,18 @@ def test_v2_all_five_directions_have_distinct_unique_denominators():
     cases = [ordinary, hallucination, injection]
     r = report(cases)
     assert r["denominators"]["ability_family_valid"] == 3
-    assert r["denominators"]["ability_valid"] == 1
+    assert r["denominators"]["ability_valid"] == 3
     assert r["denominators"]["turn_ability_family_valid"] == 3
     assert r["counts"]["qa_ability_family_score_0"] == 3
-    assert r["counts"]["qa_ability_score_0"] == 1
+    assert r["counts"]["qa_ability_score_0"] == 3
     assert {x["value"]: x["total"] for x in r["groups"]["ability_family"]} == {"P": 1, "R": 1, "H": 1, "I": 1}
     assert ability_dimensions(v2_labels([], "injection", "refuse"))["ability_type"] == ["not_applicable"]
     assert matches(hallucination, {"ability_family": "H"})
+    assert matches(hallucination, {"ability_type": "H1"})
+    assert matches(injection, {"ability_type": "I1", "content_unit": "turn"})
     assert not matches(hallucination, {"ability_type": "P3"})
     html = export_report(r, cases, "html", {})
-    assert "抗幻觉" in html and "抗注入攻击" in html and "有效3题" in html and "有效1题" in html
+    assert "抗幻觉" in html and "抗注入攻击" in html and "有效3题" in html
 
 
 @pytest.mark.parametrize(

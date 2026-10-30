@@ -473,7 +473,7 @@ def test_partitions_detect_overlap_even_when_memberships_equal_labeled_populatio
     # Counts of known memberships equal the entire population despite overlap + missing.
     assert sum(x["total"] for x in r["groups"]["ability_family"] if x["value"] != "unknown") == 3
     assert r["group_partitions"]["qa"]["benchmark_group"]["exclusive"]
-    assert r["group_partitions"]["qa"]["ability_type"]["not_applicable"] == 1
+    assert r["group_partitions"]["qa"]["ability_type"]["not_applicable"] == 0
     assert "P1" not in {x["value"] for x in r["groups"]["ability_type"]}  # supporting only
     assert not aggregate([])["group_partitions"]["qa"]
 

@@ -2,7 +2,80 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from photobench.domain.datasets.ability_taxonomy import (
+    ABILITIES,
+    SAFETY_SUBTYPES,
+    V2_ABILITY_VERSION,
+    ability_labels,
+)
 from photobench.domain.datasets.qa_taxonomy import SUBTYPE_TASK
+
+ABILITY_DISPLAY_PROJECTION = "safety-secondary-v1"
+
+
+def analysis_ability_labels(versions: Iterable[str]) -> dict[str, str]:
+    versions = set(versions)
+    labels = ability_labels(versions)
+    if V2_ABILITY_VERSION in versions:
+        labels.update({key: ABILITIES[key] for key in SAFETY_SUBTYPES.values()})
+    return labels
+
+
+def project_case_abilities(case: Mapping[str, Any]) -> dict[str, Any]:
+    """Give saved V2 safety groups same-name subtypes in analysis views only."""
+
+    def project(values: dict[str, Any], version: Any, action: Any) -> dict[str, Any]:
+        if version != V2_ABILITY_VERSION or action == "clarify":
+            return values
+        groups = values.get("benchmark_group", [])
+        subtype = SAFETY_SUBTYPES.get(groups[0]) if len(groups) == 1 else None
+        if (
+            subtype
+            and values.get("ability_family") == [subtype[0]]
+            and values.get("ability_type") == ["not_applicable"]
+        ):
+            return {
+                **values,
+                "ability_type": [subtype],
+                "saved_ability_type": values["ability_type"],
+                "ability_display_projection": ABILITY_DISPLAY_PROJECTION,
+            }
+        return values
+
+    dimensions = case.get("dimension_labels", {})
+    projected = project(
+        dimensions,
+        case.get("ability_taxonomy_version"),
+        case.get("dimensions", {}).get("expected_action"),
+    )
+    turns = []
+    for turn in case.get("turns", []):
+        versions = turn.get("ability_taxonomy_version", [])
+        turns.append(project(turn, versions[0] if len(versions) == 1 else None, turn.get("expected")))
+    if projected is dimensions and all(a is b for a, b in zip(turns, case.get("turns", []), strict=True)):
+        return dict(case)
+    labels = {**case.get("ability_labels", {}), **analysis_ability_labels([V2_ABILITY_VERSION])}
+    return {
+        **case,
+        "dimension_labels": {
+            k: v
+            for k, v in projected.items()
+            if k
+            not in {
+                "saved_ability_type",
+                "ability_display_projection",
+            }
+        },
+        "dimensions": {**case["dimensions"], "ability_type": " / ".join(projected["ability_type"])},
+        "saved_ability_type": dimensions.get("ability_type"),
+        "ability_display_projection": ABILITY_DISPLAY_PROJECTION,
+        "ability_labels": labels,
+        "turns": turns,
+    }
+
 
 TASK_ALIASES = {
     "T1_media_retrieval": "T1_retrieve_media",

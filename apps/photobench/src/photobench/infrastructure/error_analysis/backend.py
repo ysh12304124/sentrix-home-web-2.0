@@ -15,6 +15,7 @@ from photobench.domain.error_analysis.diagnosis import PROMPT_VERSION, evidence_
 from photobench.domain.error_analysis.exports import export_auxiliary, export_report
 from photobench.domain.error_analysis.query import filtered_view, select_case
 from photobench.domain.error_analysis.rules import RULE_VERSION, matches
+from photobench.domain.error_analysis.taxonomy import ABILITY_DISPLAY_PROJECTION, project_case_abilities
 from photobench.infrastructure.error_analysis.worker import atomic, lines, revision, run_worker
 
 ACTIVE = {"queued", "running", "cancelling", "paused"}
@@ -265,8 +266,19 @@ class FileAnalysisBackend:
         job = self.get(key)
         result = {**job, "stale": self._stale(job)}
         if job["status"] == "completed":
-            result["report"] = json.loads((self._directory(job["job_id"]) / "report.json").read_text())
+            result["report"] = self._rules_report(job["job_id"])
         return result
+
+    def _rules_report(self, job_id: str) -> dict[str, Any]:
+        """Recompute display groups for saved reports without rewriting their artifacts."""
+        report: dict[str, Any] = json.loads((self._directory(job_id) / "report.json").read_text())
+        if (
+            "ability-2026.10.28-v2" in report.get("ability_taxonomy_versions", [])
+            and report.get("ability_display_projection") != ABILITY_DISPLAY_PROJECTION
+        ):
+            view = filtered_view(self._cases(job_id), report, {}, 1, 1)
+            report = {**report, **view["summary"], "saved_rule_version": report["rule_version"]}
+        return report
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -320,14 +332,16 @@ class FileAnalysisBackend:
             if job_id not in self._case_cache:
                 if len(self._case_cache) >= 4:
                     self._case_cache.pop(next(iter(self._case_cache)))
-                self._case_cache[job_id] = list(lines(self._directory(job_id) / "cases.jsonl"))
+                self._case_cache[job_id] = [
+                    project_case_abilities(case) for case in lines(self._directory(job_id) / "cases.jsonl")
+                ]
             return self._case_cache[job_id]
 
     def view(self, job_id: str, filters: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
         job = self.get(job_id)
         if job["kind"] != "rules" or job["status"] != "completed":
             raise ValueError("completed rules report required")
-        report = json.loads((self._directory(job_id) / "report.json").read_text())
+        report = self._rules_report(job_id)
         return filtered_view(self._cases(job_id), report, filters, page, page_size)
 
     def evidence(self, job_id: str, index: int) -> dict[str, Any]:
@@ -368,13 +382,9 @@ class FileAnalysisBackend:
             )
             report["stale"] = self._stale(job)
             return export_auxiliary(report, job["kind"], format)
-        report = json.loads((directory / "report.json").read_text())
+        report = self._rules_report(job_id)
         report["stale"] = self._stale(job)
-        cases = [
-            selected
-            for c in lines(directory / "cases.jsonl")
-            if (selected := select_case(c, filters)) is not None
-        ]
+        cases = [selected for c in self._cases(job_id) if (selected := select_case(c, filters)) is not None]
         view = filtered_view(cases, report, filters, 1, 100)
         report = {**report, **view["summary"], "issues": view["issues"], "all_items": report["item_count"]}
         return export_report(report, cases, format, filters)
@@ -386,5 +396,7 @@ class FileAnalysisBackend:
         if job["status"] == "completed":
             name = {"rules": "report.json", "compare": "comparison.json", "ai": "diagnosis.json"}[job["kind"]]
             job["report"] = json.loads((self._directory(job_id) / name).read_text())
+            if job["kind"] == "rules":
+                job["report"] = self._rules_report(job_id)
             job["stale"] = self._stale(job)
         return job

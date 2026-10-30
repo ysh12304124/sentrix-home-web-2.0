@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -65,6 +66,19 @@ border-radius:7px;padding:9px 12px;background:white;color:var(--ink);min-height:
 input{width:100%;min-width:0}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}
 button:hover:not(:disabled){background:#edf3fa}button:focus-visible,summary:focus-visible,
 input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #8cb5e5;outline-offset:2px}
+.behavior-matrix{border-collapse:separate;border-spacing:6px;table-layout:fixed;min-width:680px}
+.behavior-matrix th{background:none;white-space:normal;text-align:center;border:0;vertical-align:middle}
+.behavior-matrix th:first-child{width:150px;text-align:left}.behavior-matrix td{padding:0;border:0}
+.behavior-matrix .heat-cell{width:100%;min-height:90px;border-radius:9px;border:1px solid #dce6e5;
+background:var(--heat);color:#203649;text-align:center;padding:12px 6px}
+.heat-cell strong{font-size:23px;display:block;font-variant-numeric:tabular-nums;line-height:1.4}
+.heat-cell span{font-size:12px}.behavior-matrix .heat-cell:hover:not(:disabled){background:var(--heat);
+box-shadow:inset 0 0 0 2px #526985}.heat-cell[aria-pressed=true]{outline:3px solid var(--blue)}
+.behavior-matrix .heat-cell:disabled{opacity:1;color:#8a96a5;border-color:#edf0f4}
+.behavior-matrix caption{text-align:left;font-size:13px;color:var(--muted)}
+.behavior-matrix th small{display:block;color:var(--muted);font-weight:400}
+.heat-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:14px}
+.heat-legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px}
 .pagination{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-top:18px}
 .empty{padding:28px;text-align:center;border:1px dashed var(--line);border-radius:10px}
 [hidden]{display:none!important}.footer{padding:14px 0;color:var(--muted);font-size:12px}
@@ -174,18 +188,32 @@ CONTROLLER = r"""
   }
   function apply(){
     const q=$('reader-search').value.trim().toLocaleLowerCase(), s=$('reader-score').value,
-      a=$('reader-ability').value,x=$('reader-execution').value,b=$('reader-behavior').value;
+      a=$('reader-ability').value,x=$('reader-execution').value,b=$('reader-behavior').value,
+      expected=$('reader-expected').value,actual=$('reader-actual').value;
     filtered=cases.flatMap((c,i)=>{
       const matched=(!q || searches[i].includes(q)) && (!s || scoreKey(c.score)===s) &&
         (!a || ((c.dimension_labels || {}).ability_family || []).includes(a)) && (!x || c.execution===x) &&
-        (!b || c.turns.some(t=>t.expected==='clarify' && t.actual==='answer'));
+        ((!b && !expected && !actual) || c.turns.some(t=>
+          (!c.matched_turns || c.matched_turns.includes(t.turn)) &&
+          (!b || (t.expected==='clarify' && t.actual==='answer')) &&
+          (!expected || (t.expected || 'unknown')===expected) &&
+          (!actual || (t.actual || 'unknown')===actual)));
       return matched?[i]:[];
     });page=0;render();
+    document.querySelectorAll('.heat-cell').forEach(cell=>cell.setAttribute('aria-pressed',
+      String(!!expected && !!actual && cell.dataset.expected===expected && cell.dataset.actual===actual)));
   }
-  for(const id of ['reader-search','reader-score','reader-ability','reader-execution','reader-behavior'])
+  for(const id of ['reader-search','reader-score','reader-ability','reader-execution','reader-behavior',
+    'reader-expected','reader-actual'])
     $(id).addEventListener('input',apply);
   $('reader-reset').onclick=()=>{for(const e of document.querySelectorAll('.controls input,.controls select'))
     e.value='';apply();};
+  for(const [id,key] of [['reader-expected','expected'],['reader-actual','actual']])
+    options(id,cases.flatMap(c=>c.turns.map(t=>t[key] || 'unknown')));
+  document.querySelectorAll('.heat-cell').forEach(cell=>cell.addEventListener('click',()=>{
+    $('reader-reset').click();$('reader-expected').value=cell.dataset.expected;
+    $('reader-actual').value=cell.dataset.actual;apply();$('cases').scrollIntoView({block:'start'});
+  }));
   $('reader-prev').onclick=()=>{page--;render();};$('reader-next').onclick=()=>{page++;render();};
   $('reader-open').onclick=()=>filtered.slice(page*size,(page+1)*size).forEach(i=>{hydrate(i);cards[i].open=true;});
   $('reader-close').onclick=()=>cards.forEach(c=>{c.open=false;});
@@ -260,6 +288,49 @@ def distribution(rows: Sequence[dict[str, Any]], labels: Mapping[str, str], unit
             f"<tr><td>{escape(labels.get(row['value'], row['value']))}</td><td>{row['total']}</td>"
             f'<td>{stack(row)}</td><td class="numeric">{counts}</td><td>{rate}</td></tr>'
         )
+    return body + "</tbody></table></div>"
+
+
+def behavior_heatmap(matrix: Sequence[dict[str, Any]], labels: Mapping[str, str]) -> str:
+    """Row-normalized action counts; action equality is separate from behavior correctness."""
+    counts: Counter[tuple[str, str]] = Counter()
+    for row in matrix:
+        counts[(str(row["expected"]), str(row["actual"]))] += row["count"]
+    if not counts:
+        return '<p class="empty">当前范围未记录回答行为。</p>'
+    order = {
+        key: i
+        for i, key in enumerate(("answer", "clarify", "refuse", "answer_and_refuse", "none", "unknown"))
+    }
+    expected = sorted({a for a, _ in counts}, key=lambda value: (order.get(value, 99), value))
+    actual = sorted({b for _, b in counts}, key=lambda value: (order.get(value, 99), value))
+    body = '<div class="scroll"><table class="behavior-matrix" aria-label="预期与实际回答行为热力图">'
+    body += "<caption>行是预期行为，列是实际行为；数字为轮数，小字为占本行比例。</caption>"
+    body += '<thead><tr><th scope="col">预期 ↓ ／实际 →</th>'
+    body += "".join(f'<th scope="col">{escape(labels.get(a, a))}</th>' for a in actual)
+    body += "</tr></thead><tbody>"
+    for wanted in expected:
+        total = sum(counts[(wanted, a)] for a in actual)
+        name = labels.get(wanted, wanted)
+        body += f'<tr><th scope="row">{escape(name)}<small>共 {total} 轮</small></th>'
+        for observed in actual:
+            count = counts[(wanted, observed)]
+            ratio = count / total if total else 0
+            unknown = "unknown" in {wanted, observed}
+            base = (112, 128, 149) if unknown else (36, 130, 120) if wanted == observed else (199, 116, 55)
+            intensity = 0.12 + ratio * 0.55 if count else 0
+            color = ",".join(str(round(255 + (value - 255) * intensity)) for value in base)
+            actual_name = labels.get(observed, observed)
+            description = f"预期{name}，实际{actual_name}：{count}轮，占本行{ratio:.1%}"
+            body += (
+                f'<td><button class="heat-cell" style="--heat:rgb({color})" '
+                f'data-expected="{escape(wanted)}" data-actual="{escape(observed)}" '
+                f'data-count="{count}" aria-label="{escape(description)}" '
+                f'title="{escape(description)}" aria-pressed="false"'
+                + (" disabled" if not count else "")
+                + f"><strong>{count}</strong><span>{ratio:.1%}</span></button></td>"
+            )
+        body += "</tr>"
     return body + "</tbody></table></div>"
 
 
@@ -391,10 +462,18 @@ def render_report(
             )
         score_tables += fold("按得分看" + title, detail)
     body += fold("按得分查看类别占比与有效分母", score_tables) + "</section>"
-    body += '<section id="behavior" class="panel"><h2>回答行为（按对话轮）</h2>'
-    body += '<p class="note">行为符合率 = 符合轮数 / 有效判定轮数。下方可筛选“预期澄清却直接回答”的题目。</p>'
+    body += '<section id="behavior" class="panel"><h2>回答行为：预期与实际</h2>'
+    body += behavior_heatmap(report["behavior_matrix"], labels)
+    body += (
+        '<div class="heat-legend"><span><i style="background:#248278"></i>同名行为</span>'
+        '<span><i style="background:#c77437"></i>行为不一致</span>'
+        '<span><i style="background:#708095"></i>行为未记录</span></div>'
+        '<p class="note">颜色越深，占本行比例越高；点击有数据的格子查看对应题目。'
+        "同名行为与行为Judge判定分开，符合率仍按有效判定轮数计算。</p>"
+    )
+    behavior_tables = ""
     for key, title in (("behavior_groups", "预期行为分布"), ("behavior_scenarios", "测试场景")):
-        body += f"<h3>{title}</h3>" + table(
+        behavior_tables += f"<h3>{title}</h3>" + table(
             ["类别", "轮数", "占全部轮数", "符合", "不符合", "未判定", "符合率 / 有效判定"],
             [
                 [
@@ -409,25 +488,15 @@ def render_report(
                 for r in report.get(key, [])
             ],
         )
-        if key == "behavior_scenarios":
-            body += '<p class="note">同一轮可属于多个测试场景，场景占比可重叠。</p>'
-    body += (
-        fold(
-            "预期 × 实际行为（全部对话轮，包含未判定）",
-            table(
-                ["预期", "实际", "轮数"],
-                [
-                    [
-                        labels.get(r["expected"], r["expected"]),
-                        labels.get(r["actual"], r["actual"]),
-                        r["count"],
-                    ]
-                    for r in report["behavior_matrix"]
-                ],
-            ),
-        )
-        + "</section>"
+    behavior_tables += '<p class="note">同一轮可属于多个测试场景，场景占比可重叠。</p>'
+    behavior_tables += table(
+        ["预期", "实际", "轮数"],
+        [
+            [labels.get(r["expected"], r["expected"]), labels.get(r["actual"], r["actual"]), r["count"]]
+            for r in report["behavior_matrix"]
+        ],
     )
+    body += fold("行为判定、测试场景与原始计数", behavior_tables) + "</section>"
     body += '<section id="execution" class="panel"><h2>运行异常分布</h2>'
     body += '<p class="note">异常类别可重叠；受影响题数、异常次数、最终失败及已恢复分别统计。</p>'
     body += (
@@ -473,7 +542,9 @@ def render_report(
     )
     for field, title in (("ability", "一级能力"), ("execution", "执行结果")):
         body += f'<label>{title}<select id="reader-{field}"><option value="">全部</option></select></label>'
-    body += '<label>澄清行为<select id="reader-behavior"><option value="">全部行为</option>'
+    for field, title in (("expected", "预期行为"), ("actual", "实际行为")):
+        body += f'<label>{title}<select id="reader-{field}"><option value="">全部</option></select></label>'
+    body += '<label>快捷筛选<select id="reader-behavior"><option value="">全部行为</option>'
     body += (
         '<option value="direct">预期澄清却直接回答</option></select></label>'
         '<button id="reader-reset">重置明细筛选</button></div>'
@@ -513,6 +584,8 @@ def render_report(
             {
                 "source": source,
                 "ability_taxonomy_versions": report.get("ability_taxonomy_versions"),
+                "ability_display_projection": report.get("ability_display_projection"),
+                "saved_rule_version": report.get("saved_rule_version"),
                 "rule_version": report["rule_version"],
                 "generated_at": report.get("generated_at"),
                 "gt_fingerprint": report["gt_fingerprint"],
@@ -537,7 +610,7 @@ def render_report(
     display_keys = {str(c["execution"]) for c in cases}
     for c in cases:
         display_keys.update(c.get("dimension_labels", {}).get("ability_family", []))
-        display_keys.update(str(t.get(k)) for t in c["turns"] for k in ("expected", "actual"))
+        display_keys.update(str(t.get(k) or "unknown") for t in c["turns"] for k in ("expected", "actual"))
         display_keys.update(str(e.get("recovery")) for e in c["events"])
     reader_labels = {k: v for k, v in labels.items() if k in display_keys}
     payload = json.dumps(
