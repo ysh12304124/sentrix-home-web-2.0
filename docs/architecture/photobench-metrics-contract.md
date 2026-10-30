@@ -256,3 +256,10 @@ Jetson正式采样的核心进程内存读取移入单个spawn子进程，与HTT
 ### 2026-10-28 显式导入与流水线进度
 
 新链中 `photo_import.execution_mode=explicit` 仅统计资产登记；`pipeline_processing.progress` 的可选 `stage=media_processing|finalizing|completed` 和 `request_status=running|returned` 表示媒体计数与同步请求的状态。processed、failed、skipped 为互斥计数。媒体计数达到 total 不代表汇总请求已经返回；阶段终态仍由真实响应决定。历史没有这些字段时保留原计时，前端只调整处理详情所在卡片。查询失败保留上次观测，不能由缺失值推断完成。显式请求取消后的活跃本地线程继续报告 stop_pending；尚无远端 operation_id 中断接口。
+
+
+## 2026-10-30｜首屏主模型内存与显存
+
+关键指标固定六项，独立展示主模型内存采样峰值（`model_process_system_memory_used_mib`）与主模型GPU分配采样峰值（`model_process_gpu_memory_mib`）。历史NVIDIA数据没有新资源协议时，`model_process_memory_used_mib`只作为原显存口径展示，不复制成主机内存。后端采样/聚合字段与原始曲线保持原样。
+
+Mac运行时未给出主模型GPU独立归属时，该卡保留并标“未记录”；整机GPU分配峰值只能在说明中标为参考，不放进主模型数值。Jetson GPU/UMA分量保留原采样来源说明；统一内存/UMA分量与进程内存可能重叠，不相加。缺失、非数或负数不补零；实时峰值优先使用完整采样统计，截短曲线不恢复缺失的完整统计。布局随视口采用六/三/两/单列。

@@ -680,9 +680,7 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
   const platform = telemetryPlatform(gpu);
   const isUnified = platform === "apple_unified";
   const isOrin = ["orin_ssh_pss", "jetson_local_pss"].includes(platform);
-  const processMemory = resourceProtocol(gpu) || isUnified || isOrin
-    ? dict(gpu.model_process_system_memory_used_mib).peak
-    : dict(gpu.model_process_memory_used_mib).peak;
+  const processMemory = dict(gpu.model_process_system_memory_used_mib).peak;
   const processMemoryNote = resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
     ? gpu.memory_accounting === "apple_footprint_resident_v2"
       ? "主模型驻留内存采样峰值（估计） · 整组PID去重：Dirty − Swapped + Clean + Reclaimable"
@@ -693,7 +691,17 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
           ? "主模型占用采样峰值 · smaps RSS + GPU/UMA 分配估计；优先 nvmap，不可读时仅正残差作为注明来源的估计；未知分量使合计不可用，跨驱动和共享页不保证物理去重"
           : "主模型占用采样峰值 · smaps RSS + GPU/UMA；历史公式见原始记录，不推断物理去重"
         : "主模型 VmRSS 峰值 · Orin 无独立显存，这是进程驻留"
-      : "主模型显存峰值 · NVML 按模型 PID 汇总";
+      : "主模型进程内存的采样峰值；历史缺失时未记录";
+  const gpuMemoryKey = resourceProtocol(gpu) || isUnified || isOrin
+    ? "model_process_gpu_memory_mib" : "model_process_memory_used_mib";
+  const gpuPeak = telemetryNumber(dict(gpu[gpuMemoryKey]).peak);
+  const memoryPeak = telemetryNumber(processMemory);
+  const memoryValue = (peak: number | null) => peak !== null && peak >= 0 ? fmtMemory(peak) : "未记录";
+  const gpuMemoryNote = isUnified
+    ? `统一内存；主模型 GPU 分配未单独采集时显示未记录。整机 GPU 分配峰值 ${memoryValue(telemetryNumber(dict(gpu.device_gpu_memory_mib).peak))}（参考），与进程内存可能重叠`
+    : isOrin
+      ? "主模型 GPU/UMA 分配采样峰值；来源以原采样记录为准，与进程内存可能重叠，不相加"
+      : "主模型进程组显存采样峰值 · NVML 按模型 PID 汇总；与主机内存分开记录";
   const throughputNote = s.agent_throughput_latency_mode === "measured_agent_phase"
     ? `Agent 阶段实际墙钟 ÷ ${s.agent_phase_completed_count ?? s.total ?? 0} 题 · 并发 ${r.qa_concurrency ?? "-"} · 不含 Judge（Judge 与 Agent 并行）`
     : "历史记录按时间线回退估算，不是实测值";
@@ -721,9 +729,14 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
       note: `模型显式交付的图片里属于 GT 的比例 · ${s.image_retrieval_metric_count ?? 0} 题含图片 GT · 这是交付口径，与检索口径的 R@K 不可换算`,
     },
     {
-      label: resourceProtocol(gpu) || isUnified || isOrin ? "主模型内存占用" : "模型进程显存",
-      value: fmtMemory(processMemory),
+      label: "主模型内存占用",
+      value: memoryValue(memoryPeak),
       note: processMemoryNote,
+    },
+    {
+      label: "主模型显存占用",
+      value: memoryValue(gpuPeak),
+      note: gpuMemoryNote,
     },
   ];
 }

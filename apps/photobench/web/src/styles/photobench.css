@@ -884,12 +884,14 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 }
 
 /* 关键指标：首屏只放能直接判读的结论值，明细留在各自折叠卡里 */
-.key-metric-list { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.key-metric-list { grid-template-columns:repeat(6,minmax(0,1fr)); }
 .key-metric-card { background:var(--surface); border-color:#c7d2fe; }
 .key-metric-value { margin:6px 0 2px; font-size:22px; font-weight:700; color:#1f2d6b; overflow-wrap:anywhere; }
 .key-metric-card .metric-calc-time { margin:0 0 6px; }
 .key-metric-card .phase-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:8px; }
+@media (max-width:1500px) { .key-metric-list { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media (max-width:1100px) { .key-metric-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:640px) { .key-metric-list { grid-template-columns:minmax(0,1fr); } }
 
 /* 结果卡片折叠：标题本身就是开关，收起时每张卡只占一行 */
 details.result-phase-card > summary.phase-title { justify-content:flex-start; cursor:pointer; list-style:none; }
