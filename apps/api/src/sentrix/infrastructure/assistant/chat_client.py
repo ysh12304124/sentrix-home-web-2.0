@@ -430,6 +430,7 @@ class OpenAIChatModel:
                 "request_sent": True,
                 "http_status": response.status_code,
                 "context_window_tokens": self._context_tokens,
+                "streamed": False,
                 **response.extensions.get("diagnostics", {}),
             },
             thought=thought,

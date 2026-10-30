@@ -11,6 +11,7 @@ from typing import Any
 from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
+    model_timing_facts,
 )
 from sentrix.domain.assistant.claim_verifier import (
     Claim,
@@ -21,6 +22,7 @@ from sentrix.domain.assistant.claim_verifier import (
 )
 from sentrix.domain.assistant.evidence_binding import Fact
 from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
+from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
 from sentrix.domain.assistant.ports import ChatModel
 
@@ -51,6 +53,7 @@ class ClaimVerifier:
             "started_at": datetime.now(UTC).isoformat(),
             "status": "error",
         }
+        model_call["json_output"] = json_output_fact()
         debug_call: dict[str, Any] | None = None
         if include_debug:
             debug_call = {
@@ -82,6 +85,10 @@ class ClaimVerifier:
             finish_reason=reply.finish_reason,
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
             diagnostics=dict(reply.diagnostics),
+            json_output=json_output_fact(reply.content),
+        )
+        model_call.update(
+            model_timing_facts(reply.diagnostics, model_call["duration_ms"], reply.completion_tokens)
         )
         if debug_call is not None:
             debug_call.update(model_call)

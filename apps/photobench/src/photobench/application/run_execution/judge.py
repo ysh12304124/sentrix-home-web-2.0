@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import json
 import os
 import random
 import threading
@@ -198,6 +199,7 @@ class JudgeRunner:
             record: dict[str, Any] = {
                 "call_id": uuid.uuid4().hex,
                 "role": "judge",
+                "json_output": {"required": True, "attempted": False, "json_object_valid": None},
                 "attempt": attempt,
                 "status": "error",
             }
@@ -209,6 +211,13 @@ class JudgeRunner:
                 )
                 if not isinstance(response, dict):
                     raise ValueError("judge response is not an object")
+                choices = response.get("choices") or []
+                raw = str((choices[0].get("message") or {}).get("content") or "") if choices else ""
+                try:
+                    valid = isinstance(json.loads(raw), dict)
+                except ValueError:
+                    valid = False
+                record["json_output"] = {"required": True, "attempted": True, "json_object_valid": valid}
                 record.update(status="complete", diagnostics={"request_sent": True})
                 if observations is not None:
                     for previous in observations:

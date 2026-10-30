@@ -9,6 +9,7 @@ rubric）、从散文里抠 JSON、分数—理由一致性重问、4xx 不重�
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -164,8 +165,21 @@ def test_an_answerable_question_does_not_turn_a_valid_judge_zero_into_a_missing_
     )
     result = _runner(http).judge("q", "ref", "answer")
     assert result["score"] == 0
-    assert result["consistency_version"] == 3
+    assert result["consistency_version"] == 4
     assert len(http.calls) == 1
+
+
+def test_correct_reference_in_a_negative_judge_reason_keeps_the_real_zero():
+    reason = (
+        "用户询问三峡标志性石碑的刻字内容，参考答案明确正确刻字为“三峡壩址基石”，"
+        "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误，因此得0分。"
+    )
+    http = FakeHttpClient([judge_reply(json.dumps({"score": 0, "reason": reason}))])
+    result = _runner(http).judge("碑上刻了什么字？", "三峡壩址基石", "三垟耀址基石")
+    assert result["score"] == 0
+    assert result["reason"] == reason
+    assert result["consistency_version"] == 4
+    assert len(result["attempts"]) == len(http.calls) == 1
 
 
 def test_a_client_error_is_not_retried():

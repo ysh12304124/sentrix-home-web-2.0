@@ -205,7 +205,10 @@ def test_native_completion_does_not_require_legacy_turn_outcome() -> None:
     ("second_reason", "second_answer", "second_status", "second_steps", "expected"),
     [
         ("answered", "answer", "completed", 4, True),
+        ("policy_refusal", "refusal", "complete", 0, True),
         ("answered_with_gap", "answer", "completed", 4, True),
+        ("answered_with_gap", "answer", "partial", 4, True),
+        ("answered_with_gap", "answer", "partial", 5, False),
         ("step_budget_exhausted", "answer", "completed", 4, False),
         ("answered", "", "completed", 4, False),
         ("answered", "answer", "failed", 4, False),
@@ -767,3 +770,73 @@ def test_qa_progress_projection_preserves_nested_and_legacy_counters_and_null():
             }
         }
         assert RunMetricsResponse.model_validate(payload).model_dump(exclude_unset=True) == payload
+
+
+def test_structured_json_records_failures_retries_and_deduplicates_calls() -> None:
+    def fact(valid):
+        return {"required": True, "attempted": valid is not None, "json_object_valid": valid}
+
+    planner = {"call_id": "planner", "json_output": fact(False)}
+    item = {
+        "metrics_contract_version": 2,
+        "model_call_metrics": [
+            planner,
+            {"call_id": "retry", "json_output": fact(True)},
+            {"call_type": "agent"},
+        ],
+        "execution_trace": [dict(planner)],
+        "tool_trace": [
+            {"result": {"model_call_observations": [{"call_id": "vision", "json_output": fact(True)}]}}
+        ],
+        "judge": {"call_observations": [{"call_id": "judge", "json_output": fact(None)}]},
+        "task_judge": {"call_observations": [{"call_id": "behavior", "json_output": fact(True)}]},
+        "task_judges": [{"call_observations": [{"call_id": "behavior", "json_output": fact(True)}]}],
+    }
+    metrics = analysis.structured_json_metrics(item)
+    assert metrics == {
+        "structured_json_requested": 5,
+        "structured_json_total": 4,
+        "structured_json_success": 3,
+        "structured_json_rate": 0.75,
+    }
+    summary = analysis.capability_summary([item])
+    for key, value in metrics.items():
+        assert summary[key] == value
+    assert (
+        analysis.structured_json_metrics({"model_call_metrics": [{"status": "complete"}]})[
+            "structured_json_rate"
+        ]
+        is None
+    )
+
+
+def test_null_summary_does_not_hide_recorded_call_metrics():
+    summary = analysis.effective_summary(
+        {
+            "summary": {
+                "llm_tokens_per_second_mean": None,
+                "llm_ttft_ms_mean": None,
+                "llm_prompt_tokens_max": None,
+                "llm_context_tokens_p95": None,
+                "llm_context_samples_count": 0,
+            },
+            "items": [
+                {
+                    "model_call_metrics": [
+                        {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5,
+                            "tokens_per_second": 2.5,
+                            "streamed": False,
+                        }
+                    ]
+                }
+            ],
+        }
+    )
+    assert summary["llm_tokens_per_second_mean"] == 2.5
+    assert summary["llm_ttft_ms_mean"] is None
+    assert summary["llm_prompt_tokens_max"] == 10
+    assert summary["llm_context_tokens_p95"] == 15
+    assert summary["llm_context_samples_count"] == 1
+    assert summary["llm_nonstreamed_count"] == 1

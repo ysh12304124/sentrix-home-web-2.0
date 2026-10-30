@@ -2,6 +2,10 @@
 
 本契约是 T006 指标正确性修复的兼容性基线；不补齐 vLLM 专项指标。
 
+## 2026-10-29 内存与显存关键指标
+
+首屏独立展示主模型进程内存与GPU分配的有效采样峰值。NVIDIA/Jetson显存读取`model_process_gpu_memory_mib`，Mac使用`device_gpu_memory_mib`并命名“整机显存占用”，标明IORegistry参考/统一内存可能重叠。历史NVIDIA旧`model_process_memory_used_mib`只在原显存口径使用，不替代缺失的进程RAM。后端字段、采集公式和历史原值保持；统一内存两项不求和。工具版本与系统基线见[资源采集工具](../runbooks/telemetry-tools.md)。
+
 ## 2026-10-27 不可回答题的媒体指标
 
 `answerability=insufficient_evidence` 与旧值 `unanswerable` 均排除在普通媒体交付、候选检索、图片/视频、micro/macro 和排名指标的分母之外；拒答质量评分继续统计。部分可回答题保留原指标资格。

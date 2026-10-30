@@ -164,6 +164,7 @@ class ImportResult:
     audio_probed: bool = False
     # 应用层内部的细分耗时；旧响应不读取它，新流水线端点会汇总后显式返回。
     timings: dict[str, float] = field(default_factory=dict)
+    timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +429,7 @@ class ImportAssets:
         with stage_span("source_memory_commit", asset.id):
             processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
+        commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
         if asset.media_type is MediaType.VIDEO:
@@ -470,6 +472,10 @@ class ImportAssets:
                 "source_memory_commit": round(memory_commit_seconds, 3),
                 **{f"video_{key}": value for key, value in video_scenes.timings.items()},
                 "total": round(time.perf_counter() - total_started, 3),
+            },
+            timing_spans={
+                "source_memory_commit": (commit_started, commit_finished),
+                **{f"video_{key}": value for key, value in video_scenes.timing_spans.items()},
             },
         )
 

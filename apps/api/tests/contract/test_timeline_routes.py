@@ -92,6 +92,18 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
     body = processed.json()
     assert body["processed"] == 2
     assert body["failures"] == []
+    for stage in ("source_memory_prepare", "source_memory_commit", "event_summarize"):
+        timings = body["timings"]
+        assert timings[stage + "_wall"] >= 0
+        assert timings[stage + "_end_seconds"] >= timings[stage + "_start_seconds"] >= 0
+        assert (
+            abs(
+                timings[stage + "_wall"]
+                - (timings[stage + "_end_seconds"] - timings[stage + "_start_seconds"])
+            )
+            <= 0.002
+        )
+        assert timings[stage + "_end_seconds"] <= timings["pipeline_core"] + 0.001
     assert body["timings"]["source_memory_prepare"] >= 0
     assert body["timings"]["source_memory_commit"] >= 0
     spans = body["timing_spans"]
@@ -105,6 +117,24 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
         assert row["elapsed_seconds"] >= 0
     assert sum(row["stage"] == "source_memory_prepare" for row in spans) == 2
     assert sum(row["stage"] == "source_memory_commit" for row in spans) == 2
+    # Both contracts survive integration: per-task UTC spans and direct-caller offsets.
+    for stage in ("source_memory_prepare", "source_memory_commit", "event_summarize"):
+        nodes = [row for row in spans if row["stage"] == stage]
+        wall = max(row["finished_offset_seconds"] for row in nodes) - min(
+            row["started_offset_seconds"] for row in nodes
+        )
+        assert body["timings"][stage + "_wall"] == round(wall, 3)
+        assert (
+            abs(
+                body["timings"][stage + "_wall"]
+                - (body["timings"][stage + "_end_seconds"] - body["timings"][stage + "_start_seconds"])
+            )
+            <= 0.003
+        )
+    assert len([row for row in spans if row["stage"] == "pipeline_total"]) == 1
+    assert {row["asset_id"] for row in spans if row["stage"] == "source_memory_prepare"} == set(
+        staged_body["asset_ids"]
+    )
     assert body["timings"]["source_memory_prepare_wall"] >= 0
 
     assert body["timings"]["memory_graph"] >= 0
@@ -141,6 +171,18 @@ def test_video_keyframes_and_their_memories_wait_for_pipeline(client: TestClient
     body = processed.json()
     assert body["processed"] == 1
     assert body["video_scenes"] == 1
+    for stage in (
+        "total",
+        "scene_planning",
+        "scene_write",
+        "keyframe_extraction",
+        "keyframe_asset_write",
+        "keyframe_memory",
+    ):
+        timings = body["timings"]
+        assert timings["video_" + stage + "_wall"] >= 0
+        assert timings["video_" + stage + "_wall"] <= timings["video_total_wall"] + 0.001
+        assert timings["video_" + stage + "_end_seconds"] <= timings["pipeline_core"] + 0.001
     assert body["timings"]["video_keyframe_extraction"] >= 0
     assert body["timings"]["video_keyframe_memory"] >= 0
     span_keys = {row["stage"] for row in body["timing_spans"]}

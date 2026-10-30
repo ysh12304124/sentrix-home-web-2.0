@@ -2344,7 +2344,9 @@ components:
             type: number
           type: object
           title: Timings
-          default: {}
+          description: 'Stage seconds: *_wall is earliest start to latest end; *_start_seconds
+            and *_end_seconds are relative to pipeline start. Unsuffixed task totals
+            remain cumulative; overlapping spans must not be added.'
         failures:
           items:
             $ref: '#/components/schemas/ImportFailure'
@@ -2677,8 +2679,9 @@ components:
           title: Trace
           description: Execution facts. model_calls optionally includes status, attempt,
             duration_ms and call_observation (kind/purpose/trigger/outcome/source/observation_version),
-            tool_argument_parse_facts (json_object_valid per native tool envelope);
-            plain-text completion is not a JSON parse attempt.
+            tool_argument_parse_facts (json_object_valid per native tool envelope),
+            json_output (required/attempted/json_object_valid for explicit JSON-object
+            output); plain-text completion is not a JSON parse attempt.
         error:
           type: string
           title: Error
@@ -4634,7 +4637,9 @@ components:
             type: number
           type: object
           title: Timings
-          default: {}
+          description: 'Stage seconds: *_wall is earliest start to latest end; *_start_seconds
+            and *_end_seconds are relative to pipeline start. Unsuffixed task totals
+            remain cumulative; overlapping spans must not be added.'
         failures:
           items:
             $ref: '#/components/schemas/ImportFailure'
@@ -5181,7 +5186,15 @@ components:
             type: number
           type: object
           title: Timings
-          default: {}
+          description: 'Stage seconds: *_wall is earliest start to latest end; *_start_seconds
+            and *_end_seconds are relative to pipeline start. Unsuffixed task totals
+            remain cumulative; overlapping spans must not be added.'
+        timing_spans:
+          items:
+            $ref: '#/components/schemas/PipelineStageSpan'
+          type: array
+          title: Timing Spans
+          default: []
         failures:
           items:
             $ref: '#/components/schemas/ImportFailure'
@@ -5210,6 +5223,45 @@ components:
       - summarized
       - failures
       title: PipelineProcessResponse
+    PipelineStageSpan:
+      properties:
+        stage:
+          type: string
+          title: Stage
+        asset_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Asset Id
+        started_at:
+          type: string
+          title: Started At
+        finished_at:
+          type: string
+          title: Finished At
+        started_offset_seconds:
+          type: number
+          title: Started Offset Seconds
+        finished_offset_seconds:
+          type: number
+          title: Finished Offset Seconds
+        elapsed_seconds:
+          type: number
+          title: Elapsed Seconds
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - stage
+      - asset_id
+      - started_at
+      - finished_at
+      - started_offset_seconds
+      - finished_offset_seconds
+      - elapsed_seconds
+      - status
+      title: PipelineStageSpan
     PortraitFeedbackRequest:
       properties:
         feedback:

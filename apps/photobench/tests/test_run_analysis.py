@@ -93,6 +93,44 @@ def test_a_non_zero_score_is_always_consistent():
     assert analysis.judge_consistency_status({"score": 2}) is None
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误，因此得0分。",
+        "模型回答提到正确答案，但最终写的是另一地点。",
+        "助手的回答没有提供正确内容。",
+        "答案引用正确时间却否定了问题的前提。",
+    ],
+)
+def test_v4_reference_narration_is_not_answer_level_praise(reason):
+    assert analysis.judge_score_consistency(0, reason) is True
+    assert analysis.judge_score_for_summary({"score": 0, "reason": reason, "consistency_version": 4}) == 0
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "模型回答正确",
+        "助手的回答内容完全准确",
+        "该回答基本正确",
+        "模型答案总体上是准确的",
+        "回答中的核心信息正确",
+        "模型回答与参考答案完全一致",
+    ],
+)
+def test_v4_still_rejects_real_answer_level_praise_at_zero(reason):
+    assert analysis.judge_score_consistency(0, reason) is False
+    assert analysis.judge_score_for_summary({"score": 0, "reason": reason, "consistency_version": 4}) is None
+
+
+def test_v3_history_keeps_the_recorded_consistency_policy():
+    reason = "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误。"
+    original = {"score": 0, "reason": reason, "consistency_version": 3}
+    assert analysis.judge_score_consistency(0, reason, version=3) is False
+    assert analysis.judge_score_for_summary(original) is None
+    assert original == {"score": 0, "reason": reason, "consistency_version": 3}
+
+
 def test_judge_score_for_summary_rejects_out_of_range_scores():
     assert analysis.judge_score_for_summary({"score": 3}) is None
     assert analysis.judge_score_for_summary({}) is None

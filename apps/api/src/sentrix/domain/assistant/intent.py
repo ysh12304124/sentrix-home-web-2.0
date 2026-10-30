@@ -511,3 +511,14 @@ def requirements_of(goal_type: EvidenceType) -> EvidenceRequirement:
         evidence_type=goal_type,
         description=descriptions[goal_type],
     )
+
+
+def json_output_fact(raw: str | None = None) -> dict[str, Any]:
+    """记录明确要求 JSON 对象的调用；语法与业务字段校验分开统计。"""
+    valid: bool | None = None
+    if raw is not None:
+        try:
+            valid = isinstance(json.loads(raw), dict)
+        except (TypeError, ValueError):
+            valid = False
+    return {"required": True, "attempted": raw is not None, "json_object_valid": valid}

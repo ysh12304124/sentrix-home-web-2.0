@@ -1301,3 +1301,7 @@ relabeled as physically deduplicated totals. See photobench-metrics-contract.md.
 view统一范围统计与分页；evidence读取报告的不可变快照。不存在返回KeyError，状态/快照不可用返回ValueError，API映射沿既有错误契约。
 AI业务提示词与抽样/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
 新增API/OpenAPI和前端类型同步，详见[错误分析接口](photobench-error-analysis.md)。
+
+### 2026-10-29 阶段计时只读展示
+
+阶段卡按内容自然撑高；媒体导入首屏只保留数量、失败和请求墙钟，登记累计与范围说明按需展开。流水线核心标题显示pipeline_core实际经过时间，prepare为跨媒体准备时间累计，不能当父阶段墙钟或计算占比。收尾汇总participant_projection/memory_graph/family_graph/person_insights四个顺序执行段，causal_graph为memory_graph包含项，不重复计算；缺少任一独立段计时则不补零。两组占比均以timings.total为分母；不改run持久记录。

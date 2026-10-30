@@ -9,8 +9,9 @@ requires-python = ">=3.11"
 # ``apps/api[dev]`` 提供，这里不再声明一遍——两个 extras 各写一份迟早会漂。
 dependencies = [
     "httpx>=0.28,<1",
-    "psutil>=7,<8",
-    "nvidia-ml-py>=12,<14; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    # Verified telemetry versions; native tools are locked in telemetry-tools.lock.json.
+    "psutil==7.2.2",
+    "nvidia-ml-py==13.615.71; platform_system == 'Linux' and platform_machine == 'x86_64'",
 ]
 
 [build-system]

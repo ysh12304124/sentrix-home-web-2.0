@@ -390,3 +390,41 @@ def test_summary_cancellation_is_not_a_recoverable_summary_failure():
     with pytest.raises(OperationCancelled):
         album._summarize_events(["first", "second"])
     assert calls == []
+
+
+def test_stage_spans_merge_overlapping_workers_and_preserve_failure_end(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, current_thread
+    from types import SimpleNamespace
+
+    from sentrix.application.media import stage_spans
+
+    clocks = {}
+    barrier = Barrier(2)
+
+    def clock():
+        return next(clocks[current_thread().name])
+
+    monkeypatch.setattr(stage_spans, "time", SimpleNamespace(perf_counter=clock))
+    spans = stage_spans.StageSpans()
+
+    def worker(start, end, fail):
+        clocks[current_thread().name] = iter((start, end))
+        try:
+            with spans.measure("prepare"):
+                barrier.wait(timeout=3)
+                if fail:
+                    raise ValueError("prepare failed")
+        except ValueError:
+            pass
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(worker, 10.0, 16.0, False)
+        second = pool.submit(worker, 12.0, 18.0, True)
+        first.result()
+        second.result()
+    assert spans.export(9.0) == {
+        "prepare_wall": 8.0,
+        "prepare_start_seconds": 1.0,
+        "prepare_end_seconds": 9.0,
+    }

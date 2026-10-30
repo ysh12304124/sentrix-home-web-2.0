@@ -35,12 +35,14 @@ from typing import Any
 from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
+    model_timing_facts,
 )
 from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
 from sentrix.domain.assistant.intent import (
     build_prompt,
     correction_hint,
     history_prompt_suffix,
+    json_output_fact,
     parse_declaration,
     planner_chat_template_kwargs,
     planner_response_format,
@@ -133,6 +135,7 @@ class GoalPlanner:
                     "tools": [],
                     "response": None,
                 }
+            call["json_output"] = json_output_fact()
             try:
                 # 规划不带工具：它要的是一段 JSON 声明，不是一次工具往返。
                 # 端点支持时用 JSON Schema 约束解码；不支持的 fake/后端走原路径。
@@ -151,6 +154,7 @@ class GoalPlanner:
                     completion_tokens=reply.completion_tokens,
                     finish_reason=reply.finish_reason,
                     diagnostics=dict(reply.diagnostics),
+                    json_output=json_output_fact(reply.content),
                 )
                 if include_debug:
                     debug_call.update(
@@ -190,6 +194,7 @@ class GoalPlanner:
 
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             call["duration_ms"] = duration_ms
+            call.update(model_timing_facts(reply.diagnostics, duration_ms, reply.completion_tokens))
             calls.append(call)
             if include_debug:
                 debug_call["duration_ms"] = duration_ms

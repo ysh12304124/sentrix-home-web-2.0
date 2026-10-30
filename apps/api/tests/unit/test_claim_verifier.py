@@ -101,6 +101,11 @@ def test_claim_call_metrics_are_recorded_without_debug():
     assert review.debug_call is None
     assert review.model_call["call_type"] == "claim_verifier"
     assert review.model_call["status"] == "complete"
+    assert review.model_call["json_output"] == {
+        "required": True,
+        "attempted": True,
+        "json_object_valid": True,
+    }
     assert review.model_call["duration_ms"] >= 0
 
 
@@ -109,7 +114,25 @@ def test_claim_failure_preserves_metrics_and_debug_error():
         query="几张", claim=high_risk_claims("3 张照片")[0], facts=[], requirement=None, include_debug=True
     )
     assert review.model_call["status"] == "error"
+    assert review.model_call["json_output"] == {
+        "required": True,
+        "attempted": False,
+        "json_object_valid": None,
+    }
     assert review.model_call["error"] == "endpoint down"
     assert review.model_call["duration_ms"] >= 0
     assert review.debug_call["duration_ms"] == review.model_call["duration_ms"]
     assert review.debug_call["error"] == "endpoint down"
+
+
+def test_nonstreaming_records_end_to_end_rate_without_inventing_ttft():
+    from sentrix.application.assistant.debug_trace import model_timing_facts
+
+    assert model_timing_facts({"streamed": False}, 2000, 40) == {
+        "streamed": False,
+        "tokens_per_second": 20.0,
+        "token_rate_basis": "end_to_end",
+    }
+    assert model_timing_facts({}, 2000, 40) == {}
+    assert model_timing_facts({"streamed": True}, 2000, 40) == {"streamed": True}
+    assert "tokens_per_second" not in model_timing_facts({"streamed": False}, 0, 40)

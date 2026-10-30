@@ -49,7 +49,7 @@ from photobench.domain.runtime.metrics import (
 # 1.0 ``:933`` / ``:1261``。
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 RANKING_KS = (1, 5, 10)
-JUDGE_CONSISTENCY_VERSION = 3
+JUDGE_CONSISTENCY_VERSION = 4
 
 
 def now_iso() -> str:
@@ -83,9 +83,16 @@ def judge_score_consistency(
         # the start of a clause. Reference narration is not praise of the model.
         subject = r"(?:模型|助手)(?:的)?(?:回答|答案|结论)"
         clause_subject = r"^\s*(?:(?:该|此|最终)(?:次)?)?(?:回答|答案|结论)"
+        # A nearby reference to the correct answer is not an assertion that
+        # the tested answer is correct. Match an answer-level predicate.
+        praise = (
+            r"(?:内容|中的核心信息|的核心信息)?\s*"
+            r"(?:(?:是|为|基本上?|完全|总体上?|整体上?|均|都|确实|非常)\s*){0,3}"
+            r"(?:正确|准确)"
+        )
         assertions = (
-            rf"{subject}.{{0,12}}(?:正确|准确)",
-            rf"{clause_subject}.{{0,12}}(?:正确|准确)",
+            rf"{subject}{praise}" if version >= 4 else rf"{subject}.{{0,12}}(?:正确|准确)",
+            rf"{clause_subject}{praise}" if version >= 4 else rf"{clause_subject}.{{0,12}}(?:正确|准确)",
             rf"(?:{subject}|{clause_subject}).{{0,12}}与.{{0,12}}(?:参考答案|标准答案).{{0,8}}一致",
             rf"(?:{subject}|{clause_subject}).{{0,8}}符合.{{0,8}}预期",
             r"^\s*与.{0,12}(?:参考答案|标准答案).{0,8}一致",
@@ -153,7 +160,11 @@ def judge_consistency_status(judge: dict[str, Any] | None) -> str | None:
     judge = judge_projection(judge)
     recorded_version = judge.get("consistency_version")
     version = JUDGE_CONSISTENCY_VERSION if judge.get("score_derivation") else 1
-    if not judge.get("score_derivation") and isinstance(recorded_version, int) and recorded_version in (2, 3):
+    if (
+        not judge.get("score_derivation")
+        and isinstance(recorded_version, int)
+        and recorded_version in (2, 3, 4)
+    ):
         version = recorded_version
     if not judge_score_consistency(judge.get("score"), str(judge.get("reason") or ""), version=version):
         return "inconsistent"
@@ -452,7 +463,7 @@ def trace_action(step: dict[str, Any]) -> dict[str, Any] | None:
 
 def _native_turn_completion(turn: dict[str, Any]) -> bool | None:
     termination = str(turn.get("termination_reason") or "").lower()
-    if termination not in {"answered", "answered_with_gap"}:
+    if termination not in {"answered", "answered_with_gap", "policy_refusal"}:
         return False if termination else None
     budget = (turn.get("agent2_trace") or {}).get("budget_outcome") or {}
     steps, maximum = budget.get("model_steps"), budget.get("max_steps")
@@ -468,9 +479,61 @@ def _native_turn_completion(turn: dict[str, Any]) -> bool | None:
     status = str(turn.get("agent_status") or turn.get("status") or turn.get("turn_status") or "").lower()
     return (
         bool(str(turn.get("answer") or "").strip())
-        and status not in {"partial", "error", "timeout", "failed", "cancelled", "canceled"}
+        # partial 表示证据缺口；预算内已交付终态回答仍属于流程完成。
+        and status not in {"error", "timeout", "failed", "cancelled", "canceled"}
         and steps <= maximum
     )
+
+
+def structured_json_metrics(item: dict[str, Any]) -> dict[str, Any]:
+    """只使用显式 JSON 输出契约事实；不从自由文本或 HTTP 成功推断。"""
+    metrics = item.get("model_call_metrics") or []
+    calls = list(
+        metrics
+        if any(isinstance(call, dict) and call.get("json_output") for call in metrics)
+        else item.get("execution_trace") or []
+    )
+    for tool in item.get("tool_trace") or []:
+        calls.extend((tool.get("result") or {}).get("model_call_observations") or [])
+    for key in ("judge", "task_judge", "evidence_judge"):
+        calls.extend((item.get(key) or {}).get("call_observations") or [])
+    for judge in item.get("task_judges") or []:
+        calls.extend(judge.get("call_observations") or [])
+    seen: set[tuple[Any, ...]] = set()
+    facts = []
+    for call in calls:
+        fact = call.get("json_output") if isinstance(call, dict) else None
+        if not isinstance(fact, dict) or fact.get("required") is not True:
+            continue
+        identity = (
+            ("call", call["call_id"])
+            if call.get("call_id")
+            else (
+                "step",
+                call.get("conversation_turn"),
+                call.get("step_id"),
+                call.get("call_type"),
+                call.get("attempt"),
+            )
+            if call.get("step_id")
+            else ("object", id(call))
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        facts.append(fact)
+    attempts = [
+        fact
+        for fact in facts
+        if fact.get("attempted") is True and isinstance(fact.get("json_object_valid"), bool)
+    ]
+    count, success = len(attempts), sum(fact["json_object_valid"] for fact in attempts)
+    return {
+        "structured_json_requested": len(facts) or None,
+        "structured_json_total": count or None,
+        "structured_json_success": success if count else None,
+        "structured_json_rate": round(success / count, 3) if count else None,
+    }
 
 
 def agent_stability(item: dict[str, Any]) -> dict[str, Any]:
@@ -518,6 +581,7 @@ def agent_stability(item: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "metrics_contract_version": 2,
+        **structured_json_metrics(item),
         "json_parse_total": parse_total or None,
         "json_parse_success": parse_success if parse_total else None,
         "json_parse_rate": round(parse_success / parse_total, 3) if parse_total else None,
@@ -1186,6 +1250,10 @@ def capability_summary(
         and (judge.get("expected_action") != "answer_and_refuse" or judge.get("behavior_rule_version") == 2)
     ]
     action_valid = [value for value in action_judges if value.get("correct") in {True, False}]
+    structured = [structured_json_metrics(item) for item in items]
+    structured_requested = sum(row["structured_json_requested"] or 0 for row in structured)
+    structured_total = sum(row["structured_json_total"] or 0 for row in structured)
+    structured_success = sum(row["structured_json_success"] or 0 for row in structured)
     parse_totals = [item.get("agent_stability", {}).get("json_parse_total") for item in items]
     parse_successes = [item.get("agent_stability", {}).get("json_parse_success") for item in items]
     tool_argument_total = sum(
@@ -1404,6 +1472,10 @@ def capability_summary(
         )
         if action_valid
         else None,
+        "structured_json_requested": structured_requested or None,
+        "structured_json_total": structured_total or None,
+        "structured_json_success": structured_success if structured_total else None,
+        "structured_json_rate": round(structured_success / structured_total, 3) if structured_total else None,
         "json_parse_total": parse_total or None,
         "json_parse_success": parse_success if parse_total else None,
         "json_parse_success_rate": round(parse_success / parse_total, 3) if parse_total else None,
@@ -1563,7 +1635,9 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             or None
         )
     for item in items:
-        if isinstance(item, dict) and item.get("execution_trace"):
+        if isinstance(item, dict) and (
+            item.get("execution_trace") or item.get("metrics_contract_version") == 2
+        ):
             item["agent_stability"] = agent_stability(item)
     recalls = [
         float(value) for item in items if isinstance((value := item.get("retrieval_recall")), (int, float))
@@ -1624,11 +1698,17 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             "core_accuracy": round((distribution["1"] + distribution["2"]) / len(scores), 3)
             if scores
             else None,
-            "llm_ttft_ms_mean": saved.get(
-                "llm_ttft_ms_mean", round(sum(ttfts) / len(ttfts), 1) if ttfts else None
+            "llm_nonstreamed_count": sum(call.get("streamed") is False for call in calls),
+            "llm_call_metrics_count": len(calls),
+            "llm_ttft_ms_mean": (
+                saved["llm_ttft_ms_mean"]
+                if saved.get("llm_ttft_ms_mean") is not None
+                else (round(sum(ttfts) / len(ttfts), 1) if ttfts else None)
             ),
-            "llm_tokens_per_second_mean": saved.get(
-                "llm_tokens_per_second_mean", round(sum(rates) / len(rates), 1) if rates else None
+            "llm_tokens_per_second_mean": (
+                saved["llm_tokens_per_second_mean"]
+                if saved.get("llm_tokens_per_second_mean") is not None
+                else (round(sum(rates) / len(rates), 1) if rates else None)
             ),
             "prompt_tokens_total": (
                 saved.get("prompt_tokens_total")
@@ -1644,19 +1724,39 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             )
             if calls
             else None,
-            "llm_prompt_tokens_max": saved.get("llm_prompt_tokens_max", max(prompts) if prompts else None),
-            "llm_prompt_tokens_p95": saved.get("llm_prompt_tokens_p95", percentile(prompts, 0.95)),
-            "llm_completion_tokens_max": saved.get(
-                "llm_completion_tokens_max", max(completions) if completions else None
+            "llm_prompt_tokens_max": (
+                saved["llm_prompt_tokens_max"]
+                if saved.get("llm_prompt_tokens_max") is not None
+                else (max(prompts) if prompts else None)
             ),
-            "llm_completion_tokens_p95": saved.get(
-                "llm_completion_tokens_p95", percentile(completions, 0.95)
+            "llm_prompt_tokens_p95": (
+                saved["llm_prompt_tokens_p95"]
+                if saved.get("llm_prompt_tokens_p95") is not None
+                else (percentile(prompts, 0.95))
             ),
-            "llm_context_tokens_max": saved.get(
-                "llm_context_tokens_max", max(contexts) if contexts else None
+            "llm_completion_tokens_max": (
+                saved["llm_completion_tokens_max"]
+                if saved.get("llm_completion_tokens_max") is not None
+                else (max(completions) if completions else None)
             ),
-            "llm_context_tokens_p95": saved.get("llm_context_tokens_p95", percentile(contexts, 0.95)),
-            "llm_context_samples_count": saved.get("llm_context_samples_count", len(contexts)),
+            "llm_completion_tokens_p95": (
+                saved["llm_completion_tokens_p95"]
+                if saved.get("llm_completion_tokens_p95") is not None
+                else (percentile(completions, 0.95))
+            ),
+            "llm_context_tokens_max": (
+                saved["llm_context_tokens_max"]
+                if saved.get("llm_context_tokens_max") is not None
+                else (max(contexts) if contexts else None)
+            ),
+            "llm_context_tokens_p95": (
+                saved["llm_context_tokens_p95"]
+                if saved.get("llm_context_tokens_p95") is not None
+                else (percentile(contexts, 0.95))
+            ),
+            "llm_context_samples_count": len(contexts)
+            if calls
+            else saved.get("llm_context_samples_count", 0),
             "tool_performance": aggregate_tool_performance(items),
             "attribution": {"primary": attribution_primary, "layer_failures": attribution_layers},
             "delivery_breakdown": saved.get("delivery_breakdown", aggregate_delivery(items)),
@@ -1680,6 +1780,7 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
             or key.startswith(
                 (
                     "json_parse_",
+                    "structured_json_",
                     "tool_argument_json_",
                     "agent_",
                     "judge_phase_",
@@ -1916,7 +2017,7 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
         and str(step.get("stage") or step.get("type") or "") == "model"
         and str(step.get("call_type") or "agent") in {"agent", "recovery"}
     ]
-    if agent_steps:
+    if agent_steps or hydrated.get("metrics_contract_version") == 2:
         hydrated["agent_stability"] = agent_stability(hydrated)
     return hydrated
 

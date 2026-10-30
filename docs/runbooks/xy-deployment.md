@@ -14,6 +14,8 @@
 
 ## 设备与依赖
 
+资源采集工具按[固定版本清单](telemetry-tools.md)和`apps/photobench/telemetry-tools.lock.json`配置；psutil/nvidia-ml-py使用包声明的精确版本，macmon保持0.8.2，系统工具随对应OS/驱动基线保存。本轮只读记录版本，现有运行环境保持；后续部署核实际版本并将差异记入回执。
+
 默认端点指设备自己的 `127.0.0.1`；产品8291、PhotoBench8872。仅云端 Judge 可访问外部模型。2026-10-21现场核验AGX主模型仅绑定本机192.168.0.118，用户明确批准保留该同机LAN端点，不重启模型。
 
 | SSH | 主模型 | 文本嵌入 | 图片嵌入 | 旧新栈根目录 |
@@ -253,3 +255,8 @@ Jetson正式采样的核心进程内存读取移入单个spawn子进程，与HTT
 运行详情展开“错误分析”；历史结果点击生成规则报告。新测评和重判退出后自动排队，分析失败不改run结果。active-work包括分析任务；取消后等工作退出再更新服务。历史报告、来源指纹和过期标记保留，重评分后重新生成。AI默认关闭，需选择1–20题并确认provider；不将secret写入任务记录。
 
 固定版本执行完整`make ci`，以干净提交打包。四机同一证据目录用各自绑定Python运行`PYTHONPATH=<release>/apps/photobench/src <python> <release>/scripts/replay_photobench_error_analysis.py --root <evidence> --output <replay.json>`，核对fact_signature、raw_unchanged及AGX格式异常/153恢复断言；回放不调用模型。随后仅在资源允许的设备激活8291/8872，真实QA验证新调用diagnostics、工具内部模型事实、Judge事实及自动分析。NX资源不足须保留待验，不抢共享模型。HTML离线导出、页面筛选和原轨迹定位分别验收。
+
+
+### 2026-10-30 统一阶段计时版本
+
+统一版本合入本机dc339aa与xy原有功能。正常执行的流水线返回UTC起止、相对偏移、状态和asset_id；并行阶段以最早开始到最晚结束计算实际耗时，任务累计耗时独立保存。历史缺失仍标未记录。整机进程崩溃时请求内节点尚无独立持久化保证。发布前完成离线CI，随后仅对空闲的本机/153/AGX自己的8291和8872激活同一提交并各验一次标准12QA；NX及模型/嵌入进程不在本轮范围。

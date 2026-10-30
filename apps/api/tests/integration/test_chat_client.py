@@ -176,6 +176,7 @@ def test_a_plain_reply_is_parsed(server: str):
     result = chat_model(server).complete(messages(), TOOL_SPECS)
 
     assert result.content == "这是你要的海边照片。"
+    assert result.diagnostics["streamed"] is False
     assert result.tool_calls == ()
     assert result.wants_tools is False
     assert (result.prompt_tokens, result.completion_tokens) == (11, 3)

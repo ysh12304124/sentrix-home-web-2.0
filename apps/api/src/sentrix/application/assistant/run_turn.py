@@ -39,6 +39,7 @@ from sentrix.application.assistant.claim_verifier import ClaimVerifier
 from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
+    model_timing_facts,
     tool_specs_payload,
 )
 from sentrix.application.assistant.goal_planner import (
@@ -75,6 +76,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     RequirementValueType,
 )
 from sentrix.domain.assistant.final_guard import FinalGuard, GuardFacts, answered_with_gap
+from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.jit import select_tools
 from sentrix.domain.assistant.models import (
     Attachment,
@@ -881,7 +883,11 @@ class RunTurn:
                 "response": None,
             }
         try:
+            if call_type == "faithfulness_judge":
+                record["json_output"] = json_output_fact()
             reply = self._model.complete(messages, specs)
+            if call_type == "faithfulness_judge":
+                record["json_output"] = json_output_fact(reply.content)
             facts = list(reply.tool_argument_parse_facts)
             if not facts:
                 for call in reply.tool_calls:
@@ -923,6 +929,11 @@ class RunTurn:
         finally:
             duration_ms = round((time.perf_counter() - started) * 1000, 1)
             record["duration_ms"] = duration_ms
+            record.update(
+                model_timing_facts(
+                    record.get("diagnostics") or {}, duration_ms, record.get("completion_tokens")
+                )
+            )
             record["call_observation"] = {
                 "kind": call_type,
                 "purpose": call_type,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { effectiveRunSummary, macroMetrics, microMetrics, nearestRankPercentile } from "./runSummary.ts";
+import { effectiveRunSummary, nativeCompletion, macroMetrics, microMetrics, nearestRankPercentile } from "./runSummary.ts";
 import type { Run } from "../api/types.ts";
 
 // 夹具原则：每一组都要让**两种口径给出不同答案**，否则测不出「照搬了哪一种」。
@@ -163,4 +163,28 @@ it.each(["unanswerable", " INSUFFICIENT_EVIDENCE "])("%s 排除图视频指标�
   expect(refusalOnly.retrieval_recall_micro).toBeNull();
   expect(refusalOnly.retrieval_precision_micro).toBeNull();
   expect(refusalOnly.retrieval_f1_micro).toBeNull();
+});
+
+
+it("预算内 partial 回答按流程完成计入，重算旧版错误的0%；多轮、超预算、未知保留", () => {
+  const turn = { termination_reason: "answered_with_gap", agent_status: "partial", answer: "answer",
+    agent2_trace: { budget_outcome: { model_steps: 3, max_steps: 8 } } };
+  expect(nativeCompletion(turn)).toBe(true);
+  expect(nativeCompletion({ ...turn, termination_reason: "policy_refusal", agent_status: "complete", agent2_trace: { budget_outcome: { model_steps: 0, max_steps: 8 } } })).toBe(true);
+  expect(nativeCompletion({ ...turn, runtime_turns: [turn, { ...turn, termination_reason: "timeout" }] })).toBe(false);
+  expect(nativeCompletion({ ...turn, agent2_trace: { budget_outcome: { model_steps: 9, max_steps: 8 } } })).toBe(false);
+  expect(nativeCompletion({ ...turn, agent2_trace: {} })).toBeNull();
+  const result = effectiveRunSummary({ summary: { qa_completion_valid_count: 10, qa_completion_within_steps_rate: 0 },
+    items: [{ ...turn, metrics_contract_version: 2 }] } as unknown as Run);
+  expect(result.qa_completion_within_steps_rate).toBe(1);
+  expect(result.qa_completion_valid_count).toBe(1);
+});
+
+it("JSON对象新指标汇总真实解析分母，零成功保持0，历史无事实保持空", () => {
+  const result = effectiveRunSummary({ items: [{ agent_stability: {
+    structured_json_requested: 3, structured_json_total: 2, structured_json_success: 0,
+  } }] } as unknown as Run);
+  expect(result.structured_json_requested).toBe(3);
+  expect(result.structured_json_rate).toBe(0);
+  expect(effectiveRunSummary({ items: [] } as unknown as Run).structured_json_rate).toBeNull();
 });

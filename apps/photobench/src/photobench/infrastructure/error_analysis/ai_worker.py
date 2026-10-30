@@ -19,6 +19,8 @@ from photobench.domain.error_analysis.diagnosis import (
     evidence_package,
     representative,
     scope_facts,
+    task_contract,
+    terminal_facts,
     validate_claims,
 )
 from photobench.domain.error_analysis.query import issue_groups
@@ -147,6 +149,7 @@ def run_ai(
                 response.raise_for_status()
                 data = response.json()
                 entry["usage"] = data.get("usage")
+                entry["finish_reason"] = data["choices"][0].get("finish_reason")
                 raw = data["choices"][0]["message"]["content"]
                 if not isinstance(raw, str):
                     raise ValueError("model content is not text")
@@ -225,7 +228,17 @@ def run_ai(
                 for g in result["issues"][:40]
             ]
             diagnoses = [
-                {"id": f"i{a['index']}:diagnosis", "index": a["index"], "result": a["result"]}
+                {
+                    "id": f"i{a['index']}:diagnosis",
+                    "index": a["index"],
+                    "result": {
+                        "claims": [
+                            {k: claim[k] for k in ("kind", "text", "limitations")}
+                            for claim in a["result"]["claims"]
+                        ],
+                        "missing_evidence": a["result"]["missing_evidence"],
+                    },
+                }
                 for a in answers
                 if a["valid"]
             ]
@@ -234,8 +247,27 @@ def run_ai(
                 "facts": result["facts"],
                 "coverage": result["coverage"],
                 "groups": groups,
+                "terminal_outcomes": [],
+                "task_contracts": [],
                 "diagnoses": [],
             }
+            # Recorded expectations and outcomes take priority over potentially conflicting diagnoses.
+            contracts = [task_contract(c) for c in cases if c["index"] in {a["index"] for a in answers}]
+            for contract in contracts:
+                if (
+                    len(json.dumps(payload, ensure_ascii=False))
+                    + len(json.dumps(contract, ensure_ascii=False))
+                    < 42000
+                ):
+                    payload["task_contracts"].append(contract)
+            outcomes = [terminal_facts(c) for c in cases if c["index"] in {a["index"] for a in answers}]
+            for outcome in outcomes:
+                if (
+                    len(json.dumps(payload, ensure_ascii=False))
+                    + len(json.dumps(outcome, ensure_ascii=False))
+                    < 42000
+                ):
+                    payload["terminal_outcomes"].append(outcome)
             for diagnosis in diagnoses:
                 if (
                     len(json.dumps(payload, ensure_ascii=False))
@@ -245,17 +277,23 @@ def run_ai(
                     payload["diagnoses"].append(diagnosis)
             payload["omitted_groups"] = len(result["issues"]) - len(groups)
             payload["omitted_diagnoses"] = len(diagnoses) - len(payload["diagnoses"])
-            raw, error = request(client, OVERVIEW_PROMPT, payload, "overview")
+            payload["omitted_terminal_outcomes"] = len(outcomes) - len(payload["terminal_outcomes"])
+            payload["omitted_task_contracts"] = len(contracts) - len(payload["task_contracts"])
             allowed = (
                 {"scope:statistics"}
                 | {g["group_id"] for g in groups}
                 | {d["id"] for d in payload["diagnoses"]}
+                | {o["id"] for o in payload["terminal_outcomes"]}
+                | {c["id"] for c in payload["task_contracts"]}
             )
+            payload["allowed_evidence_refs"] = sorted(allowed)
+            raw, error = request(client, OVERVIEW_PROMPT, payload, "overview")
             value, invalid = validate_claims(raw, allowed) if raw is not None else ({}, None)
             result.update(
                 overview=value if not error and not invalid else None,
                 summary_status="failed" if error or invalid else "completed",
                 summary_error=error or invalid,
+                summary_raw=(raw or "")[:20000],
                 summary_input=payload,
                 stage="completed",
             )

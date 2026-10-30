@@ -48,6 +48,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageOps
 
+from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.ports import ModelServiceError
 from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
 from sentrix.domain.media.ports import ObservationSemantics
@@ -261,6 +262,7 @@ def chat_json(
         "call_id": uuid.uuid4().hex,
         "status": "error",
         "role": "tool_internal",
+        "json_output": json_output_fact(),
         "diagnostics": {"request_sent": False},
     }
     started = time.perf_counter()
@@ -275,7 +277,9 @@ def chat_json(
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()
-        parsed = parse_json_object(_first_content(payload))
+        raw_content = _first_content(payload)
+        fact["json_output"] = json_output_fact(raw_content)
+        parsed = parse_json_object(raw_content)
         fact.update(status="complete" if parsed is not None else "error", model=body["model"])
         if parsed is None:
             fact.update(error_type="ModelOutputFormatError", error="vision model output is not a JSON object")
