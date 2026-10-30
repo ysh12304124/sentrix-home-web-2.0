@@ -1811,7 +1811,22 @@ class RunTurn:
         )
 
         if outcome.ok:
-            for evidence_type in TOOLS_BY_NAME[call.name].satisfies:
+            satisfied_types = TOOLS_BY_NAME[call.name].satisfies
+            if call.name == "search_memories":
+                # Retrieval can satisfy spoken-content requirements only when the
+                # returned preview actually contains a transcript. Do not let a
+                # video candidate by itself stand in for audio evidence.
+                preview = outcome.model_visible.get("preview", ())
+                has_speech = isinstance(preview, (list, tuple)) and any(
+                    isinstance(row, Mapping) and row.get("speech_evidence") for row in preview
+                )
+                if not has_speech:
+                    satisfied_types = tuple(
+                        evidence_type
+                        for evidence_type in satisfied_types
+                        if evidence_type is not EvidenceType.SPOKEN_CONTENT
+                    )
+            for evidence_type in satisfied_types:
                 session.ledger.satisfy(evidence_type, call_id=call.call_id)
             self._tool_event(
                 session,

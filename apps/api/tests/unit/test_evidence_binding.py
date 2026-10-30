@@ -156,3 +156,44 @@ def test_facts_from_state_projects_structured_and_preview_facts():
     assert any(fact.value_type is RequirementValueType.DESCRIPTION for fact in facts)
     structured = next(fact for fact in facts if fact.value_type is RequirementValueType.COUNT)
     assert structured.filters_not_applied == ("place",)
+
+
+def test_scene_aligned_speech_is_a_video_dialogue_fact():
+    state = TaskState(
+        turn_id="t",
+        conversation_id="c",
+        scope_id="s",
+        question="视频里说了什么？",
+        profile=DEFAULT_PROFILE,
+    )
+    state.record(
+        ToolCallRecord(
+            call_id="call_speech",
+            tool="search_memories",
+            signature="speech",
+            status="ok",
+            observation={"total": 1, "asset_ids": ["video_1"]},
+            model_visible={
+                "preview": [
+                    {
+                        "handle": "photo_1",
+                        "speech_evidence": [{"start_sec": 12.0, "end_sec": 14.0, "text": "加入鸡肉和香肠"}],
+                    }
+                ]
+            },
+        )
+    )
+
+    speech = next(fact for fact in facts_from_state(state) if fact.fact_type == "speech_transcript")
+    binding = bind_requirement(
+        EvidenceRequirement(
+            id="spoken",
+            evidence_type=EvidenceType.SPOKEN_CONTENT,
+            description="视频对话里的食材",
+            value_type=RequirementValueType.DESCRIPTION,
+            scope=(("event", "视频"), ("time", "视频时间")),
+        ),
+        [speech],
+    )
+    assert speech.value == "加入鸡肉和香肠"
+    assert binding.verdict is BindingVerdict.SATISFIES

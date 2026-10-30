@@ -121,6 +121,8 @@ class EventRepository(Protocol):
         source_scene_index: int,
         source_start_sec: float,
         source_end_sec: float,
+        speech_transcript: str = "",
+        speech_segments: Sequence[dict[str, object]] = (),
     ) -> EventRecord:
         """建一条 ``source_type='video_scene'`` 的事件，**同一 (源片, 场景序号) 幂等**。
 

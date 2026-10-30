@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sentrix.domain.media.models import GpsPoint
@@ -140,6 +140,9 @@ class EventRecord:
     source_scene_index: int | None = None
     source_start_sec: float | None = None
     source_end_sec: float | None = None
+    # 视频场景事件的辅助来源数据（迁移 0010 的 JSON 列）。语音转写按场景区间
+    # 存在这里，保证后续事件摘要刷新不会丢掉音频证据。
+    source_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

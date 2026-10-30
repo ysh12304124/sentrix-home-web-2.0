@@ -52,6 +52,7 @@ from sentrix.domain.media.ports import (
     PhotoInspector,
     RecordedPhotoInspector,
 )
+from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.fact_query import FactRejection
 
@@ -184,6 +185,7 @@ class AssistantToolbox:
         photo_inspector: PhotoInspector,
         person_crops: PersonCropRenderer,
         asset_places: AssetPlaceRepository | None = None,
+        events: EventRepository | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._assets = assets
@@ -193,6 +195,10 @@ class AssistantToolbox:
         # 照片的**行政地点**（导入期由 EXIF GPS 反解而来）。preview 的 ``place``
         # 必须取这一份而不是 ``observations.place``——理由见 ``_place_label``。
         self._asset_places = asset_places
+        # A video/keyframe result must expose its scene-aligned transcript to the agent.
+        # Retrieval can find the video from transcript text, but an asset-only preview
+        # would otherwise hide the event memory and send spoken-content questions to OCR.
+        self._events = events
         # ``query_photo_people`` 的两条读路径（T122）。两者都是**只读**，
         # 且都只被这一个工具用——不是通用能力。
         self._faces = faces
@@ -508,6 +514,74 @@ class AssistantToolbox:
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
+            **self._speech_preview(asset),
+        }
+
+    def _speech_preview(self, asset: Any) -> Mapping[str, Any]:
+        """Expose transcript evidence only for a video or its timestamped keyframe.
+
+        Video previews include their scene transcript with scene bounds. A derived
+        keyframe includes only transcript segments overlapping its source timestamp,
+        keeping speech aligned to the frame instead of copying the whole video's audio.
+        """
+        if self._events is None or asset is None:
+            return {}
+        video_asset_id = asset.id if asset.media_type.value == "video" else asset.parent_asset_id
+        if not video_asset_id:
+            return {}
+        scenes = self._events.list_video_scenes(video_asset_id)
+        if not scenes:
+            return {}
+
+        frame_time = asset.source_timestamp_sec if asset.media_type.value != "video" else None
+        evidence: list[dict[str, Any]] = []
+        for scene in scenes:
+            if frame_time is not None and not (
+                (scene.source_start_sec or 0.0) <= frame_time <= (scene.source_end_sec or 0.0)
+            ):
+                continue
+            metadata = scene.source_metadata
+            segments = metadata.get("speech_segments", [])
+            if not isinstance(segments, list):
+                segments = []
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                try:
+                    start_sec = float(segment.get("start_sec", 0.0))
+                    end_sec = float(segment.get("end_sec", start_sec))
+                except (TypeError, ValueError):
+                    continue
+                if frame_time is not None and not start_sec <= frame_time <= end_sec:
+                    continue
+                text = str(segment.get("text") or "").strip()
+                if text:
+                    evidence.append(
+                        {
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "text": text[:1000],
+                            "speaker": str(segment.get("speaker") or ""),
+                        }
+                    )
+            if not segments:
+                transcript = str(metadata.get("speech_transcript") or "").strip()
+                if transcript:
+                    evidence.append(
+                        {
+                            "scene_start_sec": scene.source_start_sec,
+                            "scene_end_sec": scene.source_end_sec,
+                            "text": transcript[:1000],
+                        }
+                    )
+        if not evidence:
+            return {}
+        return {
+            "speech_evidence": evidence[:12],
+            "speech_evidence_note": (
+                "语音证据来自视频 ASR 转写；关键帧仅显示与该帧时间戳重叠的语音片段。"
+                "可直接用于回答说话内容，不要改用图片 OCR。"
+            ),
         }
 
     def _people_count(self, asset_id: str) -> int:

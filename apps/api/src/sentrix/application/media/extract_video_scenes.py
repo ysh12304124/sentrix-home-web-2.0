@@ -168,8 +168,13 @@ class ExtractVideoScenes:
         keyframe_memory_seconds = 0.0
         for window in windows:
             scene_started = time.perf_counter()
+            scene_segments = _scene_segments(segments, window.start_sec, window.end_sec)
             event = self._ensure_scene_event(
-                asset, window, place_text, _scene_transcript(segments, window.start_sec, window.end_sec)
+                asset,
+                window,
+                place_text,
+                _format_scene_transcript(scene_segments),
+                scene_segments,
             )
             finished = time.perf_counter()
             scene_write_seconds += finished - scene_started
@@ -225,7 +230,12 @@ class ExtractVideoScenes:
     # ---- 内部 ----------------------------------------------------------------
 
     def _ensure_scene_event(
-        self, asset: Asset, window: SceneWindow, place_text: str, transcript: str = ""
+        self,
+        asset: Asset,
+        window: SceneWindow,
+        place_text: str,
+        transcript: str = "",
+        speech_segments: tuple[dict[str, object], ...] = (),
     ) -> EventRecord:
         """1.0 ``db.py:2397`` 的 ``create_video_scene_event``：同一 (源片, 场景序号) 只有一条。
 
@@ -246,6 +256,8 @@ class ExtractVideoScenes:
             source_scene_index=window.index,
             source_start_sec=start,
             source_end_sec=end,
+            speech_transcript=transcript,
+            speech_segments=speech_segments,
         )
 
     def _derived_asset(self, source: Asset, frame: Path, window: SceneWindow) -> Asset:
@@ -282,7 +294,13 @@ def _offset(captured_at: datetime | None, seconds: float) -> datetime | None:
 
 def _scene_transcript(segments: tuple[TranscriptionSegment, ...], start: float, end: float) -> str:
     """Select speech overlapping this scene, retaining chronology and removing repeated text."""
-    selected: list[str] = []
+    return _format_scene_transcript(_scene_segments(segments, start, end))
+
+
+def _scene_segments(
+    segments: tuple[TranscriptionSegment, ...], start: float, end: float
+) -> tuple[dict[str, object], ...]:
+    selected: list[dict[str, object]] = []
     seen: set[str] = set()
     for segment in sorted(segments, key=lambda item: (item.start_sec, item.end_sec)):
         if segment.end_sec <= start or segment.start_sec >= end:
@@ -291,8 +309,22 @@ def _scene_transcript(segments: tuple[TranscriptionSegment, ...], start: float, 
         if not text or text.casefold() in seen:
             continue
         seen.add(text.casefold())
-        speaker = f"{segment.speaker}: " if segment.speaker else ""
-        selected.append(f"{speaker}{text}")
+        selected.append(
+            {
+                "start_sec": segment.start_sec,
+                "end_sec": segment.end_sec,
+                "text": text,
+                "speaker": segment.speaker,
+            }
+        )
+    return tuple(selected)
+
+
+def _format_scene_transcript(segments: tuple[dict[str, object], ...]) -> str:
+    selected: list[str] = []
+    for segment in segments:
+        speaker = f"{segment['speaker']}: " if segment.get("speaker") else ""
+        selected.append(f"{speaker}{segment['text']}")
     return "；".join(selected)
 
 

@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
     qwen_asr_base_url: str = ""
     qwen_asr_model: str = "Qwen3-ASR"
+    qwen_asr_api_key: str = ""
     qwen_asr_timeout_s: float = 300.0
     text_embedder_url: str = "http://127.0.0.1:8101"
     # W1：检索用的统一多模态嵌入侧车（WeMM-Embedding-2B，2048 维）。与 8100 的 VLM、

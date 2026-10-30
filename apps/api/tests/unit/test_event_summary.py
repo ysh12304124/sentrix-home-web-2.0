@@ -92,6 +92,17 @@ def test_fallback_uses_place_plus_first_activity_as_the_title():
     assert projection.model == FALLBACK_MODEL
 
 
+def test_summary_evidence_includes_scene_aligned_speech():
+    from sentrix.application.memories.summarize_event import build_evidence
+
+    payload = build_evidence(
+        event(source_metadata={"speech_transcript": "speaker_0: 把盘子放到桌上"}),
+        [observation()],
+    )
+
+    assert '"speech_transcript": "speaker_0: 把盘子放到桌上"' in payload
+
+
 def test_fallback_summary_lists_captions_and_truncates_to_four():
     observations = [observation(id=f"obs_{index}", caption=f"第{index}张") for index in range(6)]
 

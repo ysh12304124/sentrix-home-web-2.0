@@ -1,5 +1,15 @@
 # S8 违背 / 偏离审计（音频与视频）
 
+> **2026-10-30 更新：**下文记录的是 2026-10-04 的初始裁决（当时不做转写）。当前实现按后续需求改为可选 Qwen ASR：语音按原片时间戳分配到对应视频场景，写入场景来源元数据，并在事件总结与记忆摘要刷新时保留；未配置 ASR 时维持原行为。以下历史背景保留用于解释设计变更，不再代表当前实现状态。
+
+### 当前语音对齐实现（2026-10-30）
+
+- 配置 `SENTRIX_QWEN_ASR_BASE_URL` 后，API 通过 OpenAI-compatible `/audio/transcriptions` 请求 `verbose_json` 的 segment 时间戳；`SENTRIX_QWEN_ASR_MODEL` 指定模型，`SENTRIX_QWEN_ASR_API_KEY` 可选地发送 Bearer token，`SENTRIX_QWEN_ASR_TIMEOUT_S` 控制请求超时。
+- 转写片段保留原片 `start_sec` / `end_sec`，按与场景区间重叠关系附到对应视频场景。场景摘要刷新时，文字转写保存在 `source_metadata_json`，摘要中也保留 `语音：...`，不会因摘要重建而丢失。
+- 助手检索预览会把视频场景语音作为 `speech_evidence` 一并交给回答模型；视频候选携带场景语音，关键帧候选只携带与帧时间戳重叠的片段。规划器用 `spoken_content` 区分语音与图片 OCR，证据绑定也要求该语音来自视频范围。
+- 摘要提示明确区分视觉观察与语音内容：语音只支持说话内容，不能据此推断画面人物、物品或动作。ASR 未配置时与旧流程一致；无音轨或 ASR 失败不会阻断视频场景处理。
+- 本机端到端验证使用带语音的 `cooking_paella.mp4`：转写得到 0–29.55 秒和 29.55–38.99 秒两段，原秒数与文本均写入场景来源元数据，事件摘要刷新后仍保留语音；对“视频中说了哪些肉类”提问时，检索返回视频及关键帧，回答覆盖鸡肉、香肠、西班牙香肠和 chorizo，回合 `status=complete`、`answer_coverage=1.0`，没有调用图片 OCR。该样例有个别词识别错误，因此结果只证明链路可用，不代表 ASR 对任意视频都准确。
+
 审计对象：`docs/refactor/2026-10-04-s8-implementation-plan.md`。
 基线：设计文档 `docs/architecture/2026-09-21-sentrix-home-web-2-implementation-design.md:513`
 对 S8 的定义，与 1.0 的实现。

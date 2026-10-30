@@ -357,6 +357,7 @@ class Container:
                 QwenAudioTranscriber(
                     settings.qwen_asr_base_url,
                     settings.qwen_asr_model,
+                    api_key=settings.qwen_asr_api_key,
                     timeout_s=settings.qwen_asr_timeout_s,
                 )
                 if settings.qwen_asr_base_url.strip()

@@ -19,9 +19,10 @@ class QwenAudioTranscriber:
     segments, as provided by OpenAI-compatible Qwen3-ASR serving setups.
     """
 
-    def __init__(self, base_url: str, model: str, *, timeout_s: float = 300.0) -> None:
+    def __init__(self, base_url: str, model: str, *, api_key: str = "", timeout_s: float = 300.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._api_key = api_key.strip()
         self._timeout_s = timeout_s
 
     def transcribe_video(self, path: Path) -> tuple[TranscriptionSegment, ...]:
@@ -51,8 +52,10 @@ class QwenAudioTranscriber:
                 timeout=self._timeout_s,
             )
             with audio_path.open("rb") as audio:
+                headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
                 response = httpx.post(
                     f"{self._base_url}/audio/transcriptions",
+                    headers=headers,
                     data={
                         "model": self._model,
                         "response_format": "verbose_json",
