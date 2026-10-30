@@ -513,6 +513,7 @@ def test_apple_scoped_model_workers_deduplicate_shared_roles(monkeypatch):
 
     monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
     monkeypatch.setattr(apple, "_resident_group", lambda group: resident_observation(group, 200))
+    monkeypatch.setattr(apple, "_phys_footprint_group", lambda group: resident_observation(group, 200))
     data = provider._augment()
     assert data["product_stack_memory_mib"] == 200
     assert data["memory_observations"]["model"]["pids"] == [1, 2]
