@@ -186,6 +186,10 @@ export interface MemorySourceObservation {
 
 /** run 指标汇总。后端 `summary` 的字段是开放的，前端 `effectiveRunSummary` 现算 60+ 项。 */
 export interface RunSummary {
+  structured_json_requested?: number | null;
+  structured_json_total?: number | null;
+  structured_json_success?: number | null;
+  structured_json_rate?: number | null;
   run_valid?: boolean | null;
   completed?: number;
   total?: number;

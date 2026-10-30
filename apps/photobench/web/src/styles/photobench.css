@@ -1078,6 +1078,67 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .model-call-node > summary { flex-wrap:wrap; gap:4px 12px; }
 .model-call-body .call-purpose-grid { margin:8px 0; }
 
-/* 流水线含十个计时项，独占一行并按可用宽度排列。 */
-.pipeline-phase-card { grid-column:1 / -1; }
-.pipeline-phase-card .pipeline-metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); }
+/* 阶段卡按内容确定高度，展开详情仅延展所在行。 */
+.execution-phase-list { align-items:start; align-content:start; grid-auto-rows:auto; gap:10px; }
+.execution-phase-list > .phase-card { min-width:0; }
+.execution-phase-list .phase-title { min-height:22px; }
+.execution-phase-list .phase-summary { line-height:1.55; }
+.pipeline-phase-card { min-width:0; }
+.pipeline-details { margin-top:8px; }
+.pipeline-details > summary { cursor:pointer; font-size:12px; color:var(--accent); padding:5px 0; }
+.pipeline-details > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.pipeline-details > .muted,.pipeline-timing > .muted { font-size:11px; margin:6px 0; }
+.phase-scope-note { margin:5px 0 0 30px; color:var(--muted); font-size:11px; }
+.pipeline-timing-overview { display:flex; flex-wrap:wrap; gap:4px 16px; margin:6px 0 0 30px; color:var(--muted); font-size:12px; }
+.pipeline-timing-overview strong { color:var(--text); font-weight:600; }
+.pipeline-timing-group { margin-top:14px; }
+.pipeline-timing-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.pipeline-timing-heading h4 { margin:0; font-size:13px; }
+.pipeline-timing-heading > strong { font-size:13px; }
+.pipeline-timing-group > summary { cursor:pointer; font-size:12px; font-weight:600; }
+.pipeline-timing-group > .muted { margin:5px 0 8px; font-size:11px; }
+.pipeline-timing-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:7px; }
+.pipeline-timing-table { width:100%; min-width:400px; table-layout:fixed; border-collapse:collapse; background:var(--surface); }
+.pipeline-timing-table th,.pipeline-timing-table td { padding:7px 8px; text-align:left; vertical-align:top; font-size:12px; white-space:normal; overflow-wrap:anywhere; }
+.pipeline-timing-table thead th:first-child { width:45%; }
+.pipeline-timing-table thead th:nth-child(2) { width:25%; }
+.pipeline-timing-table thead th { color:var(--muted); background:var(--surface2); font-size:11px; }
+.pipeline-timing-table tbody th { width:45%; font-weight:500; }
+.pipeline-timing-table .timing-value { width:25%; white-space:nowrap; }
+.pipeline-timing-table td:nth-child(3) { width:30%; }
+.pipeline-timing-table th small { display:block; color:var(--muted); font-size:11px; font-weight:400; margin-top:3px; }
+.timing-value small { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
+.timing-basis { display:inline-block; padding:2px 5px; border-radius:4px; background:var(--surface2); color:var(--muted); font-size:10px; white-space:nowrap; }
+.pipeline-timing-table .timing-included th { padding-left:26px; color:var(--muted); }
+
+/* 三段表示流水线步骤，只有阶段成功终态才全部填满。 */
+.pipeline-overall { margin:6px 0 0 30px; }
+.pipeline-overall-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:3px 10px; font-size:12px; }
+.pipeline-overall-heading > b { font-weight:500; }
+.pipeline-overall-heading > span { color:var(--muted); font-size:11px; }
+.pipeline-step-track { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:7px 0 4px; }
+.pipeline-step-bar { height:4px; border-radius:2px; background:var(--border); overflow:hidden; }
+.pipeline-step-bar i { display:block; height:100%; background:var(--accent); }
+.pipeline-step.done i { background:var(--accent2); }
+.pipeline-step.stopped i { background:var(--danger); }
+.pipeline-step.running .pipeline-step-bar { outline:1px solid var(--accent); outline-offset:1px; }
+.pipeline-step > span { display:block; margin-top:4px; font-size:10px; color:var(--muted); }
+.pipeline-step.running > span { color:var(--accent); font-weight:600; }
+.pipeline-step.stopped > span { color:var(--danger); }
+.pipeline-step-bar i.indeterminate { width:40% !important; animation:pipeline-working 1.5s linear infinite; }
+.pipeline-counts { margin:5px 0 0; color:var(--muted); font-size:11px; }
+@keyframes pipeline-working { from { transform:translateX(-110%); } to { transform:translateX(260%); } }
+@media (prefers-reduced-motion:reduce) { .pipeline-step-bar i.indeterminate { animation:none; } }
+
+/* 登记首屏与身份卡共用摘要基线，补充说明按需展开。 */
+.phase-import-details { margin:5px 0 0 30px; color:var(--muted); font-size:12px; line-height:1.55; }
+.phase-import-details > summary { display:flex; align-items:baseline; flex-wrap:wrap; gap:2px 12px; cursor:pointer; list-style:none; }
+.phase-import-details > summary::-webkit-details-marker { display:none; }
+.phase-import-toggle { color:var(--accent); font-size:11px; white-space:nowrap; }
+.phase-import-toggle::after { content:" ▸"; }
+.phase-import-details[open] .phase-import-toggle::after { content:" ▾"; }
+.phase-import-details > p { margin:7px 0 0; font-size:11px; }
+.phase-import-details > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.execution-phase-list .phase-name { min-width:0; }
+.execution-phase-list .phase-step,.execution-phase-list .phase-status { flex-shrink:0; }
+.execution-phase-list .phase-summary { overflow-wrap:anywhere; }

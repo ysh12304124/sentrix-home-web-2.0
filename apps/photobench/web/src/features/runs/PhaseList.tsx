@@ -1,20 +1,12 @@
-/**
- * 6 张 Pipeline 执行阶段卡 + 阶段错误明细。逐行照搬
- * 1.0 `services/photobench/frontend/src/App.vue:3097-3129`（只读权威；任务表给的是
- * `:3090-3118`，实测 phase-list 到 `</div>` 收在 `:3129`）。
- *
- * `phasePercent` 是 1.0 `App.vue:2195-2198` 的私有函数，2.0 lib 尚未收，照搬在本文件。
- * `phaseSummary` / `phaseErrorDetails` / `phaseErrorSummary` / `pipelineMetricRows` 已在
- * `lib/details.ts`，直接 import。
- *
- * `phaseSummary(key, phase, itemCount)` 的第三参是 1.0 闭包读的 `activeRun.item_count`
- * （1.0 `:2175` 的 `activeRun.value?.item_count`），模板里只传两个参数——这里补上。
- */
+/** 测评阶段、流水线处理进度及已有计时的只读展示。 */
 import { useEffect, useState } from "react";
 import type { Phase, Run } from "../../api/types.ts";
 import { EXECUTION_PHASES } from "../../lib/constants.ts";
-import { phaseErrorDetails, phaseErrorSummary, phaseSummary, pipelineMetricRows } from "../../lib/details.ts";
+import { phaseErrorDetails, phaseErrorSummary, phaseSummary } from "../../lib/details.ts";
+import { phaseElapsed, pipelineDuration, pipelineTimingView } from "../../lib/pipelineTiming.ts";
+import type { PipelineTimingGroup } from "../../lib/pipelineTiming.ts";
 import { statusLabel } from "../../lib/format.ts";
+import { pipelineProgressView } from "../../lib/pipelineProgress.ts";
 
 /** 1.0 `App.vue:2195-2198`。 */
 function phasePercent(phase: Phase | undefined): number {
@@ -50,6 +42,19 @@ function elapsedSeconds(start: unknown, end: number): string {
     ? String(Math.max(0, Math.floor((end - time) / 1000))) : "?";
 }
 
+function TimingTable({ group }: { group: PipelineTimingGroup }) {
+  return <div className="pipeline-timing-table-wrap">
+    <table className="pipeline-timing-table" aria-label={group.title}>
+      <thead><tr><th>处理环节</th><th>耗时</th><th>计时口径</th></tr></thead>
+      <tbody>{group.rows.map(row => <tr key={row.key} className={row.nested ? "timing-included" : undefined}>
+        <th scope="row">{row.label}<small>{row.description}</small></th>
+        <td className="timing-value"><strong>{row.value}</strong>{row.share ? <small>占后端 {row.share}</small> : null}</td>
+        <td><span className="timing-basis">{row.basis}</span></td>
+      </tr>)}</tbody>
+    </table>
+  </div>;
+}
+
 export function PhaseList({ activeRun }: PhaseListProps) {
   const [now, setNow] = useState(() => Date.now());
   const terminal = ["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status ?? "");
@@ -63,7 +68,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
     <>
       <h3>Pipeline 执行阶段</h3>
       {activeRun.mode === "build" ? <p>仅构建记忆空间；QA、Judge 和评分有效性不适用。</p> : null}
-      <div className="phase-list">
+      <div className="phase-list execution-phase-list">
         {EXECUTION_PHASES.filter((p) => activeRun.mode !== "build" || p.key !== "qa_eval").map((phaseDef, index) => {
           const phase = activeRun.phases?.[phaseDef.key];
           const start = typeof phase?.started_at === "string" ? Date.parse(phase.started_at) : NaN;
@@ -78,7 +83,13 @@ export function PhaseList({ activeRun }: PhaseListProps) {
           const finishedAt = (processingDetails ?? phase)?.finished_at ?? (terminal ? activeRun.finished_at : null);
           const end = typeof finishedAt === "string" ? Date.parse(finishedAt) : now;
           const errors = phaseErrorDetails(phase);
-          const metrics = pipelineMetricRows(phase);
+          const displayImport = !terminal && legacyImport?.status === "running" && typeof legacyImport.started_at === "string"
+            ? { ...legacyImport, total_seconds: Math.max(0, (now - Date.parse(legacyImport.started_at)) / 1000) }
+            : legacyImport;
+          const flow = phaseDef.key === "pipeline_processing" ? pipelineProgressView(activeRun, now) : null;
+          const timing = flow ? pipelineTimingView(displayPhase, displayImport) : null;
+          const clock = flow ? phaseElapsed(flow.combined ? displayImport : displayPhase) : null;
+          const status = flow?.status ?? phase?.status ?? "pending";
           return (
             <article className={phaseDef.key === "pipeline_processing" ? "phase-card pipeline-phase-card" : "phase-card"} key={phaseDef.key}>
               <div className="phase-title">
@@ -86,11 +97,62 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                   <span className="phase-step">{index + 1}</span>
                   <b>{phaseDef.label}</b>
                 </div>
-                <span className={"phase-status " + (phase?.status || "pending")}>
-                  {statusLabel(phase?.status || "pending")}
+                <span className={"phase-status " + status}>
+                  {statusLabel(status)}
                 </span>
               </div>
-              <p className="phase-summary">{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
+              {flow ? <div className="pipeline-overall">
+                <div className="pipeline-overall-heading">
+                  <b>{flow.label}</b>
+                  <span>{clock?.seconds != null ? `${flow.combined ? "合并请求" : clock.label} ${pipelineDuration(clock.seconds)}` : ""}
+                    {flow.status === "done" ? " · 100%" : ""}</span>
+                </div>
+                <div role="progressbar" aria-label="流水线整体进度" aria-valuemin={0} aria-valuemax={100}
+                  aria-valuenow={flow.status === "done" ? 100 : undefined} aria-valuetext={flow.label}
+                  className={"pipeline-step-track " + flow.status}>
+                  {flow.steps.map(step => <div key={step.label} className={"pipeline-step " + step.state}>
+                    <div className="pipeline-step-bar"><i
+                      className={step.state === "running" && step.fraction === null ? "indeterminate" : undefined}
+                      style={{ width: `${(step.fraction ?? 0) * 100}%` }} /></div>
+                    <span>{step.state === "done" ? "✓ " : ""}{step.label}</span>
+                  </div>)}
+                </div>
+                <p className="pipeline-counts">{flow.detail}</p>
+                {flow.warning ? <p className="import-progress-warning">{flow.warning}</p> : null}
+              </div> : phaseDef.key === "photo_import" ? <details className="phase-import-details">
+                <summary><span>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count, true)}</span><span className="phase-import-toggle">登记明细</span></summary>
+                <p>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
+                <p>文件登记、去重、元数据读取与预览准备；媒体处理见流水线。</p>
+              </details> : <p className="phase-summary">{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>}
+              {errors.length > 0 ? (
+                <details className="phase-errors">
+                  <summary>{phaseErrorSummary(phase)}</summary>
+                  <ul>
+                    {errors.slice(0, 20).map((raw, detailIndex) => {
+                      const detail = raw as Record<string, unknown>;
+                      return (
+                        <li key={`${String(detail.sample_id || "error")}-${detailIndex}`}>
+                          <b>{String(detail.sample_id || "未知样本")}</b>
+                          <span>{String(detail.reason || detail.error || "未提供原因")}</span>
+                          <small>
+                            {String(detail.error_type || detail.status || "错误")}
+                            {detail.asset_id ? ` · ${String(detail.asset_id)}` : ""}
+                          </small>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {errors.length > 20 ? <p>仅展示前 20 条，完整记录已保存在 run.json。</p> : null}
+                </details>
+              ) : null}
+              {phaseDef.key === "photo_import" && phase?.status === "running" && phase?.progress ? (
+                <div className="phase-bar">
+                  <div className="phase-bar-fill" style={{ width: `${phasePercent(phase)}%` }} />
+                </div>
+              ) : null}
+              {processingDetails || (timing && timing.groups.length > 0) ? (
+                <details className="pipeline-details" key={`${activeRun.run_id}-pipeline-details`}>
+                  <summary>处理步骤与耗时详情</summary>
               {processingDetails && progress?.current_directory ? (
                 <div className="import-progress-panel" data-testid="import-waiting">
                   <p className="muted">历史合并请求中的处理进度；计时保留原记录。</p>
@@ -117,11 +179,6 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                       {observation ? `后端状态：${observation.status ?? "未知"} · 更新于 ${observation.updated_at ?? "未记录"}` : "等待进度接口"}
                     </span>
                   </div>
-                  {progress?.request_error ? <p className="import-progress-warning">请求错误：{progress.request_error}；产品是否已停止以独立进度为准。</p> : null}
-                  {progress?.availability !== "available" ? <p className="import-progress-warning">查询状态：{progress?.availability ?? "未接入"} · {progress?.query_error ?? "等待进度接口"}；保留的计数不是当前实时进度。</p> : null}
-                  {!terminal && phase?.status === "running" && progress?.last_received_at &&
-                    Number(elapsedSeconds(progress.last_received_at, now)) > 10
-                    ? <p className="import-progress-warning">进度查询超过 10 秒未刷新，当前显示上次观测。</p> : null}
                   <div className="import-progress-directory">
                     已完成目录 {Number(progress.directories_done ?? 0)}/{Number(progress.directories_total ?? 0)}
                   </div>
@@ -135,46 +192,20 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                     <small>媒体处理进度；事件总结和人物画像另行收尾。</small>
                   </div>
                 ) : null}
-              {errors.length > 0 ? (
-                <details className="phase-errors">
-                  <summary>{phaseErrorSummary(phase)}</summary>
-                  <ul>
-                    {errors.slice(0, 20).map((raw, detailIndex) => {
-                      const detail = raw as Record<string, unknown>;
-                      return (
-                        <li key={`${String(detail.sample_id || "error")}-${detailIndex}`}>
-                          <b>{String(detail.sample_id || "未知样本")}</b>
-                          <span>{String(detail.reason || detail.error || "未提供原因")}</span>
-                          <small>
-                            {String(detail.error_type || detail.status || "错误")}
-                            {detail.asset_id ? ` · ${String(detail.asset_id)}` : ""}
-                          </small>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  {errors.length > 20 ? <p>仅展示前 20 条，完整记录已保存在 run.json。</p> : null}
+                  {phase?.progress ? <p className="muted">媒体处理后还需完成事件总结、图谱和人物信息更新。</p> : null}
+                  {timing ? <div className="pipeline-timing">
+                    {timing.overview.map(row => <p className="muted" key={row.label}>{row.label} <strong>{row.value}</strong> · {row.note}</p>)}
+                    {timing.groups.map(group => group.collapsed
+                      ? <details className="pipeline-timing-group" key={group.key}>
+                        <summary>{group.title}</summary><p className="muted">{group.note}</p><TimingTable group={group} />
+                      </details>
+                      : <section className="pipeline-timing-group" key={group.key} aria-label={group.title}>
+                        <div className="pipeline-timing-heading"><h4>{group.title}</h4>{group.summary ? <strong>{group.summary}</strong> : null}</div>
+                        <p className="muted">{group.note}</p><TimingTable group={group} />
+                      </section>)}
+                    <p className="muted">未记录的独立计时保持空缺；细分时延以已保存的调用统计为准。</p>
+                  </div> : null}
                 </details>
-              ) : null}
-              {(phaseDef.key === "photo_import" || phaseDef.key === "pipeline_processing") && phase?.progress ? (
-                <div className="phase-bar">
-                  <div className="phase-bar-fill" style={{ width: `${phasePercent(phase)}%` }} />
-                </div>
-              ) : null}
-              {phaseDef.key === "pipeline_processing" && phase?.progress ? (
-                <p className="muted">媒体进度按处理、失败和跳过的数量统计；事件总结、图构建和人物信息更新结束后，流水线才完成。</p>
-              ) : null}
-              {phaseDef.key === "pipeline_processing" && metrics.length > 0 ? (
-                <><p className="muted">耗时由产品流水线返回；未记录的步骤无法确认是否执行。并发累计耗时及包含项不相加。</p>
-                <div className="phase-metrics pipeline-metrics">
-                  {metrics.map((row) => (
-                    <div className="phase-metric" key={row[0]}>
-                      <span>{row[0]}</span>
-                      <strong>{row[1]}</strong>
-                      <small>{row[2]}</small>
-                    </div>
-                  ))}
-                </div></>
               ) : null}
             </article>
           );

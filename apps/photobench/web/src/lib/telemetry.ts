@@ -639,8 +639,9 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
     [typedMediaMetrics ? "媒体检索 Precision" : "历史图片检索 Precision", fmtPct(s.retrieval_precision_macro), `交付准确率：模型拿出来交付的图里有多少属于 GT · 逐 QA 求值后平均 · ${s.retrieval_metric_count ?? 0} 题有 GT · 排除 ${s.retrieval_excluded_unanswerable_count ?? 0} 道不可回答题`, true],
     [typedMediaMetrics ? "媒体检索 Recall" : "历史图片检索 Recall", fmtPct(s.retrieval_recall_macro), typedMediaMetrics ? "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；图/视频按类型与稳定标识匹配" : "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；历史 run 无法补算视频指标", true],
     ["回答质量均分", s.answer_quality_mean == null ? "-" : `${s.answer_quality_mean} / 2`, `Judge 给最终回答打分（2 完全支持 / 1 部分支持 / 0 不支持）的均值，唯一回答「模型能不能用」的端到端结论 · 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} · 无效 ${(s.total ?? 0) - (s.judge_valid_count ?? 0)} · 0:${dist["0"] || 0} · 1:${dist["1"] || 0} · 2:${dist["2"] || 0}`, true],
-    ["步数内 QA 完成率", fmtPct(s.qa_completion_within_steps_rate), `在限定步数内跑完流程的题占比，衡量 Agent 是否收敛而不是反复绕圈 · 有效记录 ${s.qa_completion_valid_count ?? 0} 题`, true],
+    ["步数内 QA 完成率", fmtPct(s.qa_completion_within_steps_rate), `在步骤预算内生成终态回答的题占比；证据缺口计流程完成，答案质量另由 Judge 评分 · 有效记录 ${s.qa_completion_valid_count ?? 0} 题`, true],
     ["工具参数 JSON 解析率", fmtPct(s.tool_argument_json_rate), s.tool_argument_json_total == null ? "未记录或未调用原生工具；普通文本回答不进入分母" : `${s.tool_argument_json_success}/${s.tool_argument_json_total} 次原生工具参数`, true],
+    ["JSON 对象解析率", s.structured_json_rate == null ? "未记录" : fmtPct(s.structured_json_rate), s.structured_json_requested == null ? "未记录：历史调用未采集 JSON 输出契约；自由文本不计入分母" : `明确要求 JSON 对象的规划、核验、工具内部及 Judge 调用；每次重试单独统计 · 解析成功 ${s.structured_json_success ?? 0}/${s.structured_json_total ?? 0} · 要求 JSON ${s.structured_json_requested} 次；无响应不计解析分母`, true],
     ["旧 JSON 动作解析率", fmtPct(s.json_parse_success_rate), s.json_parse_total == null ? "旧 JSON 动作协议；原生工具模式未适用，旧结果缺失事实时未记录" : `需要结构化输出的调用里一次解析成功的比例，衡量格式稳定性 · ${s.json_parse_success ?? 0}/${s.json_parse_total} 个`, true],
     ["Agent 并发吞吐折算时延", fmtMs(s.agent_throughput_latency_ms), throughputNote, true],
     ["平均调用轮数", s.agent_loop_calls_mean == null ? "未记录" : `${Number(s.agent_loop_calls_mean).toFixed(2)} 轮`, `每道题平均经历几轮模型调用，轮数越高越可能在反复试探 · 仅 Agent/Recovery，不含 L2 Judge、Final Writer 和工具内部模型`, true],
@@ -659,8 +660,8 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
     ["端到端测评总时延（不含 Judge）", fmtMs(s.benchmark_e2e_latency_excluding_judge_ms), "身份/关系及图片导入开始至最后一个 Agent 完成；Judge 可并行执行"],
     ["完全准确率", fmtPct(s.exact_accuracy), "Judge 给 2 分（完全支持）的题占比 · 严格口径"],
     ["核心准确率", fmtPct(s.core_accuracy), "Judge 给 1 或 2 分的题占比 · 宽松口径"],
-    ["LLM TTFT 均值", fmtMs(s.llm_ttft_ms_mean), "首 token 响应时间均值，衡量并发排队下的响应灵敏度"],
-    ["LLM 生成速度", s.llm_tokens_per_second_mean == null ? "-" : `${Number(s.llm_tokens_per_second_mean).toFixed(1)} token/s`, "主 Agent 平均生成速度；流式调用是纯解码速率，非流式是端到端速率，两者不可直接横比"],
+    ["LLM TTFT 均值", s.llm_ttft_ms_mean == null && s.llm_call_metrics_count > 0 && s.llm_nonstreamed_count === s.llm_call_metrics_count ? "不适用（非流式）" : fmtMs(s.llm_ttft_ms_mean), "首 token 响应时间均值，衡量并发排队下的响应灵敏度"],
+    ["LLM 生成速度", s.llm_tokens_per_second_mean == null ? "未记录" : `${Number(s.llm_tokens_per_second_mean).toFixed(1)} token/s`, "主 Agent 平均生成速度；流式调用是纯解码速率，非流式是端到端速率，两者不可直接横比"],
   ];
 }
 
