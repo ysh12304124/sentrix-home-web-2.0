@@ -169,6 +169,42 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
         asset_id: max(rows, key=lambda item: (item[0], item[1]))[3]
         for asset_id, rows in observations_by_asset.items()
     }
+
+    # 原始图片的直接关系参考集。关键帧仍走下面独立的 hpq 规则；这里排除派生图片，
+    # 避免一张视频关键帧同时被计入普通图片图。
+    timed_images: list[tuple[float, str]] = []
+    image_objects: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for node_id, (kind, attrs) in nodes.items():
+        if kind != "asset" or attrs.get("media_type") != "image" or attrs.get("derived_kind"):
+            continue
+        captured_at = _date(attrs.get("captured_at"))
+        if captured_at is not None:
+            timed_images.append((captured_at.timestamp(), node_id))
+        observation_attrs = latest.get(node_id.removeprefix("asset:"), {})
+        labels = tuple(
+            dict.fromkeys(
+                str(label).strip().casefold()
+                for label in _strings(observation_attrs.get("objects"))
+                if str(label).strip().casefold() not in GENERIC_OBJECTS
+            )
+        )[:8]
+        for label in labels:
+            image_objects[label].append((node_id, str(attrs.get("captured_at") or "")))
+
+    timed_images.sort(key=lambda item: (item[0], item[1]))
+    for (left_timestamp, left_id), (right_timestamp, right_id) in zip(
+        timed_images, timed_images[1:], strict=False
+    ):
+        gap = right_timestamp - left_timestamp
+        if 0 <= gap <= 24 * 60 * 60:
+            reference.add((left_id, right_id, "image_temporal_next", ""))
+
+    for label, image_matches in image_objects.items():
+        image_matches.sort(key=lambda item: (item[1] == "", item[1], item[0]))
+        for index, (left_id, _) in enumerate(image_matches):
+            for right_id, _ in image_matches[index + 1 : index + 1 + 8]:
+                reference.add((left_id, right_id, "image_shares_object", label))
+
     for video_id, rows in frames_by_video.items():
         rows = [row for row in rows if row[1].removeprefix("asset:") in latest]
         rows.sort(key=lambda row: (row[0], row[1]))

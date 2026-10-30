@@ -30,6 +30,7 @@ from sentrix.domain.memories.ports import (
 )
 from sentrix.domain.retrieval.ports import VectorRepository
 
+from .image_graph import project_image_graph
 from .keyframe_graph import project_keyframe_graph
 
 log = logging.getLogger("sentrix.memories.build_graph")
@@ -480,6 +481,19 @@ class BuildMemoryGraph:
                 discriminator=discriminator,
             ),
         )
+        image_stats = project_image_graph(
+            assets=assets,
+            latest_observations=latest_by_asset,
+            vectors=self._vectors,
+            add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
+                source,
+                target,
+                relation,
+                weight=weight,
+                attributes=attributes,
+                discriminator=discriminator,
+            ),
+        )
 
         causal_started = time.perf_counter()
         frames: list[CausalFrame] = []
@@ -594,6 +608,11 @@ class BuildMemoryGraph:
             keyframe_relation_edges=keyframe_stats.relation_edges,
             keyframe_visual_edges=keyframe_stats.visual_edges,
             keyframe_visual_status=keyframe_stats.visual_status,
+            image_count=image_stats.image_count,
+            image_temporal_edges=image_stats.temporal_edges,
+            image_object_edges=image_stats.object_edges,
+            image_visual_edges=image_stats.visual_edges,
+            image_visual_status=image_stats.visual_status,
         )
 
     @staticmethod

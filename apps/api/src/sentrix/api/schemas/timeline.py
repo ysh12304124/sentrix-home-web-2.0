@@ -148,6 +148,11 @@ class MemoryGraphBuildResponse(BaseModel):
     keyframe_relation_edges: int = 0
     keyframe_visual_edges: int = 0
     keyframe_visual_status: str = "no_frames"
+    image_count: int = 0
+    image_temporal_edges: int = 0
+    image_object_edges: int = 0
+    image_visual_edges: int = 0
+    image_visual_status: str = "no_images"
 
 
 class PipelineProcessResponse(BaseModel):

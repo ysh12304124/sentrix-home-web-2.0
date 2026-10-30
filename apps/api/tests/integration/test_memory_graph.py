@@ -179,6 +179,57 @@ def test_build_graph_consumes_standard_memory_records_without_keyframes(migratio
     ]
 
 
+def test_build_graph_links_original_images_by_object_time_and_visual_similarity(migrations_ready_db):
+    assets = (
+        replace(_asset("image-a", "/tmp/a.jpg"), captured_at=NOW),
+        replace(_asset("image-b", "/tmp/b.jpg"), captured_at=NOW.replace(hour=13)),
+        replace(_asset("image-c", "/tmp/c.jpg"), captured_at=NOW.replace(day=24)),
+    )
+    observations = (
+        replace(_observation("obs-a", "image-a"), objects=("bottle",)),
+        replace(_observation("obs-b", "image-b"), objects=("bottle",)),
+        replace(_observation("obs-c", "image-c"), objects=("tree",)),
+    )
+
+    class _Vectors:
+        def get(self, *, space, source_type, source_id, model_name=None):
+            assert space == "visual" and source_type == "asset"
+            vectors = {
+                "image-a": (1.0, 0.0),
+                "image-b": (0.99, 0.1),
+                "image-c": (0.0, 1.0),
+            }
+            return VectorRecord(
+                scope_id=SCOPE,
+                space=space,
+                source_type=source_type,
+                source_id=source_id,
+                model_name="clip-test",
+                vector=vectors[source_id],
+            )
+
+    graph = SqliteMemoryGraphRepository(migrations_ready_db)
+    stats = BuildMemoryGraph(
+        assets=_ListSource(assets),
+        observations=_ListSource(observations),
+        events=_EventSource((), ()),
+        participants=_ParticipantSource(),
+        entities=_ListSource(()),
+        facts=_ListSource(()),
+        relationships=_ListSource(()),
+        graph=graph,
+        vectors=_Vectors(),
+    ).execute(SCOPE)
+
+    assert stats.image_count == 3
+    assert stats.image_temporal_edges == 1
+    assert stats.image_object_edges == 1
+    assert stats.image_visual_edges == 1
+    assert stats.image_visual_status == "ok"
+    assert graph.expand_assets(("image-a",), scope_id=SCOPE, max_hops=1, limit=10)
+    assert graph.quality(SCOPE)["reference_edge_recall"] == 1.0
+
+
 def test_build_graph_keeps_video_keyframe_lineage_as_a_traversable_edge(migrations_ready_db):
     assets = (_asset("video", "/tmp/video.mp4"), _asset("frame", "/tmp/frame.webp", parent_asset_id="video"))
     observations = (_observation("obs-frame", "frame"),)

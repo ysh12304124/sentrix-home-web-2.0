@@ -347,6 +347,11 @@ def process_album_pipeline(
                 keyframe_relation_edges=graph.keyframe_relation_edges,
                 keyframe_visual_edges=graph.keyframe_visual_edges,
                 keyframe_visual_status=graph.keyframe_visual_status,
+                image_count=graph.image_count,
+                image_temporal_edges=graph.image_temporal_edges,
+                image_object_edges=graph.image_object_edges,
+                image_visual_edges=graph.image_visual_edges,
+                image_visual_status=graph.image_visual_status,
             )
             if graph is not None
             else None

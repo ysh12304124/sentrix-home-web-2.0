@@ -206,6 +206,8 @@ class SqliteMemoryGraphRepository:
             "frame_shares_object",
             "frame_mentions_relation",
             "frame_shares_relation",
+            "image_temporal_next",
+            "image_shares_object",
             "event_place_context",
             "event_date_context",
             "asset_place_context",
@@ -229,6 +231,9 @@ class SqliteMemoryGraphRepository:
             "frame_mentions_relation": {("asset", "relation_hub")},
             "frame_shares_relation": {("asset", "asset")},
             "frame_visual_similar": {("asset", "asset")},
+            "image_temporal_next": {("asset", "asset")},
+            "image_shares_object": {("asset", "asset")},
+            "image_visual_similar": {("asset", "asset")},
             "event_place_context": {("event", "place_context")},
             "event_date_context": {("event", "date_context")},
             "asset_place_context": {("asset", "place_context")},
@@ -270,12 +275,16 @@ class SqliteMemoryGraphRepository:
                 attribute_supported += 1
             if not isinstance(attributes, dict):
                 attributes = {}
-            discriminator = str(attributes.get("label") or "") if relation.startswith("frame_") else ""
+            discriminator = (
+                str(attributes.get("label") or "")
+                if relation.startswith(("frame_", "image_")) and relation.endswith(("object", "relation"))
+                else ""
+            )
             key = (source_id, target_id, relation, discriminator)
             predicted_counts[key] += 1
             if relation in evaluable_relations:
                 predicted_reference.add(key)
-            if relation == "frame_visual_similar":
+            if relation in {"frame_visual_similar", "image_visual_similar"}:
                 with suppress(TypeError, ValueError):
                     evidence_supported += float(attributes.get("similarity") or 0.0) >= 0.75
             elif relation.startswith("asset_causes_asset:"):
