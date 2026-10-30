@@ -37,6 +37,7 @@ import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ from sentrix.application.media.import_assets import (
     PreparedImage,
     StagedImport,
 )
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.media.models import Asset, AssetStatus
 from sentrix.domain.media.ports import AssetRepository
 from sentrix.domain.media.progress import OperationCancelled
@@ -453,7 +455,10 @@ class ProcessAlbumPipeline:
         prepared: dict[int, Future[PreparedImage]] = {}
         next_submit = next_finish = 0
 
-        with ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="sentrix-pipeline") as pool:
+        with (
+            stage_span("media_processing"),
+            ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="sentrix-pipeline") as pool,
+        ):
             while next_finish < len(targets):
                 while next_submit < len(targets) and next_submit - next_finish < self._workers:
                     index = next_submit
@@ -462,7 +467,7 @@ class ProcessAlbumPipeline:
                     if asset is None:
                         continue
                     self._assets.update_status(asset.id, AssetStatus.PROCESSING)
-                    prepared[index] = pool.submit(self._importer.prepare_image, asset)
+                    prepared[index] = pool.submit(copy_context().run, self._prepare_source, asset)
 
                 index = next_finish
                 next_finish += 1
@@ -492,7 +497,8 @@ class ProcessAlbumPipeline:
                     timing_totals[key] = timing_totals.get(key, 0.0) + float(value)
 
         summarize_started = time.perf_counter()
-        summarized = self._summarize_events(event_ids)
+        with stage_span("event_summarize"):
+            summarized = self._summarize_events(event_ids)
         timing_totals["event_summarize"] = time.perf_counter() - summarize_started
         total_seconds = time.perf_counter() - total_started
         timing_totals["pipeline_core"] = total_seconds
@@ -507,6 +513,10 @@ class ProcessAlbumPipeline:
             failures=tuple(failures[index] for index in sorted(failures)),
             timings={key: round(value, 3) for key, value in timing_totals.items()},
         )
+
+    def _prepare_source(self, asset: Asset) -> PreparedImage:
+        with stage_span("source_memory_prepare", asset.id):
+            return self._importer.prepare_image(asset)
 
     def _summarize_events(self, event_ids: list[str]) -> int:
         if self._summarize_event is None:

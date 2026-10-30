@@ -1822,6 +1822,7 @@ class RunExecution:
             "video_scene_count": int(result.get("video_scenes") or 0),
             "summarized_count": int(result.get("summarized") or 0),
             "timings": timings,
+            "timing_spans": result.get("timing_spans") or [],
             "keyframe_extraction_seconds": timings.get("video_keyframe_extraction", 0.0),
             "keyframe_memory_seconds": timings.get("video_keyframe_memory", 0.0),
             "source_memory_prepare_worker_seconds": timings.get("source_memory_prepare", 0.0),

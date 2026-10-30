@@ -696,10 +696,14 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
   const gpuMemoryKey = resourceProtocol(gpu) || isUnified || isOrin
     ? "model_process_gpu_memory_mib" : "model_process_memory_used_mib";
   const gpuPeak = telemetryNumber(dict(gpu[gpuMemoryKey]).peak);
+  const deviceGpuPeak = telemetryNumber(dict(gpu.device_gpu_memory_mib).peak);
+  const useDeviceGpu = isUnified && (gpuPeak === null || gpuPeak < 0) && deviceGpuPeak !== null && deviceGpuPeak >= 0;
   const memoryPeak = telemetryNumber(processMemory);
   const memoryValue = (peak: number | null) => peak !== null && peak >= 0 ? fmtMemory(peak) : "未记录";
   const gpuMemoryNote = isUnified
-    ? `统一内存；主模型 GPU 分配未单独采集时显示未记录。整机 GPU 分配峰值 ${memoryValue(telemetryNumber(dict(gpu.device_gpu_memory_mib).peak))}（参考），与进程内存可能重叠`
+    ? useDeviceGpu
+      ? "Mac 未提供主模型独立 GPU 占用，显示整机 GPU 分配采样峰值，包含其他应用；统一内存，与进程内存可能重叠，不相加"
+      : "主模型 GPU 分配采样峰值；统一内存，与进程内存可能重叠，不相加"
     : isOrin
       ? "主模型 GPU/UMA 分配采样峰值；来源以原采样记录为准，与进程内存可能重叠，不相加"
       : "主模型进程组显存采样峰值 · NVML 按模型 PID 汇总；与主机内存分开记录";
@@ -735,8 +739,8 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
       note: processMemoryNote,
     },
     {
-      label: "主模型显存占用",
-      value: memoryValue(gpuPeak),
+      label: useDeviceGpu ? "整机GPU占用（参考）" : "主模型显存占用",
+      value: memoryValue(useDeviceGpu ? deviceGpuPeak : gpuPeak),
       note: gpuMemoryNote,
     },
   ];

@@ -88,6 +88,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
@@ -424,11 +425,16 @@ class ImportAssets:
         total_started = time.perf_counter()
         asset = staged.asset
         commit_started = time.perf_counter()
-        processed = self.commit_image(asset, prepared)
+        with stage_span("source_memory_commit", asset.id):
+            processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
-        video_scenes = self._extract_video_scenes(asset)
+        if asset.media_type is MediaType.VIDEO:
+            with stage_span("video_total", asset.id):
+                video_scenes = self._extract_video_scenes(asset)
+        else:
+            video_scenes = self._extract_video_scenes(asset)
 
         # 整个视频阶段的秒数落库**排在场景抽取之后**：1.0 的 ``video_processing_seconds``
         # 覆盖的是「探测 → 图片流水线 → 抽帧建场景」整段（``processor.py:205/420``），

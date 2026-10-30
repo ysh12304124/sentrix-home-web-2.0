@@ -579,8 +579,18 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
             "lexical_terms": 8,
             "video_scenes": 3,
             "summarized": 1,
+            "timing_spans": [
+                {
+                    "stage": "media_processing",
+                    "status": "completed",
+                    "started_at": "2026-10-30T00:00:00Z",
+                    "finished_at": "2026-10-30T00:00:06Z",
+                    "elapsed_seconds": 6.0,
+                }
+            ],
             "timings": {
                 "source_memory_prepare": 10.0,
+                "source_memory_prepare_wall": 6.0,
                 "source_memory_commit": 2.0,
                 "video_keyframe_extraction": 4.0,
                 "video_keyframe_memory": 12.0,
@@ -603,6 +613,16 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
     assert photo["pipeline_seconds"] == 0.0
     assert photo["scanned_count"] == 2
     assert photo["timings"]["asset_import"] == 1.2
+    assert pipeline["timing_spans"] == [
+        {
+            "stage": "media_processing",
+            "status": "completed",
+            "started_at": "2026-10-30T00:00:00Z",
+            "finished_at": "2026-10-30T00:00:06Z",
+            "elapsed_seconds": 6.0,
+        }
+    ]
+    assert pipeline["timings"]["source_memory_prepare_wall"] == 6.0
     assert pipeline["keyframe_extraction_seconds"] == 4.0
     assert pipeline["keyframe_memory_seconds"] == 12.0
     assert pipeline["graph_build_seconds"] == 0.4

@@ -94,6 +94,19 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
     assert body["failures"] == []
     assert body["timings"]["source_memory_prepare"] >= 0
     assert body["timings"]["source_memory_commit"] >= 0
+    spans = body["timing_spans"]
+    major = [row for row in spans if row["stage"] in {"media_processing", "event_summarize", "finalize"}]
+    assert [row["stage"] for row in major] == ["media_processing", "event_summarize", "finalize"]
+    assert all(row["status"] == "completed" for row in major)
+    for before, after in zip(major, major[1:], strict=False):
+        assert before["finished_offset_seconds"] <= after["started_offset_seconds"]
+    for row in spans:
+        assert row["started_at"] <= row["finished_at"]
+        assert row["elapsed_seconds"] >= 0
+    assert sum(row["stage"] == "source_memory_prepare" for row in spans) == 2
+    assert sum(row["stage"] == "source_memory_commit" for row in spans) == 2
+    assert body["timings"]["source_memory_prepare_wall"] >= 0
+
     assert body["timings"]["memory_graph"] >= 0
     assert body["timings"]["total"] >= body["timings"]["memory_graph"]
     assert body["memory_graph"]["node_count"] > 0
@@ -130,6 +143,18 @@ def test_video_keyframes_and_their_memories_wait_for_pipeline(client: TestClient
     assert body["video_scenes"] == 1
     assert body["timings"]["video_keyframe_extraction"] >= 0
     assert body["timings"]["video_keyframe_memory"] >= 0
+    span_keys = {row["stage"] for row in body["timing_spans"]}
+    assert {
+        "video_total",
+        "video_scene_planning",
+        "video_scene_write",
+        "video_keyframe_extraction",
+        "video_keyframe_asset_write",
+        "video_keyframe_memory",
+    } <= span_keys
+    assert body["timings"]["video_keyframe_memory_wall"] >= 0
+    assert sum(row["stage"] == "source_memory_prepare" for row in body["timing_spans"]) == 1
+
     assert len(client.get(f"/api/v1/videos/{asset_id}").json()["scenes"]) == 1
     assert len(client.app.state.container.video_repository.list_derived(asset_id)) == 1  # type: ignore[attr-defined]
 

@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
@@ -119,11 +120,12 @@ class ExtractVideoScenes:
         probe = self._video_repository.probe(source_asset_id)
         duration = (probe.metadata.duration_sec if probe and probe.metadata else 0.0) or 0.0
         planning_started = time.perf_counter()
-        windows = (
-            self._scene_planner(Path(asset.path), asset.id, duration)
-            if self._scene_planner is not None
-            else plan_scenes(duration)
-        )
+        with stage_span("video_scene_planning", asset.id):
+            windows = (
+                self._scene_planner(Path(asset.path), asset.id, duration)
+                if self._scene_planner is not None
+                else plan_scenes(duration)
+            )
         planning_seconds = time.perf_counter() - planning_started
         if not windows:
             # 探测没读到时长（ffprobe 失败 / 还没探测过）。**不猜时长**：编一个只会
@@ -147,30 +149,34 @@ class ExtractVideoScenes:
         keyframe_memory_seconds = 0.0
         for window in windows:
             scene_started = time.perf_counter()
-            event = self._ensure_scene_event(asset, window, place_text)
+            with stage_span("video_scene_write", asset.id):
+                event = self._ensure_scene_event(asset, window, place_text)
             scene_write_seconds += time.perf_counter() - scene_started
             scene_count += 1
             if window.index in existing:
                 reused += 1
                 continue
             extract_started = time.perf_counter()
-            frame = self._keyframes.extract(
-                Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
-            )
+            with stage_span("video_keyframe_extraction", asset.id):
+                frame = self._keyframes.extract(
+                    Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
+                )
             keyframe_extract_seconds += time.perf_counter() - extract_started
             asset_write_started = time.perf_counter()
-            derived = self._derived_asset(asset, frame, window)
-            self._video_repository.add_derived(
-                parent_asset_id=asset.id,
-                asset=derived,
-                derived_kind=KEYFRAME_DERIVED_KIND,
-                source_timestamp_sec=window.keyframe_timestamp_sec,
-                source_frame_index=window.index,
-                source_scene_index=window.index,
-            )
+            with stage_span("video_keyframe_asset_write", asset.id):
+                derived = self._derived_asset(asset, frame, window)
+                self._video_repository.add_derived(
+                    parent_asset_id=asset.id,
+                    asset=derived,
+                    derived_kind=KEYFRAME_DERIVED_KIND,
+                    source_timestamp_sec=window.keyframe_timestamp_sec,
+                    source_frame_index=window.index,
+                    source_scene_index=window.index,
+                )
             keyframe_asset_write_seconds += time.perf_counter() - asset_write_started
             memory_started = time.perf_counter()
-            self._process_image(derived, event.id)
+            with stage_span("video_keyframe_memory", asset.id):
+                self._process_image(derived, event.id)
             keyframe_memory_seconds += time.perf_counter() - memory_started
             keyframe_count += 1
 

@@ -79,7 +79,7 @@ describe("主模型内存与显存分别展示", () => {
     expect(cards[5].textContent).not.toContain("16.00 GiB");
   });
 
-  it("Mac 缺主模型GPU归属时展示未记录，整机值仅作为参考", () => {
+  it("Mac 缺主模型GPU归属时主值显示整机参考，并标明包含其他应用", () => {
     const run = { ...RUN, phases: { gpu_metrics: {
       status: "done", protocol_version: "photobench-resource-telemetry-v1", source: "apple_unified",
       model_process_system_memory_used_mib: { peak: 2048 },
@@ -87,8 +87,27 @@ describe("主模型内存与显存分别展示", () => {
     } } } as Run;
     const { container } = render(<KeyMetrics run={run} />);
     const gpu = container.querySelectorAll(".key-metric-card")[5];
-    expect(gpu.querySelector(".key-metric-value")?.textContent).toBe("未记录");
-    expect(gpu.textContent).toContain("整机 GPU 分配峰值 4.00 GiB（参考）");
+    expect(gpu.querySelector(".key-metric-value")?.textContent).toBe("4.00 GiB");
+    expect(gpu.textContent).toContain("整机GPU占用（参考）");
+    expect(gpu.textContent).toContain("包含其他应用");
+    expect(gpu.textContent).toContain("不相加");
+  });
+
+  it.each([
+    { source: "apple_unified", model: 1024, device: 4096, label: "主模型显存占用", value: "1.00 GiB" },
+    { source: "apple_unified", model: 0, device: 4096, label: "主模型显存占用", value: "0.00 GiB" },
+    { source: "apple_unified", model: null, device: null, label: "主模型显存占用", value: "未记录" },
+    { source: "host_nvml", model: null, device: 4096, label: "主模型显存占用", value: "未记录" },
+    { source: "jetson_local_pss", model: null, device: 4096, label: "主模型显存占用", value: "未记录" },
+  ])("$source 模型=$model、整机=$device 时显示 $label $value", ({ source, model, device, label, value }) => {
+    const run = { ...RUN, phases: { gpu_metrics: {
+      status: "done", protocol_version: "photobench-resource-telemetry-v1", source,
+      model_process_gpu_memory_mib: { peak: model }, device_gpu_memory_mib: { peak: device },
+    } } } as Run;
+    const { container } = render(<KeyMetrics run={run} />);
+    const gpu = container.querySelectorAll(".key-metric-card")[5];
+    expect(gpu.querySelector(".key-metric-value")?.textContent).toBe(value);
+    expect(gpu.textContent).toContain(label);
   });
 
   it("Jetson GPU/UMA分量独立展示，不拿合计内存代替", () => {

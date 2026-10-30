@@ -150,6 +150,17 @@ class MemoryGraphBuildResponse(BaseModel):
     keyframe_visual_status: str = "no_frames"
 
 
+class PipelineStageSpan(BaseModel):
+    stage: str
+    asset_id: str | None
+    started_at: str
+    finished_at: str
+    started_offset_seconds: float
+    finished_offset_seconds: float
+    elapsed_seconds: float
+    status: str
+
+
 class PipelineProcessResponse(BaseModel):
     scope_id: str
     processed: int
@@ -159,6 +170,7 @@ class PipelineProcessResponse(BaseModel):
     video_scenes: int
     summarized: int
     timings: dict[str, float] = {}
+    timing_spans: list[PipelineStageSpan] = []
     failures: list[ImportFailure]
     memory_graph: MemoryGraphBuildResponse | None = None
     insights: InsightCounts | None = None
