@@ -209,7 +209,7 @@ def test_build_graph_links_original_images_by_object_time_and_visual_similarity(
             )
 
     graph = SqliteMemoryGraphRepository(migrations_ready_db)
-    stats = BuildMemoryGraph(
+    BuildMemoryGraph(
         assets=_ListSource(assets),
         observations=_ListSource(observations),
         events=_EventSource((), ()),
@@ -221,11 +221,16 @@ def test_build_graph_links_original_images_by_object_time_and_visual_similarity(
         vectors=_Vectors(),
     ).execute(SCOPE)
 
-    assert stats.image_count == 3
-    assert stats.image_temporal_edges == 1
-    assert stats.image_object_edges == 1
-    assert stats.image_visual_edges == 1
-    assert stats.image_visual_status == "ok"
+    with migrations_ready_db.connect() as connection:
+        relations = [
+            row[0]
+            for row in connection.execute(
+                "SELECT relation FROM memory_graph_edges WHERE scope_id = ?", (SCOPE,)
+            ).fetchall()
+        ]
+    assert relations.count("image_temporal_next") == 1
+    assert relations.count("image_shares_object") == 1
+    assert relations.count("image_visual_similar") == 1
     assert graph.expand_assets(("image-a",), scope_id=SCOPE, max_hops=1, limit=10)
     assert graph.quality(SCOPE)["reference_edge_recall"] == 1.0
 

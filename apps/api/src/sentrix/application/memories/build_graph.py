@@ -481,7 +481,7 @@ class BuildMemoryGraph:
                 discriminator=discriminator,
             ),
         )
-        image_stats = project_image_graph(
+        project_image_graph(
             assets=assets,
             latest_observations=latest_by_asset,
             vectors=self._vectors,
@@ -608,11 +608,6 @@ class BuildMemoryGraph:
             keyframe_relation_edges=keyframe_stats.relation_edges,
             keyframe_visual_edges=keyframe_stats.visual_edges,
             keyframe_visual_status=keyframe_stats.visual_status,
-            image_count=image_stats.image_count,
-            image_temporal_edges=image_stats.temporal_edges,
-            image_object_edges=image_stats.object_edges,
-            image_visual_edges=image_stats.visual_edges,
-            image_visual_status=image_stats.visual_status,
         )
 
     @staticmethod
