@@ -1254,6 +1254,13 @@ export interface VideoScenePayload {
   source_scene_index: number | null;
   source_start_sec: number | null;
   source_end_sec: number | null;
+  speech_segments: VideoSpeechSegment[];
+}
+
+export interface VideoSpeechSegment {
+  start_sec: number;
+  end_sec: number;
+  text: string;
 }
 
 export interface VideoDetailResponse {

@@ -84,6 +84,19 @@ def _video_payload(asset: Asset, probe: VideoProbe | None) -> VideoPayload:
 
 
 def _scene_payload(event: EventRecord) -> VideoScenePayload:
+    raw_segments = event.source_metadata.get("speech_segments", [])
+    speech_segments = [
+        {
+            "start_sec": segment["start_sec"],
+            "end_sec": segment["end_sec"],
+            "text": segment["text"],
+        }
+        for segment in raw_segments
+        if isinstance(segment, dict)
+        and isinstance(segment.get("start_sec"), (int, float))
+        and isinstance(segment.get("end_sec"), (int, float))
+        and isinstance(segment.get("text"), str)
+    ] if isinstance(raw_segments, list) else []
     return VideoScenePayload(
         id=event.id,
         scope_id=event.scope_id,
@@ -101,6 +114,7 @@ def _scene_payload(event: EventRecord) -> VideoScenePayload:
         source_scene_index=event.source_scene_index,
         source_start_sec=event.source_start_sec,
         source_end_sec=event.source_end_sec,
+        speech_segments=speech_segments,
     )
 
 

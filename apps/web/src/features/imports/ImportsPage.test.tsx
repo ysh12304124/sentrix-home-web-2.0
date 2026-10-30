@@ -195,6 +195,7 @@ describe("ImportsPage 批量与重试", () => {
           source_scene_index: 0,
           source_start_sec: 0,
           source_end_sec: 1,
+          speech_segments: [],
         },
       ],
     });
