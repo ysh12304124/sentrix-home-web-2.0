@@ -27,6 +27,7 @@ import math
 import threading
 import time
 from pathlib import Path
+from typing import Protocol
 
 import httpx
 
@@ -36,6 +37,30 @@ from sentrix.domain.retrieval import scheme
 CIRCUIT_OPEN_S = 10.0
 HEALTH_TTL_S = 10.0
 FAILURE_THRESHOLD = 5
+
+
+class _SmokeTestableVisual(Protocol):
+    """``smoke_test`` 对视觉嵌入器的最小要求：能嵌入图片、能报维度、能报健康。"""
+
+    @property
+    def dimension(self) -> int: ...
+    @property
+    def available(self) -> bool: ...
+    @property
+    def load_error(self) -> str: ...
+    def embed_image(self, path: Path) -> list[float]: ...
+
+
+class _SmokeTestableText(Protocol):
+    """``smoke_test`` 对文本嵌入器的最小要求。"""
+
+    @property
+    def dimension(self) -> int: ...
+    @property
+    def available(self) -> bool: ...
+    @property
+    def load_error(self) -> str: ...
+    def embed_query(self, text: str) -> list[float]: ...
 
 
 class _SidecarEmbedder:
@@ -246,7 +271,7 @@ class LegacyEmbeddingHealthProbe:
     ``/health`` 引入嵌入探针时要解决的那类问题。
     """
 
-    def __init__(self, visual: _SidecarEmbedder, text: _SidecarEmbedder) -> None:
+    def __init__(self, visual: _SmokeTestableVisual, text: _SmokeTestableText) -> None:
         self._visual = visual
         self._text = text
 
@@ -279,6 +304,7 @@ class LegacyEmbeddingHealthProbe:
         # 测试视觉嵌入：生成一个临时小图片
         try:
             from PIL import Image
+
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 img = Image.new("RGB", (64, 64), color=(128, 128, 128))
                 img.save(f, format="PNG")
@@ -288,7 +314,10 @@ class LegacyEmbeddingHealthProbe:
                 if not vector:
                     return False, f"visual embed_image returned empty vector: {self._visual.load_error}"
                 if len(vector) != self._visual.dimension:
-                    return False, f"visual embed_image returned {len(vector)} dims, expected {self._visual.dimension}"
+                    return (
+                        False,
+                        f"visual embed_image returned {len(vector)} dims, expected {self._visual.dimension}",
+                    )
             finally:
                 temp_path.unlink(missing_ok=True)
         except Exception as e:

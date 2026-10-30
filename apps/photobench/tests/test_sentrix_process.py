@@ -110,7 +110,11 @@ def test_the_new_endpoint_is_exported_to_the_child_environment(tmp_path: Path):
     对它是没有区分力的。
     """
     harness = _Harness()
-    process = _process(harness, FakeHttpClient([{"status": "ok"}]), tmp_path / "sentrix.json")
+    process = _process(
+        harness,
+        FakeHttpClient([{"status": "ok", "embeddings": "ok"}]),
+        tmp_path / "sentrix.json",
+    )
     outcome = process.restart(endpoint=ENDPOINT)
     assert outcome.ok is True
     assert outcome.restarted is True
@@ -150,7 +154,7 @@ def test_restart_uses_frozen_model_and_embedding_even_after_global_config_change
         cwd=tmp_path,
         pid_file=tmp_path / "process.json",
         log_path=tmp_path / "api.log",
-        http=FakeHttpClient([{"status": "ok"}]),
+        http=FakeHttpClient([{"status": "ok", "embeddings": "ok"}]),
         runtime_snapshot=snapshot,
         spawn=harness.spawn,
         alive=harness.alive,
@@ -200,7 +204,7 @@ def test_restart_passes_frozen_mac_profile_and_cpu_providers(tmp_path: Path, mon
         cwd=tmp_path,
         pid_file=tmp_path / "process.json",
         log_path=tmp_path / "sentrix.log",
-        http=FakeHttpClient([{"status": "ok"}]),
+        http=FakeHttpClient([{"status": "ok", "embeddings": "ok"}]),
         runtime_snapshot=RunRuntimeSnapshot(json.dumps(connection)),
         environment={"SENTRIX_TEXT_EMBEDDER_URL": "http://stale:8101"},
         spawn=harness.spawn,
@@ -230,7 +234,7 @@ def test_the_recorded_process_reports_the_endpoint_it_was_started_with(tmp_path:
     """
     pid_file = tmp_path / "sentrix.json"
     harness = _Harness()
-    first = _process(harness, FakeHttpClient([{"status": "ok"}]), pid_file)
+    first = _process(harness, FakeHttpClient([{"status": "ok", "embeddings": "ok"}]), pid_file)
     first.restart(endpoint=ENDPOINT)
     assert first.running_endpoint() == ENDPOINT
 
@@ -264,7 +268,7 @@ def test_the_old_process_is_stopped_before_the_new_one_starts(tmp_path: Path):
     pid_file.write_text('{"pid": 111, "endpoint": "http://old:8100/v1"}', encoding="utf-8")
     harness = _Harness(alive=[111, 222])
     harness.discovered = [222]
-    process = _process(harness, FakeHttpClient([{"status": "ok"}]), pid_file)
+    process = _process(harness, FakeHttpClient([{"status": "ok", "embeddings": "ok"}]), pid_file)
     process.restart(endpoint=ENDPOINT)
     assert sorted(harness.terminated) == [111, 222]
     assert len(harness.spawned) == 1, "先起后停会让两个进程抢同一个端口"

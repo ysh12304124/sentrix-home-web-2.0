@@ -15,8 +15,11 @@
 2. **PID 归属**：停一个「不是本进程起的」2.0 只能靠 ``lsof`` 按端口反查（见
    ``_discover_by_port``）——那是尽力而为，不是权威。S11 若给主 API 配了 pidfile /
    systemd 单元，应换成读那一个。
-3. **健康判据**：只看 ``GET /api/v1/health`` 回不回 ``ok``/``degraded``。**不看模型
-   端点**——2.0 自己不管理模型（设计口径），模型通不通是 ``model_deploy`` 相位的事。
+3. **健康判据**：看 ``GET /api/v1/health`` 的 ``status`` 是 ``ok``/``degraded``，
+   **且** ``embeddings`` 必须是 ``"ok"``。嵌入不可用时整轮数据会作废（视觉向量
+   全部写不进去，记忆图降级），必须启动时就拦住——2026-10-28 的教训。
+   **不看模型端点**——2.0 自己不管理模型（设计口径），模型通不通是 ``model_deploy``
+   相位的事。
 
 **为什么端点是「环境变量」而不是别的**：2.0 的 ``Settings``（``apps/api/src/sentrix/
 config.py``）用 ``env_prefix="SENTRIX_"`` 读 ``SENTRIX_VLM_BASE_URL``，那是**启动时**
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -39,13 +43,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import logging
-
-log = logging.getLogger(__name__)
-
 from photobench.domain.deploy.ports import RestartOutcome
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.runtime.ports import RunRuntimeSnapshot
+
+log = logging.getLogger(__name__)
 
 
 def _snapshot_config_root(snapshot: RunRuntimeSnapshot, endpoint: str, directory: Path) -> Path:
@@ -266,20 +268,20 @@ class SubprocessSentrixProcess:
                     ):
                         if embedding.get(key):
                             env[name] = str(embedding[key])
-                else:
-                    # embedding 段存在但 mode 缺失/未知 → 显式兜底到 legacy，
-                    # 而不是让 config.py 的默认值按 profile 静默决定（server→wemm
-                    # 但 wemm 实际没部署 → 视觉向量全部写不进去 → 记忆图降级）。
-                    # Mac 上 redundant（config.py 自己也会选 legacy），但显式写出来
-                    # 让日志可追溯；server 上是真正修复。
-                    profile = (connection.get("product_settings") or {}).get(
-                        "deployment_profile", "server"
-                    )
-                    env["SENTRIX_EMBEDDING_SCHEME"] = "legacy"
+                elif mode is not None:
+                    # mode 存在但值不认识——不静默兜底，让产品 config.py 按 profile
+                    # 决定（server→wemm, mac→legacy）。记 warning 让运维看见。
                     log.warning(
-                        "embedding.mode 未配置（profile=%s），显式兜底到 legacy CLIP。"
-                        "建议在 runtime_connection.json 显式指定 embedding.mode",
-                        profile,
+                        "embedding.mode=%r 不认识（runtime_connection.json）；"
+                        "不设置 SENTRIX_EMBEDDING_SCHEME，由产品 profile 默认值决定。",
+                        mode,
+                    )
+                else:
+                    # mode 缺失——同样不替产品做业务决策。
+                    log.warning(
+                        "embedding.mode 未配置（runtime_connection.json）；"
+                        "不设置 SENTRIX_EMBEDDING_SCHEME，由产品 profile 默认值决定。"
+                        "建议在 runtime_connection.json 显式指定 embedding.mode。",
                     )
             for key, name in (
                 ("deployment_profile", "SENTRIX_DEPLOYMENT_PROFILE"),

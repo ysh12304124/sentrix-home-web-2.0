@@ -60,6 +60,10 @@ class RunStore(Protocol):
         """
         ...
 
+    def revision(self, run_id: str) -> str:
+        """返回 run 的 opaque 文件标识，用于缓存失效。run 不存在抛 ``KeyError``。"""
+        ...
+
 
 @runtime_checkable
 class RunResultWriter(Protocol):
