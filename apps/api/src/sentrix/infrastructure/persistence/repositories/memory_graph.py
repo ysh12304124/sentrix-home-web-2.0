@@ -27,6 +27,49 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
 
 
+# 图边的 ``weight`` 表示来源置信度，不能单独表示“这条边是否适合把答案
+# 交付给模型”。例如 observation_mentions_concept 是有用的导航边，但它
+# 不应当和 event_contains_asset / fact_evidence 一样强。这里把关系语义与
+# BuildMemoryGraph 写入的 evidence_tier 合并成路径质量先验：它只影响图
+# 扩展的排序和晋升，不会删除图边，也不会改变主检索结果。
+_EVIDENCE_TIER_PRIORS = {
+    "confirmed": 1.0,
+    "supported": 0.82,
+    "inferred": 0.60,
+}
+_RELATION_PRIORS = {
+    "observation_mentions_concept": 0.55,
+    "observation_mentions_entity": 0.72,
+    "event_has_entity": 0.78,
+    "entity_relationship": 0.68,
+    "event_temporal_next": 0.88,
+    "frame_temporal_next": 0.90,
+    "frame_visual_similar": 0.60,
+}
+
+
+def _edge_path_prior(relation: str, attributes_json: str | None) -> float:
+    """返回一条边对“可交付证据”的先验质量。
+
+    直接证据/血缘边默认保持 1.0；弱语义导航边和视觉相似边只用于
+    找路，除非有足够强的其它路径，不应单独挤掉 primary 结果。旧图
+    可能没有 ``evidence_tier``，所以关系名仍保留一个兼容性回退。
+    """
+
+    tier = ""
+    if attributes_json:
+        try:
+            parsed = json.loads(attributes_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            tier = str(parsed.get("evidence_tier") or "").strip().casefold()
+    if tier in _EVIDENCE_TIER_PRIORS:
+        return _EVIDENCE_TIER_PRIORS[tier]
+    relation_family = relation.split(":", 1)[0]
+    return _RELATION_PRIORS.get(relation, _RELATION_PRIORS.get(relation_family, 1.0))
+
+
 class SqliteMemoryGraphRepository:
     """按 scope 原子替换、按有限 hop 做邻接遍历。"""
 
@@ -314,7 +357,7 @@ class SqliteMemoryGraphRepository:
         frontier: dict[str, tuple[float, int, tuple[str, ...], tuple[str, ...]]] = {
             node_id: (1.0, 0, (node_id,), ()) for node_id in seeds
         }
-        best_hops: dict[str, int] = {node_id: 0 for node_id in seeds}
+        best_states = dict(frontier)
         candidates: dict[str, GraphExpansionHit] = {}
 
         with self._database.connect() as connection:
@@ -324,7 +367,7 @@ class SqliteMemoryGraphRepository:
                 frontier_ids = tuple(frontier)
                 placeholders = ",".join("?" for _ in frontier_ids)
                 rows = connection.execute(
-                    "SELECT source_id, target_id, relation, weight FROM memory_graph_edges"
+                    "SELECT source_id, target_id, relation, weight, attributes_json FROM memory_graph_edges"
                     f" WHERE scope_id = ? AND (source_id IN ({placeholders})"
                     f" OR target_id IN ({placeholders}))"
                     " ORDER BY id LIMIT 10000",
@@ -346,6 +389,7 @@ class SqliteMemoryGraphRepository:
                     source_id, target_id = str(row[0]), str(row[1])
                     relation = str(row[2])
                     weight = float(row[3] or 0.0)
+                    path_prior = _edge_path_prior(relation, row[4])
                     causal = relation.startswith("asset_causes_asset:")
                     temporal = relation in {"frame_temporal_next", "event_temporal_next"}
                     object_edge = relation in {"frame_shares_object", "frame_mentions_object"}
@@ -398,10 +442,8 @@ class SqliteMemoryGraphRepository:
                             continue
                         current_score, current_hops, current_path, current_relations = current
                         next_hops = current_hops + 1
-                        old_hops = best_hops.get(neighbor_id)
-                        if old_hops is not None and old_hops <= next_hops:
+                        if neighbor_id in current_path:
                             continue
-                        best_hops[neighbor_id] = next_hops
                         safe_weight = min(1.0, max(0.0, weight))
                         intent_boost = 1.0
                         if intent in {"causal", "action", "multi_hop"} and causal:
@@ -414,7 +456,7 @@ class SqliteMemoryGraphRepository:
                             intent_boost = 1.15
                         next_score = (
                             current_score
-                            * min(1.0, safe_weight * intent_boost)
+                            * min(1.0, safe_weight * intent_boost * path_prior)
                             * (0.72 if next_hops > 1 else 1.0)
                         )
                         state = (
@@ -423,6 +465,20 @@ class SqliteMemoryGraphRepository:
                             (*current_path, neighbor_id),
                             (*current_relations, relation),
                         )
+                        old_state = next_frontier.get(neighbor_id)
+                        if old_state is not None and old_state[0] >= next_score:
+                            continue
+                        old_global = best_states.get(neighbor_id)
+                        if old_global is not None:
+                            old_score, old_hops = old_global[0], old_global[1]
+                            # A previous path dominates a new one only when it is
+                            # both no weaker and no longer. If a same-hop path has
+                            # stronger evidence, or a longer path compensates for
+                            # a weak edge with a higher score, keep the stronger
+                            # path instead of letting SQL row order decide.
+                            if old_score >= next_score and old_hops <= next_hops:
+                                continue
+                        best_states[neighbor_id] = state
                         next_frontier[neighbor_id] = state
                         if node_types.get(neighbor_id) == "asset" and neighbor_id not in seeds:
                             asset_id = neighbor_id.removeprefix("asset:")
