@@ -650,3 +650,28 @@ def test_multiturn_quality_judge_uses_each_frozen_turn_gt_image():
         "b.jpg",
     ]
     assert all(isinstance(http.payloads()[i]["messages"][1]["content"], str) for i in (0, 2))
+
+
+def test_gt_image_mode_replaces_text_only_visibility_rule_in_actual_input():
+    from photobench.domain.runs.judge import TEXT_ONLY_QUALITY_GUIDANCE
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    _runner(
+        http,
+        judge_use_gt_images=True,
+        answer_quality_prompt=JUDGE_PROMPT,
+        inline_images=lambda *_: [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="}}
+        ],
+    ).judge(
+        "问题",
+        "参考",
+        "回答",
+        gt_row={"answer_evidence_image_ids": ["a.jpg"]},
+        assets_by_name={"a.jpg": [{"id": "a", "media_type": "image"}]},
+    )
+    sent = http.payloads()[0]["messages"][0]["content"]
+    assert TEXT_ONLY_QUALITY_GUIDANCE not in sent
+    assert "本轮已提供标注的GT图片" in sent
+    assert "图片是否支持回答由独立证据评测负责" not in sent
+    assert TEXT_ONLY_QUALITY_GUIDANCE in JUDGE_PROMPT

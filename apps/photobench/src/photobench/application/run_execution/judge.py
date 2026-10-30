@@ -48,13 +48,14 @@ from photobench.domain.runs.judge import (
     JUDGE_PROMPT,
     JUDGE_SCORE_NORMALIZATION_VERSION,
     TASK_JUDGE_PROMPT,
+    TEXT_ONLY_QUALITY_GUIDANCE,
     execution_failure,
     judge_chat_url,
     normalize_judge_score,
     parse_judge_json,
     thinking_kwargs,
 )
-from photobench.domain.runs.judge_recovery import GT_IMAGE_PROMPT, gt_image_refs
+from photobench.domain.runs.judge_recovery import GT_IMAGE_PROMPT, GT_IMAGE_QUALITY_GUIDANCE, gt_image_refs
 
 #: 1.0 的四个模块级常量（``:206-229``），同样由环境变量覆盖。
 JUDGE_RETRY_ATTEMPTS = max(1, int(os.environ.get("PHOTOBENCH_JUDGE_RETRY_ATTEMPTS", "6")))
@@ -362,7 +363,9 @@ class JudgeRunner:
                     "call_observations": [],
                 }
             if image_parts:
-                prompt += GT_IMAGE_PROMPT
+                prompt = (
+                    prompt.replace(TEXT_ONLY_QUALITY_GUIDANCE, GT_IMAGE_QUALITY_GUIDANCE) + GT_IMAGE_PROMPT
+                )
                 content = [{"type": "text", "text": judge_text}, *image_parts]
         payload = {
             "model": self.judge_model,

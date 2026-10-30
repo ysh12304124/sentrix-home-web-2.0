@@ -7,6 +7,13 @@ from typing import Any
 
 from photobench.domain.runs.execution import normalize_media_refs
 
+GT_IMAGE_QUALITY_GUIDANCE = (
+    "- 本轮已提供标注的GT图片，可直接核对其可见内容。"
+    "对用户所问事实，图片中可确认的内容与文字GT共同构成评分依据。"
+    "用户未要求的附加细节不自动成为扣分项；只有相关事实与给定证据明确冲突时才扣分。"
+    "不能把裁判看到的图片当成Agent已检索或交付成功的证明。"
+)
+
 RECOVERY_SCOPES = {"missing", "failed", "unscored", "all"}
 GT_IMAGE_PROMPT = (
     "\nGT图片辅助评分：随后图片均为人工标注GT引用，仅供裁判核对回答，"
