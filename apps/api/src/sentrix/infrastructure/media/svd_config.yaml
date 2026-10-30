@@ -6,9 +6,13 @@ stride_seconds: 2.0
 energy_threshold: 0.90
 min_rank: 1
 max_rank: 16
-min_event_seconds: 2.0
-boundary_quantile: 0.78
-dedup_similarity: 0.985
+min_event_seconds: 8.0
+boundary_quantile: 0.92
+dedup_similarity: 0.995
+keyframe_min_gap_seconds: 8.0
+coverage_interval_seconds: 16.0
+camera_stabilization: true
+camera_stabilization_max_shift_ratio: 0.015
 score_weights:
   reconstruction: 0.40
   subspace: 0.30

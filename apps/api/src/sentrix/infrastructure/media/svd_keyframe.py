@@ -28,10 +28,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "energy_threshold": 0.90,
     "min_rank": 1,
     "max_rank": 16,
-    "min_event_seconds": 2.0,
+    "min_event_seconds": 8.0,
     "score_weights": {"reconstruction": 0.40, "subspace": 0.30, "spectrum": 0.20, "coverage": 0.10},
-    "boundary_quantile": 0.78,
-    "dedup_similarity": 0.985,
+    "boundary_quantile": 0.92,
+    "dedup_similarity": 0.995,
+    "keyframe_min_gap_seconds": 8.0,
+    "coverage_interval_seconds": 16.0,
+    "camera_stabilization": True,
+    "camera_stabilization_max_shift_ratio": 0.015,
 }
 
 
@@ -124,7 +128,43 @@ class SVDLowRankKeyframeExtractor:
         }
 
     def build_feature_matrix(self, samples) -> np.ndarray:
-        return np.vstack([self.preprocess(frame) for _, _, frame in samples]).astype(np.float32)
+        """Build features after compensating small frame-to-frame camera shake.
+
+        Stabilization is intentionally bounded and only affects scoring. The
+        original decoded frame remains the one written as evidence later.
+        """
+        if not self.config.get("camera_stabilization", True) or len(samples) < 2:
+            return np.vstack([self.preprocess(frame) for _, _, frame in samples]).astype(np.float32)
+
+        width, height = [int(v) for v in self.config.get("resize", [160, 90])]
+        max_shift = max(1.0, min(width, height) * float(self.config.get("camera_stabilization_max_shift_ratio", 0.015)))
+        previous: np.ndarray | None = None
+        features: list[np.ndarray] = []
+        for _, _, frame in samples:
+            small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            aligned = small
+            if previous is not None:
+                (shift_x, shift_y), response = cv2.phaseCorrelate(previous, gray)
+                if response >= 0.12 and abs(shift_x) <= max_shift and abs(shift_y) <= max_shift:
+                    transform = np.float32([[1.0, 0.0, -shift_x], [0.0, 1.0, -shift_y]])
+                    aligned = cv2.warpAffine(
+                        small,
+                        transform,
+                        (width, height),
+                        flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_REFLECT,
+                    )
+                    gray = cv2.warpAffine(
+                        gray,
+                        transform,
+                        (width, height),
+                        flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_REFLECT,
+                    )
+            previous = gray
+            features.append(self.preprocess(aligned))
+        return np.vstack(features).astype(np.float32)
 
     def estimate_rank(self, singular_values: np.ndarray) -> tuple[int, float]:
         if singular_values.size == 0:
@@ -226,6 +266,29 @@ class SVDLowRankKeyframeExtractor:
                 result.append(index)
         return result
 
+    def temporal_nms(self, indices: list[int], scores: np.ndarray, timestamps: np.ndarray) -> list[int]:
+        """Keep strong events while guaranteeing a sparse temporal coverage grid."""
+        min_gap = max(0.0, float(self.config.get("keyframe_min_gap_seconds", 8.0)))
+        selected: list[int] = []
+        interval = float(self.config.get("coverage_interval_seconds", 16.0))
+        if interval > 0 and len(timestamps):
+            radius = interval / 4.0
+            target = interval / 2.0
+            while target < float(timestamps[-1]):
+                nearby = [
+                    i for i, timestamp in enumerate(timestamps)
+                    if abs(float(timestamp) - target) <= radius
+                ]
+                if nearby:
+                    selected.append(max(nearby, key=lambda i: float(scores[i])))
+                target += interval
+        for index in sorted(set(indices), key=lambda i: float(scores[i]), reverse=True):
+            if index in selected:
+                continue
+            if all(abs(float(timestamps[index] - timestamps[other])) >= min_gap for other in selected):
+                selected.append(index)
+        return sorted(selected)
+
     def extract(self, video_path: str | Path, video_id: str, output_dir: str | Path) -> WorldMMResult:
         started = time.perf_counter()
         output = Path(output_dir).resolve()
@@ -285,15 +348,26 @@ class SVDLowRankKeyframeExtractor:
         )
         boundaries = self.detect_event_boundaries(scores, timestamps)
         boundaries.append(len(samples))
-        scenes: list[WorldMMScene] = []
         all_selected: list[int] = []
+        scene_ranges: list[tuple[int, int, int]] = []
         for scene_index, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:], strict=True)):
             if end <= start:
                 continue
+            scene_ranges.append((scene_index, start, end))
             duration = float(timestamps[min(end - 1, len(timestamps) - 1)] - timestamps[start])
             max_count = 1 if duration < 5 else 2 if duration <= 15 else 3
             picks = self.select_event_keyframes(start, end, scores, features, max_count)
             picks = self.deduplicate(picks, features)
+            all_selected.extend(picks)
+
+        # Scene boundaries can still produce near-duplicate frames. Keep
+        # important peaks, then add a sparse coverage grid for quieter spans.
+        all_selected = self.temporal_nms(all_selected, scores, timestamps)
+        scenes: list[WorldMMScene] = []
+        for scene_index, start, end in scene_ranges:
+            picks = [index for index in all_selected if start <= index < end]
+            if not picks:
+                continue
             keyframes: list[WorldMMKeyframe] = []
             for ordinal, index in enumerate(picks, 1):
                 timestamp, frame_index, frame = samples[index]
@@ -317,7 +391,6 @@ class SVDLowRankKeyframeExtractor:
                         raw=raw,
                     )
                 )
-                all_selected.append(index)
             scenes.append(
                 WorldMMScene(
                     scene_id=f"{video_id}_svd_scene_{scene_index:04d}",
