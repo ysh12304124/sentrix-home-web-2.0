@@ -218,9 +218,8 @@ def test_video_scene_detail_carries_the_lineage(client: TestClient):
 
     body = client.get("/api/v1/video-scenes/evt_scene").json()
 
-    assert body["event"]["speech_segments"] == [
-        {"start_sec": 11.5, "end_sec": 13.0, "text": "加入鸡肉"}
-    ]
+    assert body["event"]["speech_segments"] == [{"start_sec": 11.5, "end_sec": 13.0, "text": "加入鸡肉"}]
+    assert body["event"]["keyframe_timestamps_sec"] == [12.5]
     assert body["event"]["source_type"] == "video_scene"
     assert body["event"]["source_asset_id"] == asset_id
     assert body["event"]["source_scene_index"] == 2

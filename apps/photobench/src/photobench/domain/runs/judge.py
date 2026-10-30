@@ -214,12 +214,17 @@ def execution_failure(agent_status: str | None, termination_reason: str | None) 
 
 
 def thinking_kwargs(judge_url: str | None) -> dict[str, Any]:
-    """1.0 ``_judge_thinking_kwargs``（``:231``）：关掉云端 provider 的推理开关，
-    同时保留本地 judge 的负载形状（豆包用 ``thinking``，其余用 ``enable_thinking``）。"""
+    """关闭 Judge 的额外推理，保证有限输出预算留给评分 JSON。
+
+    火山 Ark 接受 ``thinking``；本地 OpenAI-compatible 服务（包括 llama.cpp）
+    需要通过 ``chat_template_kwargs`` 将 ``enable_thinking`` 传进模板。单独发送
+    顶层 ``enable_thinking`` 会被 llama.cpp 忽略，Qwen 可能持续输出推理直到
+    ``max_tokens`` 用尽，导致没有可解析的评分结果。
+    """
     endpoint = str(judge_url or "").lower()
     if "volces.com" in endpoint or "volcengine.com" in endpoint:
         return {"thinking": {"type": "disabled"}}
-    return {"enable_thinking": False}
+    return {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def judge_chat_url(judge_url: str) -> str:
