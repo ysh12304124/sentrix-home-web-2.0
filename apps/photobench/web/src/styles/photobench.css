@@ -135,13 +135,13 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 .scoring-scope { display:flex; flex-direction:column; gap:6px; width:240px; max-width:100%; color:var(--text); font-weight:600; }
 .scoring-scope select { min-height:38px; margin:0; font-weight:400; }
 .scoring-options .gt-image-option { margin-top:25px; }
-.gt-image-option { display:inline-flex; flex-direction:column; align-items:flex-start; gap:5px; min-width:0; max-width:100%; }
+.gt-image-option { position:relative; display:inline-flex; align-items:flex-start; padding-bottom:23px; min-width:0; max-width:100%; }
 .btn.gt-image-toggle { display:inline-flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px; min-height:38px; max-width:100%; padding:8px 12px; background:var(--surface); color:#44506c; border:1px solid #cfd5e3; font-size:12px; }
 .btn.gt-image-toggle.active { color:#304fc9; background:#eef2ff; border-color:#7489ed; }
 .gt-image-toggle input[type=checkbox] { width:15px; height:15px; margin:0; flex:none; accent-color:var(--accent); cursor:pointer; }
 .gt-image-toggle.disabled { opacity:.45; cursor:not-allowed; }
 .gt-image-toggle.disabled input { cursor:not-allowed; }
-.gt-image-hint { max-width:100%; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.gt-image-hint { position:absolute; top:calc(100% - 18px); left:0; width:max-content; max-width:min(320px,calc(100vw - 72px)); color:var(--muted); font-size:11px; line-height:18px; overflow-wrap:anywhere; }
 .gt-image-toggle:focus-within,.scoring-details summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .scoring-summary { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; padding:14px 16px; background:#f6f8fd; border:1px solid #e4e8f2; border-radius:7px; }
 .scoring-summary>.btn { min-height:38px; }
