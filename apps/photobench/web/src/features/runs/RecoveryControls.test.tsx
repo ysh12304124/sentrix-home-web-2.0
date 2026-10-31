@@ -43,7 +43,7 @@ describe("恢复与评分范围",()=>{
     fireEvent.click(screen.getByRole("button",{name:"继续剩余 QA 测评"}));
     expect(resume).not.toHaveBeenCalled();
     rerender(<ResumeCard plan={plan} busy={true} onResume={resume}/>);
-    expect((screen.getByRole("button",{name:"任务处理中…"}) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button",{name:"已有任务运行，暂不可续跑"}) as HTMLButtonElement).disabled).toBe(true);
   });
   it("补评显示准确题/轮/项计数，并可切全量",()=>{
     const scope=vi.fn(), images=vi.fn();

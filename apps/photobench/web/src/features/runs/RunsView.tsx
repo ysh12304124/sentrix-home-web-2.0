@@ -43,6 +43,11 @@ export interface RunsViewProps {
 }
 
 export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memory }: RunsViewProps) {
+  const selectedRun = runs.activeRun?.run_id === runs.activeRunId ? runs.activeRun : null;
+  const recoveryPlan = runs.recoveryPlan?.run_id === selectedRun?.run_id ? runs.recoveryPlan : null;
+  const canResume = !!selectedRun &&
+    ["interrupted", "failed", "cancelled", "completed_with_errors"].includes(selectedRun.status || "") &&
+    recoveryPlan?.can_resume && recoveryPlan.remaining_qa_count > 0;
   return (
     <>
       {/* **运行列表/详情/重判的错误出口。** 此前 `useRuns.error`（列表加载、删除、
@@ -63,7 +68,12 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
       />
       <RunDetail
         activeRun={runs.activeRun}
-        recovery={runs.activeRun && <ResumeCard key={runs.activeRun.run_id} error={runs.recoveryPlanError} onRetry={runs.reloadRecoveryPlan} plan={runs.recoveryPlan?.run_id === runs.activeRun.run_id ? runs.recoveryPlan : null} busy={runs.hasRunning || runs.resuming} onResume={body => { if (runs.activeRun) void runs.resumeRun(runs.activeRun.run_id, body); }} />}
+        recovery={runs.recoveryPlanError ? <p className="error">恢复信息读取失败：{runs.recoveryPlanError} <button className="btn ghost compact" onClick={runs.reloadRecoveryPlan}>重新读取</button></p> : canResume && <ResumeCard
+          key={selectedRun.run_id}
+          plan={recoveryPlan}
+          busy={runs.hasRunning || runs.resuming}
+          onResume={body => { void runs.resumeRun(selectedRun.run_id, body); }}
+        />}
         exportScores={runs.exportScores}
         onExportScoresChange={runs.setExportScores}
         onExportTraces={runs.exportTraces}

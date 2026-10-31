@@ -28,7 +28,7 @@ export function ResumeCard({ plan, busy, onResume, error, onRetry }: {
         if (!window.confirm(`继续剩余 ${plan.remaining_qa_count} 题；${repair ? "补评已有缺分" : "保留已有评分状态"}；${images ? "使用 GT 图片" : "仅文字 GT"}。${useCurrentVersion ? "按当前产品版本执行。" : ""}确定开始？`)) return;
         onResume({repair_missing_judges: repair, judge_use_gt_images: images,
           ...(useCurrentVersion ? {product_build_revision: plan.current_product_build_revision} : {})});
-      }}>{busy ? "任务处理中…" : "继续剩余 QA 测评"}</button>
+      }}>{busy ? "已有任务运行，暂不可续跑" : "继续剩余 QA 测评"}</button>
     </div>
   </section>;
 }
