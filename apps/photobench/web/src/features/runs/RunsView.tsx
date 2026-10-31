@@ -67,6 +67,7 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
         regionRef={runs.runsRegionRef}
       />
       <RunDetail
+        key={runs.activeRunId || "empty"}
         activeRun={runs.activeRun}
         recovery={runs.recoveryPlanError ? <p className="error">恢复信息读取失败：{runs.recoveryPlanError} <button className="btn ghost compact" onClick={runs.reloadRecoveryPlan}>重新读取</button></p> : canResume && <ResumeCard
           key={selectedRun.run_id}

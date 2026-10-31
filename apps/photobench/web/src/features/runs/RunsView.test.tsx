@@ -64,6 +64,25 @@ describe("RunsView 装配", () => {
     expect(screen.getByText("评测记录")).not.toBeNull();
     expect(screen.getByText("点击上方列表中的某条记录查看详情")).not.toBeNull();
   });
+
+  it("完整详情从中断任务切到完成任务时卸载旧恢复卡片", () => {
+    const { result } = renderHook(() => useRuns());
+    const interrupted = { run_id: "old1171", status: "failed", item_count: 697, model_name: "old-model" };
+    const completed = { run_id: "smoke12", status: "completed", item_count: 12, model_name: "new-model" };
+    const recoveryPlan = {
+      run_id: "old1171", can_resume: true, remaining_qa_count: 474, inherited_qa_count: 697,
+      product_version_changed: false, judge_use_gt_images: false,
+      scoring: Object.fromEntries(["missing", "failed", "unscored", "all"].map(key =>
+        [key, { qa_count: 0, turn_count: 0, subscore_count: 0 }])) as import("../../hooks/useRunDetail.ts").RecoveryPlan["scoring"],
+    };
+    const { rerender } = render(<RunsView runs={{ ...result.current, activeRunId: interrupted.run_id,
+      activeRun: interrupted, recoveryPlan }} judgeModel="" saveJudgePrompt={() => {}} />);
+    expect(screen.getByText("继续中断的测评")).toBeTruthy();
+    rerender(<RunsView runs={{ ...result.current, activeRunId: completed.run_id,
+      activeRun: completed, recoveryPlan }} judgeModel="" saveJudgePrompt={() => {}} />);
+    expect(screen.queryByText("继续中断的测评")).toBeNull();
+    expect(screen.getByRole("heading", { level: 2, name: /new-model/ })).toBeTruthy();
+  });
 });
 
 describe("导出 URL 的分数参数", () => {
