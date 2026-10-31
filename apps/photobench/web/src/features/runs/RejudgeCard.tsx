@@ -1,21 +1,7 @@
-/**
- * 重新 Judge 评分卡。逐行照搬 1.0
- * `services/photobench/frontend/src/App.vue:3059-3096`（任务表给的是 `:3059-3089`，
- * 实测 `<section class="rejudge-card">` 到 `</section>` 收在 `:3096`）。
- *
- * **两处必须由上层注入的接缝**（1.0 直接闭包读，2.0 拆到别的 hook）：
- *   - `judgeModel`：1.0 读 `judgeModel.value`，归配置切片（`hooks/useConfig.ts`），
- *     这里做成可选 prop，缺省 `-`（与 1.0 的 `judgeModel || '-'` 一致）。
- *   - `onSavePrompt`：1.0 的 `saveJudgePrompt()` 在 `useConfig` 侧（`useConfig.ts:167`），
- *     `useRuns`/`useRunDetail` 不提供。做成可选 prop；未接线时按钮可点但无副作用。
- *
- * 1.0 的 `startRejudge` 内含 `window.confirm`；`useRunDetail` 把它拆成
- * `requestRejudge()`（置 `rejudgeConfirmation`）/`confirmRejudge()`/`cancelRejudge()`。
- * 本组件用 effect 在 `rejudgeConfirmation` 置位时弹原生 confirm——保持 1.0 的交互，
- * 不改成一版内联确认条。
- */
+/** Score existing answers without running the answering model. */
 import { useEffect, useRef } from "react";
 
+import { GtImageToggle } from "../../components/GtImageToggle.tsx";
 import type { RejudgeTask } from "../../api/types.ts";
 import type { PromptKindMeta, RejudgeScope, RecoveryPlan } from "../../hooks/useRunDetail.ts";
 import { statusLabel } from "../../lib/format.ts";
@@ -75,6 +61,10 @@ export function RejudgeCard({
   rejudgePercent,
 }: RejudgeCardProps) {
   const running = activeRejudge?.status === "running";
+  const actionLabel: Record<RejudgeScope, string> = {
+    missing: "补齐缺失评分", failed: "重试失败评分", unscored: "为未评分回答打分", all: "重新评分全部回答",
+  };
+  const count = recoveryPlan?.scoring?.[scope];
 
   // requestRejudge 只置位 rejudgeConfirmation，真正弹窗与执行在这里。用 ref 保证同一
   // 待确认对象只弹一次（回调 identity 变化也不会重复弹，StrictMode 双调也安全）。
@@ -87,74 +77,90 @@ export function RejudgeCard({
   }, [rejudgeConfirmation, onConfirmRejudge, onCancelRejudge]);
 
   return (
-    <section className="rejudge-card">
+    <section className="rejudge-card scoring-card">
       <div className="rejudge-head">
         <div>
-          <h3>重新 Judge 评分</h3>
-          <p>只复用本次运行已有的题目、标准答案和 Agent 回答，不重新执行相册处理、模型切换或 Agent 问答。</p>
+          <h3>为已有回答评分</h3>
+          <p>由 Judge（评分模型）为已保存的回答打分，答题模型不重新答题。</p>
         </div>
         {activeRejudge ? (
           <span className={"phase-status " + (activeRejudge.status || "")}>{statusLabel(activeRejudge.status)}</span>
         ) : null}
       </div>
-      <div className="recovery-options">
-        <label>评分范围
+      <div className="scoring-options">
+        <label className="scoring-scope">评分范围
           <select aria-label="评分范围" value={scope} disabled={running || rejudgeSubmitting} onChange={event => onScopeChange?.(event.target.value as RejudgeScope)}>
-            <option value="missing">仅评分失败或未评分</option>
-            <option value="failed">仅评分失败</option>
-            <option value="unscored">仅未评分</option>
-            <option value="all">重新评分全部答案</option>
+            <option value="missing">失败或未评分的回答</option>
+            <option value="failed">评分失败的回答</option>
+            <option value="unscored">尚未评分的回答</option>
+            <option value="all">全部已有回答</option>
           </select>
         </label>
-        <label><input type="checkbox" checked={judgeUseGtImages} disabled={running || rejudgeSubmitting} onChange={event => onJudgeUseGtImagesChange?.(event.target.checked)} /> 使用 GT 图片辅助评分</label>
-        <p className="muted small">需要支持图片输入的 Judge。图片只提供给 Judge，不传给答题模型。只附标注的图片，不附视频；图片缺失或读取失败会记录为评分失败。补评保留已有有效分数，含 0 分；已有结果保留原评分模式。</p>
-        {recoveryPlan?.scoring?.[scope] ? <p>所选范围：{recoveryPlan.scoring[scope].qa_count} 题 · {recoveryPlan.scoring[scope].turn_count} 轮 · {recoveryPlan.scoring[scope].subscore_count} 项评分</p> : null}
+        <GtImageToggle checked={judgeUseGtImages} disabled={running || rejudgeSubmitting}
+          onChange={value => onJudgeUseGtImagesChange?.(value)} />
       </div>
-      <div className="prompt-kind-tabs">
-        {judgePromptKinds.map((meta) => {
-          const kind = meta.kind || "";
-          return (
-            <button
-              key={kind}
-              type="button"
-              className={"btn ghost compact prompt-kind-tab" + (activePromptKind === kind ? " active" : "")}
-              onClick={() => onSwitchPromptKind(kind)}
-            >
-              {PROMPT_KIND_LABELS[kind] || kind}
-              {meta.custom ? <span className="custom-badge">已自定义</span> : null}
-            </button>
-          );
-        })}
+      <div className="scoring-summary">
+        {count ? <div className="scoring-counts" aria-label="本次评分数量">
+          <span><strong>{count.qa_count}</strong> 题</span>
+          <span><strong>{count.turn_count}</strong> 轮对话</span>
+          <span><strong>{count.subscore_count}</strong> 项评分</span>
+        </div> : <span className="muted small">按所选范围处理已有回答</span>}
+        <button type="button" className="btn" disabled={!canRejudge || rejudgeSubmitting || running || count?.turn_count === 0}
+          onClick={() => onRequestRejudge()}>{running ? "评分进行中…" : rejudgeSubmitting ? "正在提交…" : actionLabel[scope]}</button>
       </div>
-      <label className="rejudge-prompt">
-        Judge System Prompt（{PROMPT_KIND_LABELS[activePromptKind] || activePromptKind}）
-        <textarea
-          value={rejudgePrompt}
-          disabled={running}
-          rows={8}
-          spellCheck={false}
-          onChange={(event) => onRejudgePromptChange(event.target.value)}
-        />
-      </label>
-      <div className="rejudge-toolbar">
-        <span className="muted small">
-          {rejudgePrompt.length} 字符 · Judge {judgeModel || "-"}
-        </span>
-        <div className="rejudge-actions">
-          <button className="btn ghost compact" disabled={running} onClick={() => onSavePrompt?.()}>
-            保存提示词
-          </button>
-          <button className="btn ghost compact" disabled={running} onClick={onResetPrompt}>
-            恢复默认
-          </button>
-          <button className="btn compact" disabled={!canRejudge || rejudgeSubmitting || recoveryPlan?.scoring?.[scope]?.turn_count === 0} onClick={() => onRequestRejudge()}>
-            {running ? "重新评分中…" : (scope === "all" ? "重新评分全部 QA" : "补评所选范围")}
-          </button>
+      {count?.turn_count === 0 ? <p className="muted small">此范围内没有需要评分的回答。</p> : null}
+      <p className="scoring-note">{scope === "all" ? "本次将替换全部已有评分，旧评分保留在历史中。" : "保留已有有效评分，包括 0 分。"}</p>
+      <details className="scoring-details">
+        <summary>评分说明</summary>
+        <p>GT 指标准答案与证据。开启图片辅助后，只将标注图片提供给质量评分模型，不附视频，也不传给答题模型。没有图片标注时使用文字评分；已标注的图片缺失或读取失败会记为评分失败。</p>
+        <p>每轮可包含回答质量、任务判断等多项评分；补评只处理所选范围内缺失或失败的项目，保留其他有效分数。已有评分保留当时的评分模式。</p>
+      </details>
+      <details className="scoring-details scoring-prompt-editor">
+        <summary>评分提示词 <span>{judgeModel || "未配置评分模型"}</span></summary>
+        <div className="prompt-kind-tabs">
+          {judgePromptKinds.map((meta) => {
+            const kind = meta.kind || "";
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={"btn ghost compact prompt-kind-tab" + (activePromptKind === kind ? " active" : "")}
+                onClick={() => onSwitchPromptKind(kind)}
+              >
+                {PROMPT_KIND_LABELS[kind] || kind}
+                {meta.custom ? <span className="custom-badge">已自定义</span> : null}
+              </button>
+            );
+          })}
         </div>
-      </div>
+        <label className="rejudge-prompt">
+          系统提示词（{PROMPT_KIND_LABELS[activePromptKind] || activePromptKind}）
+          <textarea
+            value={rejudgePrompt}
+            disabled={running}
+            rows={8}
+            spellCheck={false}
+            onChange={(event) => onRejudgePromptChange(event.target.value)}
+          />
+        </label>
+        <div className="rejudge-toolbar">
+          <span className="muted small">
+            {rejudgePrompt.length} 字符 · Judge {judgeModel || "-"}
+          </span>
+          <div className="rejudge-actions">
+            <button className="btn ghost compact" disabled={running} onClick={() => onSavePrompt?.()}>
+              保存提示词
+            </button>
+            <button className="btn ghost compact" disabled={running} onClick={onResetPrompt}>
+              恢复默认
+            </button>
+
+          </div>
+        </div>
+      </details>
       {activeRejudge ? (
         <div className="rejudge-progress">
-          {"judge_use_gt_images" in activeRejudge ? <p className="muted small">本次重评分：{activeRejudge.judge_use_gt_images ? "GT 图片辅助" : "文字 GT"}</p> : null}
+          {"judge_use_gt_images" in activeRejudge ? <p className="muted small">本次评分方式：{activeRejudge.judge_use_gt_images ? "GT 图片辅助" : "文字 GT"}</p> : null}
           <div className="rejudge-progress-meta">
             <span>
               {activeRejudge.completed || 0}/{activeRejudge.total || 0} 轮

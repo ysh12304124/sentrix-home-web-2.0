@@ -136,13 +136,13 @@ describe("导出轨迹控制（1.0 :3046-3054）", () => {
 describe("重评卡的显隐（1.0 :3059 v-if mode !== 'build'）", () => {
   it("build 模式不渲染重评卡", () => {
     renderDetail(run({ mode: "build" }));
-    expect(screen.queryByRole("button", { name: "补评所选范围" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "补齐缺失评分" })).toBeNull();
   });
 
   it("非 build 模式渲染重评卡", () => {
     renderDetail(run({ mode: "reuse" }));
-    expect(screen.getByRole("button", { name: "补评所选范围" })).not.toBeNull();
-    expect(screen.getByText("重新 Judge 评分")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "补齐缺失评分" })).not.toBeNull();
+    expect(screen.getByText("为已有回答评分")).not.toBeNull();
   });
 });
 

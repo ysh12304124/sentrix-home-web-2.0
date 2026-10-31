@@ -10,6 +10,7 @@
  *      `startSuite` / `stopSuite` / `deleteScopeAfterRun` 不在已写好的三个 hook 里，
  *      由组合层注入（1.0 它们是同一个组件里的方法，2.0 拆到 hook 之外）。
  */
+import { GtImageToggle } from "../../components/GtImageToggle.tsx";
 import { runModeMeta, startDisabledReason, type StartDisabledInput } from "./rules.ts";
 
 export interface StartActionsProps extends StartDisabledInput {
@@ -38,10 +39,8 @@ export function StartActions(props: StartActionsProps) {
 
   return (
     <div className="actions">
-      {runMode !== "build" && <label className="config-help">
-        <input type="checkbox" checked={props.judgeUseGtImages ?? false} disabled={suiteRunning || hasRunning} onChange={event => props.onJudgeUseGtImagesChange?.(event.target.checked)} />
-        使用 GT 图片辅助评分（仅给 Judge；不附视频）
-      </label>}
+      {runMode !== "build" && <GtImageToggle checked={props.judgeUseGtImages ?? false}
+        disabled={suiteRunning || hasRunning} onChange={value => props.onJudgeUseGtImagesChange?.(value)} />}
       {runMode === "full" && (
         <label
           className={`btn danger delete-scope-toggle${deleteScopeAfterRun ? " active" : ""}${

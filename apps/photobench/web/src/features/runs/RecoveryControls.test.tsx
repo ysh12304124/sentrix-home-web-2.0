@@ -28,10 +28,10 @@ describe("恢复与评分范围",()=>{
     const resume=vi.fn();
     vi.spyOn(window,"confirm").mockReturnValue(true);
     render(<ResumeCard plan={plan} busy={false} onResume={resume}/>);
-    const button=screen.getByRole("button",{name:"继续剩余 QA 测评"}) as HTMLButtonElement;
+    const button=screen.getByRole("button",{name:"继续剩余 QA 答题"}) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("选择当前产品版本续跑，并记录版本变化"));
-    fireEvent.click(screen.getByLabelText("使用 GT 图片辅助评分（仅给 Judge；不附视频）"));
+    fireEvent.click(screen.getByRole("checkbox", {name:"GT 图片辅助评分"}));
     expect(button.disabled).toBe(false);
     fireEvent.click(button);
     expect(resume).toHaveBeenCalledExactlyOnceWith({repair_missing_judges:true,judge_use_gt_images:true,product_build_revision:"new-rev"});
@@ -40,7 +40,7 @@ describe("恢复与评分范围",()=>{
     const resume=vi.fn();
     vi.spyOn(window,"confirm").mockReturnValue(false);
     const {rerender}=render(<ResumeCard plan={{...plan,product_version_changed:false}} busy={false} onResume={resume}/>);
-    fireEvent.click(screen.getByRole("button",{name:"继续剩余 QA 测评"}));
+    fireEvent.click(screen.getByRole("button",{name:"继续剩余 QA 答题"}));
     expect(resume).not.toHaveBeenCalled();
     rerender(<ResumeCard plan={plan} busy={true} onResume={resume}/>);
     expect((screen.getByRole("button",{name:"已有任务运行，暂不可续跑"}) as HTMLButtonElement).disabled).toBe(true);
@@ -48,16 +48,39 @@ describe("恢复与评分范围",()=>{
   it("补评显示准确题/轮/项计数，并可切全量",()=>{
     const scope=vi.fn(), images=vi.fn();
     const {rerender}=render(<RejudgeCard {...base} recoveryPlan={plan} scope="missing" onScopeChange={scope} onJudgeUseGtImagesChange={images}/>);
-    expect(screen.getByText("所选范围：197 题 · 229 轮 · 456 项评分")).toBeTruthy();
+    expect(screen.getByLabelText("本次评分数量").textContent).toBe("197 题229 轮对话456 项评分");
     fireEvent.change(screen.getByLabelText("评分范围"),{target:{value:"all"}});
     expect(scope).toHaveBeenCalledWith("all");
-    fireEvent.click(screen.getByLabelText("使用 GT 图片辅助评分"));
+    fireEvent.click(screen.getByRole("checkbox", {name:"GT 图片辅助评分"}));
     expect(images).toHaveBeenCalledWith(true);
     rerender(<RejudgeCard {...base} scope="all"/>);
-    expect(screen.getByRole("button",{name:"重新评分全部 QA"})).toBeTruthy();
+    expect(screen.getByRole("button",{name:"重新评分全部回答"})).toBeTruthy();
   });
   it("无目标时不允许补评",()=>{
     render(<RejudgeCard {...base} recoveryPlan={{...plan,scoring:{...plan.scoring,missing:{qa_count:0,turn_count:0,subscore_count:0}}}}/>);
-    expect((screen.getByRole("button",{name:"补评所选范围"}) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button",{name:"补齐缺失评分"}) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("评分面板的操作语义", () => {
+  it("切换图片选项只变更本次选择，不触发评分", () => {
+    const images = vi.fn(), request = vi.fn(() => true);
+    const { rerender } = render(<RejudgeCard {...base} onRequestRejudge={request}
+      onJudgeUseGtImagesChange={images} judgeUseGtImages={false} />);
+    const toggle = screen.getByRole("checkbox", { name: "GT 图片辅助评分" });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(images).toHaveBeenCalledExactlyOnceWith(true);
+    expect(request).not.toHaveBeenCalled();
+    rerender(<RejudgeCard {...base} onRequestRejudge={request} judgeUseGtImages={true} />);
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText("向评分模型提供标注图片；需支持图片输入")).toBeTruthy();
+  });
+  it("评分运行时不能切图片或再次提交，提示词默认折叠", () => {
+    render(<RejudgeCard {...base} activeRejudge={{status:"running"}} />);
+    expect((screen.getByRole("checkbox", { name: "GT 图片辅助评分" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "评分进行中…" }) as HTMLButtonElement).disabled).toBe(true);
+    const prompt = screen.getByText("评分提示词").closest("details") as HTMLDetailsElement;
+    expect(prompt.open).toBe(false);
   });
 });

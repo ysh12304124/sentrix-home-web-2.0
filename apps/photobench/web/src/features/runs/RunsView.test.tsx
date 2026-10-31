@@ -77,10 +77,10 @@ describe("RunsView 装配", () => {
     };
     const { rerender } = render(<RunsView runs={{ ...result.current, activeRunId: interrupted.run_id,
       activeRun: interrupted, recoveryPlan }} judgeModel="" saveJudgePrompt={() => {}} />);
-    expect(screen.getByText("继续中断的测评")).toBeTruthy();
+    expect(screen.getByText("继续未完成的答题")).toBeTruthy();
     rerender(<RunsView runs={{ ...result.current, activeRunId: completed.run_id,
       activeRun: completed, recoveryPlan }} judgeModel="" saveJudgePrompt={() => {}} />);
-    expect(screen.queryByText("继续中断的测评")).toBeNull();
+    expect(screen.queryByText("继续未完成的答题")).toBeNull();
     expect(screen.getByRole("heading", { level: 2, name: /new-model/ })).toBeTruthy();
   });
 });
