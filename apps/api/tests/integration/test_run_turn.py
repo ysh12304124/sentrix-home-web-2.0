@@ -1061,6 +1061,9 @@ def test_a_prompt_that_still_does_not_fit_ends_the_turn_honestly(env):
         [
             tool_call("search_memories", "c1", query="海边"),
             PromptTooLongError("提示词约 9000 token，上下文上限 6144…"),
+            PromptTooLongError("提示词约 9000 token，上下文上限 6144…"),
+            PromptTooLongError("提示词约 9000 token，上下文上限 6144…"),
+            PromptTooLongError("提示词约 9000 token，上下文上限 6144…"),
         ]
     )
     run_turn = build(env, model, StubToolbox({"search_memories": SEARCH_OK}))
@@ -1071,6 +1074,29 @@ def test_a_prompt_that_still_does_not_fit_ends_the_turn_honestly(env):
     assert result.status is TurnStatus.FAILED
     assert result.termination_reason is TerminationReason.MODEL_ERROR
     assert result.answer
+
+
+
+def test_single_oversized_search_retries_with_compacted_preview(env):
+    """只发生一次检索时也压缩其预览并重试，保留候选 handle。"""
+    _conversations, _turns, conversation, _db = env
+    model = ScriptedModel(
+        [
+            tool_call("search_memories", "c1", query="友好"),
+            PromptTooLongError("提示词约 5555 token，超过软上限 5222"),
+            final_call("大家的交流氛围友好。", "photo_1"),
+        ]
+    )
+    run_turn = build(env, model, StubToolbox({"search_memories": SEARCH_OK}))
+    turn_id = start(run_turn, conversation)
+    result = run_turn.run(turn_id)
+    assert result.answer == "大家的交流氛围友好。"
+    assert len(model.calls) == 3
+    retry = model.calls[2]
+    assert_tool_messages_are_paired(retry)
+    tool_result = next(message for message in retry if message.role is ChatRole.TOOL)
+    assert "photo_1" in tool_result.content
+
 
 
 def test_a_model_failure_ends_the_turn_as_failed_not_complete(env):
@@ -1665,6 +1691,21 @@ def test_the_recorded_tool_result_keeps_every_observation_key():
         "asset_id": "asset_1",
         "full_text": "囍",
         "degraded_reason": "embedder_unavailable",
+    }
+
+
+def test_recorded_search_result_keeps_model_visible_asr_preview():
+    from sentrix.application.assistant.run_turn import _tool_result_shape
+
+    outcome = ToolOutcome(
+        observation={"asset_ids": ["frame_1"]},
+        model_visible={"preview": [{"speech_evidence": [
+            {"start_sec": 18.0, "end_sec": 24.0, "text": "We meet Friday.", "speaker": "A"}
+        ]}]},
+    )
+    assert _tool_result_shape(outcome) == {
+        "asset_ids": ["frame_1"],
+        "speech_evidence": [{"start_sec": 18.0, "end_sec": 24.0, "text": "We meet Friday.", "speaker": "A"}],
     }
 
 

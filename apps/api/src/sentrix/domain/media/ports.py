@@ -376,6 +376,22 @@ class VideoScenePlanner(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptionSegment:
+    """A time-aligned speech segment returned by an ASR service (source-video seconds)."""
+
+    start_sec: float
+    end_sec: float
+    text: str
+    speaker: str = ""
+
+
+class AudioTranscriber(Protocol):
+    """Transcribe speech from a video and return source-timestamped segments."""
+
+    def transcribe_video(self, path: Path) -> Sequence[TranscriptionSegment]: ...
+
+
+@dataclass(frozen=True, slots=True)
 class VideoProbe:
     """一次视频探测的落库形态（写进 ``assets.metadata_json``）。
 

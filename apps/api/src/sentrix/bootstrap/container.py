@@ -44,6 +44,7 @@ from sentrix.domain.media.ports import (
     AssetRepository,
     AudioMetadataReader,
     AudioRepository,
+    AudioTranscriber,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -83,6 +84,7 @@ from sentrix.infrastructure.assistant.events import InProcessTurnEventBroker
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel, probe_context_tokens
 from sentrix.infrastructure.build import read_build_revision
 from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
+from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
@@ -187,10 +189,12 @@ class Container:
     # 音频两件（S8c T521）：ffprobe 探测 + 探测结果落库。**没有转码器**——音频不转码
     # （用户裁决②），浏览器原生放 mp3/wav/m4a/aac/flac/ogg。
     audio_metadata_reader: AudioMetadataReader
+    audio_transcriber: AudioTranscriber | None
     audio_repository: AudioRepository
     vector_repository: VectorRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
+    cross_modal_embedder: VisualEmbedder
     text_embedder: TextEmbedder
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
@@ -269,15 +273,10 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
-        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "window").strip().lower()
+        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_lowrank").strip().lower()
         video_scene_planner = None
         if video_algorithm == "svd_lowrank":
-            source_root = os.getenv("SENTRIX_SVD_SOURCE_ROOT", "").strip()
-            if not source_root:
-                raise ValueError("SENTRIX_SVD_SOURCE_ROOT is required for svd_lowrank")
-            video_scene_planner = SVDLowRankScenePlanner(
-                Path(source_root), settings.media_dir / "derived" / "svd"
-            )
+            video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
         place_aliases = load_place_aliases()
@@ -361,10 +360,32 @@ class Container:
             video_scene_planner=video_scene_planner,
             video_repository=SqliteVideoRepository(database),
             audio_metadata_reader=FfprobeAudioMetadataReader(),
+            audio_transcriber=(
+                QwenAudioTranscriber(
+                    settings.qwen_asr_base_url,
+                    settings.qwen_asr_model,
+                    api_key=settings.qwen_asr_api_key,
+                    timeout_s=settings.qwen_asr_timeout_s,
+                )
+                if settings.qwen_asr_base_url.strip()
+                else None
+            ),
             audio_repository=SqliteAudioRepository(database),
             vector_repository=SqliteVectorRepository(database),
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
+            cross_modal_embedder=(
+                None
+                if not settings.cross_modal_attention_enabled
+                else (
+                    visual_embedder
+                    if settings.embedding_scheme == "legacy"
+                    else ChineseClipSidecarEmbedder(
+                        settings.legacy_clip_url,
+                        timeout_s=settings.legacy_clip_timeout_s,
+                    )
+                )
+            ),
             text_embedder=text_embedder,
             embedding_health=embedding_health,
             place_resolver=OfflinePlaceResolver(

@@ -53,6 +53,7 @@ dependencies = [
     "insightface==1.0.1",
     # headless：服务端不装 GUI 那份，1.0 两份都装了是因为它还要在开发机上跑预览。
     "opencv-python-headless>=4.10,<6",
+    "pyyaml>=6,<7",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +66,6 @@ dev = [
     "types-psutil>=7,<8",
     "import-linter>=2.1,<3",
     "pre-commit>=4,<5",
-    "pyyaml>=6,<7",
 ]
 
 [build-system]
@@ -80,6 +80,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 sentrix = [
     "infrastructure/persistence/migrations/*.sql",
+    "infrastructure/media/svd_config.yaml",
     # 地名别名表随包发布。放在包内而不是仓库根的 data/ 下：那个目录整条在
     # .gitignore 里（`/data/` 是运行期数据目录），放进去就不受版本控制，
     # 「可审查、可替换、可测试」三条一条都做不到。见 s4-deviations.md §2 第 5 项。

@@ -16,6 +16,7 @@ from pathlib import Path
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes
 from sentrix.application.media.import_assets import ImportAssets, ImportRequest
 from sentrix.domain.media.models import MediaType, VideoMetadata
+from sentrix.domain.media.ports import AudioTranscriber, TranscriptionSegment
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.asset_places import SqliteAssetPlaceRepository
 from sentrix.infrastructure.persistence.repositories.assets import (
@@ -69,8 +70,23 @@ class RecordingKeyframeExtractor:
         return target
 
 
+class FakeTranscriber:
+    def __init__(self, segments: tuple[TranscriptionSegment, ...]) -> None:
+        self.segments = segments
+
+    def transcribe_video(self, path: Path) -> tuple[TranscriptionSegment, ...]:
+        return self.segments
+
+
 class Harness:
-    def __init__(self, db: Database, tmp_path: Path, *, duration_sec: float = 125.0) -> None:
+    def __init__(
+        self,
+        db: Database,
+        tmp_path: Path,
+        *,
+        duration_sec: float = 125.0,
+        transcriber: AudioTranscriber | None = None,
+    ) -> None:
         self.assets = SqliteAssetRepository(db)
         self.observations = SqliteObservationRepository(db)
         self.events = SqliteEventRepository(db)
@@ -85,6 +101,7 @@ class Harness:
             video_repository=self.videos,
             keyframes=self.extractor,
             process_image=self._process_image,
+            transcriber=transcriber,
         )
         self.importer = ImportAssets(
             assets=self.assets,
@@ -140,6 +157,39 @@ def test_importing_a_video_forms_scenes_with_lineage_back_to_the_source(
     assert [call[2] for call in harness.extractor.calls] == [30.0, 90.0, 122.5]
 
 
+def test_timestamped_speech_is_added_to_the_matching_scene_memory_text(
+    migrations_ready_db: Database, tmp_path: Path
+):
+    """Speech is assigned by source-time overlap before keyframe observations are built."""
+    transcriber = FakeTranscriber(
+        (
+            TranscriptionSegment(8.0, 10.0, "小明说开始做饭", "speaker_0"),
+            TranscriptionSegment(62.0, 65.0, "把盘子放到桌上"),
+            TranscriptionSegment(64.0, 66.0, "把盘子放到桌上"),  # duplicate ASR text is collapsed
+            TranscriptionSegment(121.0, 124.0, "大家开饭了"),
+        )
+    )
+    harness = Harness(migrations_ready_db, tmp_path, transcriber=transcriber)
+
+    result = harness.import_video()
+
+    scenes = harness.events.list_video_scenes(result.asset_id)
+    assert "speaker_0: 小明说开始做饭" in scenes[0].summary
+    assert "把盘子放到桌上" in scenes[1].summary
+    assert scenes[1].summary.count("把盘子放到桌上") == 1
+    assert "大家开饭了" in scenes[2].summary
+    assert scenes[0].source_metadata["speech_transcript"] == "speaker_0: 小明说开始做饭"
+    assert scenes[0].source_metadata["speech_segments"] == [
+        {
+            "start_sec": 8.0,
+            "end_sec": 10.0,
+            "text": "小明说开始做饭",
+            "speaker": "speaker_0",
+        }
+    ]
+    assert scenes[1].source_metadata["speech_segments"][0]["start_sec"] == 62.0
+
+
 def test_a_keyframe_is_an_image_asset_whose_observation_lands_in_its_scene_event(
     migrations_ready_db: Database, tmp_path: Path
 ):
@@ -184,6 +234,33 @@ def test_running_the_extraction_again_reuses_the_existing_scenes(
     assert (again.scene_count, again.keyframe_count, again.reused) == (3, 0, 3)
     assert [item.id for item in harness.videos.list_derived(result.asset_id)] == [item.id for item in before]
     assert len(harness.events.list_video_scenes(result.asset_id)) == 3
+
+
+def test_reprocessing_updates_transcript_and_summary_refresh_keeps_it(
+    migrations_ready_db: Database, tmp_path: Path
+):
+    harness = Harness(
+        migrations_ready_db,
+        tmp_path,
+        transcriber=FakeTranscriber((TranscriptionSegment(8.0, 10.0, "开始做饭"),)),
+    )
+    result = harness.import_video()
+    harness.scenes._transcriber = FakeTranscriber((TranscriptionSegment(8.0, 10.0, "开始炒菜"),))
+
+    harness.scenes.execute(result.asset_id)
+    scene = harness.events.list_video_scenes(result.asset_id)[0]
+    refreshed = harness.events.apply_summary(
+        scene.id,
+        title="家庭做饭",
+        event_type="家庭活动",
+        activity="做饭",
+        summary="关键帧显示有人在厨房准备食物",
+    )
+
+    assert refreshed.source_metadata["speech_transcript"] == "开始炒菜"
+    assert refreshed.source_metadata["speech_segments"][0]["start_sec"] == 8.0
+    assert "语音：开始炒菜" in refreshed.summary
+    assert "开始做饭" not in refreshed.summary
 
 
 def test_a_long_video_is_capped_at_max_scenes_by_growing_the_window(

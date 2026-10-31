@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -32,10 +33,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from sentrix.application.media.cross_modal_attention import (
+    attended_speech_indices,
+    bidirectional_cross_modal_attention,
+)
 from sentrix.application.media.stage_spans import StageSpans
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
+    AudioTranscriber,
+    TranscriptionSegment,
     VideoKeyframeExtractor,
     VideoRepository,
     VideoScenePlanner,
@@ -44,6 +51,7 @@ from sentrix.domain.media.scenes import KEYFRAME_DERIVED_KIND, SceneWindow, plan
 from sentrix.domain.memories.events import EventRecord
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
+from sentrix.domain.retrieval.ports import VisualEmbedder
 
 # 1.0 建场景事件时的占位地点（``db.py:2407`` 的 ``data.get("place") or "其他或不确定"``）。
 # 地点解析不出结果时事件不该是一行空字符串——那是「不知道」冒充「没有地点」。
@@ -52,6 +60,7 @@ UNKNOWN_PLACE = "其他或不确定"
 # 1.0 的 ``video/processor.py:203``：场景标题是「视频场景 N」（N 从 1 起），
 # 摘要带区间。两者都写死在事件上，后续的 ``refresh_event_summary`` 会按参与者重写。
 SCENE_TITLE_PREFIX = "视频场景"
+log = logging.getLogger("sentrix.application.media.extract_video_scenes")
 
 
 def _new_id(prefix: str) -> str:
@@ -99,6 +108,8 @@ class ExtractVideoScenes:
         # （它还要负责去重、落盘、探测）。第二参是 ``forced_event_id``。
         process_image: Callable[[Asset, str], object],
         scene_planner: VideoScenePlanner | None = None,
+        transcriber: AudioTranscriber | None = None,
+        cross_modal_embedder: VisualEmbedder | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._assets = assets
@@ -108,6 +119,8 @@ class ExtractVideoScenes:
         self._keyframes = keyframes
         self._process_image = process_image
         self._scene_planner = scene_planner
+        self._transcriber = transcriber
+        self._cross_modal_embedder = cross_modal_embedder
         self._clock = clock
 
     def execute(self, source_asset_id: str) -> VideoSceneExtraction:
@@ -142,25 +155,39 @@ class ExtractVideoScenes:
                 },
             )
 
+        transcription_started = time.perf_counter()
+        segments: tuple[TranscriptionSegment, ...] = ()
+        if self._transcriber is not None:
+            try:
+                segments = tuple(self._transcriber.transcribe_video(Path(asset.path)))
+            except Exception as error:  # noqa: BLE001 — optional ASR must not block video import
+                log.warning("视频语音转写失败 asset=%s: %s", asset.id, error)
+        transcription_seconds = time.perf_counter() - transcription_started
+
         place = self._places.get(source_asset_id)
         place_text = place.display() if place else UNKNOWN_PLACE
-        existing = {item.source_frame_index for item in self._video_repository.list_derived(source_asset_id)}
+        derived_by_scene = {
+            item.source_scene_index: item
+            for item in self._video_repository.list_derived(source_asset_id)
+            if item.source_scene_index is not None
+        }
 
         scene_count = keyframe_count = reused = 0
         scene_write_seconds = 0.0
         keyframe_extract_seconds = 0.0
         keyframe_asset_write_seconds = 0.0
         keyframe_memory_seconds = 0.0
+
+        # Prepare the complete visual sequence first so reverse attention can
+        # disambiguate audio across scene cuts.
+        frame_records: list[tuple[SceneWindow, Asset, bool]] = []
         for window in windows:
-            scene_started = time.perf_counter()
-            event = self._ensure_scene_event(asset, window, place_text)
-            finished = time.perf_counter()
-            scene_write_seconds += finished - scene_started
-            spans.include({"scene_write": (scene_started, finished)})
-            scene_count += 1
-            if window.index in existing:
-                reused += 1
-                continue
+            existing_asset = derived_by_scene.get(window.index)
+            if existing_asset is not None:
+                derived = self._assets.get(existing_asset.id)
+                if derived is not None:
+                    frame_records.append((window, derived, True))
+                    continue
             extract_started = time.perf_counter()
             frame = self._keyframes.extract(
                 Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
@@ -181,6 +208,57 @@ class ExtractVideoScenes:
             finished = time.perf_counter()
             keyframe_asset_write_seconds += finished - asset_write_started
             spans.include({"keyframe_asset_write": (asset_write_started, finished)})
+            frame_records.append((window, derived, False))
+
+        attended_by_scene: dict[int, tuple[str, tuple[dict[str, object], ...]]] = {}
+        embedder = self._cross_modal_embedder
+        if embedder is not None and segments and frame_records:
+            try:
+                visual_features = [
+                    list(embedder.embed_image(Path(item.path))) for _, item, _ in frame_records
+                ]
+                audio_features = [list(embedder.embed_query(item.text)) for item in segments]
+                if all(visual_features) and all(audio_features):
+                    result = bidirectional_cross_modal_attention(
+                        visual_features,
+                        audio_features,
+                        [window.keyframe_timestamp_sec for window, _, _ in frame_records],
+                        [(item.start_sec + item.end_sec) / 2 for item in segments],
+                    )
+                    for (window, _, _), selected in zip(
+                        frame_records, attended_speech_indices(result), strict=True
+                    ):
+                        attended = tuple(
+                            {
+                                "start_sec": segments[index].start_sec,
+                                "end_sec": segments[index].end_sec,
+                                "text": segments[index].text,
+                                "speaker": segments[index].speaker,
+                                "attention_weight": round(weight, 6),
+                            }
+                            for index, weight in selected
+                        )
+                        transcript = _format_scene_transcript(attended)
+                        if transcript:
+                            attended_by_scene[window.index] = (transcript, attended)
+            except Exception as error:  # noqa: BLE001 — optional fusion must not block import
+                log.warning("跨模态注意力计算失败 asset=%s: %s", asset.id, error)
+
+        for window, derived, was_existing in frame_records:
+            scene_started = time.perf_counter()
+            overlapping = _scene_segments(segments, window.start_sec, window.end_sec)
+            transcript, event_segments = attended_by_scene.get(
+                window.index,
+                (_format_scene_transcript(overlapping), overlapping),
+            )
+            event = self._ensure_scene_event(asset, window, place_text, transcript, event_segments)
+            finished = time.perf_counter()
+            scene_write_seconds += finished - scene_started
+            spans.include({"scene_write": (scene_started, finished)})
+            scene_count += 1
+            if was_existing:
+                reused += 1
+                continue
             memory_started = time.perf_counter()
             self._process_image(derived, event.id)
             finished = time.perf_counter()
@@ -196,6 +274,7 @@ class ExtractVideoScenes:
             timing_spans=dict(spans.intervals),
             timings={
                 "scene_planning": round(planning_seconds, 3),
+                "speech_transcription": round(transcription_seconds, 3),
                 "scene_write": round(scene_write_seconds, 3),
                 "keyframe_extraction": round(keyframe_extract_seconds, 3),
                 "keyframe_asset_write": round(keyframe_asset_write_seconds, 3),
@@ -206,7 +285,14 @@ class ExtractVideoScenes:
 
     # ---- 内部 ----------------------------------------------------------------
 
-    def _ensure_scene_event(self, asset: Asset, window: SceneWindow, place_text: str) -> EventRecord:
+    def _ensure_scene_event(
+        self,
+        asset: Asset,
+        window: SceneWindow,
+        place_text: str,
+        transcript: str = "",
+        speech_segments: tuple[dict[str, object], ...] = (),
+    ) -> EventRecord:
         """1.0 ``db.py:2397`` 的 ``create_video_scene_event``：同一 (源片, 场景序号) 只有一条。
 
         区间是**原片秒数**，与事件自身的 ``time_start`` / ``time_end``
@@ -218,7 +304,7 @@ class ExtractVideoScenes:
             event_id=_new_id("evt"),
             scope_id=asset.scope_id,
             title=f"{SCENE_TITLE_PREFIX} {window.index + 1}",
-            summary=f"{SCENE_TITLE_PREFIX} · {start:.1f}s~{end:.1f}s",
+            summary=_scene_summary(start, end, transcript),
             place=place_text,
             time_start=_offset(asset.captured_at, start),
             time_end=_offset(asset.captured_at, end),
@@ -226,6 +312,8 @@ class ExtractVideoScenes:
             source_scene_index=window.index,
             source_start_sec=start,
             source_end_sec=end,
+            speech_transcript=transcript,
+            speech_segments=speech_segments,
         )
 
     def _derived_asset(self, source: Asset, frame: Path, window: SceneWindow) -> Asset:
@@ -258,3 +346,44 @@ def _offset(captured_at: datetime | None, seconds: float) -> datetime | None:
     if captured_at is None:
         return None
     return captured_at + timedelta(seconds=float(seconds))
+
+
+def _scene_transcript(segments: tuple[TranscriptionSegment, ...], start: float, end: float) -> str:
+    """Select speech overlapping this scene, retaining chronology and removing repeated text."""
+    return _format_scene_transcript(_scene_segments(segments, start, end))
+
+
+def _scene_segments(
+    segments: tuple[TranscriptionSegment, ...], start: float, end: float
+) -> tuple[dict[str, object], ...]:
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for segment in sorted(segments, key=lambda item: (item.start_sec, item.end_sec)):
+        if segment.end_sec <= start or segment.start_sec >= end:
+            continue
+        text = " ".join(segment.text.split())
+        if not text or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        selected.append(
+            {
+                "start_sec": segment.start_sec,
+                "end_sec": segment.end_sec,
+                "text": text,
+                "speaker": segment.speaker,
+            }
+        )
+    return tuple(selected)
+
+
+def _format_scene_transcript(segments: tuple[dict[str, object], ...]) -> str:
+    selected: list[str] = []
+    for segment in segments:
+        speaker = f"{segment['speaker']}: " if segment.get("speaker") else ""
+        selected.append(f"{speaker}{segment['text']}")
+    return "；".join(selected)
+
+
+def _scene_summary(start: float, end: float, transcript: str) -> str:
+    summary = f"{SCENE_TITLE_PREFIX} · {start:.1f}s~{end:.1f}s"
+    return f"{summary}；语音：{transcript}" if transcript else summary

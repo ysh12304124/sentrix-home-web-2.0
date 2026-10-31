@@ -14,8 +14,8 @@ flowchart TD
     A[视频文件导入] --> B[源视频 Asset]
     B --> C[ffprobe: 时长 / FPS / 帧数 / 元数据]
     D[抽帧算法配置] --> E{SENTRIX_VIDEO_KEYFRAME_ALGORITHM}
-    E -->|未设置或 window| F[固定时间窗规划: 默认 60 秒 / 最多 40 窗]
-    E -->|svd_lowrank| G[原 SVD low-rank + YOLO 抽帧器]
+    E -->|window| F[固定时间窗规划: 默认 60 秒 / 最多 40 窗]
+    E -->|未设置或 svd_lowrank| G[原 CPU SVD low-rank 场景与关键帧选择]
     C --> F
     C --> G
     F --> H[场景区间 + 选中时间码]
@@ -30,7 +30,7 @@ flowchart TD
     N --> O[分别统计帧级、源视频级、QA 0/1/2 分]
 ```
 
-当前默认是 `window`，不是 SVD。`svd_lowrank` 由 `SENTRIX_VIDEO_KEYFRAME_ALGORITHM=svd_lowrank` 选择，并要求 `SENTRIX_SVD_SOURCE_ROOT` 指向原抽帧工程。Web2 将 SVD 结果适配为场景窗，再走同一派生图片及图片处理链。场景窗默认 60 秒、最多 40 个；超出上限时按比例扩窗。
+默认关键帧算法为原 SVD low-rank；`SENTRIX_VIDEO_KEYFRAME_ALGORITHM=window` 可显式切换到固定时间窗。SVD 实现与配置随 API 包发布，不依赖外部源码目录或 YOLO 权重。Web2 将 SVD 结果适配为场景窗，再走同一派生图片及图片处理链。语音片段仍使用源视频秒数，并按片段与场景的时间重叠写入对应场景记忆；详情接口同时返回场景内关键帧时间，前端在对应语音片段旁展示可核对的时间点。
 
 ### 当前已有的数据结构
 

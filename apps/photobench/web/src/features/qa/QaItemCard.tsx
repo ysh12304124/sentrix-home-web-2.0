@@ -43,6 +43,42 @@ function dict(value: unknown): Dict {
   return typeof value === "object" && value !== null ? (value as Dict) : {};
 }
 
+/** Only show ASR text returned by an executed retrieval tool; never infer it from QA labels. */
+function retrievedSpeechEvidence(item: RunItemDetail): Array<{ text: string; start?: number; end?: number }> {
+  const found: Array<{ text: string; start?: number; end?: number }> = [];
+  const seen = new Set<string>();
+  const visitResult = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(visitResult); return; }
+    const node = dict(value);
+    const segments = node.speech_evidence;
+    if (Array.isArray(segments)) {
+      for (const raw of segments) {
+        const segment = dict(raw);
+        const text = String(segment.text || "").trim();
+        if (!text || seen.has(`${segment.start_sec}|${segment.end_sec}|${text}`)) continue;
+        seen.add(`${segment.start_sec}|${segment.end_sec}|${text}`);
+        found.push({ text, start: Number.isFinite(Number(segment.start_sec)) ? Number(segment.start_sec) : undefined, end: Number.isFinite(Number(segment.end_sec)) ? Number(segment.end_sec) : undefined });
+      }
+    }
+    Object.values(node).forEach(visitResult);
+  };
+  const visitCalls = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(visitCalls); return; }
+    const call = dict(value);
+    if (call.result != null) visitResult(call.result);
+  };
+  // Only tool results count: question text and model prose are excluded.
+  visitCalls(item.tool_trace);
+  return found;
+}
+
+function evidenceTime(seconds: number | undefined): string {
+  if (seconds == null) return "";
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 /** 1.0 `media.file_name || media.media_id || media.image_id`。 */
 function mediaLabel(media: MediaLike): string {
   return esc(media.file_name) || esc(media.media_id) || esc(media.image_id);
@@ -180,7 +216,20 @@ function QaItemDetail({
   const taskJudge = dict(detail.task_judge);
   const evidenceJudge = dict(detail.evidence_judge);
   // 两个媒体区：候选 vs 显式交付，分开取、分开渲染。
-  const recallMedia = toolRecallMedia(detail, albumId);
+  const recallMedia = toolRecallMedia(detail, albumId).map((media) => {
+    const keyframeId = String(media.source_keyframe_asset_id || "");
+    if (!keyframeId) return media;
+    const seconds = Number(media.source_timestamp_sec);
+    return {
+      ...media,
+      asset_id: keyframeId,
+      media_id: keyframeId,
+      media_type: "image",
+      media_url: undefined,
+      file_name: Number.isFinite(seconds) ? `检索关键帧 ${seconds.toFixed(1)}s` : "检索关键帧",
+    };
+  });
+  const speechEvidence = retrievedSpeechEvidence(detail);
   const evidenceMedia = itemEvidenceMedia(detail, albumId);
   const gtMedia = itemMedia(detail, albumId, true);
   const timing = itemTimingBreakdown(detail);
@@ -254,7 +303,7 @@ function QaItemDetail({
               <b>{evidenceScoreLabel(detail.evidence_judge)}</b>
             </span> : null}
           </div>
-          <h4>工具召回图片（{recallMedia.length}）</h4>
+          <h4>工具召回关键帧图片（{recallMedia.length}）</h4>
           <div className="image-grid">
             {recallMedia.map((media, mediaIndex) => (
               <MediaTile
@@ -265,6 +314,17 @@ function QaItemDetail({
             ))}
             {recallMedia.length === 0 && <span className="muted small">检索未返回可识别媒体</span>}
           </div>
+          <h4>工具召回语音转写（{speechEvidence.length}）</h4>
+          {speechEvidence.length ? (
+            <ul className="qa-speech-evidence">
+              {speechEvidence.map((entry, index) => (
+                <li key={`${entry.start ?? "na"}-${index}`}>
+                  {entry.start != null ? <time>{evidenceTime(entry.start)}{entry.end != null ? `–${evidenceTime(entry.end)}` : ""}</time> : null}
+                  <span>{esc(entry.text)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="muted small">检索工具没有返回 ASR 转写文本</p>}
           <h4>模型使用图片（{evidenceMedia.length}）</h4>
           <div className="image-grid">
             {evidenceMedia.slice(0, 3).map((media, mediaIndex) => (

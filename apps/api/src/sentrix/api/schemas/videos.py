@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class VideoMetadataPayload(BaseModel):
@@ -56,6 +56,14 @@ class VideoPayload(BaseModel):
     processing_seconds: float | None = None
 
 
+class SpeechSegmentPayload(BaseModel):
+    """带视频时间轴的 ASR 片段。"""
+
+    start_sec: float
+    end_sec: float
+    text: str
+
+
 class VideoScenePayload(BaseModel):
     """一个视频场景事件。血缘那几位（``source_*``）来自迁移 0010。"""
 
@@ -75,6 +83,8 @@ class VideoScenePayload(BaseModel):
     source_scene_index: int | None = None
     source_start_sec: float | None = None
     source_end_sec: float | None = None
+    speech_segments: list[SpeechSegmentPayload] = Field(default_factory=list)
+    keyframe_timestamps_sec: list[float] = Field(default_factory=list)
 
 
 class KeyframeAssetPayload(BaseModel):

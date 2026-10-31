@@ -55,6 +55,30 @@ describe("资产详情", () => {
     expect(video.currentTime).toBe(12.5);
   });
 
+  it("视频详情按时间显示语音片段", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        video: {},
+        scenes: [{
+          id: "scene-1",
+          title: "视频场景 1",
+          keyframe_timestamps_sec: [5.3, 9.1],
+          speech_segments: [{ start_sec: 4.2, end_sec: 6.8, text: "加入鸡肉" }],
+        }],
+      }),
+    }));
+    render(
+      <AssetDetail
+        asset={asset({ id: "v1", file_name: "clip.mp4", media_type: "video", mime_type: "video/mp4" })}
+        onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByText("加入鸡肉")).toBeTruthy();
+    expect(screen.getByText("00:04–00:06")).toBeTruthy();
+    expect(screen.getByText(/关键帧 00:05/)).toBeTruthy();
+  });
+
   it("音频渲染 audio 控件并走 /preview", () => {
     render(
       <AssetDetail

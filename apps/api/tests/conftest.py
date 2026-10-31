@@ -262,6 +262,9 @@ def isolated_app(settings):
         video_transcoder=FakeVideoTranscoder(),
         # 音频探测同理（S8c）：真实现起 ffprobe 子进程。
         audio_metadata_reader=FakeAudioMetadataReader(),
+        # Contract fixtures use tiny invalid video byte strings. The default SVD
+        # selection is verified by the container test; keep these route fixtures isolated.
+        video_scene_planner=None,
         # 抽帧同理：真实现起 ffmpeg。这里给的是「每个场景一张真 JPEG」的假件，
         # 所以契约测试能走完整条「导入视频 → 场景成型 → 关键帧落库」的链。
         video_keyframe_extractor=FakeVideoKeyframeExtractor(),

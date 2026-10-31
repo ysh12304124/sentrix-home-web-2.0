@@ -187,9 +187,16 @@ def test_video_scene_detail_carries_the_lineage(client: TestClient):
     with database.connect() as connection, connection:
         connection.execute(
             "INSERT INTO events (id, scope_id, title, event_type, source_type, source_asset_id,"
-            " source_scene_index, source_start_sec, source_end_sec, created_at, updated_at)"
-            " VALUES ('evt_scene', 'album1', '视频场景', '视频场景', 'video_scene', ?, 2, 10.0, 15.0, ?, ?)",
-            (asset_id, NOW.isoformat(), NOW.isoformat()),
+            " source_scene_index, source_start_sec, source_end_sec, source_metadata_json,"
+            " created_at, updated_at)"
+            " VALUES ('evt_scene', 'album1', '视频场景', '视频场景', 'video_scene', ?,"
+            " 2, 10.0, 15.0, ?, ?, ?)",
+            (
+                asset_id,
+                '{"speech_segments":[{"start_sec":11.5,"end_sec":13.0,"text":"加入鸡肉"}]}',
+                NOW.isoformat(),
+                NOW.isoformat(),
+            ),
         )
         connection.execute(
             "INSERT INTO assets (id, scope_id, file_name, media_type, path, size_bytes, status,"
@@ -211,6 +218,8 @@ def test_video_scene_detail_carries_the_lineage(client: TestClient):
 
     body = client.get("/api/v1/video-scenes/evt_scene").json()
 
+    assert body["event"]["speech_segments"] == [{"start_sec": 11.5, "end_sec": 13.0, "text": "加入鸡肉"}]
+    assert body["event"]["keyframe_timestamps_sec"] == [12.5]
     assert body["event"]["source_type"] == "video_scene"
     assert body["event"]["source_asset_id"] == asset_id
     assert body["event"]["source_scene_index"] == 2

@@ -18,7 +18,8 @@ _COLUMNS = (
     "id, scope_id, title, event_type, time_start, time_end, place, admin_district,"
     "activity, summary, confidence, aggregation_score, aggregation_breakdown_json,"
     " status, revision, created_at,"
-    " source_type, source_asset_id, source_scene_index, source_start_sec, source_end_sec"
+    " source_type, source_asset_id, source_scene_index, source_start_sec, source_end_sec,"
+    " source_metadata_json"
 )
 
 # 1.0 ``merge_observation_into_event`` 新建事件时的两个占位值（``db.py:2310`` 附近）。
@@ -77,7 +78,24 @@ def _row_to_event(row: sqlite3.Row) -> EventRecord:
         source_scene_index=row["source_scene_index"],
         source_start_sec=row["source_start_sec"],
         source_end_sec=row["source_end_sec"],
+        source_metadata=_json_object(row["source_metadata_json"]),
     )
+
+
+def _json_object(value: str | None) -> dict[str, object]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _with_speech(summary: str, metadata: dict[str, object]) -> str:
+    speech = str(metadata.get("speech_transcript") or "").strip()
+    if not speech:
+        return summary
+    marker = f"语音：{speech}"
+    return summary if marker in summary else f"{summary}；{marker}"
 
 
 class SqliteEventRepository:
@@ -174,8 +192,10 @@ class SqliteEventRepository:
         1.0 ``_persist_event_summary`` 的 UPDATE 就是这四列；置信度不在其中——
         1.0 也没有把确定性摘要的那 0.45 写回事件。
         """
-        if self.get(event_id) is None:
+        current = self.get(event_id)
+        if current is None:
             raise KeyError(event_id)
+        summary = _with_speech(summary, current.source_metadata)
         with self._database.connect() as connection, connection:
             connection.execute(
                 "UPDATE events SET title = ?, event_type = ?, activity = ?, summary = ?,"
@@ -343,6 +363,8 @@ class SqliteEventRepository:
         source_scene_index: int,
         source_start_sec: float,
         source_end_sec: float,
+        speech_transcript: str = "",
+        speech_segments: Sequence[dict[str, object]] = (),
     ) -> EventRecord:
         """1.0 ``db.py:2397`` 的 ``create_video_scene_event``：**先查后插**，幂等。
 
@@ -356,12 +378,26 @@ class SqliteEventRepository:
         """
         with self._database.connect() as connection, connection:
             existing = connection.execute(
-                "SELECT id FROM events WHERE source_type = 'video_scene'"
+                "SELECT id, summary, source_metadata_json FROM events WHERE source_type = 'video_scene'"
                 " AND source_asset_id = ? AND source_scene_index = ?",
                 (source_asset_id, int(source_scene_index)),
             ).fetchone()
             if existing is not None:
                 scene_id = existing["id"]
+                metadata = _json_object(existing["source_metadata_json"])
+                metadata["speech_transcript"] = speech_transcript
+                metadata["speech_segments"] = list(speech_segments)
+                summary = _with_speech(summary, metadata)
+                connection.execute(
+                    "UPDATE events SET summary = ?, source_metadata_json = ?, revision = revision + 1,"
+                    " updated_at = ? WHERE id = ?",
+                    (
+                        summary,
+                        json.dumps(metadata, ensure_ascii=False),
+                        datetime.now(UTC).isoformat(),
+                        scene_id,
+                    ),
+                )
             else:
                 scene_id = event_id
                 now = datetime.now(UTC).isoformat()
@@ -372,7 +408,7 @@ class SqliteEventRepository:
                     " source_scene_index, source_start_sec, source_end_sec, source_metadata_json,"
                     " created_at, updated_at)"
                     " VALUES (?,?,?,'视频场景',?,?,?, '视频场景',?,1.0,0.0,?,'active',1,"
-                    " 'video_scene',?,?,?,?, '{}', ?, ?)",
+                    " 'video_scene',?,?,?,?, ?, ?, ?)",
                     (
                         scene_id,
                         scope_id,
@@ -386,6 +422,15 @@ class SqliteEventRepository:
                         int(source_scene_index),
                         float(source_start_sec),
                         float(source_end_sec),
+                        json.dumps(
+                            {
+                                "speech_transcript": speech_transcript,
+                                "speech_segments": list(speech_segments),
+                            }
+                            if speech_transcript
+                            else {},
+                            ensure_ascii=False,
+                        ),
                         now,
                         now,
                     ),
