@@ -1,6 +1,7 @@
 import type {
   FaceClusteringMetrics,
   GraphQaByTypeRow,
+  GraphQaOverall,
   GraphQuality,
   GraphReferenceMetrics,
 } from "../../api/types.ts";
@@ -59,6 +60,44 @@ function qaCell(value: number | null | undefined, percent = true): string {
   return percent ? ratio(value) : value.toFixed(3);
 }
 
+function signedRatio(value: number | null | undefined): string {
+  if (typeof value !== "number") return "—";
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+}
+
+function transition(before: number | null | undefined, after: number | null | undefined): string {
+  if (typeof before !== "number" || typeof after !== "number") return "—";
+  return `${ratio(before)} → ${ratio(after)}`;
+}
+
+function overallGainCards(overall: GraphQaOverall) {
+  const without = overall.without_graph || {};
+  const withGraph = overall.with_graph || {};
+  const delta = overall.delta || {};
+  return [
+    metricCard(
+      "召回率（无图 → 有图）",
+      transition(without.retrieval_recall, withGraph.retrieval_recall),
+      `变化 ${signedRatio(delta.retrieval_recall)}`,
+    ),
+    metricCard(
+      "精确率 P（无图 → 有图）",
+      transition(without.retrieval_precision, withGraph.retrieval_precision),
+      `变化 ${signedRatio(delta.retrieval_precision)}`,
+    ),
+    metricCard(
+      "回答质量分（有图）",
+      typeof withGraph.answer_quality_mean === "number" ? withGraph.answer_quality_mean.toFixed(2) : "—",
+      "无图质量对照未记录，暂不计算质量分变化",
+    ),
+    metricCard(
+      "有效对照题数",
+      number(overall.sample_count),
+      `图路由 ${number(overall.graph_routed_count)} · 图生效 ${number(overall.graph_enabled_count)}`,
+    ),
+  ];
+}
+
 function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
   if (!rows.length) return <p className="metric-calc-time">没有可汇总的题型数据。</p>;
   return (
@@ -71,6 +110,7 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
             <th>图路由</th>
             <th>图生效</th>
             <th>图召回 Δ</th>
+            <th>图精确率 Δ</th>
             <th>检索 R</th>
             <th>回答质量</th>
             <th>证据支持率</th>
@@ -85,6 +125,7 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
               <td>{number(row.graph_routed_count)}</td>
               <td>{number(row.graph_effect_count)}</td>
               <td>{row.graph_recall_delta == null ? "—" : `${row.graph_recall_delta >= 0 ? "+" : ""}${(row.graph_recall_delta * 100).toFixed(1)}%`}</td>
+              <td>{signedRatio(row.graph_precision_delta)}</td>
               <td>{qaCell(row.retrieval_recall)}</td>
               <td>{row.answer_quality_mean == null ? "—" : row.answer_quality_mean.toFixed(2)}</td>
               <td>{qaCell(row.evidence_supported_rate)}</td>
@@ -128,6 +169,17 @@ export function GraphQualityPanel({ quality }: { quality: GraphQuality | null })
 
       <h4>人脸身份聚类质量</h4>
       {face.available ? <div className="phase-metrics graph-quality-metrics">{faceCards(face)}</div> : <p className="metric-calc-time">{String(face.reason || "未找到 identity GT sidecar")}</p>}
+
+      <h4>总体图增益（同题无图 → 有图）</h4>
+      <p className="metric-calc-time">
+        召回率和精确率比较 primary（图晋升前）与 fused（图晋升后）；回答质量分只来自本轮有图回答，
+        需要同题、同模型的无图对照 run 才能计算质量分变化。
+      </p>
+      {quality.graph_qa_overall?.available ? (
+        <div className="phase-metrics graph-quality-metrics">{overallGainCards(quality.graph_qa_overall)}</div>
+      ) : (
+        <p className="metric-calc-time">总体图增益：暂无可比较的图遥测或 GT。</p>
+      )}
 
       <h4>按问题类型的图记忆 QA 表现</h4>
       <QuestionTypeTable rows={quality.graph_qa_by_type || []} />

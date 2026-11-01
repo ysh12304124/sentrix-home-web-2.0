@@ -262,6 +262,7 @@ class RunReports:
             else {"available": False, "reason": "scope_missing"},
             "face_clustering": {"available": False, "reason": "scope_missing"},
             "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(items),
+            "graph_qa_overall": graph_quality.aggregate_graph_qa_overall(items),
         }
         if scope_id:
             truth = self._identity_truth(str(state.get("album_id") or ""))

@@ -251,6 +251,11 @@ export interface GraphQaByTypeRow {
   graph_enabled_count?: number;
   graph_effect_count?: number;
   graph_recall_delta?: number | null;
+  without_graph_recall?: number | null;
+  without_graph_precision?: number | null;
+  with_graph_recall?: number | null;
+  with_graph_precision?: number | null;
+  graph_precision_delta?: number | null;
   graph_gt_improved_count?: number;
   graph_gt_worsened_count?: number;
   graph_rank_changed_count?: number;
@@ -264,6 +269,33 @@ export interface GraphQaByTypeRow {
   [key: string]: unknown;
 }
 
+export interface GraphQaOverall {
+  available?: boolean;
+  telemetry_status?: string;
+  sample_count?: number;
+  graph_routed_count?: number;
+  graph_enabled_count?: number;
+  without_graph?: {
+    retrieval_recall?: number | null;
+    retrieval_precision?: number | null;
+    answer_quality_mean?: number | null;
+  };
+  with_graph?: {
+    retrieval_recall?: number | null;
+    retrieval_precision?: number | null;
+    answer_quality_mean?: number | null;
+    judge_valid_count?: number;
+  };
+  delta?: {
+    retrieval_recall?: number | null;
+    retrieval_precision?: number | null;
+    answer_quality_mean?: number | null;
+  };
+  quality_comparison_status?: string;
+  quality_comparison_note?: string;
+  [key: string]: unknown;
+}
+
 export interface GraphQuality {
   status?: string;
   run_id?: string;
@@ -271,6 +303,7 @@ export interface GraphQuality {
   graph?: GraphReferenceMetrics;
   face_clustering?: FaceClusteringMetrics;
   graph_qa_by_type?: GraphQaByTypeRow[];
+  graph_qa_overall?: GraphQaOverall;
   [key: string]: unknown;
 }
 

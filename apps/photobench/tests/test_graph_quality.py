@@ -1,4 +1,8 @@
-from photobench.domain.runs.graph_quality import aggregate_graph_qa_by_type, face_clustering_quality
+from photobench.domain.runs.graph_quality import (
+    aggregate_graph_qa_by_type,
+    aggregate_graph_qa_overall,
+    face_clustering_quality,
+)
 
 
 def test_graph_qa_marks_historical_items_without_graph_telemetry():
@@ -87,6 +91,38 @@ def test_graph_qa_does_not_call_degraded_graph_enabled():
 
     assert rows[0]["graph_routed_count"] == 1
     assert rows[0]["graph_enabled_count"] == 0
+
+
+def test_graph_qa_overall_compares_primary_and_fused_retrieval_heads():
+    overall = aggregate_graph_qa_overall(
+        [
+            {
+                "question_type": "multi_hop",
+                "gt_media": [{"asset_id": "gt"}],
+                "judge": {"score": 2},
+                "tool_trace": [
+                    {
+                        "result": {
+                            "retrieval_channels": [{"channel": "graph", "status": "ok"}],
+                            "graph_primary_asset_ids": ["other"],
+                            "graph_fused_asset_ids": ["gt"],
+                        }
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert overall["available"] is True
+    assert overall["without_graph"]["retrieval_recall"] == 0.0
+    assert overall["with_graph"]["retrieval_recall"] == 1.0
+    assert overall["delta"]["retrieval_recall"] == 1.0
+    assert overall["without_graph"]["retrieval_precision"] == 0.0
+    assert overall["with_graph"]["retrieval_precision"] == 1.0
+    assert overall["delta"]["retrieval_precision"] == 1.0
+    assert overall["with_graph"]["answer_quality_mean"] == 2.0
+    assert overall["delta"]["answer_quality_mean"] is None
+    assert overall["quality_comparison_status"] == "requires_paired_no_graph_run"
 
 
 def test_face_clustering_quality_uses_identity_gallery_and_image_links():

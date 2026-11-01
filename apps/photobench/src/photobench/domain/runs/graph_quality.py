@@ -70,6 +70,130 @@ def _judge_score(value: object) -> float | None:
     return float(score) if isinstance(score, (int, float)) else None
 
 
+def _graph_heads(trace: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """Return the primary (without graph promotion) and fused graph heads."""
+
+    baseline = trace.get("graph_primary_asset_ids") or []
+    final = trace.get("graph_fused_asset_ids") or []
+    if not baseline and isinstance(trace.get("graph_rerank"), Mapping):
+        rerank = trace["graph_rerank"]
+        baseline = (
+            rerank.get("baseline_head_asset_ids") or (rerank.get("baseline_ranked_asset_ids") or [])[:18]
+        )
+        final = rerank.get("returned_head_asset_ids") or (rerank.get("reranked_asset_ids") or [])[:18]
+    # Keep the conversion here so malformed historical traces cannot break the report.
+    return [str(asset_id) for asset_id in baseline], [str(asset_id) for asset_id in final]
+
+
+def _retrieval_metrics(asset_ids: list[str], gt: set[str]) -> tuple[float, float]:
+    """Return question-level recall and precision for one candidate head."""
+
+    predicted = set(asset_ids)
+    hits = len(predicted & gt)
+    recall = hits / len(gt) if gt else 0.0
+    precision = hits / len(predicted) if predicted else 0.0
+    return recall, precision
+
+
+def _graph_comparison(item: Mapping[str, Any], trace: Mapping[str, Any]) -> dict[str, Any] | None:
+    gt = _gt_asset_ids(item)
+    if not gt:
+        return None
+    baseline, final = _graph_heads(trace)
+    baseline_recall, baseline_precision = _retrieval_metrics(baseline, gt)
+    final_recall, final_precision = _retrieval_metrics(final, gt)
+    return {
+        "baseline_recall": baseline_recall,
+        "baseline_precision": baseline_precision,
+        "graph_recall": final_recall,
+        "graph_precision": final_precision,
+        "recall_delta": final_recall - baseline_recall,
+        "precision_delta": final_precision - baseline_precision,
+    }
+
+
+def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate the same-question primary→fused comparison for the whole run.
+
+    A single graph-on run has no answer generated from the primary-only candidates, so
+    answer quality cannot honestly be differenced here.  The response exposes the graph-on
+    quality and an explicit comparison status; a paired graph-off run can fill the missing
+    baseline later without changing the retrieval metric contract.
+    """
+
+    comparisons: list[dict[str, Any]] = []
+    graph_judge_scores: list[float] = []
+    routed_count = 0
+    enabled_count = 0
+    for item in items:
+        trace = _graph_trace(item)
+        if trace is None:
+            continue
+        routed_count += 1
+        channels = trace.get("retrieval_channels") or []
+        graph_channel = next(
+            (
+                channel
+                for channel in channels
+                if isinstance(channel, Mapping) and channel.get("channel") == "graph"
+            ),
+            None,
+        )
+        if isinstance(graph_channel, Mapping) and graph_channel.get("status") == "ok":
+            enabled_count += 1
+        comparison = _graph_comparison(item, trace)
+        if comparison is not None:
+            comparisons.append(comparison)
+            score = _judge_score(item.get("judge"))
+            if score is not None:
+                graph_judge_scores.append(score)
+
+    if not comparisons:
+        return {
+            "available": False,
+            "telemetry_status": "not_recorded" if not routed_count else "no_gt",
+            "sample_count": 0,
+            "graph_routed_count": routed_count,
+            "graph_enabled_count": enabled_count,
+            "quality_comparison_status": "requires_paired_no_graph_run",
+        }
+
+    baseline_recall = _mean([row["baseline_recall"] for row in comparisons])
+    baseline_precision = _mean([row["baseline_precision"] for row in comparisons])
+    graph_recall = _mean([row["graph_recall"] for row in comparisons])
+    graph_precision = _mean([row["graph_precision"] for row in comparisons])
+    quality_mean = round(sum(graph_judge_scores) / len(graph_judge_scores), 3) if graph_judge_scores else None
+    return {
+        "available": True,
+        "telemetry_status": "recorded",
+        "sample_count": len(comparisons),
+        "graph_routed_count": routed_count,
+        "graph_enabled_count": enabled_count,
+        "without_graph": {
+            "retrieval_recall": baseline_recall,
+            "retrieval_precision": baseline_precision,
+            "answer_quality_mean": None,
+        },
+        "with_graph": {
+            "retrieval_recall": graph_recall,
+            "retrieval_precision": graph_precision,
+            "answer_quality_mean": quality_mean,
+            "judge_valid_count": len(graph_judge_scores),
+        },
+        "delta": {
+            "retrieval_recall": round(graph_recall - baseline_recall, 4)
+            if graph_recall is not None and baseline_recall is not None
+            else None,
+            "retrieval_precision": round(graph_precision - baseline_precision, 4)
+            if graph_precision is not None and baseline_precision is not None
+            else None,
+            "answer_quality_mean": None,
+        },
+        "quality_comparison_status": "requires_paired_no_graph_run",
+        "quality_comparison_note": "质量分需要同题、同模型、关闭图检索的对照 run；本轮只记录了有图回答。",
+    }
+
+
 def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """按题型汇总检索、回答质量和图拓展带来的 GT 召回变化。
 
@@ -116,6 +240,7 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
         graph_enabled = 0
         intents: dict[str, int] = {}
         deltas: list[float] = []
+        comparisons: list[dict[str, Any]] = []
         improved = worsened = rank_changed = set_changed = 0
 
         for item, trace in ((item, _graph_trace(item)) for item in bucket):
@@ -137,27 +262,21 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
                 intent = str(policy.get("intent") or "ordinary")
                 intents[intent] = intents.get(intent, 0) + 1
 
-            baseline = trace.get("graph_primary_asset_ids") or []
-            final = trace.get("graph_fused_asset_ids") or []
-            if not baseline and isinstance(trace.get("graph_rerank"), Mapping):
-                rerank = trace["graph_rerank"]
-                baseline = (
-                    rerank.get("baseline_head_asset_ids")
-                    or (rerank.get("baseline_ranked_asset_ids") or [])[:18]
-                )
-                final = rerank.get("returned_head_asset_ids") or (rerank.get("reranked_asset_ids") or [])[:18]
+            baseline, final = _graph_heads(trace)
             gt = _gt_asset_ids(item)
             # 空的 baseline/final 也是有效观测：例如 primary 没召回、或图扩展把
             # 条件结果全部过滤掉时，必须把它计为 0 召回，而不能静默丢掉这道题。
             if not gt:
                 continue
-            baseline = [str(asset_id) for asset_id in baseline]
-            final = [str(asset_id) for asset_id in final]
             if baseline != final:
                 rank_changed += 1
             if set(baseline) != set(final):
                 set_changed += 1
-            delta = len(set(final) & gt) / len(gt) - len(set(baseline) & gt) / len(gt)
+            comparison = _graph_comparison(item, trace)
+            if comparison is None:
+                continue
+            comparisons.append(comparison)
+            delta = comparison["recall_delta"]
             deltas.append(delta)
             if delta > 1e-9:
                 improved += 1
@@ -183,6 +302,13 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
                 "retrieval_recall": _mean(recalls),
                 "retrieval_precision": _mean(precisions),
                 "retrieval_f1": _mean(f1s),
+                "without_graph_recall": _mean([comparison["baseline_recall"] for comparison in comparisons]),
+                "without_graph_precision": _mean(
+                    [comparison["baseline_precision"] for comparison in comparisons]
+                ),
+                "with_graph_recall": _mean([comparison["graph_recall"] for comparison in comparisons]),
+                "with_graph_precision": _mean([comparison["graph_precision"] for comparison in comparisons]),
+                "graph_precision_delta": _mean([comparison["precision_delta"] for comparison in comparisons]),
                 "answer_quality_mean": (
                     round(sum(judge_scores) / len(judge_scores), 3) if judge_scores else None
                 ),
@@ -193,6 +319,7 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
                 )
                 if evidence_scores
                 else None,
+                "quality_comparison_status": "requires_paired_no_graph_run",
             }
         )
     return sorted(rows, key=lambda row: (-row["sample_count"], row["type"]))
