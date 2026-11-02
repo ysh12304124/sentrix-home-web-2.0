@@ -36,6 +36,9 @@ class ControlSettings(BaseSettings):
     feedback_dir: Path = Path("/srv/sentrix/control/feedback")
 
     model_upstream_url: str = "http://127.0.0.1:8100/v1"
+    # 体验发行固定 legacy 嵌入：分别探活，失败只影响依赖它的阶段。
+    bge_health_url: str = "http://127.0.0.1:8101/health"
+    clip_health_url: str = "http://127.0.0.1:8103/health"
     model_upstream_api_key: str = ""
     model_id: str = ""
     model_slots: int = Field(default=2, ge=1)

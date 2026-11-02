@@ -475,6 +475,13 @@ class SqliteTurnRepository:
                 ),
             )
 
+    def status_counts(self) -> dict[str, int]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS n FROM agent_turns GROUP BY status"
+            ).fetchall()
+        return {str(row["status"]): int(row["n"]) for row in rows}
+
     def list_for_conversation(self, conversation_id: str, limit: int) -> Sequence[TurnRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(

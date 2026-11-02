@@ -136,6 +136,9 @@ class RouteTable:
     def get(self, account_id: str) -> UserRoute | None:
         return self._routes.get(account_id)
 
+    def ids(self) -> list[str]:
+        return list(self._routes)
+
     def __len__(self) -> int:
         return len(self._routes)
 

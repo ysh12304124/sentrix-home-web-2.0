@@ -24,11 +24,13 @@ from sentrix.control.auth import (
     require_admin,
     require_csrf,
 )
+from sentrix.control import admin as admin_routes
 from sentrix.control import feedback as feedback_routes
 from sentrix.control.config import ControlSettings
 from sentrix.control.internal_model import router as internal_model_router
 from sentrix.control.metrics import collect_host_snapshot
 from sentrix.control.model_gate import ModelClientTable, ModelGate, ModelTarget
+from sentrix.control.monitor import Monitor
 from sentrix.control.proxy import (
     PROXY_METHODS,
     RouteTable,
@@ -58,6 +60,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         )
     )
     model_clients = ModelClientTable.load(settings.model_clients_file)
+    monitor = Monitor(settings=settings, store=store, routes=routes, gate=gate)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -67,9 +70,11 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             follow_redirects=False,
         )
         app.state.http_client = client
+        monitor.start()
         try:
             yield
         finally:
+            monitor.stop()
             await client.aclose()
 
     app = FastAPI(title="Sentrix Control", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -78,6 +83,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
     app.state.route_table = routes
     app.state.model_gate = gate
     app.state.model_client_table = model_clients
+    app.state.monitor = monitor
 
     router = APIRouter(prefix=CONTROL_PREFIX)
 
@@ -114,6 +120,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
 
     router.include_router(build_auth_router())
     router.include_router(feedback_routes.router)
+    router.include_router(admin_routes.router)
     app.include_router(router)
     app.include_router(internal_model_router)
 

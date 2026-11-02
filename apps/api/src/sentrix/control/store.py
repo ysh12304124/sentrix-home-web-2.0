@@ -336,6 +336,88 @@ class ControlStore:
         with self._database.connect() as connection, connection:
             connection.execute("DELETE FROM login_attempts WHERE attempted_at < ?", (cutoff,))
 
+    # ---- 事件与采样 ---------------------------------------------------------
+
+    def record_metric(self, *, sampled_at: str, source: str, payload: dict[str, object]) -> None:
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT INTO metric_samples (sampled_at, source, payload_json) VALUES (?, ?, ?)",
+                (sampled_at, source, json.dumps(payload, ensure_ascii=False)),
+            )
+
+    def open_incident(
+        self,
+        *,
+        source: str,
+        category: str,
+        severity: str,
+        message: str,
+        now: str,
+        user_id: str = "",
+        request_id: str = "",
+        job_id: str = "",
+        turn_id: str = "",
+    ) -> str:
+        with self._database.connect() as connection, connection:
+            existing = connection.execute(
+                "SELECT event_id FROM incidents WHERE source = ? AND category = ? AND status = 'open'"
+                " ORDER BY last_seen DESC LIMIT 1",
+                (source, category),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    "UPDATE incidents SET last_seen = ?, occurrences = occurrences + 1"
+                    " WHERE event_id = ?",
+                    (now, existing["event_id"]),
+                )
+                return str(existing["event_id"])
+            event_id = f"inc_{uuid.uuid4().hex[:16]}"
+            connection.execute(
+                """
+                INSERT INTO incidents (
+                    event_id, time, source, severity, user_id, request_id, job_id, turn_id,
+                    category, message, recovery_action, result, status, occurrences,
+                    first_seen, last_seen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 'open', 1, ?, ?)
+                """,
+                (
+                    event_id,
+                    now,
+                    source,
+                    severity,
+                    user_id,
+                    request_id,
+                    job_id,
+                    turn_id,
+                    category,
+                    message,
+                    now,
+                    now,
+                ),
+            )
+        return event_id
+
+    def close_incidents(self, *, source: str, category: str, now: str, result: str) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE incidents SET status = 'closed', closed_at = ?, result = ?"
+                " WHERE source = ? AND category = ? AND status = 'open'",
+                (now, result, source, category),
+            )
+        return cursor.rowcount
+
+    def list_incidents(self, *, limit: int = 100) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM incidents ORDER BY last_seen DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def purge_metrics(self, *, older_than_days: int = 30) -> None:
+        cutoff = _iso(_now() - timedelta(days=older_than_days))
+        with self._database.connect() as connection, connection:
+            connection.execute("DELETE FROM metric_samples WHERE sampled_at < ?", (cutoff,))
+
     # ---- 反馈 ---------------------------------------------------------------
 
     def create_feedback(

@@ -33,6 +33,7 @@ from sentrix.api.routes import (
     identity,
     import_jobs,
     insights,
+    internal,
     knowledge,
     maintenance,
     media,
@@ -186,6 +187,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(health.router)
     v1.include_router(media.router)
     v1.include_router(import_jobs.router)
+    v1.include_router(internal.router)
     v1.include_router(search.router)
     v1.include_router(assistant.router)
     v1.include_router(diagnostics.router)
