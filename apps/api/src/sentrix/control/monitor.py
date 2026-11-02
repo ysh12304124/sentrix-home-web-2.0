@@ -49,11 +49,15 @@ class Monitor:
         store: ControlStore,
         routes: RouteTable,
         gate: ModelGate,
+        # 独立管理入口只做采集展示：告警、趋势、保留期清理与真实推理探针
+        # 由用户入口那一个主监测器独占，避免同一份控制库被两个进程重复写。
+        primary: bool = True,
     ) -> None:
         self._settings = settings
         self._store = store
         self._routes = routes
         self._gate = gate
+        self._primary = primary
         self._lock = threading.Lock()
         self._snapshot: dict[str, Any] = {"sampled_at": None, "stale": True}
         self._streaks: dict[str, int] = {}
@@ -100,23 +104,25 @@ class Monitor:
                 snapshot = self._collect()
                 with self._lock:
                     self._snapshot = snapshot
-                self._store.record_metric(
-                    sampled_at=str(snapshot["sampled_at"]),
-                    source="control",
-                    payload={
-                        "host": snapshot["host"],
-                        "services": {
-                            key: value.get("ok")
-                            for key, value in snapshot["services"].items()
-                            if isinstance(value, dict)
+                if self._primary:
+                    self._store.record_metric(
+                        sampled_at=str(snapshot["sampled_at"]),
+                        source="control",
+                        payload={
+                            "host": snapshot["host"],
+                            "services": {
+                                key: value.get("ok")
+                                for key, value in snapshot["services"].items()
+                                if isinstance(value, dict)
+                            },
                         },
-                    },
-                )
-                self._rollup_samples.append(snapshot)
-                if time.monotonic() - self._last_rollup >= ROLLUP_INTERVAL_S:
-                    self._record_rollup(str(snapshot["sampled_at"]))
-                self._run_retention()
+                    )
+                    self._rollup_samples.append(snapshot)
+                    if time.monotonic() - self._last_rollup >= ROLLUP_INTERVAL_S:
+                        self._record_rollup(str(snapshot["sampled_at"]))
+                    self._run_retention()
             except Exception as error:  # noqa: BLE001 - 采样失败只标记过期
+                log.warning("控制面采样失败", exc_info=True)
                 with self._lock:
                     self._snapshot = {"sampled_at": None, "stale": True, "error": str(error)}
             self._stop.wait(max(1.0, self._settings.sample_interval_s))
@@ -128,12 +134,13 @@ class Monitor:
         units = self._units()
         queue = self._gate.describe()
         self._merge_encoding(services)
-        self._maybe_inference(services)
-        self._evaluate(services, host, now)
-        self._evaluate_queue(queue, now)
-        self._evaluate_gpu(host, now)
-        self._evaluate_restarts(units, now)
-        self._evaluate_stalled(services, now)
+        if self._primary:
+            self._maybe_inference(services)
+            self._evaluate(services, host, now)
+            self._evaluate_queue(queue, now)
+            self._evaluate_gpu(host, now)
+            self._evaluate_restarts(units, now)
+            self._evaluate_stalled(services, now)
         return {
             "sampled_at": now,
             "stale": False,

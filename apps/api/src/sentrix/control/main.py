@@ -61,7 +61,13 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         )
     )
     model_clients = ModelClientTable.load(settings.model_clients_file)
-    monitor = Monitor(settings=settings, store=store, routes=routes, gate=gate)
+    monitor = Monitor(
+        settings=settings,
+        store=store,
+        routes=routes,
+        gate=gate,
+        primary=not settings.admin_only,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
