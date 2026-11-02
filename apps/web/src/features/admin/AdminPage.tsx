@@ -116,6 +116,7 @@ interface Overview {
     oldest_wait_s?: number;
     last_ok_at?: number | null;
   };
+  model_queue_sampled_at?: string;
   open_incidents?: number;
 }
 
@@ -703,6 +704,9 @@ export function AdminPage() {
               ? ` · 最近成功 ${formatTime(
                   new Date(overview.model_queue.last_ok_at * 1000).toISOString(),
                 )}`
+              : ""}
+            {overview?.model_queue_sampled_at
+              ? ` · 队列采样 ${formatTime(overview.model_queue_sampled_at)}`
               : ""}
           </p>
           <div className="service-list" style={{ marginTop: 14 }}>

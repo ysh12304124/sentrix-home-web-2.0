@@ -418,6 +418,20 @@ class ControlStore:
         with self._database.connect() as connection, connection:
             connection.execute("DELETE FROM metric_samples WHERE sampled_at < ?", (cutoff,))
 
+    def latest_metric(self, *, source: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT sampled_at, payload_json FROM metric_samples"
+                " WHERE source = ? ORDER BY sampled_at DESC LIMIT 1",
+                (source,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "sampled_at": str(row["sampled_at"]),
+            "payload": json.loads(row["payload_json"]),
+        }
+
     def list_metric_series(
         self, *, source: str, since: str, limit: int = 1440
     ) -> list[dict[str, object]]:

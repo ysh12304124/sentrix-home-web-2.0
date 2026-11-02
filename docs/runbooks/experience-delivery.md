@@ -21,6 +21,7 @@
 | 0018 | 回忆序列、游标与已看记录 |
 | 0019 | 导入取消请求 |
 | 0020 | 结果集按回合尝试归属 |
+| 0021 | 相册后处理失败退避（`next_attempt_at`） |
 
 控制库（`apps/api/src/sentrix/control/migrations`）：
 
@@ -29,6 +30,7 @@
 | 0001 | 账号、会话、反馈、附件、审计、事件、采样 |
 | 0002 | 登录限速 |
 | 0003 | 反馈补充信息与内容签名 |
+| 0004 | 重启操作幂等记录 |
 
 全部为扩展式；旧表不删除。回退前提：上一版能读新 schema，且不把新作业写坏。
 
@@ -80,23 +82,27 @@ PY
 
 ## 5. 静态检查记录（实施代理执行）
 
-在 153 的 `sentrix-home-web2.0-codex` 工作树执行：
+在 153 的 `sentrix-home-web2.0-codex` 工作树执行（2026-11-03，SHA `7557981`）：
 
 - `git diff --check`：通过。
 - `.venv/bin/python -m compileall -q apps/api/src/sentrix`：通过。
-- `PYTHONPATH=apps/api/src .venv/bin/python -c "import sentrix.main, ..."`：通过。
+- `PYTHONPATH=apps/api/src .venv/bin/python -c "import sentrix.control.admin, ..."`：通过。
 - `cd apps/web && npx tsc -b --force`：通过。
-- `cd apps/web && npx vite build`：通过。
+- `cd apps/web && VITE_BUILD_SHA=7557981 npx vite build`：通过。
 - `.venv/bin/lint-imports`：11 条契约全部 KEPT。
+- 针对性浏览器验证：8220 管理台加载构建 SHA、按用户运行、趋势、反馈筛选与重启按钮；
+  8210 问答点击“停止回答”后本地标记已停止，服务端回合状态为 `cancelled`。
 
-未执行：功能测试、真实模型调用、故障注入、容量压测。上述每一项仍需用户按
+未执行：完整 A1–A9 验收、故障注入、容量压测、TLS/专有身份/备份恢复。上述仍需用户按
 `experience-fault-drills.md` 与验收矩阵执行。
 
 ## 6. 已知缺口（开放用户前仍需处理）
 
 已补齐：家族图批末推断、结果集按尝试清理、运行中导入的取消检查点、管理员作业重排、
 管理员反馈收件箱 UI、阶梯 attempts 计数、逐条路由审计（见 `experience-route-audit.md`，共 77 条）、
-独立管理入口（8220，独立 cookie）与固定端口 systemd 自恢复（见 `experience-ports.md`）。
+独立管理入口（8220，独立 cookie）、固定端口 systemd 自恢复（见 `experience-ports.md`）、
+管理台按用户运行视图与在飞阶段、60 分钟趋势、排队告警、构建 SHA、反馈截图与多维筛选、
+固定单元重启（幂等键）与共享模型影响提示、导入后处理 `partial` 状态。
 
 仍缺：
 
@@ -106,7 +112,9 @@ PY
    部署时需设置 `deploy/experience/photobench.env.example` 的三个变量并跑并发验收。
 3. **TLS 与生产 systemd 未执行**：演示是 HTTP、Secure cookie 关闭、以 asus 身份运行；
    正式部署必须使用专用身份、受信任证书与 systemd 单元。
-4. **依赖托管仍不唯一**：BGE 8101 仍是 1.0 的裸子进程；8100 是裸进程；CLIP 单元已提供，
-   但演示跑在 8113 的裸进程上。
+4. **依赖托管仍不唯一**：BGE 8101 是 1.0 `sentrix-api.service` 的子进程，没有独立单元，
+   子进程退出不会由 systemd 单独拉起；8100 与 8113 已有 demo 单元，但未换成生产模板。
 5. **容量、故障注入、备份恢复未执行**：1→3→5 用户、断 SSE、杀进程、停依赖、
    单用户恢复与版本回滚仍需用户按 `experience-fault-drills.md` 执行。
+6. **8100 旁路未接入**：8194、8291、8091 等消费者仍直连共享模型。管理台会显示
+   “共享模型调度未全覆盖”，在这些旁路接入前优先级保障不能算全局生效。

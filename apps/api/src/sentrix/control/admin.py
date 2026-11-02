@@ -33,6 +33,14 @@ def _settings(request: Request):
 def overview(request: Request, _: AuthContext = Depends(require_admin)) -> dict[str, object]:
     payload = dict(_monitor(request).snapshot())
     settings = _settings(request)
+    if settings.admin_only:
+        # 管理入口不转发模型流量，自己的准入队列恒为空；读主入口落库的真实队列。
+        latest = _store(request).latest_metric(source="control")
+        if latest is not None:
+            queue = (latest.get("payload") or {}).get("model_queue")
+            if isinstance(queue, dict):
+                payload["model_queue"] = queue
+                payload["model_queue_sampled_at"] = latest["sampled_at"]
     unmanaged = list(settings.unmanaged_model_consumer_list())
     payload.update(
         {

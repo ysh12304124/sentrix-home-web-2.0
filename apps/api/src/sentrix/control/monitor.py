@@ -115,6 +115,9 @@ class Monitor:
                                 for key, value in snapshot["services"].items()
                                 if isinstance(value, dict)
                             },
+                            # 独立管理入口的准入队列永远为空（它不转发模型流量），
+                            # 从主监测器落库的这条记录里读真实队列。
+                            "model_queue": snapshot["model_queue"],
                         },
                     )
                     self._rollup_samples.append(snapshot)
