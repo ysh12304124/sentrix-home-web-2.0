@@ -95,7 +95,8 @@ PY
 ## 6. 已知缺口（开放用户前仍需处理）
 
 已补齐：家族图批末推断、结果集按尝试清理、运行中导入的取消检查点、管理员作业重排、
-管理员反馈收件箱 UI、阶梯 attempts 计数、逐条路由审计（见 `experience-route-audit.md`，共 77 条）。
+管理员反馈收件箱 UI、阶梯 attempts 计数、逐条路由审计（见 `experience-route-audit.md`，共 77 条）、
+独立管理入口（8220，独立 cookie）与固定端口 systemd 自恢复（见 `experience-ports.md`）。
 
 仍缺：
 

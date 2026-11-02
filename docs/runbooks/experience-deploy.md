@@ -74,3 +74,18 @@ systemctl show sentrix-experience-api@alice.service -p MainPID -p ActiveState
 - 迁移均为扩展式；回退前确认上一版能读新 schema，且不会把新作业写坏。
 - 开放上传后不覆盖数据库旧备份；故障先停新入口，保留原件与作业，向前修复。
 - 旧 8191、8191 的 PhotoBench 单元与数据根不随本手册移动。
+
+## 6. 独立管理入口（推荐）
+
+用户入口与管理台分成两个监听端口和两套会话 cookie：
+
+| 入口 | 端口 | 配置 | 单元 |
+| --- | --- | --- | --- |
+| 用户登录/转发/反馈 | 8210 | `control.env` | `sentrix-experience-control.service` |
+| 管理台 | 8220 | `admin.env` | `sentrix-experience-admin.service` |
+
+`admin.env` 设置 `SENTRIX_CONTROL_ADMIN_ONLY=1` 与
+`SENTRIX_CONTROL_COOKIE_NAMESPACE=sentrix_admin`。管理台只接受管理员账号，
+不转发用户 API；同一浏览器可同时保持普通用户会话与管理台会话。
+管理台的重启动作通过 `/etc/sudoers.d/sentrix` 只放行 `restart_units` 中的固定单元。
+演示环境的实测端口与自恢复说明见 `experience-ports.md`。
