@@ -10,12 +10,12 @@ import argparse
 import getpass
 import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path  # noqa: F401 - 同时用于 SPA 目录解析
 from typing import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from sentrix.control.auth import (
     AuthContext,
@@ -144,6 +144,24 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         if route is None:
             raise HTTPException(status_code=503, detail="user API is not configured")
         return await forward(request, route, request.app.state.http_client)
+
+    # 同一个 React 构建由控制面提供；API 前缀已在上面的路由里处理，SPA 只兜底其余 GET。
+    dist = Path(__file__).resolve().parents[5] / "apps" / "web" / "dist"
+    if (dist / "index.html").is_file():
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def spa(full_path: str) -> FileResponse:
+            if full_path.startswith(("api/", "control/", "internal/")) or full_path in {
+                "api",
+                "control",
+                "internal",
+            }:
+                raise HTTPException(status_code=404, detail="not found")
+            root = dist.resolve()
+            candidate = (root / full_path).resolve()
+            if full_path and candidate.is_file() and root in candidate.parents:
+                return FileResponse(candidate)
+            return FileResponse(root / "index.html")
 
     return app
 
