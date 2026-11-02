@@ -1,0 +1,12 @@
+{
+  "users": {
+    "alice": {
+      "api_url": "http://127.0.0.1:8301",
+      "api_token": "replace-with-alice-internal-token"
+    },
+    "bob": {
+      "api_url": "http://127.0.0.1:8302",
+      "api_token": "replace-with-bob-internal-token"
+    }
+  }
+}
