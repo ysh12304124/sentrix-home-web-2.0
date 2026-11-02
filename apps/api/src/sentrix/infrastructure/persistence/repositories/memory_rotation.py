@@ -57,6 +57,17 @@ class SqliteRotationRepository:
                 (max(0, position), now.isoformat(), sequence_id),
             )
 
+    def replace_sequence(
+        self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime
+    ) -> None:
+        """同一天的新一轮：保留 sequence_id，换候选并回到第一页。"""
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE memory_rotation_sequences SET event_ids_json = ?, position = 0,"
+                " updated_at = ? WHERE sequence_id = ?",
+                (json.dumps(list(event_ids), ensure_ascii=False), now.isoformat(), sequence_id),
+            )
+
     def recently_viewed(self, scope_id: str, *, limit: int) -> frozenset[str]:
         with self._database.connect() as connection:
             rows = connection.execute(

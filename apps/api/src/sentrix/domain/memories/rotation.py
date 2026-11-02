@@ -40,6 +40,10 @@ class RotationRepository(Protocol):
 
     def advance(self, sequence_id: str, position: int, *, now: datetime) -> None: ...
 
+    def replace_sequence(
+        self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime
+    ) -> None: ...
+
     def recently_viewed(self, scope_id: str, *, limit: int) -> frozenset[str]: ...
 
     def mark_viewed(

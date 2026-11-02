@@ -91,7 +91,9 @@ def build_media_postprocess(container: Container) -> Callable[[str], None]:
             model=container.chat_model,
         )
         for event in container.event_repository.list_by_scope(scope_id, limit=10000):
-            if event.summary.strip():
+            # 事件归属会先写一句初步摘要，但标题仍是“待总结事件”；只按 summary
+            # 判断会把这些事件永久跳过，时间线就一直是占位标题。
+            if event.summary.strip() and event.title.strip() not in {"", "待总结事件"}:
                 continue
             try:
                 summarizer.execute(event.id)

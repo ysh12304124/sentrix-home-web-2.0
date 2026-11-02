@@ -90,12 +90,28 @@ class ReadRotation:
             position = cursor if cursor is not None else sequence.position
 
         if position >= len(sequence.event_ids):
-            return RotationPage(
-                sequence_id=sequence.sequence_id,
-                day=day,
-                cursor=position,
-                has_more=False,
+            # 本轮已放完。导入完成后刷新应能看到新事件：同一天开新一轮，
+            # 但正在播放的页面不受影响（客户端已经拿到旧卡片）。
+            fresh = self._candidates(scope_id)
+            new_events = [
+                item for item in fresh if item.media.event_id not in set(sequence.event_ids)
+            ]
+            if not new_events:
+                return RotationPage(
+                    sequence_id=sequence.sequence_id,
+                    day=day,
+                    cursor=position,
+                    has_more=False,
+                )
+            viewed = self._rotations.recently_viewed(scope_key, limit=RECENT_VIEWED_LIMIT)
+            ordered = self._order(fresh, viewed)
+            self._rotations.replace_sequence(
+                sequence.sequence_id,
+                tuple(item.media.event_id for item in ordered),
+                now=now,
             )
+            sequence = self._rotations.sequence_for(scope_key, day) or sequence
+            position = 0
 
         media_by_event = {
             item.media.event_id: item.media for item in self._candidates(scope_id, event_ids=sequence.event_ids)
