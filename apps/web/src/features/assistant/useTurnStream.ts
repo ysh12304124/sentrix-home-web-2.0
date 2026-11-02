@@ -50,6 +50,8 @@ export function useTurnStream(): TurnStream {
   const finishedRef = useRef(false);
   const cursorRef = useRef(0);
   const seenRef = useRef<Set<number>>(new Set());
+  // 回合 ID 还没返回时用户就点了停止：等 ID 到手后立刻补发取消，而不是静默吞掉。
+  const cancelRequestedRef = useRef(false);
 
   const close = useCallback(() => {
     sourceRef.current?.close();
@@ -66,6 +68,7 @@ export function useTurnStream(): TurnStream {
     async (conversationId: string, message: string) => {
       close();
       finishedRef.current = false;
+      cancelRequestedRef.current = false;
       cursorRef.current = 0;
       seenRef.current = new Set();
       setProgress([]);
@@ -88,6 +91,21 @@ export function useTurnStream(): TurnStream {
       } catch (cause) {
         setError((cause as Error).message);
         setBusy(false);
+        return;
+      }
+
+      if (cancelRequestedRef.current) {
+        cancelRequestedRef.current = false;
+        try {
+          await cancelTurnRequest(activeTurnId);
+          finishedRef.current = true;
+          close();
+          setCancelled(true);
+          setBusy(false);
+          setExecutionState("");
+        } catch (cause) {
+          setError((cause as Error).message);
+        }
         return;
       }
 
@@ -186,7 +204,12 @@ export function useTurnStream(): TurnStream {
   );
 
   const cancel = useCallback(async () => {
-    if (turnId === null || finishedRef.current) return;
+    if (finishedRef.current) return;
+    if (turnId === null) {
+      // 回合还在创建：先记下意图，startTurn 返回后立即取消。
+      if (busy) cancelRequestedRef.current = true;
+      return;
+    }
     try {
       await cancelTurnRequest(turnId);
       // 停止接收后续帧：服务端会在安全检查点收尾，界面不再等一个不会来的 complete。
@@ -198,7 +221,7 @@ export function useTurnStream(): TurnStream {
     } catch (cause) {
       setError((cause as Error).message);
     }
-  }, [close, turnId]);
+  }, [busy, close, turnId]);
 
   return {
     progress,
