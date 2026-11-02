@@ -112,6 +112,7 @@ class ModelGate:
     _active: int = 0
     _seq: int = 0
     _waiters: list[_Waiter] = field(default_factory=list)
+    _active_by_user: dict[str, int] = field(default_factory=dict)
     _last_admitted: dict[str, float] = field(default_factory=dict)
     _chat_since_import: int = 0
     _last_ok_at: float = 0.0
@@ -139,6 +140,9 @@ class ModelGate:
                     await self._condition.wait()
                 self._waiters.remove(waiter)
                 self._active += 1
+                self._active_by_user[waiter.user_id] = (
+                    self._active_by_user.get(waiter.user_id, 0) + 1
+                )
                 self._note_admitted(waiter)
                 admitted = True
                 # 还有空槽时让下一个等待者立刻重新判定，否则它要等下一次释放才被唤醒。
@@ -153,6 +157,11 @@ class ModelGate:
                 return
             async with self._condition:
                 self._active -= 1
+                remaining = self._active_by_user.get(waiter.user_id, 0) - 1
+                if remaining > 0:
+                    self._active_by_user[waiter.user_id] = remaining
+                else:
+                    self._active_by_user.pop(waiter.user_id, None)
                 self._condition.notify_all()
 
     def _can_admit(self, waiter: _Waiter) -> bool:
@@ -208,11 +217,17 @@ class ModelGate:
     def describe(self) -> dict[str, object]:
         now = time.monotonic()
         oldest = min((item.enqueued_at for item in self._waiters), default=0.0)
+        waiting_by_user: dict[str, dict[str, int]] = {}
+        for item in self._waiters:
+            counts = waiting_by_user.setdefault(item.user_id, {})
+            counts[item.kind] = counts.get(item.kind, 0) + 1
         return {
             **self.target.describe(),
             "active": self._active,
             "waiting": self.waiting(),
             "waiting_total": len(self._waiters),
+            "active_by_user": dict(self._active_by_user),
+            "waiting_by_user": waiting_by_user,
             "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,
             "last_ok_at": self._last_ok_at or None,
         }

@@ -114,6 +114,8 @@ interface Overview {
     active?: number;
     waiting?: Record<string, number>;
     waiting_total?: number;
+    active_by_user?: Record<string, number>;
+    waiting_by_user?: Record<string, Record<string, number>>;
     oldest_wait_s?: number;
     last_ok_at?: number | null;
   };
@@ -686,7 +688,12 @@ export function AdminPage() {
           <div className="empty-panel">路由表里没有用户 API。</div>
         ) : (
           users.map(([account, state]) => (
-            <UserRunCard key={account} account={account} state={state} />
+            <UserRunCard
+              key={account}
+              account={account}
+              state={state}
+              modelQueue={overview?.model_queue}
+            />
           ))
         )}
       </div>
@@ -997,7 +1004,15 @@ export function AdminPage() {
   );
 }
 
-function UserRunCard({ account, state }: { account: string; state: ServiceState }) {
+function UserRunCard({
+  account,
+  state,
+  modelQueue,
+}: {
+  account: string;
+  state: ServiceState;
+  modelQueue?: Overview["model_queue"];
+}) {
   const status = state.status;
   const activeJobs = status?.active_jobs ?? [];
   const activeTurns = status?.active_turns ?? [];
@@ -1027,6 +1042,12 @@ function UserRunCard({ account, state }: { account: string; state: ServiceState 
         </span>
         <span className="queue-chip">
           后处理待办 <b>{status?.postprocess_backlog ?? 0}</b>
+        </span>
+        <span className="queue-chip">
+          模型执行 <b>{modelQueue?.active_by_user?.[account] ?? 0}</b>
+        </span>
+        <span className="queue-chip">
+          模型排队 <b>{sum(modelQueue?.waiting_by_user?.[account])}</b>
         </span>
         <span className="queue-chip">
           最老作业活动 <b>{formatAge(status?.oldest_active_job)}</b>
