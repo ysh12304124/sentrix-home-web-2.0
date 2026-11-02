@@ -49,6 +49,10 @@ function jobStatusLabel(job: ImportJobView): string {
 
 export function ImportsPage() {
   const { scopeId, spaces } = useScope();
+  // “全部相册”是读侧筛选；写入必须落到具体相册，默认是 home-default。
+  const targetScope = scopeId || "home-default";
+  const targetName =
+    spaces.find((space) => space.id === targetScope)?.name ?? targetScope;
   const [entries, setEntries] = useState<Entry[]>([]);
   const [jobs, setJobs] = useState<ImportJobView[]>([]);
   const [error, setError] = useState("");
@@ -87,13 +91,13 @@ export function ImportsPage() {
     async (entry: Entry) => {
       updateEntry(entry.key, { status: "uploading", error: "" });
       try {
-        const accepted = await uploadMedia(entry.file, scopeId, entry.key);
+        const accepted = await uploadMedia(entry.file, targetScope, entry.key);
         updateEntry(entry.key, { status: "accepted", jobId: accepted.job_id });
       } catch (cause) {
         updateEntry(entry.key, { status: "failed", error: (cause as Error).message });
       }
     },
-    [scopeId, updateEntry],
+    [targetScope, updateEntry],
   );
 
   const startUploads = useCallback(
@@ -122,7 +126,16 @@ export function ImportsPage() {
   );
 
   return (
-    <section className="import-layout">
+    <>
+      <header className="import-head">
+        <p className="eyebrow">资料导入</p>
+        <h1>把照片和视频交给回忆</h1>
+        <p>
+          上传后会进入持久作业，关闭页面也会继续处理。当前导入目标：<strong>{targetName}</strong>
+          {scopeId === "" ? "（查看全部相册时默认导入这里）" : ""}
+        </p>
+      </header>
+      <section className="import-layout">
       <div>
         <label
           className="dropzone"
@@ -164,13 +177,29 @@ export function ImportsPage() {
                   <div>
                     <strong>{entry.file.name}</strong>
                     <small>
-                      {entry.status === "waiting"
-                        ? "等待上传"
-                        : entry.status === "uploading"
-                          ? "正在上传"
-                          : entry.status === "accepted"
-                            ? `已接收 · ${entry.jobId}`
-                            : `失败：${entry.error}`}
+                      <span
+                        className="job-status"
+                        data-status={
+                          entry.status === "accepted"
+                            ? "accepted"
+                            : entry.status === "failed"
+                              ? "failed"
+                              : "queued"
+                        }
+                      >
+                        {entry.status === "waiting"
+                          ? "等待上传"
+                          : entry.status === "uploading"
+                            ? "正在上传"
+                            : entry.status === "accepted"
+                              ? "已接收"
+                              : "上传失败"}
+                      </span>{" "}
+                      {entry.status === "accepted"
+                        ? `作业 ${entry.jobId}`
+                        : entry.status === "failed"
+                          ? entry.error
+                          : ""}
                     </small>
                   </div>
                   {entry.status === "failed" ? (
@@ -203,8 +232,10 @@ export function ImportsPage() {
                 <div>
                   <strong>{job.file_name}</strong>
                   <small>
-                    {jobStatusLabel(job)}
-                    {job.stage !== "" ? ` · ${job.stage}` : ""}
+                    <span className="job-status" data-status={job.status}>
+                      {jobStatusLabel(job)}
+                    </span>{" "}
+                    {job.stage !== "" ? job.stage : ""}
                     {job.attempts > 0 ? ` · 第 ${job.attempts} 次` : ""}
                   </small>
                   {job.error_message !== "" ? <small>{job.error_message}</small> : null}
@@ -223,6 +254,7 @@ export function ImportsPage() {
           </div>
         )}
       </aside>
-    </section>
+      </section>
+    </>
   );
 }
