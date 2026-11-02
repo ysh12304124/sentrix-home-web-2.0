@@ -82,13 +82,13 @@ PY
 
 ## 5. 静态检查记录（实施代理执行）
 
-在 153 的 `sentrix-home-web2.0-codex` 工作树执行（2026-11-03，SHA `e7e586e`）：
+在 153 的 `sentrix-home-web2.0-codex` 工作树执行（2026-11-03，SHA `182fc2a`）：
 
 - `git diff --check`：通过。
 - `.venv/bin/python -m compileall -q apps/api/src/sentrix`：通过。
 - `PYTHONPATH=apps/api/src .venv/bin/python -c "import sentrix.control.admin, ..."`：通过。
 - `cd apps/web && npx tsc -b --force`：通过。
-- `cd apps/web && VITE_BUILD_SHA=e7e586e npx vite build`：通过。
+- `cd apps/web && VITE_BUILD_SHA=182fc2a npx vite build`：通过。
 - `.venv/bin/lint-imports`：11 条契约全部 KEPT。
 - 针对性浏览器验证：8220 管理台加载构建 SHA、按用户运行、趋势、反馈筛选与重启按钮；
   8210 问答点击“停止回答”后本地标记已停止，服务端回合状态为 `cancelled`。
