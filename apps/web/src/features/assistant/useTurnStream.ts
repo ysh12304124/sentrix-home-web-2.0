@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { newClientId } from "../../shared/id";
 import {
   pollTurn,
   startTurn,
@@ -67,10 +68,7 @@ export function useTurnStream(): TurnStream {
       setBusy(true);
 
       // 一次提问一枚键：网络重试命中同一个回合，不重复保存用户消息。
-      const idempotencyKey =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const idempotencyKey = newClientId("turn");
 
       let turnId: string;
       try {

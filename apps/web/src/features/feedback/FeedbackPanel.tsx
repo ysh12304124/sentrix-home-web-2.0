@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { newClientId } from "../../shared/id";
+
 import { useAuth } from "../../app/AuthProvider";
 import { useScope } from "../../app/ScopeProvider";
 import "./feedback.css";
@@ -46,10 +48,7 @@ export function FeedbackPanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    keyRef.current =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `fb-${Date.now()}`;
+    keyRef.current = newClientId("fb");
   }, []);
 
   useEffect(() => {
@@ -99,7 +98,7 @@ export function FeedbackPanel({ onClose }: { onClose: () => void }) {
       setScreenshot(null);
       setConfirmed(false);
       setMessage(`已收到，反馈编号 ${created.id}`);
-      keyRef.current = crypto.randomUUID?.() ?? `fb-${Date.now()}`;
+      keyRef.current = newClientId("fb");
       const list = await fetch("/control/v1/feedback", { credentials: "same-origin" });
       if (list.ok) setRecords(((await list.json()) as { items: FeedbackRecord[] }).items);
     } catch (cause) {

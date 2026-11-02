@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
+import { newClientId } from "../../shared/id";
 import {
   cancelImportJob,
   listImportJobs,
@@ -28,8 +29,7 @@ const ACTIVE_JOB_STATUSES = new Set([
 ]);
 
 function keyFor(file: File): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
-  return `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(16).slice(2)}`;
+  return newClientId(`upload-${file.name.slice(0, 24)}`);
 }
 
 function jobStatusLabel(job: ImportJobView): string {
@@ -91,10 +91,14 @@ export function ImportsPage() {
     async (entry: Entry) => {
       updateEntry(entry.key, { status: "uploading", error: "" });
       try {
+        void reportClientEvent("upload.started", `${entry.file.name}:${entry.file.size}`);
         const accepted = await uploadMedia(entry.file, targetScope, entry.key);
         updateEntry(entry.key, { status: "accepted", jobId: accepted.job_id });
+        void reportClientEvent("upload.accepted", `${entry.file.name}:${accepted.job_id}`);
       } catch (cause) {
-        updateEntry(entry.key, { status: "failed", error: (cause as Error).message });
+        const message = (cause as Error).message;
+        updateEntry(entry.key, { status: "failed", error: message });
+        void reportClientEvent("upload.failed", `${entry.file.name}:${message}`);
       }
     },
     [targetScope, updateEntry],
@@ -103,24 +107,33 @@ export function ImportsPage() {
   const startUploads = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
-      const additions: Entry[] = files.map((file) => ({
-        key: keyFor(file),
-        file,
-        status: "waiting",
-        jobId: "",
-        error: "",
-      }));
-      setEntries((previous) => [...additions, ...previous]);
-      const queue = [...additions];
-      await Promise.all(
-        Array.from({ length: Math.min(MAX_CONCURRENT, queue.length) }, async () => {
-          while (queue.length > 0) {
-            const next = queue.shift();
-            if (next !== undefined) await uploadOne(next);
-          }
-        }),
-      );
-      await refreshJobs();
+      try {
+        const additions: Entry[] = files.map((file) => ({
+          key: keyFor(file),
+          file,
+          status: "waiting",
+          jobId: "",
+          error: "",
+        }));
+        setEntries((previous) => [...additions, ...previous]);
+        setError("");
+        void reportClientEvent(
+          "upload.selected",
+          additions.map((entry) => `${entry.file.name}:${entry.file.size}:${entry.file.type}`).join(","),
+        );
+        const queue = [...additions];
+        await Promise.all(
+          Array.from({ length: Math.min(MAX_CONCURRENT, queue.length) }, async () => {
+            while (queue.length > 0) {
+              const next = queue.shift();
+              if (next !== undefined) await uploadOne(next);
+            }
+          }),
+        );
+        await refreshJobs();
+      } catch (cause) {
+        setError(`上传没有开始：${(cause as Error).message}`);
+      }
     },
     [refreshJobs, uploadOne],
   );
@@ -282,4 +295,19 @@ export function ImportsPage() {
       </section>
     </>
   );
+}
+
+async function reportClientEvent(kind: string, detail: string): Promise<void> {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
+    const csrf = match === null ? "" : decodeURIComponent(match[1]);
+    await fetch("/control/v1/client-events", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
+      body: JSON.stringify({ kind, detail: detail.slice(0, 500) }),
+    });
+  } catch {
+    // 诊断日志失败不能影响主流程。
+  }
 }

@@ -25,6 +25,7 @@ from sentrix.control.auth import (
     require_csrf,
 )
 from sentrix.control import admin as admin_routes
+from sentrix.control import client_events as client_event_routes
 from sentrix.control import feedback as feedback_routes
 from sentrix.control.config import ControlSettings
 from sentrix.control.internal_model import router as internal_model_router
@@ -125,6 +126,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
     else:
         router.include_router(feedback_routes.router)
         router.include_router(feedback_routes.admin_router)
+        router.include_router(client_event_routes.router)
     router.include_router(admin_routes.router)
     app.include_router(router)
     if not settings.admin_only:
