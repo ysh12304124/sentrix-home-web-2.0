@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import re
+import shutil
+import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from sentrix.api.deps import get_container
+from sentrix.api.schemas.import_jobs import UploadAcceptedResponse
 from sentrix.api.schemas.media import AssetListResponse, AssetSummary, ImportResponse
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
@@ -23,6 +30,12 @@ from sentrix.application.memories.maintain_facts import MaintainFacts
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.bootstrap.container import Container
+from sentrix.domain.media.import_jobs import (
+    IdempotencyConflict,
+    ImportJob,
+    UploadBusy,
+    UploadQuotaExceeded,
+)
 from sentrix.domain.media.models import Asset, MediaType, Observation
 from sentrix.domain.memories.graph import GraphBuildStats
 
@@ -88,6 +101,163 @@ async def import_media(
         video_scenes=result.video_scenes,
         audio_probed=result.audio_probed,
     )
+
+
+_UPLOAD_CHUNK = 1024 * 1024
+_SCOPE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _sniff_media_type(head: bytes) -> MediaType | None:
+    """按文件头判定类型；文件名与上传方 content-type 只作提示。"""
+    if head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return MediaType.IMAGE
+    if head[:6] in {b"GIF87a", b"GIF89a"}:
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return MediaType.VIDEO
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return MediaType.AUDIO
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in {b"heic", b"heix", b"hevc", b"mif1", b"msf1", b"avif"}:
+            return MediaType.IMAGE
+        if brand in {b"M4A ", b"M4B "}:
+            return MediaType.AUDIO
+        return MediaType.VIDEO
+    if head.startswith(b"ID3") or head[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return MediaType.AUDIO
+    if head.startswith((b"OggS", b"fLaC")):
+        return MediaType.AUDIO
+    return None
+
+
+def _upload_limit(media: MediaType, container: Container) -> int:
+    if media is MediaType.IMAGE:
+        return container.settings.upload_photo_max_bytes
+    return container.settings.upload_video_max_bytes
+
+
+@router.post("/media/uploads", status_code=202)
+async def upload_media(
+    request: Request,
+    file: UploadFile = File(...),
+    scope_id: str = Form("home-default"),
+    container: Container = Depends(get_container),
+) -> UploadAcceptedResponse:
+    """流式接收一个文件。只有原件落盘且作业入库后才返回 202。"""
+    settings = container.settings
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 缺失或过长")
+    if not _SCOPE_PATTERN.fullmatch(scope_id):
+        raise HTTPException(status_code=400, detail="scope_id 不合法")
+    file_name = file.filename or "unnamed"
+    declared = MediaType.from_upload(file.content_type, file_name)
+    try:
+        declared_size = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared_size = 0
+    if declared_size > settings.upload_video_max_bytes:
+        raise HTTPException(status_code=413, detail="文件超过单文件上限")
+
+    expected = declared_size or settings.upload_video_max_bytes
+    try:
+        free_bytes = shutil.disk_usage(settings.data_dir).free
+    except OSError:
+        free_bytes = 0
+    try:
+        reservation = container.import_jobs.reserve_upload(
+            expected,
+            quota_bytes=settings.upload_quota_bytes,
+            max_inflight=settings.upload_max_inflight,
+            free_bytes=free_bytes,
+            min_free_bytes=settings.upload_min_free_bytes,
+        )
+    except UploadBusy as error:
+        raise HTTPException(status_code=429, detail="同时上传的文件已达到上限，请稍后重试") from error
+    except UploadQuotaExceeded as error:
+        raise HTTPException(status_code=507, detail="存储配额或磁盘空间不足，暂停接收新上传") from error
+
+    staging_path = container.media_storage.staging_dir / f"{reservation}.part"
+    final_path: Path | None = None
+    accepted = False
+    digest = hashlib.sha256()
+    size = 0
+    media: MediaType | None = None
+    try:
+        with staging_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                if media is None:
+                    media = _sniff_media_type(chunk) or declared
+                if media is MediaType.TEXT:
+                    raise HTTPException(status_code=415, detail="仅支持照片、视频和音频")
+                size += len(chunk)
+                if size > _upload_limit(media, container):
+                    raise HTTPException(status_code=413, detail="文件超过该媒体类型的大小上限")
+                digest.update(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if size == 0:
+            raise HTTPException(status_code=400, detail="空文件")
+        if media is None:
+            media = declared
+
+        asset_id = f"asset_{uuid.uuid4().hex[:12]}"
+        final_path = container.media_storage.move_from_path(asset_id, file_name, staging_path)
+        now = datetime.now(UTC)
+        job = ImportJob(
+            id=f"job_{uuid.uuid4().hex[:16]}",
+            asset_id=asset_id,
+            scope_id=scope_id,
+            # 真实接收序号在 accept() 的写锁事务里分配。
+            receive_seq=0,
+            file_name=file_name,
+            media_type=media.value,
+            content_sha256=digest.hexdigest(),
+            size_bytes=size,
+            status="accepted",
+            stage="accepted",
+            attempts=0,
+            error_category="",
+            error_message="",
+            idempotency_key=idempotency_key,
+            accepted_at=now,
+            updated_at=now,
+            original_path=str(final_path),
+        )
+        try:
+            stored, created = container.import_jobs.accept(
+                job,
+                reservation_id=reservation,
+                quota_bytes=settings.upload_quota_bytes,
+            )
+        except IdempotencyConflict as error:
+            raise HTTPException(
+                status_code=409, detail="同一幂等键已用于不同内容"
+            ) from error
+        except UploadQuotaExceeded as error:
+            raise HTTPException(
+                status_code=507, detail="存储配额不足，暂停接收新上传"
+            ) from error
+        accepted = True
+        if not created and stored.asset_id != asset_id:
+            # 重试的新副本不是权威原件，删掉；返回第一次接收的作业。
+            final_path.unlink(missing_ok=True)
+        return UploadAcceptedResponse(
+            job_id=stored.id, asset_id=stored.asset_id, status="accepted"
+        )
+    finally:
+        if not accepted:
+            container.import_jobs.release_upload(reservation)
+            staging_path.unlink(missing_ok=True)
+            if final_path is not None:
+                final_path.unlink(missing_ok=True)
 
 
 def build_memory_graph(container: Container) -> BuildMemoryGraph:

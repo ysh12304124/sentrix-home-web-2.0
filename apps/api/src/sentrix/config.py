@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # **提交永远串行**，与这个数无关——事件的归属顺序是语义的一部分。
     album_workers: int = 4
 
+    # 体验入口的持久上传（任务 4/5）。配额按用户原件计，派生预览与向量另计。
+    upload_quota_bytes: int = 20 * 1024**3
+    upload_photo_max_bytes: int = 250 * 1024**2
+    upload_video_max_bytes: int = 2 * 1024**3
+    upload_min_free_bytes: int = 100 * 1024**3
+    upload_max_inflight: int = 2
+    upload_cleanup_grace_s: int = 3600
+
     def model_post_init(self, _context: Any, /) -> None:  # noqa: D105
         self.data_dir = self.data_dir.expanduser().resolve()
         self.web_dist_dir = self.web_dist_dir.expanduser().resolve()

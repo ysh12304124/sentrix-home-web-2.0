@@ -363,7 +363,9 @@ class ImportAlbum:
         if not root.is_dir():
             raise NotADirectoryError(str(root))
         paths = sorted(
-            path for path in root.iterdir() if path.is_file() and path.suffix.lower() in SCAN_SUFFIXES
+            path
+            for path in root.iterdir()
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in SCAN_SUFFIXES
         )[: max(1, int(request.limit))]
         return root, paths
 
@@ -376,7 +378,9 @@ class ImportAlbum:
             scope_id=request.scope_id,
             file_name=path.name,
             content_type=None,
-            content=path.read_bytes(),
+            # 目录导入不得把整文件读成 bytes，也不能移动用户的原文件。
+            source_path=path,
+            source_move=False,
             defer_processing=defer_processing,
         )
 

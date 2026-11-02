@@ -119,10 +119,16 @@ class ImportRequest:
     scope_id: str
     file_name: str
     content_type: str | None
-    content: bytes
+    content: bytes = b""
     # ``True`` 只完成资产落盘/登记，把关键帧与记忆构建留给显式流水线阶段。
     # 默认 False，保证既有单张导入与 ``POST /imports`` 的外部行为不变。
     defer_processing: bool = False
+    # 已落盘的原件：上传走 move（原子改名），目录导入走 copy（不破坏用户原文件）。
+    source_path: Path | None = None
+    source_move: bool = False
+    # 接收阶段已确定的稳定 ID 与哈希；缺失时才在 stage() 里计算。
+    asset_id: str | None = None
+    content_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +236,14 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class ImportAssets:
     def __init__(
         self,
@@ -319,11 +333,19 @@ class ImportAssets:
         # 放在去重判断**之前**——去重命中同样是一条「这个 scope 被用到了」的证据。
         self._ensure_space(request.scope_id)
 
-        content_sha256 = hashlib.sha256(request.content).hexdigest()
+        source_size = request.source_path.stat().st_size if request.source_path is not None else len(request.content)
+        content_sha256 = request.content_sha256 or (
+            _sha256_file(request.source_path)
+            if request.source_path is not None
+            else hashlib.sha256(request.content).hexdigest()
+        )
         media_type = MediaType.from_upload(request.content_type, request.file_name)
 
         existing = self._assets.find_by_hash(request.scope_id, content_sha256)
         if existing is not None:
+            # 上传件已在接收阶段落盘；去重命中后不再需要那份原件。
+            if request.source_move and request.source_path is not None:
+                request.source_path.unlink(missing_ok=True)
             return ImportResult(
                 asset_id=existing.id,
                 observation_id=None,
@@ -335,8 +357,17 @@ class ImportAssets:
                 placed=False if request.defer_processing else self._index_place(existing),
             )
 
-        asset_id = _new_id("asset")
-        stored_path = self._storage.store(asset_id, request.file_name, request.content)
+        asset_id = request.asset_id or _new_id("asset")
+        if request.source_path is None:
+            stored_path = self._storage.store(asset_id, request.file_name, request.content)
+        elif request.source_move:
+            stored_path = self._storage.move_from_path(
+                asset_id, request.file_name, request.source_path
+            )
+        else:
+            stored_path = self._storage.copy_from_path(
+                asset_id, request.file_name, request.source_path
+            )
 
         captured_at, gps, device = (None, None, None)
         if media_type is MediaType.IMAGE:
@@ -393,7 +424,7 @@ class ImportAssets:
             media_type=media_type,
             path=str(stored_path),
             mime_type=mime_type,
-            size_bytes=len(request.content),
+            size_bytes=source_size,
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
             captured_at=captured_at or now,

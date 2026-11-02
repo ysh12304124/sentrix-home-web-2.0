@@ -29,6 +29,7 @@ from sentrix.api.routes import (
     family,
     health,
     identity,
+    import_jobs,
     insights,
     knowledge,
     maintenance,
@@ -142,6 +143,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     container = Container.build(settings)
     container.database.migrate()
+    if settings.experience_mode:
+        # 先对账再清理；旧 8191 不开这个开关，绝不触碰它的媒体目录。
+        log.info("upload reconcile: %s", container.reconcile_uploads())
 
     app = FastAPI(title="Sentrix Home API", version=__version__, docs_url=None, redoc_url=None)
     app.state.container = container
@@ -151,6 +155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
     v1.include_router(media.router)
+    v1.include_router(import_jobs.router)
     v1.include_router(search.router)
     v1.include_router(assistant.router)
     v1.include_router(diagnostics.router)
