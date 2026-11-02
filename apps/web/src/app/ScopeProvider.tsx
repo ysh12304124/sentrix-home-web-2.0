@@ -1,8 +1,7 @@
 /**
  * 相册范围（scope）的单一来源。
  *
- * **语义逐条移植 1.0 `src/app.js:1162-1172`（初始化）与 `:1247`（切换写回）**，
- * localStorage 的键名沿用 `sentrix.scopeId`——从 1.0 迁过来的浏览器不该丢选择。
+ * **语义逐条移植 1.0 `src/app.js:1162-1172`（初始化）与 `:1247`（切换写回）**。
  *
  * **回落是两级，不是一句「不存在就回落」。** `:1168` 的实际写法是
  * `state.scopeId = storedSpace?.kind === "benchmark" ? storedSpace.id : ""`：
@@ -13,14 +12,16 @@
  * 第二种是 1.0 有意为之（注释写明是把旧的家庭选择迁到「全部相册」）。按字面实现
  * 「只判存在性」会漏掉它，所以那一条单独有用例骑住。
  *
- * 2.0 多一样：范围同步到 `?scope=` query，链接因此可分享、刷新保持。
+ * 体验入口多两件事：存储键按登录账号隔开（`sentrix.scopeId.<account_id>`），
+ * 且 URL 里的 scope 必须在本账号相册列表内，否则回退到「全部相册」。
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { listMemorySpaces, type MemorySpace } from "../shared/api/client";
 
-const STORAGE_KEY = "sentrix.scopeId";
+const LEGACY_STORAGE_KEY = "sentrix.scopeId";
+const ACCOUNT_STORAGE_PREFIX = "sentrix.scopeId.";
 /** 「全部相册」的表示。1.0 用空串，2.0 沿用——它同时是 query 省略与 API 不传参的约定。 */
 export const ALL_SCOPES = "";
 
@@ -40,29 +41,86 @@ export function resolveStoredScope(storedId: string, spaces: readonly MemorySpac
   return stored?.kind === "benchmark" ? stored.id : ALL_SCOPES;
 }
 
+/**
+ * 体验入口的存储键。`null` 表示当前身份不可用，不读也不写任何 scope——
+ * 避免把上一个账号的选择带给下一个账号。
+ */
+export function scopeStorageKey(accountId: string | null, legacy: boolean): string | null {
+  if (accountId !== null) return `${ACCOUNT_STORAGE_PREFIX}${accountId}`;
+  return legacy ? LEGACY_STORAGE_KEY : null;
+}
+
 function readQueryScope(): string | null {
   if (typeof window === "undefined") return null;
   return new URLSearchParams(window.location.search).get("scope");
 }
 
+function clearQueryScope(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("scope");
+  window.history.replaceState(null, "", url);
+}
+
+interface Identity {
+  readonly accountId: string | null;
+  /** 控制服务不存在（旧 8191）；保留 1.0 的存储键，旧实例行为不变。 */
+  readonly legacy: boolean;
+}
+
+function isControlSession(response: Response): boolean {
+  if (response.status === 401 || response.status === 403) return true;
+  return response.ok && (response.headers.get("content-type") ?? "").includes("application/json");
+}
+
 export function ScopeProvider({ children }: { children: ReactNode }) {
   const [spaces, setSpaces] = useState<readonly MemorySpace[]>([]);
   const [spacesError, setSpacesError] = useState<string | null>(null);
-  // `?scope=` 优先于 localStorage：分享出去的链接必须打开就是那一册。
-  const [scopeId, setScopeIdState] = useState<string>(() => readQueryScope() ?? "");
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [scopeId, setScopeIdState] = useState<string>(ALL_SCOPES);
 
   useEffect(() => {
     let cancelled = false;
+    fetch("/control/v1/auth/me", { credentials: "same-origin" })
+      .then(async (response) => {
+        if (cancelled) return;
+        if (!isControlSession(response)) {
+          setIdentity({ accountId: null, legacy: true });
+          return;
+        }
+        if (!response.ok) {
+          setIdentity({ accountId: null, legacy: false });
+          return;
+        }
+        const body = (await response.json()) as { account_id?: unknown };
+        const accountId = typeof body.account_id === "string" ? body.account_id : null;
+        setIdentity({ accountId, legacy: false });
+      })
+      .catch(() => {
+        if (!cancelled) setIdentity({ accountId: null, legacy: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (identity === null) return;
+    let cancelled = false;
+    const storageKey = scopeStorageKey(identity.accountId, identity.legacy);
     listMemorySpaces()
       .then((items) => {
         if (cancelled) return;
         setSpaces(items);
         setSpacesError(null);
-        // 只在没有 `?scope=` 时才从 localStorage 恢复——否则会覆盖链接里的选择。
-        if (readQueryScope() === null) {
-          const stored = window.localStorage.getItem(STORAGE_KEY) ?? "";
-          setScopeIdState(stored ? resolveStoredScope(stored, items) : ALL_SCOPES);
+        const queryScope = readQueryScope();
+        if (queryScope !== null) {
+          const resolved = resolveStoredScope(queryScope, items);
+          if (resolved === ALL_SCOPES) clearQueryScope();
+          setScopeIdState(resolved);
+          return;
         }
+        const stored = storageKey === null ? "" : (window.localStorage.getItem(storageKey) ?? "");
+        setScopeIdState(stored === "" ? ALL_SCOPES : resolveStoredScope(stored, items));
       })
       .catch((cause: Error) => {
         if (cancelled) return;
@@ -71,17 +129,22 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [identity]);
 
-  const setScopeId = useCallback((next: string) => {
-    setScopeIdState(next);
-    window.localStorage.setItem(STORAGE_KEY, next);
-    const url = new URL(window.location.href);
-    if (next === ALL_SCOPES) url.searchParams.delete("scope");
-    else url.searchParams.set("scope", next);
-    // replaceState：切相册是筛选，不该往浏览器历史里塞一条。
-    window.history.replaceState(null, "", url);
-  }, []);
+  const setScopeId = useCallback(
+    (next: string) => {
+      setScopeIdState(next);
+      const storageKey =
+        identity === null ? null : scopeStorageKey(identity.accountId, identity.legacy);
+      if (storageKey !== null) window.localStorage.setItem(storageKey, next);
+      const url = new URL(window.location.href);
+      if (next === ALL_SCOPES) url.searchParams.delete("scope");
+      else url.searchParams.set("scope", next);
+      // replaceState：切相册是筛选，不该往浏览器历史里塞一条。
+      window.history.replaceState(null, "", url);
+    },
+    [identity],
+  );
 
   const value = useMemo<ScopeValue>(
     () => ({ scopeId, spaces, setScopeId, spacesError }),

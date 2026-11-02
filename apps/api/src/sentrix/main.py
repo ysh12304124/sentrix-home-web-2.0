@@ -13,13 +13,14 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.types import Scope
 
 from sentrix import __version__
+from sentrix.api.deps import internal_call_guard
 from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
@@ -144,9 +145,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Sentrix Home API", version=__version__, docs_url=None, redoc_url=None)
     app.state.container = container
+    app.state.settings = settings
     app.add_exception_handler(DomainError, domain_error_handler)
 
-    v1 = APIRouter(prefix="/api/v1")
+    v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
     v1.include_router(media.router)
     v1.include_router(search.router)

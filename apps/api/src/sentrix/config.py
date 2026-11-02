@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     api_port: int = 8191
     api_host: str = "0.0.0.0"
 
+    # 体验实例由控制面独占转发；内部令牌未设置时保持旧 8191/PhotoBench 语义不变。
+    require_internal_token: bool = False
+    internal_token: str = ""
+    experience_mode: bool = False
+
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
     text_embedder_url: str = "http://127.0.0.1:8101"

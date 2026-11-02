@@ -65,8 +65,28 @@ function parseApiError(raw: string): ApiErrorBody | null {
   return null;
 }
 
+/** 控制面用双提交 CSRF：非 HttpOnly cookie 的内容要原样进请求头。 */
+function csrfToken(): string {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;\s*)sentrix_control_csrf=([^;]*)/);
+  return match === null ? "" : decodeURIComponent(match[1]);
+}
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, init);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers = new Headers(init?.headers);
+  if (!SAFE_METHODS.has(method)) {
+    const token = csrfToken();
+    if (token !== "" && !headers.has("x-csrf-token")) headers.set("x-csrf-token", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    // 体验入口的会话 cookie 只在同源发送；控制面据此决定转发目标。
+    credentials: "same-origin",
+    ...init,
+    headers,
+  });
   if (!response.ok) {
     const raw = await response.text();
     throw new ApiError(response.status, parseApiError(raw), raw);
@@ -320,7 +340,11 @@ export async function renameConversation(
 export async function deleteConversation(conversationId: string): Promise<void> {
   const response = await fetch(
     `${BASE}/assistant/conversations/${encodeURIComponent(conversationId)}`,
-    { method: "DELETE" },
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "x-csrf-token": csrfToken() },
+    },
   );
   if (!response.ok) {
     const raw = await response.text();
