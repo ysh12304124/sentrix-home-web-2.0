@@ -36,6 +36,7 @@ from sentrix.application.media.stage_spans import StageSpans
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
+    ObservationRepository,
     VideoKeyframeExtractor,
     VideoRepository,
     VideoScenePlanner,
@@ -99,6 +100,7 @@ class ExtractVideoScenes:
         # 这一层要的是「把一张已落库的图片走完整条链」，不是导入用例本身
         # （它还要负责去重、落盘、探测）。第二参是 ``forced_event_id``。
         process_image: Callable[[Asset, str], object],
+        observations: ObservationRepository | None = None,
         scene_planner: VideoScenePlanner | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
@@ -108,6 +110,8 @@ class ExtractVideoScenes:
         self._video_repository = video_repository
         self._keyframes = keyframes
         self._process_image = process_image
+        # 用于判断“派生资产已经真正完成记忆构建”，而不是只存在一行资产。
+        self._observations = observations
         self._scene_planner = scene_planner
         self._clock = clock
 
@@ -146,7 +150,10 @@ class ExtractVideoScenes:
 
         place = self._places.get(source_asset_id)
         place_text = place.display() if place else UNKNOWN_PLACE
-        existing = {item.source_frame_index for item in self._video_repository.list_derived(source_asset_id)}
+        derived_by_index = {
+            item.source_frame_index: item
+            for item in self._video_repository.list_derived(source_asset_id)
+        }
 
         scene_count = keyframe_count = reused = 0
         scene_write_seconds = 0.0
@@ -160,8 +167,16 @@ class ExtractVideoScenes:
             scene_write_seconds += finished - scene_started
             spans.include({"scene_write": (scene_started, finished)})
             scene_count += 1
-            if window.index in existing:
+            existing_asset = derived_by_index.get(window.index)
+            if existing_asset is not None and self._frame_complete(existing_asset):
                 reused += 1
+                continue
+            if existing_asset is not None:
+                # 上次在派生资产入库后、记忆构建前崩溃：复用资产，补齐观察/事件/索引。
+                memory_started = time.perf_counter()
+                self._process_image(existing_asset, event.id)
+                keyframe_memory_seconds += time.perf_counter() - memory_started
+                keyframe_count += 1
                 continue
             extract_started = time.perf_counter()
             frame = self._keyframes.extract(
@@ -205,6 +220,14 @@ class ExtractVideoScenes:
                 "total": round(time.perf_counter() - total_started, 3),
             },
         )
+
+    def _frame_complete(self, asset: Asset) -> bool:
+        """派生帧只有在观察已落库后才算完成；仅“资产行存在”会在崩溃后漏建记忆。"""
+        if asset.status is not AssetStatus.PROCESSED:
+            return False
+        if self._observations is None:
+            return True
+        return bool(self._observations.list_by_asset(asset.id))
 
     # ---- 内部 ----------------------------------------------------------------
 

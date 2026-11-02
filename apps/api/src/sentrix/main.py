@@ -10,6 +10,8 @@ from sentrix.infrastructure.thread_limits import configure_thread_environment
 configure_thread_environment()
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -134,6 +136,18 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
     app.state.web_dist = WebDist(directory=directory, mounted=True)
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    executor = getattr(app.state, "import_executor", None)
+    if executor is not None:
+        executor.start()
+    try:
+        yield
+    finally:
+        if executor is not None:
+            executor.stop()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，
     # 线程上限必须在它们之前生效（见 infrastructure.thread_limits）。
@@ -147,9 +161,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 先对账再清理；旧 8191 不开这个开关，绝不触碰它的媒体目录。
         log.info("upload reconcile: %s", container.reconcile_uploads())
 
-    app = FastAPI(title="Sentrix Home API", version=__version__, docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Sentrix Home API",
+        version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_lifespan,
+    )
     app.state.container = container
     app.state.settings = settings
+    app.state.import_executor = container.build_import_executor()
     app.add_exception_handler(DomainError, domain_error_handler)
 
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])

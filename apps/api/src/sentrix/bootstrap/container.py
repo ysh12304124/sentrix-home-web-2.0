@@ -160,6 +160,21 @@ log = logging.getLogger("sentrix.bootstrap.container")
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "infrastructure" / "persistence" / "migrations"
 
 
+class _UnavailableEmbeddingHealth:
+    """体验实例启动时嵌入不可用的状态投影：保持进程可服务，只让依赖它的阶段等待。"""
+
+    def __init__(self, wrapped: object, error: str) -> None:
+        self._wrapped = wrapped
+        self.load_error = error
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    def smoke_test(self) -> tuple[bool, str]:
+        return False, self.load_error
+
+
 @dataclass(frozen=True)
 class Container:
     settings: Settings
@@ -327,12 +342,26 @@ class Container:
         # `/health` 返回 ok，但实际推理时 NameError。健康检查只验证服务活着，
         # 发现不了功能 broken。现在启动时做一次真实推理，确认端到端可用。
         # 失败则 API 启动失败，明确报错。
+        if settings.experience_mode and settings.embedding_scheme != "legacy":
+            raise RuntimeError(
+                "体验实例必须固定 SENTRIX_EMBEDDING_SCHEME=legacy（BGE-M3 1024 + Chinese-CLIP 768）"
+            )
+        if settings.experience_mode and (
+            visual_embedder.dimension != 768 or text_embedder.dimension != 1024
+        ):
+            raise RuntimeError(
+                "体验实例嵌入维度不符：视觉必须是 768，文本必须是 1024"
+            )
         smoke_ok, smoke_error = embedding_health.smoke_test()
         if not smoke_ok:
-            raise RuntimeError(
-                f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
-                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
-            )
+            if not settings.experience_mode:
+                raise RuntimeError(
+                    f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
+                    f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+                )
+            # 体验实例允许“浏览/作业查询/恢复”先起来；依赖不可用只让受影响阶段等待。
+            log.warning("体验实例嵌入依赖暂不可用，API 仍启动: %s", smoke_error)
+            embedding_health = _UnavailableEmbeddingHealth(embedding_health, smoke_error)
         log.info("嵌入方案启动测试通过（%s）", settings.embedding_scheme)
         log.info(
             "嵌入方案=%s 视觉=%s/%sd 文本=%s/%sd",
@@ -429,6 +458,41 @@ class Container:
             person_directory=EntityPersonDirectory(entities=entities, family=family),
             import_jobs=SqliteImportJobRepository(database),
             turn_event_broker=InProcessTurnEventBroker(),
+        )
+
+    def dependencies_ready(self) -> tuple[bool, str]:
+        """执行器开始一条作业前的依赖门槛：嵌入可用且主模型可响应。"""
+        if not self.embedding_health.available:
+            return False, f"embedding_unavailable: {self.embedding_health.load_error}"
+        try:
+            import httpx
+
+            from sentrix.infrastructure.models.gateway import model_auth_headers
+
+            response = httpx.get(
+                f"{self.settings.vlm_base_url.rstrip('/')}/models",
+                headers=model_auth_headers(),
+                timeout=3.0,
+            )
+            response.raise_for_status()
+        except Exception as error:  # noqa: BLE001 - 只回答可用性
+            return False, f"model_unavailable: {error}"
+        return True, ""
+
+    def build_import_executor(self):
+        """体验实例的导入执行器；旧实例返回 None。"""
+        if not self.settings.experience_mode:
+            return None
+        from sentrix.bootstrap.import_wiring import build_import_assets, build_media_postprocess
+        from sentrix.infrastructure.media.import_executor import ImportJobExecutor
+
+        return ImportJobExecutor(
+            settings=self.settings,
+            jobs=self.import_jobs,
+            assets=self.asset_repository,
+            importer_factory=lambda: build_import_assets(self, observe=True),
+            dependencies_ready=self.dependencies_ready,
+            postprocess=build_media_postprocess(self),
         )
 
     def reconcile_uploads(self) -> dict[str, int]:

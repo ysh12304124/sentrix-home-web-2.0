@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sentrix.domain.media.import_jobs import (
     ImportJob,
@@ -216,6 +216,241 @@ class SqliteImportJobRepository:
                 "UNION SELECT path FROM assets"
             ).fetchall()
         return {str(row["path"]) for row in rows}
+
+    # ---- 执行器：认领、租约与阶段 -------------------------------------------
+
+    def claim_due(self, *, now: datetime, lease_s: int) -> ImportJob | None:
+        """原子认领一条到期作业；过期 lease 的 running 作业会被重新认领。"""
+        stamp = now.isoformat()
+        expires = (now + timedelta(seconds=lease_s)).isoformat()
+        with self._database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    f"SELECT {_COLUMNS} FROM import_jobs WHERE "
+                    "(status IN ('accepted', 'queued', 'retry_scheduled') "
+                    " AND (next_retry_at IS NULL OR next_retry_at <= ?)) "
+                    "OR (status = 'running' AND lease_expires_at IS NOT NULL "
+                    " AND lease_expires_at < ?) "
+                    "ORDER BY receive_seq ASC LIMIT 1",
+                    (stamp, stamp),
+                ).fetchone()
+                if row is None:
+                    connection.commit()
+                    return None
+                connection.execute(
+                    "UPDATE import_jobs SET status = 'running', attempts = attempts + 1, "
+                    "fence = fence + 1, lease_expires_at = ?, updated_at = ? WHERE id = ?",
+                    (expires, stamp, row["id"]),
+                )
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+        return self.get(str(row["id"]))
+
+    def heartbeat(self, job_id: str, fence: int, *, now: datetime, lease_s: int) -> bool:
+        expires = (now + timedelta(seconds=lease_s)).isoformat()
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE import_jobs SET lease_expires_at = ?, updated_at = ? "
+                "WHERE id = ? AND fence = ? AND status = 'running'",
+                (expires, now.isoformat(), job_id, fence),
+            )
+        return cursor.rowcount > 0
+
+    def set_job_status(
+        self,
+        job_id: str,
+        fence: int,
+        *,
+        now: datetime,
+        status: str,
+        stage: str | None = None,
+        error_category: str = "",
+        error_message: str = "",
+        next_retry_at: datetime | None = None,
+        asset_id: str | None = None,
+        completed_items: int | None = None,
+        failed_items: int | None = None,
+        attempts: int | None = None,
+    ) -> bool:
+        fields = [
+            "status = ?",
+            "error_category = ?",
+            "error_message = ?",
+            "next_retry_at = ?",
+            "updated_at = ?",
+            "lease_expires_at = NULL",
+        ]
+        values: list[object] = [
+            status,
+            error_category,
+            error_message,
+            next_retry_at.isoformat() if next_retry_at else None,
+            now.isoformat(),
+        ]
+        if stage is not None:
+            fields.append("stage = ?")
+            values.append(stage)
+        if asset_id is not None:
+            fields.append("asset_id = ?")
+            values.append(asset_id)
+        if completed_items is not None:
+            fields.append("completed_items = ?")
+            values.append(completed_items)
+        if failed_items is not None:
+            fields.append("failed_items = ?")
+            values.append(failed_items)
+        if attempts is not None:
+            fields.append("attempts = ?")
+            values.append(max(0, attempts))
+        values.extend([job_id, fence])
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE import_jobs SET {', '.join(fields)} WHERE id = ? AND fence = ?",
+                tuple(values),
+            )
+        return cursor.rowcount > 0
+
+    def set_stage(
+        self,
+        job_id: str,
+        fence: int,
+        stage: str,
+        status: str,
+        *,
+        now: datetime,
+        reason: str = "",
+        error_category: str = "",
+    ) -> bool:
+        stamp = now.isoformat()
+        with self._database.connect() as connection, connection:
+            owner = connection.execute(
+                "SELECT fence FROM import_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if owner is None or int(owner["fence"]) != fence:
+                return False
+            connection.execute(
+                """
+                INSERT INTO import_job_stages (
+                    job_id, stage, status, reason, attempts, error_category,
+                    started_at, finished_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(job_id, stage) DO UPDATE SET
+                    status = excluded.status,
+                    reason = excluded.reason,
+                    attempts = import_job_stages.attempts + 1,
+                    error_category = excluded.error_category,
+                    started_at = COALESCE(import_job_stages.started_at, excluded.started_at),
+                    finished_at = excluded.finished_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job_id,
+                    stage,
+                    status,
+                    reason,
+                    error_category,
+                    stamp,
+                    stamp if status in {"done", "skipped", "failed"} else None,
+                    stamp,
+                ),
+            )
+        return True
+
+    def set_stage_name(self, job_id: str, fence: int, stage: str, *, now: datetime) -> None:
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE import_jobs SET stage = ?, updated_at = ? WHERE id = ? AND fence = ?",
+                (stage, now.isoformat(), job_id, fence),
+            )
+
+    def stage_status(self, job_id: str, stage: str) -> str | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM import_job_stages WHERE job_id = ? AND stage = ?",
+                (job_id, stage),
+            ).fetchone()
+        return str(row["status"]) if row is not None else None
+
+    def wake_waiting(self, *, now: datetime) -> int:
+        """依赖恢复后把等待中的作业放回可认领队列。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE import_jobs SET status = 'retry_scheduled', next_retry_at = ?, "
+                "updated_at = ? WHERE status = 'waiting_dependency'",
+                (now.isoformat(), now.isoformat()),
+            )
+        return cursor.rowcount
+
+    # ---- 相册后处理代际 -----------------------------------------------------
+
+    def bump_scope_generation(self, scope_id: str, *, now: datetime) -> int:
+        with self._database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "INSERT INTO scope_postprocess (scope_id, dirty_generation, processed_generation, updated_at) "
+                    "VALUES (?, 1, 0, ?) "
+                    "ON CONFLICT(scope_id) DO UPDATE SET "
+                    "dirty_generation = scope_postprocess.dirty_generation + 1, updated_at = excluded.updated_at",
+                    (scope_id, now.isoformat()),
+                )
+                row = connection.execute(
+                    "SELECT dirty_generation FROM scope_postprocess WHERE scope_id = ?", (scope_id,)
+                ).fetchone()
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+        return int(row["dirty_generation"])
+
+    def claim_postprocess(self, *, now: datetime) -> tuple[str, int] | None:
+        with self._database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT scope_id, dirty_generation FROM scope_postprocess "
+                    "WHERE dirty_generation > processed_generation AND processing_generation IS NULL "
+                    "ORDER BY updated_at ASC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    connection.commit()
+                    return None
+                connection.execute(
+                    "UPDATE scope_postprocess SET processing_generation = ?, updated_at = ? WHERE scope_id = ?",
+                    (row["dirty_generation"], now.isoformat(), row["scope_id"]),
+                )
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+        return str(row["scope_id"]), int(row["dirty_generation"])
+
+    def finish_postprocess(
+        self, scope_id: str, generation: int, *, success: bool, now: datetime
+    ) -> None:
+        with self._database.connect() as connection, connection:
+            if success:
+                connection.execute(
+                    "UPDATE scope_postprocess SET processed_generation = MAX(processed_generation, ?), "
+                    "processing_generation = NULL, updated_at = ? WHERE scope_id = ?",
+                    (generation, now.isoformat(), scope_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE scope_postprocess SET processing_generation = NULL, updated_at = ? "
+                    "WHERE scope_id = ?",
+                    (now.isoformat(), scope_id),
+                )
+
+    def scope_backlog(self) -> int:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS n FROM scope_postprocess WHERE dirty_generation > processed_generation"
+            ).fetchone()
+        return int(row["n"]) if row is not None else 0
 
     def stage_rows(self, job_id: str) -> list[ImportJobStage]:
         with self._database.connect() as connection:

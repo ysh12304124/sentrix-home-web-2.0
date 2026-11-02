@@ -52,6 +52,8 @@ class FileSystemMediaStorage:
     def move_from_path(self, asset_id: str, file_name: str, source_path: Path) -> Path:
         """同盘原子改名。调用方负责在改名后 fsync 父目录前不返回“已接收”。"""
         destination = self._media_dir / f"{asset_id}_{sanitise(file_name)}"
+        if destination == source_path:
+            return destination
         os.replace(source_path, destination)
         fsync_directory(self._media_dir)
         return destination
@@ -61,6 +63,8 @@ class FileSystemMediaStorage:
         if source_path.is_symlink() or not source_path.is_file():
             raise ValueError("source must be a regular file")
         destination = self._media_dir / f"{asset_id}_{sanitise(file_name)}"
+        if destination == source_path:
+            return destination
         with source_path.open("rb") as source, destination.open("wb") as target:
             while True:
                 chunk = source.read(_COPY_CHUNK)

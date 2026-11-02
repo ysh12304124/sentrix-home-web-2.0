@@ -82,7 +82,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -168,6 +168,8 @@ class ImportResult:
     # 本次导入的音频有没有真的走过 ffprobe（S8c T521）。与 ``video_probed`` 同一条
     # 理由：「音频收下了但什么都没发生」必须在响应上看得见。音频以外一律 False。
     audio_probed: bool = False
+    # 视频场景抽取失败时不是只写日志：执行器据此把作业标成需要关注/重试。
+    video_scene_error: str = ""
     # 应用层内部的细分耗时；旧响应不读取它，新流水线端点会汇总后显式返回。
     timings: dict[str, float] = field(default_factory=dict)
     timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -278,6 +280,10 @@ class ImportAssets:
         # 关键帧挂到场景事件上的那条路（S8b T513）。**没有它就不能强制归属**：
         # 关键帧的观察属于它那一秒的源片场景，按 6 小时窗去折进某张照片的事件是错的。
         event_attacher: Callable[[str, Observation], None] | None = None,
+        # 重放幂等：某条观察已经属于哪个事件；命中就直接复用，不再跑候选打分。
+        observation_event: Callable[[str], str | None] | None = None,
+        # 重放幂等：该资产已经登记过的人脸实例；非空就整段跳过登记。
+        face_manifest: Callable[[str], Sequence[object]] | None = None,
         # 抽帧链（S8b T511–T513）。入参是源片 id，返回**建起来的场景数**。
         # 不传就退化成「只入库、不建场景」——正是 S8a 的行为，测试与不需要视频
         # 场景的调用方都不必构造它。
@@ -294,6 +300,8 @@ class ImportAssets:
         self._audio_metadata = audio_metadata
         self._audio_repository = audio_repository
         self._event_attacher = event_attacher
+        self._observation_event = observation_event
+        self._face_manifest = face_manifest
         self._video_scene_extractor = video_scene_extractor
         self._visual_indexer = visual_indexer
         self._place_indexer = place_indexer
@@ -494,6 +502,12 @@ class ImportAssets:
             text_rows=processed.text_rows,
             video_probed=staged.video_probe is not None and staged.video_probe.metadata is not None,
             video_scenes=video_scenes.scene_count,
+            video_scene_error=(
+                video_scenes.reason
+                if staged.media_type is MediaType.VIDEO
+                and video_scenes.reason not in {"", "not_a_video"}
+                else ""
+            ),
             audio_probed=staged.audio_probe is not None and staged.audio_probe.metadata is not None,
             timings={
                 "source_memory_prepare": round(prepared.inference_seconds, 3),
@@ -564,17 +578,23 @@ class ImportAssets:
         placed = self._index_place(asset)
         indexed = self._index_visual(asset, prepared)
 
-        observation = Observation(
-            id=_new_id("obs"),
-            scope_id=asset.scope_id,
-            asset_id=asset.id,
-            source_type="import",
-            captured_at=asset.captured_at,
-            confidence=0.0,
-            created_at=now,
-            updated_at=now,
-        )
-        self._observations.add(observation)
+        # **重放必须复用观察 ID。** 观察一旦插入，后段任一步失败重跑时若再生成
+        # ``obs_*``，文本向量、词项、实体关联都会跟着多一套；事件归属也会再建一个。
+        reused = sorted(self._observations.list_by_asset(asset.id), key=lambda item: (item.created_at, item.id))
+        if reused:
+            observation = reused[0]
+        else:
+            observation = Observation(
+                id=_new_id("obs"),
+                scope_id=asset.scope_id,
+                asset_id=asset.id,
+                source_type="import",
+                captured_at=asset.captured_at,
+                confidence=0.0,
+                created_at=now,
+                updated_at=now,
+            )
+            self._observations.add(observation)
 
         observation = self._observe(asset, observation, prepared) or observation
         faces = self._enroll_faces(asset, observation, prepared)
@@ -763,6 +783,9 @@ class ImportAssets:
         """
         if self._face_enroller is None or prepared.faces is None:
             return 0
+        if self._face_manifest is not None and self._face_manifest(asset.id):
+            # 已登记过：重放不重复建实例与提及。
+            return 0
         return self._face_enroller.commit(asset.id, observation.id, prepared.faces)
 
     def _assign_event(self, observation: Observation, forced_event_id: str | None) -> str | None:
@@ -775,6 +798,10 @@ class ImportAssets:
                 raise RuntimeError("forced_event_id 需要 event_attacher 协作者")
             self._event_attacher(forced_event_id, observation)
             return forced_event_id
+        if self._observation_event is not None:
+            existing = self._observation_event(observation.id)
+            if existing is not None:
+                return existing
         if self._event_assigner is None:
             return None
         return self._event_assigner(observation)
