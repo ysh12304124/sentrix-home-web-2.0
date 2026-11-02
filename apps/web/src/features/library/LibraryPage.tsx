@@ -86,9 +86,7 @@ export function LibraryPage() {
             </span>
           ))
         ) : (
-          <span className="scope-count-note">
-            按相册汇总需要 <code>/assets</code> 返回 <code>scope_id</code>（当前未返回）
-          </span>
+          <span className="scope-count-note">当前范围内没有分相册的条目</span>
         )}
       </div>
 

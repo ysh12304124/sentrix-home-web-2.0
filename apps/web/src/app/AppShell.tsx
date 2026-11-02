@@ -15,8 +15,7 @@ import { Link, Outlet, useLocation, useNavigate } from "react-router";
 import { NAV_ITEMS, SYSTEM_ITEMS, activeNavItem } from "./nav";
 import { useScope } from "./ScopeProvider";
 import { CommandPalette } from "./CommandPalette";
-import { HelpModal } from "./HelpModal";
-import { qaDashboardUrl } from "./qa";
+import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
 import { useToast } from "../shared/ui/Toast";
 
@@ -34,9 +33,9 @@ export function AppShell() {
   const navigate = useNavigate();
   const { scopeId, spaces, setScopeId } = useScope();
   const { notify } = useToast();
-  const [backendDown, setBackendDown] = useState(false);
-  // 1.0 的模态是全局 `state.modal`；2.0 这里只有两个壳层动作，不需要通用模态栈。
-  const [overlay, setOverlay] = useState<"command" | "help" | null>(null);
+  const { identity, logout } = useAuth();
+  const [backendState, setBackendState] = useState<"ok" | "degraded" | "down">("ok");
+  const [overlay, setOverlay] = useState<"command" | null>(null);
 
   /**
    * 切换相册。1.0 的 `select-space` 直接写 state——但写 `localStorage` 会抛
@@ -55,17 +54,14 @@ export function AppShell() {
     }
   }
 
-  function openQaDashboard() {
-    // 不探测服务是否就绪：2.0 API 没有 1.0 的 `/api/photobench/ensure`，
-    // 先 fetch 一个不存在的端点只会把「打不开」伪装成「启动中」。
-    window.open(qaDashboardUrl(window.location), "_blank", "noopener,noreferrer");
-  }
-
   useEffect(() => {
     let cancelled = false;
     fetchHealth()
-      .then(() => !cancelled && setBackendDown(false))
-      .catch(() => !cancelled && setBackendDown(true));
+      .then((health) => {
+        if (cancelled) return;
+        setBackendState(health.status === "ok" ? "ok" : "degraded");
+      })
+      .catch(() => !cancelled && setBackendState("down"));
     return () => {
       cancelled = true;
     };
@@ -117,37 +113,33 @@ export function AppShell() {
           ))}
         </nav>
 
-        <div className="side-label lower">空间与系统</div>
-        <nav className="main-nav">
-          {SYSTEM_ITEMS.map((item) => (
-            <NavButton
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={current?.id === item.id}
-              onClick={() => navigate(item.path)}
-            />
-          ))}
-          {/* 两个动作项照 1.0 `:238`：不是路由，所以不进 SYSTEM_ITEMS（那张表
-              与 ROUTES 一一对应，路由门禁会拒绝没有页面的导航项）。 */}
-          <NavButton
-            icon="?"
-            label="使用帮助"
-            active={false}
-            onClick={() => setOverlay("help")}
-          />
-          <NavButton
-            icon="▤"
-            label="QA 测评"
-            active={false}
-            onClick={openQaDashboard}
-          />
-        </nav>
+        {identity?.role === "admin" ? (
+          <>
+            <div className="side-label lower">管理</div>
+            <nav className="main-nav">
+              {SYSTEM_ITEMS.map((item) => (
+                <NavButton
+                  key={item.id}
+                  icon={item.icon}
+                  label={item.label}
+                  active={current?.id === item.id}
+                  onClick={() => navigate(item.path)}
+                />
+              ))}
+            </nav>
+          </>
+        ) : null}
 
         <div className="sidebar-footer">
           <div className="local-pulse">
             <i />
-            <span>{backendDown ? "本地服务不可用" : "本地 AI 正常运行"}</span>
+            <span>
+              {backendState === "down"
+                ? "本地服务不可用"
+                : backendState === "degraded"
+                  ? "部分功能暂不可用"
+                  : "服务正常"}
+            </span>
           </div>
           <small>Sentrix Home · 0.2.0</small>
         </div>
@@ -156,7 +148,7 @@ export function AppShell() {
       <div className="main-content">
         <header className="topbar">
           <div className="breadcrumbs">
-            {current !== undefined && current.id !== "overview" ? (
+            {current !== undefined && current.id !== "memories" ? (
               <>
                 <button type="button" className="crumb-back" onClick={() => navigate(-1)}>←返回</button>
                 <b>/</b>
@@ -180,8 +172,13 @@ export function AppShell() {
               ⌘
             </button>
             <span className="top-user">
-              <span className="avatar tiny">S</span>
-              <span>{spaceLabel}</span>
+              <span className="avatar tiny">{identity?.display_name.slice(0, 1) ?? "S"}</span>
+              <span>{identity?.display_name ?? spaceLabel}</span>
+              {identity?.account_id !== "local" ? (
+                <button type="button" className="crumb-back" onClick={() => void logout()}>
+                  退出
+                </button>
+              ) : null}
             </span>
           </div>
         </header>
@@ -193,7 +190,6 @@ export function AppShell() {
       {overlay === "command" ? (
         <CommandPalette onClose={() => setOverlay(null)} />
       ) : null}
-      {overlay === "help" ? <HelpModal onClose={() => setOverlay(null)} /> : null}
     </main>
   );
 }

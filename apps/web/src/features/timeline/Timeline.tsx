@@ -192,16 +192,6 @@ export function Timeline({ scopeId, focusEventId, onOpenEvent }: Props) {
         >
           有地点
         </button>
-        {/* 后端的事件模型没有人物/实体字段，也没有按事件反查人物的端点。
-            留一个禁用项把缺口摆在明面上，比让它「点了没反应」好。 */}
-        <button
-          type="button"
-          className="filter-chip"
-          disabled
-          title="后端事件数据不含人物关联，暂时无法筛选"
-        >
-          有人物（暂不可用）
-        </button>
         {place || clientFiltering ? (
           <button
             type="button"

@@ -48,15 +48,6 @@ export function TimelinePage() {
             onOpenEvent={openEvent}
           />
         </div>
-        <aside className="side-inspector">
-          <p className="section-kicker">视频记忆</p>
-          <h2>一段视频，也能成为清晰的家庭回忆</h2>
-          <p>系统会选出有代表性的画面，按场景整理，并继承拍摄时间与地点。</p>
-          <div className="inspector-note">
-            场景图片堆 <strong>尚未开放</strong>
-            <small>视频链路在 2.0 还没做——videos 与 video-scenes 端点都不存在。这里的结构留着，链路接上就能填。</small>
-          </div>
-        </aside>
       </section>
     </>
   );

@@ -1,0 +1,130 @@
+.memory-stage {
+  min-height: calc(100vh - 72px);
+  background: #10110f;
+  color: #f5f3ee;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0;
+}
+
+.memory-frame {
+  position: relative;
+  flex: 1;
+  min-height: calc(100vh - 72px);
+  overflow: hidden;
+  animation: memory-fade 400ms ease;
+}
+
+.memory-frame-reduced {
+  animation: none;
+}
+
+@keyframes memory-fade {
+  from { opacity: 0.25; }
+  to { opacity: 1; }
+}
+
+.memory-media {
+  width: 100%;
+  height: 100%;
+  min-height: calc(100vh - 72px);
+  object-fit: contain;
+  background: #10110f;
+  display: block;
+}
+
+.memory-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 48px 32px 96px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+  pointer-events: none;
+}
+
+.memory-overlay h1 {
+  font-size: clamp(24px, 4vw, 44px);
+  margin: 0 0 8px;
+}
+
+.memory-overlay p {
+  max-width: 720px;
+  margin: 0 0 8px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.memory-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.memory-controls {
+  position: absolute;
+  right: 24px;
+  bottom: 28px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.memory-controls button,
+.memory-empty button,
+.memory-actions a,
+.memory-note + button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.45);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.memory-progress {
+  position: absolute;
+  left: 24px;
+  bottom: 12px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.memory-empty,
+.memory-note {
+  margin: auto;
+  max-width: 520px;
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.memory-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.memory-actions a {
+  text-decoration: none;
+}
+
+.memory-controls button:focus-visible,
+.memory-actions a:focus-visible {
+  outline: 3px solid #9fe870;
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .memory-overlay { padding: 32px 16px 120px; }
+  .memory-controls { right: 12px; bottom: 16px; }
+}

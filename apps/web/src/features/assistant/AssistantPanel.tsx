@@ -113,7 +113,7 @@ export function AssistantPanel({
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const { progress, result, busy, error, ask } = useTurnStream();
+  const { progress, result, busy, error, ask, executionState, attemptNo } = useTurnStream();
 
   const settled = useRef<string | null>(null);
   /** 当前这一轮是哪个会话的哪条 exchange——切换会话后到达的结果不该串台。 */
@@ -279,6 +279,11 @@ export function AssistantPanel({
           return (
             <article key={exchange.key} className="assistant-exchange">
               {exchange.question ? <p className="question">{exchange.question}</p> : null}
+              {liveExchange && executionState !== "" ? (
+                <p className="note" role="status">
+                  {executionLabel(executionState, attemptNo)}
+                </p>
+              ) : null}
               {exchange.answer ? <p className="answer">{exchange.answer}</p> : null}
               {exchange.status !== "running" && exchange.status !== "complete" ? (
                 <p className="note">
@@ -344,4 +349,12 @@ export function AssistantPanel({
       )}
     </section>
   );
+}
+
+function executionLabel(state: string, attemptNo: number): string {
+  const suffix = attemptNo > 1 ? `（第 ${attemptNo} 次尝试）` : "";
+  if (state === "recovering") return `正在恢复这次回答${suffix}…`;
+  if (state === "waiting_dependency") return "模型服务暂不可用，恢复后会自动继续，不需要重新提问。";
+  if (state === "retry_scheduled") return `这次回答稍后会自动重试${suffix}…`;
+  return "";
 }

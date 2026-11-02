@@ -907,6 +907,113 @@ export async function importAsset(file: File, scopeId: string): Promise<ImportRe
   return request<ImportResponse>("/media/import", { method: "POST", body: form });
 }
 
+/** 体验入口的持久上传：202 + 作业 ID，处理与浏览器连接无关。 */
+export async function uploadMedia(
+  file: File,
+  scopeId: string,
+  idempotencyKey: string,
+): Promise<{ job_id: string; asset_id: string; status: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("scope_id", scopeId);
+  const response = await fetch(`${BASE}/media/uploads`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Idempotency-Key": idempotencyKey, "x-csrf-token": csrfToken() },
+    body: form,
+  });
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as { job_id: string; asset_id: string; status: string };
+}
+
+export interface ImportJobStageView {
+  stage: string;
+  status: string;
+  reason: string;
+  attempts: number;
+  error_category: string;
+}
+
+export interface ImportJobView {
+  job_id: string;
+  asset_id: string;
+  scope_id: string;
+  receive_seq: number;
+  file_name: string;
+  media_type: string;
+  size_bytes: number;
+  status: string;
+  stage: string;
+  attempts: number;
+  error_category: string;
+  error_message: string;
+  next_retry_at: string | null;
+  accepted_at: string;
+  updated_at: string;
+  completed_items: number;
+  failed_items: number;
+  stages: ImportJobStageView[];
+}
+
+export async function listImportJobs(scopeId: string): Promise<ImportJobView[]> {
+  const body = await request<{ items: ImportJobView[] }>(
+    `/import-jobs?scope_id=${encodeURIComponent(scopeId)}`,
+  );
+  return body.items;
+}
+
+export async function getImportJob(jobId: string): Promise<ImportJobView> {
+  return request<ImportJobView>(`/import-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function cancelImportJob(jobId: string): Promise<ImportJobView> {
+  return request<ImportJobView>(`/import-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export interface RotationCard {
+  event_id: string;
+  asset_id: string;
+  media_kind: string;
+  title: string;
+  summary: string;
+  time_label: string;
+  place_label: string;
+  related_asset_count: number;
+  poster_url: string;
+  play_url: string | null;
+}
+
+export interface RotationResponse {
+  sequence_id: string;
+  day: string;
+  cursor: number;
+  has_more: boolean;
+  empty_reason: string;
+  media: RotationCard[];
+}
+
+export async function fetchRotation(scopeId: string, cursor?: number): Promise<RotationResponse> {
+  const query = new URLSearchParams();
+  if (scopeId !== "") query.set("scope_id", scopeId);
+  if (cursor !== undefined) query.set("cursor", String(cursor));
+  const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+  return request<RotationResponse>(`/memories/rotation${suffix}`);
+}
+
+export async function markRotationViewed(sequenceId: string, eventId: string): Promise<void> {
+  await fetch(`${BASE}/memories/rotation/viewed`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken() },
+    body: JSON.stringify({ sequence_id: sequenceId, event_id: eventId }),
+  }).catch(() => undefined);
+}
+
 /** 某个相册范围下的会话列表。`GET /api/v1/assistant/conversations`。 */
 export async function listConversations(scopeId: string): Promise<ConversationSummary[]> {
   const body = await request<{ items: ConversationSummary[] }>(
