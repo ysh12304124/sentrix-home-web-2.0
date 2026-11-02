@@ -28,13 +28,14 @@ import logging
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.media import deliver_asset
-from sentrix.api.routes.search import build_retrieve_evidence
+from sentrix.bootstrap.assistant_wiring import build_run_turn
 from sentrix.api.schemas.assistant import (
     AttachmentSummary,
     CompleteEventPayload,
@@ -59,7 +60,12 @@ from sentrix.application.assistant.run_turn import (
 )
 from sentrix.application.assistant.tools import AssistantToolbox
 from sentrix.bootstrap.container import Container
-from sentrix.domain.assistant.models import Conversation, ProgressEvent, TurnRecord
+from sentrix.domain.assistant.models import (
+    Conversation,
+    ProgressEvent,
+    TurnIdempotencyConflict,
+    TurnRecord,
+)
 from sentrix.domain.assistant.profile import DEFAULT_PROFILE
 
 log = logging.getLogger("sentrix.api.assistant")
@@ -100,41 +106,7 @@ def _turn_summary(record: TurnRecord) -> TurnSummary:
 
 
 def _run_turn(container: Container) -> RunTurn:
-    return RunTurn(
-        model=container.chat_model,
-        operation_control=container.operation_control,
-        conversations=container.conversation_repository,
-        turns=container.turn_repository,
-        # ``search_memories`` 走的是与 ``GET /api/v1/search`` 同一套多路召回：
-        # 1.0 的两个入口（HTTP 侧与 ``agent_runtime/tools.py``）都是同一个
-        # ``EvidenceRetrievalKernel``，只有一份融合排名。
-        toolbox=AssistantToolbox(
-            retrieval=build_retrieve_evidence(container),
-            assets=container.asset_repository,
-            result_sets=container.result_set_repository,
-            people=container.person_directory,
-            memory_facts=QueryMemoryFacts(
-                structured=container.structured_query_repository,
-                entities=container.entity_repository,
-            ),
-            # `query_photo_people` 的两条读路径（T122）：按 asset 的已绑定人脸，
-            # 与 people_json 里带 entity_id 的那一份快照。
-            faces=container.face_repository,
-            observations=container.observation_repository,
-            # `inspect_photo` 的两件（T123）：把问题问给图的那一层，与目标人物的裁剪件。
-            photo_inspector=container.photo_inspector,
-            person_crops=container.person_crop_renderer,
-            # preview 的 ``place`` 取自这里（导入期 EXIF GPS 反解出来的行政地名），
-            # 不是 ``observations.place``（VLM 的场景描述）——理由见 ``_place_label``。
-            asset_places=container.asset_place_repository,
-        ),
-        # 墙钟是部署事实：Mac/CPU 上 4 并发时一次 inspect 就可能 30-60s，
-        # 180s 的默认值会把正常回合截成 timeout。由 Settings 注入，153 仍用 180。
-        profile=replace(
-            DEFAULT_PROFILE,
-            wall_time_s=container.settings.agent_wall_time_s,
-        ),
-    )
+    return build_run_turn(container)
 
 
 @router.post("/assistant/conversations", status_code=201)
@@ -216,6 +188,7 @@ def delete_conversation(conversation_id: str, container: Container = Depends(get
 def start_turn(
     conversation_id: str,
     payload: StartTurnRequest,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
     container: Container = Depends(get_container),
 ) -> StartTurnResponse:
     """建一个回合并立刻返回 ``turn_id``，执行放在工作线程里。
@@ -235,9 +208,14 @@ def start_turn(
     try:
         record = run_turn.start(
             TurnRequest(
-                conversation_id=conversation_id, question=payload.message, include_debug=payload.include_debug
+                conversation_id=conversation_id,
+                question=payload.message,
+                include_debug=payload.include_debug,
+                idempotency_key=idempotency_key.strip(),
             )
         )
+    except TurnIdempotencyConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except (ValueError, OverflowError) as error:
         raise HTTPException(
             status_code=409 if isinstance(error, ValueError) else 429, detail=str(error)
@@ -245,30 +223,11 @@ def start_turn(
     manage.ensure_title(conversation_id, payload.message)
 
     broker = container.turn_event_broker
-    # 先登记再起飞：SSE 可能比工作线程的第一条事件更早连上来。
-
-    def worker() -> None:
-        try:
-            run_turn.run(record.id, emit=lambda event: broker.publish(record.id, event))
-        except Exception:
-            log.exception("回合执行失败: %s", record.id)
-        finally:
-            try:
-                broker.finish(record.id)
-            finally:
-                container.operation_control.finish("turn:" + record.id)
-
-    try:
-        manage.ensure_title(conversation_id, payload.message)
-        broker.open(record.id)
-        threading.Thread(target=worker, name=f"turn-{record.id}", daemon=True).start()
-    except Exception:
-        try:
-            run_turn.fail_start(record.id)
-        finally:
-            broker.finish(record.id)
-        raise
-    return StartTurnResponse(turn_id=record.id, conversation_id=conversation_id, status=record.status.value)
+    # 执行由进程内 TurnExecutor 认领；这里只登记 SSE channel，不自己起线程。
+    broker.open(record.id)
+    return StartTurnResponse(
+        turn_id=record.id, conversation_id=conversation_id, status=record.status.value
+    )
 
 
 def _progress_payload(event: ProgressEvent) -> ProgressEventPayload:
@@ -323,6 +282,7 @@ def _resume_index(last_event_id: str) -> int:
 async def turn_events(
     turn_id: str,
     request: Request,
+    after: int = Query(default=0, ge=0),
     last_event_id: str = Header(default="", alias="Last-Event-ID"),
     container: Container = Depends(get_container),
 ) -> StreamingResponse:
@@ -336,21 +296,53 @@ async def turn_events(
 
     turns = container.turn_repository
     broker = container.turn_event_broker
-    cursor = _resume_index(last_event_id)
+    cursor = max(_resume_index(last_event_id), after)
 
     async def body() -> AsyncIterator[str]:
         nonlocal cursor
-        for stored in turns.events_after(turn_id, cursor):
-            cursor = stored.step_index
-            yield _format_progress(stored)
+
+        def replay(from_seq: int):
+            nonlocal cursor
+            for seq, attempt_no, stored in turns.events_after(turn_id, from_seq):
+                cursor = seq
+                yield _format_progress(
+                    ProgressEvent(
+                        step_index=seq,
+                        stage=stored.stage,
+                        status=stored.status,
+                        text=stored.text,
+                        kind=stored.kind,
+                        timestamp=stored.timestamp,
+                        payload={**dict(stored.payload), "attempt_no": attempt_no},
+                    )
+                )
+
+        for frame in replay(cursor):
+            yield frame
 
         record = turns.get(turn_id)
+        if record is not None and record.execution_state and not record.status.is_terminal:
+            yield (
+                "event: status\ndata: "
+                + json.dumps(
+                    {
+                        "status": record.status.value,
+                        "execution_state": record.execution_state,
+                        "attempt_no": record.attempt_no,
+                        "waiting_reason": record.waiting_reason,
+                        "next_retry_at": (
+                            record.next_retry_at.isoformat() if record.next_retry_at else None
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
         if record is not None and record.status.is_terminal:
             # The worker may have persisted every event between the first read
             # and this terminal check. Catch up before announcing completion.
-            for stored in turns.events_after(turn_id, cursor):
-                cursor = stored.step_index
-                yield _format_progress(stored)
+            for frame in replay(cursor):
+                yield frame
             yield _format_complete(record)
             return
 
@@ -368,11 +360,11 @@ async def turn_events(
 
         # A closed channel can be retired before subscription begins. Durable
         # events bridge that handover; cursor still prevents duplicate delivery.
-        for stored in turns.events_after(turn_id, cursor):
-            cursor = stored.step_index
-            yield _format_progress(stored)
+        for frame in replay(cursor):
+            yield frame
         record = turns.get(turn_id)
-        if record is not None:
+        # 只有真正的终态才发 complete；内存 broker 关闭不代表回答完成。
+        if record is not None and record.status.is_terminal:
             yield _format_complete(record)
 
     return StreamingResponse(body(), media_type="text/event-stream", headers=SSE_HEADERS)
@@ -397,12 +389,29 @@ def get_turn(turn_id: str, container: Container = Depends(get_container)) -> Tur
         raise HTTPException(status_code=404, detail="turn not found")
 
     terminal = record.status.is_terminal
+    progress = []
+    for seq, attempt_no, event in container.turn_repository.events_after(turn_id, 0):
+        progress.append(
+            _progress_payload(
+                ProgressEvent(
+                    step_index=seq,
+                    stage=event.stage,
+                    status=event.status,
+                    text=event.text,
+                    kind=event.kind,
+                    timestamp=event.timestamp,
+                    payload={**dict(event.payload), "attempt_no": attempt_no},
+                )
+            )
+        )
     return TurnPollResponse(
         turn_id=turn_id,
         status=record.status.value,
-        public_progress=[
-            _progress_payload(event) for event in container.turn_repository.events_after(turn_id, 0)
-        ],
+        execution_state=record.execution_state,
+        attempt_no=record.attempt_no,
+        waiting_reason=record.waiting_reason,
+        next_retry_at=record.next_retry_at.isoformat() if record.next_retry_at else None,
+        public_progress=progress,
         result=_complete_payload(record) if terminal else None,
         error=record.termination_reason if record.status.value in _FAILED_STATUSES else "",
     )
@@ -458,8 +467,17 @@ def result_set_photo(
 
 @router.post("/assistant/turns/{turn_id}/cancel", status_code=202)
 async def cancel_turn(turn_id: str, request: Request) -> OperationCancellationResponse:
+    container = get_container(request)
+    record = container.turn_repository.get(turn_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="turn not found")
+    # 取消标志持久化：进程重启后的恢复扫描不会认领已取消回合。
+    container.turn_repository.request_cancel(turn_id, now=datetime.now(UTC))
     try:
-        result = get_container(request).operation_control.request_cancel("turn:" + turn_id)
+        container.operation_control.request_cancel("turn:" + turn_id)
     except KeyError:
-        raise HTTPException(status_code=404, detail="turn not owned by this process") from None
-    return OperationCancellationResponse.model_validate({**result, "operation_id": turn_id})
+        # 执行线程不在本进程（例如回合尚未被认领）——标志已经落库，足够。
+        pass
+    return OperationCancellationResponse(
+        operation_id=turn_id, cancel_requested=True, cleanup_status="pending"
+    )

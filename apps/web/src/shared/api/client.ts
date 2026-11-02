@@ -361,17 +361,21 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 export async function startTurn(
   conversationId: string,
   message: string,
+  idempotencyKey = "",
 ): Promise<{ turn_id: string; conversation_id: string; status: string }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey !== "") headers["Idempotency-Key"] = idempotencyKey;
   return request(`/assistant/conversations/${conversationId}/turns`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ message }),
   });
 }
 
-/** 回合事件的 SSE 地址。浏览器侧的主路径，与 1.0 ``src/api.js:66`` 同形。 */
-export function turnEventsUrl(turnId: string): string {
-  return `${BASE}/assistant/turns/${turnId}/events`;
+/** 回合事件的 SSE 地址。``after`` 让新连接从已经看过的序号之后续传。 */
+export function turnEventsUrl(turnId: string, after = 0): string {
+  const suffix = after > 0 ? `?after=${after}` : "";
+  return `${BASE}/assistant/turns/${turnId}/events${suffix}`;
 }
 
 /**
@@ -411,6 +415,10 @@ export function fetchTurnEvents(turnId: string, timeoutMs = 5000): Promise<Assis
 export interface AssistantTurnPoll {
   turn_id: string;
   status: string;
+  execution_state?: string;
+  attempt_no?: number;
+  waiting_reason?: string;
+  next_retry_at?: string | null;
   public_progress: AssistantProgressEvent[];
   result: AssistantCompleteEvent | null;
   error: string;

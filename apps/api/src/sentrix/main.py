@@ -138,13 +138,20 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    executor = getattr(app.state, "import_executor", None)
-    if executor is not None:
+    executors = [
+        executor
+        for executor in (
+            getattr(app.state, "import_executor", None),
+            getattr(app.state, "turn_executor", None),
+        )
+        if executor is not None
+    ]
+    for executor in executors:
         executor.start()
     try:
         yield
     finally:
-        if executor is not None:
+        for executor in executors:
             executor.stop()
 
 
@@ -171,6 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.container = container
     app.state.settings = settings
     app.state.import_executor = container.build_import_executor()
+    app.state.turn_executor = container.build_turn_executor()
     app.add_exception_handler(DomainError, domain_error_handler)
 
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])

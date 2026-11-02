@@ -479,6 +479,21 @@ class Container:
             return False, f"model_unavailable: {error}"
         return True, ""
 
+    def build_turn_executor(self):
+        """体验实例的问答回合执行器；旧实例返回 None。"""
+        if not self.settings.experience_mode:
+            return None
+        from sentrix.bootstrap.assistant_wiring import build_run_turn
+        from sentrix.infrastructure.assistant.turn_executor import TurnExecutor
+
+        return TurnExecutor(
+            turns=self.turn_repository,
+            run_turn_factory=lambda: build_run_turn(self),
+            broker=self.turn_event_broker,
+            dependencies_ready=self.dependencies_ready,
+            operation_control=self.operation_control,
+        )
+
     def build_import_executor(self):
         """体验实例的导入执行器；旧实例返回 None。"""
         if not self.settings.experience_mode:
