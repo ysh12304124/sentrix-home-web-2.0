@@ -28,8 +28,9 @@ const ACTIVE_JOB_STATUSES = new Set([
   "retry_scheduled",
 ]);
 
-function keyFor(file: File): string {
-  return newClientId(`upload-${file.name.slice(0, 24)}`);
+function keyFor(_file: File): string {
+  // HTTP 头只能带 ISO-8859-1；中文文件名绝不能进 Idempotency-Key。
+  return newClientId("upload");
 }
 
 function jobStatusLabel(job: ImportJobView): string {
