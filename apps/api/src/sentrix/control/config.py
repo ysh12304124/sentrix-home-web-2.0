@@ -55,6 +55,15 @@ class ControlSettings(BaseSettings):
 
     sample_interval_s: float = Field(default=10.0, gt=0)
     restart_units: str = ""
+    # 管理台显式标注：这些单元里的共享模型重启会影响全部用户。
+    shared_model_units: str = ""
+    # 仍直连 8100、未接入控制入口的消费者；非空时面板必须标注“未纳入调度”。
+    unmanaged_model_consumers: str = ""
+    queue_wait_warn_s: float = Field(default=300.0, gt=0)
+
+    metric_retention_days: int = Field(default=30, gt=0)
+    audit_retention_days: int = Field(default=90, gt=0)
+    feedback_retention_days: int = Field(default=90, gt=0)
 
     session_idle_s: int = Field(default=8 * 3600, gt=0)
     session_max_s: int = Field(default=7 * 24 * 3600, gt=0)
@@ -70,6 +79,16 @@ class ControlSettings(BaseSettings):
 
     def restart_unit_list(self) -> tuple[str, ...]:
         return tuple(unit.strip() for unit in self.restart_units.split(",") if unit.strip())
+
+    def shared_model_unit_list(self) -> tuple[str, ...]:
+        return tuple(unit.strip() for unit in self.shared_model_units.split(",") if unit.strip())
+
+    def unmanaged_model_consumer_list(self) -> tuple[str, ...]:
+        return tuple(
+            item.strip()
+            for item in self.unmanaged_model_consumers.split(",")
+            if item.strip()
+        )
 
     def diagnostics(self, *, route_users: int, ready: bool) -> dict[str, object]:
         """只包含可公开的有效配置，不含令牌、账号列表或文件系统私有路径。"""
@@ -87,6 +106,8 @@ class ControlSettings(BaseSettings):
             },
             "sample_interval_s": self.sample_interval_s,
             "restart_units": list(self.restart_unit_list()),
+            "shared_model_units": list(self.shared_model_unit_list()),
+            "unmanaged_model_consumers": list(self.unmanaged_model_consumer_list()),
         }
 
     def users_document(self) -> dict[str, object]:

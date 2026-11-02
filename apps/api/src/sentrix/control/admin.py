@@ -1,10 +1,12 @@
-"""管理员概览、事件与固定服务的重启动作。"""
+"""管理员概览、事件、趋势与固定服务的重启动作。"""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
@@ -23,9 +25,39 @@ def _monitor(request: Request):
     return request.app.state.monitor
 
 
+def _settings(request: Request):
+    return request.app.state.control_settings
+
+
 @router.get("/admin/overview")
 def overview(request: Request, _: AuthContext = Depends(require_admin)) -> dict[str, object]:
-    return _monitor(request).snapshot()
+    payload = dict(_monitor(request).snapshot())
+    settings = _settings(request)
+    unmanaged = list(settings.unmanaged_model_consumer_list())
+    payload.update(
+        {
+            "build_sha": settings.build_sha,
+            "frontend_build": settings.frontend_build,
+            "shared_model_units": list(settings.shared_model_unit_list()),
+            "unmanaged_model_consumers": unmanaged,
+            "scheduling_complete": not unmanaged,
+        }
+    )
+    return payload
+
+
+@router.get("/admin/trends")
+def trends(
+    request: Request,
+    _: AuthContext = Depends(require_admin),
+    minutes: int = 60,
+) -> dict[str, object]:
+    window = max(1, min(minutes, 24 * 60))
+    since = (datetime.now(UTC) - timedelta(minutes=window)).isoformat()
+    return {
+        "minutes": window,
+        "items": _store(request).list_metric_series(source="minute", since=since),
+    }
 
 
 @router.get("/admin/incidents")
@@ -106,11 +138,38 @@ def restart_service(
     auth: AuthContext = Depends(require_admin),
     idempotency_key: str = Header(default="", alias="Idempotency-Key"),
 ) -> dict[str, object]:
-    settings = request.app.state.control_settings
+    settings = _settings(request)
+    store = _store(request)
     allowed = set(settings.restart_unit_list())
     require_csrf(request, auth)
     if service_id not in allowed:
         raise HTTPException(status_code=403, detail="service is not in the restart allowlist")
+    key = idempotency_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key is required")
+
+    existing = store.get_restart_request(key)
+    if existing is not None:
+        if str(existing["service_id"]) != service_id:
+            raise HTTPException(
+                status_code=409, detail="idempotency key reused for a different service"
+            )
+        body = json.loads(str(existing["body_json"]))
+        store.audit(
+            "service.restart",
+            actor_account_id=auth.account.id,
+            target=service_id,
+            result="replayed",
+            detail={"idempotency_key": key},
+            request_id=str(existing["request_id"]),
+        )
+        if int(existing["status_code"]) >= 400:
+            raise HTTPException(
+                status_code=int(existing["status_code"]),
+                detail=str(body.get("detail", "restart failed")),
+            )
+        return {**body, "idempotent_replay": True}
+
     request_id = f"req_{uuid.uuid4().hex[:16]}"
     # 只接受固定单元名；不拼接用户输入，不经过 shell。
     command = (
@@ -126,7 +185,17 @@ def restart_service(
         check=False,
     )
     result = "ok" if completed.returncode == 0 else "failed"
-    _store(request).audit(
+    shared = service_id in set(settings.shared_model_unit_list())
+    body: dict[str, object] = {
+        "service_id": service_id,
+        "result": result,
+        "request_id": request_id,
+        "affected_all_users": shared,
+    }
+    status_code = 200 if completed.returncode == 0 else 502
+    if completed.returncode != 0:
+        body["detail"] = f"restart failed: {completed.stderr[-300:]}"
+    store.audit(
         "service.restart",
         actor_account_id=auth.account.id,
         target=service_id,
@@ -134,10 +203,18 @@ def restart_service(
         detail={
             "returncode": completed.returncode,
             "stderr": completed.stderr[-500:],
-            "idempotency_key": idempotency_key,
+            "idempotency_key": key,
+            "affected_all_users": shared,
         },
         request_id=request_id,
     )
+    store.save_restart_request(
+        key,
+        service_id=service_id,
+        request_id=request_id,
+        status_code=status_code,
+        body=body,
+    )
     if completed.returncode != 0:
-        raise HTTPException(status_code=502, detail=f"restart failed: {completed.stderr[-300:]}")
-    return {"service_id": service_id, "result": result, "request_id": request_id}
+        raise HTTPException(status_code=502, detail=str(body["detail"]))
+    return body

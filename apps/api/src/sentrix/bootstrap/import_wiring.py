@@ -75,15 +75,28 @@ def build_import_assets(container: Container, *, observe: bool) -> ImportAssets:
     )
 
 
-def build_media_postprocess(container: Container) -> Callable[[str], None]:
-    """一个相册代际的批末后处理：参与者 → 记忆图 → 事件总结 → 人物画像。"""
+def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
+    """一个相册代际的批末后处理：参与者 → 记忆图 → 事件总结 → 家族图 → 画像。
 
-    def run(scope_id: str) -> None:
+    返回未完成的阶段名。局部失败不阻断其他阶段，也不回滚已提交的资产；
+    执行器据此把作业标为 ``partial`` 并保留具体阶段。
+    """
+
+    def run(scope_id: str) -> list[str]:
+        failures: list[str] = []
         observations = container.observation_repository.list_scope(scope_id, limit=100000)
-        _confirmed_person_events(container).refresh_participants(
-            [item.id for item in observations]
-        )
-        refresh_memory_graph(container, scope_id)
+        try:
+            _confirmed_person_events(container).refresh_participants(
+                [item.id for item in observations]
+            )
+        except Exception as error:  # noqa: BLE001 - 单个后处理阶段失败不阻断其他阶段
+            log.warning("参与者刷新失败（scope=%s）: %s", scope_id, error)
+            failures.append("participants")
+        try:
+            refresh_memory_graph(container, scope_id)
+        except Exception as error:  # noqa: BLE001
+            log.warning("记忆图刷新失败（scope=%s）: %s", scope_id, error)
+            failures.append("memory_graph")
         summarizer = SummarizeEvent(
             events=container.event_repository,
             observations=container.observation_repository,
@@ -91,6 +104,7 @@ def build_media_postprocess(container: Container) -> Callable[[str], None]:
             participants=container.event_participant_repository,
             model=container.chat_model,
         )
+        summary_failed = False
         for event in container.event_repository.list_by_scope(scope_id, limit=10000):
             # 事件归属会先写一句初步摘要，但标题仍是“待总结事件”；只按 summary
             # 判断会把这些事件永久跳过，时间线就一直是占位标题。
@@ -100,8 +114,17 @@ def build_media_postprocess(container: Container) -> Callable[[str], None]:
                 summarizer.execute(event.id)
             except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
                 log.warning("事件总结失败（event=%s）: %s", event.id, error)
-        _run_family_graph(container, scope_id)
-        _run_insights(container)(scope_id)
+                summary_failed = True
+        if summary_failed:
+            failures.append("event_summary")
+        if not _run_family_graph(container, scope_id):
+            failures.append("family_graph")
+        try:
+            _run_insights(container)(scope_id)
+        except Exception as error:  # noqa: BLE001
+            log.warning("画像刷新失败（scope=%s）: %s", scope_id, error)
+            failures.append("insights")
+        return failures
 
     return run
 
@@ -124,13 +147,13 @@ def _confirmed_person_events(container: Container) -> ConfirmedPersonEvents:
     )
 
 
-def _run_family_graph(container: Container, scope_id: str) -> None:
+def _run_family_graph(container: Container, scope_id: str) -> bool:
     """批末家族图推断；已有 queued/running 的 run 或失败都不阻断其他后处理。"""
     try:
         repository = container.family_graph_repository
         latest = repository.latest_run(scope_id)
         if latest is not None and latest.status in {"queued", "running"}:
-            return
+            return True
         run = repository.create_run(
             scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"}
         )
@@ -141,8 +164,10 @@ def _run_family_graph(container: Container, scope_id: str) -> None:
             model=container.chat_model,
         )
         service.run(run.id, scope_id)
+        return True
     except Exception as error:  # noqa: BLE001 - 家族图是导入副作用
         log.warning("家族图推断失败（scope=%s）: %s", scope_id, error)
+        return False
 
 
 def _run_insights(container: Container) -> RunInsights:

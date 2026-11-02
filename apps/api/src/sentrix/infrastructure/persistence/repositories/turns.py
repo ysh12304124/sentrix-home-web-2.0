@@ -498,3 +498,22 @@ class SqliteTurnRepository:
                 (conversation_id, max(1, limit)),
             ).fetchall()
         return [_row_to_turn(row) for row in rows]
+
+    def list_active(self, *, limit: int = 20) -> Sequence[TurnRecord]:
+        """在飞回合：控制面只读运行元数据，不读问题与答案正文。"""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_TURN_COLUMNS} FROM agent_turns WHERE status IN ('pending', 'running')"
+                " ORDER BY updated_at ASC, rowid ASC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [_row_to_turn(row) for row in rows]
+
+    def list_recent(self, *, limit: int = 20) -> Sequence[TurnRecord]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_TURN_COLUMNS} FROM agent_turns"
+                " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [_row_to_turn(row) for row in rows]

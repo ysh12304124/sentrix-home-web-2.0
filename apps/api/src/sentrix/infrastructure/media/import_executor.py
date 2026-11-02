@@ -100,7 +100,8 @@ class ImportJobExecutor:
         assets: AssetRepository,
         importer_factory: Callable[[], ImportAssets],
         dependencies_ready: Callable[[], tuple[bool, str]],
-        postprocess: Callable[[str], None] | None = None,
+        # 返回未完成的阶段名；空列表表示整代后处理成功。
+        postprocess: Callable[[str], list[str]] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._settings = settings
@@ -158,11 +159,29 @@ class ImportJobExecutor:
             return
         scope_id, generation = claimed
         try:
-            self._postprocess(scope_id)
+            failures = list(self._postprocess(scope_id))
         except Exception:  # noqa: BLE001 - 保留成功资产，整代重试
             log.exception("相册后处理失败 scope=%s generation=%s", scope_id, generation)
+            self._jobs.mark_scope_postprocess_partial(
+                scope_id, message="后处理失败，未完成阶段：postprocess", now=self._clock()
+            )
             self._jobs.finish_postprocess(scope_id, generation, success=False, now=self._clock())
             return
+        if failures:
+            message = "后处理未完成：" + "、".join(failures)
+            log.warning(
+                "相册后处理部分失败 scope=%s generation=%s stages=%s",
+                scope_id,
+                generation,
+                ",".join(failures),
+            )
+            self._jobs.mark_scope_postprocess_partial(
+                scope_id, message=message, now=self._clock()
+            )
+            # 五分钟后重试整代；成功时 clear_scope_postprocess_partial 会把作业清回 completed。
+            self._jobs.finish_postprocess(scope_id, generation, success=False, now=self._clock())
+            return
+        self._jobs.clear_scope_postprocess_partial(scope_id, now=self._clock())
         self._jobs.finish_postprocess(scope_id, generation, success=True, now=self._clock())
 
     def _execute(self, job: ImportJob) -> None:

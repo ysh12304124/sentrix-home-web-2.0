@@ -443,7 +443,9 @@ class SqliteImportJobRepository:
                 row = connection.execute(
                     "SELECT scope_id, dirty_generation FROM scope_postprocess "
                     "WHERE dirty_generation > processed_generation AND processing_generation IS NULL "
-                    "ORDER BY updated_at ASC LIMIT 1"
+                    "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                    "ORDER BY updated_at ASC LIMIT 1",
+                    (now.isoformat(),),
                 ).fetchone()
                 if row is None:
                     connection.commit()
@@ -465,15 +467,46 @@ class SqliteImportJobRepository:
             if success:
                 connection.execute(
                     "UPDATE scope_postprocess SET processed_generation = MAX(processed_generation, ?), "
-                    "processing_generation = NULL, updated_at = ? WHERE scope_id = ?",
+                    "processing_generation = NULL, next_attempt_at = NULL, updated_at = ? "
+                    "WHERE scope_id = ?",
                     (generation, now.isoformat(), scope_id),
                 )
             else:
                 connection.execute(
-                    "UPDATE scope_postprocess SET processing_generation = NULL, updated_at = ? "
-                    "WHERE scope_id = ?",
-                    (now.isoformat(), scope_id),
+                    "UPDATE scope_postprocess SET processing_generation = NULL, "
+                    "next_attempt_at = ?, updated_at = ? WHERE scope_id = ?",
+                    (
+                        (now + timedelta(minutes=5)).isoformat(),
+                        now.isoformat(),
+                        scope_id,
+                    ),
                 )
+
+    def mark_scope_postprocess_partial(
+        self, scope_id: str, *, message: str, now: datetime
+    ) -> int:
+        """批末阶段失败：该相册已完成的作业改为 partial，并标出后处理阶段。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE import_jobs SET status = 'partial', stage = 'postprocess',"
+                " error_category = 'postprocess_failed', error_message = ?, updated_at = ?,"
+                " lease_expires_at = NULL"
+                " WHERE scope_id = ? AND status IN ('completed', 'partial')"
+                " AND (status = 'completed' OR error_category = 'postprocess_failed')",
+                (message, now.isoformat(), scope_id),
+            )
+        return cursor.rowcount
+
+    def clear_scope_postprocess_partial(self, scope_id: str, *, now: datetime) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE import_jobs SET status = 'completed', stage = 'completed',"
+                " error_category = '', error_message = '', updated_at = ?"
+                " WHERE scope_id = ? AND status = 'partial'"
+                " AND error_category = 'postprocess_failed'",
+                (now.isoformat(), scope_id),
+            )
+        return cursor.rowcount
 
     def scope_backlog(self) -> int:
         with self._database.connect() as connection:

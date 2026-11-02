@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import subprocess
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,10 +24,21 @@ from sentrix.control.model_gate import ModelGate
 from sentrix.control.proxy import RouteTable
 from sentrix.control.store import ControlStore
 
+log = logging.getLogger("sentrix.control.monitor")
+
 STALE_AFTER_S = 30
 FAIL_THRESHOLD = 3
 DISK_WARN_GIB = 150
 DISK_STOP_GIB = 100
+ROLLUP_INTERVAL_S = 60.0
+RETENTION_INTERVAL_S = 6 * 3600.0
+ACTIVE_JOB_STATUSES = (
+    "accepted",
+    "queued",
+    "running",
+    "waiting_dependency",
+    "retry_scheduled",
+)
 
 
 class Monitor:
@@ -52,6 +65,9 @@ class Monitor:
         self._unit_history: dict[str, list[tuple[float, float]]] = {}
         self._gpu_temp_since: float | None = None
         self._gpu_vram_since: float | None = None
+        self._rollup_samples: list[dict[str, Any]] = []
+        self._last_rollup = time.monotonic()
+        self._last_retention = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -96,6 +112,10 @@ class Monitor:
                         },
                     },
                 )
+                self._rollup_samples.append(snapshot)
+                if time.monotonic() - self._last_rollup >= ROLLUP_INTERVAL_S:
+                    self._record_rollup(str(snapshot["sampled_at"]))
+                self._run_retention()
             except Exception as error:  # noqa: BLE001 - 采样失败只标记过期
                 with self._lock:
                     self._snapshot = {"sampled_at": None, "stale": True, "error": str(error)}
@@ -106,9 +126,11 @@ class Monitor:
         host = self._host()
         services = self._services()
         units = self._units()
+        queue = self._gate.describe()
         self._merge_encoding(services)
         self._maybe_inference(services)
         self._evaluate(services, host, now)
+        self._evaluate_queue(queue, now)
         self._evaluate_gpu(host, now)
         self._evaluate_restarts(units, now)
         self._evaluate_stalled(services, now)
@@ -118,11 +140,55 @@ class Monitor:
             "host": host,
             "services": services,
             "units": units,
-            "model_queue": self._gate.describe(),
+            "model_queue": queue,
             "open_incidents": len(
                 [item for item in self._store.list_incidents(limit=200) if item["status"] == "open"]
             ),
         }
+
+    def _evaluate_queue(self, queue: dict[str, Any], now: str) -> None:
+        oldest = queue.get("oldest_wait_s")
+        wait_s = float(oldest) if isinstance(oldest, (int, float)) else 0.0
+        if wait_s >= self._settings.queue_wait_warn_s:
+            self._store.open_incident(
+                source="model",
+                category="queue_long",
+                severity="warning",
+                message=f"模型排队最久 {wait_s:.0f} 秒，超过 {self._settings.queue_wait_warn_s:.0f} 秒",
+                now=now,
+            )
+        else:
+            self._store.close_incidents(
+                source="model", category="queue_long", now=now, result="recovered"
+            )
+
+    def _record_rollup(self, sampled_at: str) -> None:
+        samples = self._rollup_samples
+        self._rollup_samples = []
+        self._last_rollup = time.monotonic()
+        if not samples:
+            return
+        self._store.record_metric(
+            sampled_at=sampled_at, source="minute", payload=_aggregate(samples)
+        )
+
+    def _run_retention(self) -> None:
+        if time.monotonic() - self._last_retention < RETENTION_INTERVAL_S:
+            return
+        self._last_retention = time.monotonic()
+        settings = self._settings
+        try:
+            self._store.purge_metrics(older_than_days=settings.metric_retention_days)
+            self._store.purge_audit(older_than_days=settings.audit_retention_days)
+            for path in self._store.purge_feedback(
+                older_than_days=settings.feedback_retention_days
+            ):
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError:
+                    log.warning("反馈截图清理失败: %s", path)
+        except Exception:  # noqa: BLE001 - 清理失败不影响采样
+            log.warning("控制库保留期清理失败", exc_info=True)
 
     def _host(self) -> dict[str, Any]:
         base = collect_host_snapshot().as_dict()
@@ -185,6 +251,8 @@ class Monitor:
                         result["status"] = status_response.json()
                 except httpx.HTTPError:
                     pass
+                # 管理台要区分“哪台用户 API”；token 永不出控制面。
+                result["api_url"] = route.api_url
                 users[account_id] = result
             services["users"] = users
         return services
@@ -455,6 +523,77 @@ class Monitor:
             self._store.close_incidents(
                 source=source, category="service_down", now=now, result="recovered"
             )
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _avg(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return round(sum(present) / len(present), 2) if present else None
+
+
+def _aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """一分钟窗口的聚合：资源取均值，队列与在飞数量取峰值。"""
+    hosts = [item.get("host") or {} for item in samples]
+    gpus = [host.get("gpu") or {} for host in hosts]
+    queues = [item.get("model_queue") or {} for item in samples]
+
+    users: dict[str, dict[str, int]] = {}
+    for sample in samples:
+        services = sample.get("services") or {}
+        for account, value in (services.get("users") or {}).items():
+            status = value.get("status") if isinstance(value, dict) else None
+            if not isinstance(status, dict):
+                continue
+            jobs = status.get("jobs") or {}
+            turns = status.get("turns") or {}
+            entry = users.setdefault(
+                account, {"active_jobs": 0, "waiting_jobs": 0, "active_turns": 0}
+            )
+            active_jobs = sum(int(jobs.get(key, 0)) for key in ACTIVE_JOB_STATUSES)
+            waiting_jobs = int(jobs.get("waiting_dependency", 0)) + int(
+                jobs.get("retry_scheduled", 0)
+            )
+            active_turns = int(turns.get("pending", 0)) + int(turns.get("running", 0))
+            entry["active_jobs"] = max(entry["active_jobs"], active_jobs)
+            entry["waiting_jobs"] = max(entry["waiting_jobs"], waiting_jobs)
+            entry["active_turns"] = max(entry["active_turns"], active_turns)
+
+    last_services = (samples[-1].get("services") or {}) if samples else {}
+    return {
+        "host": {
+            "cpu_percent": _avg([_number(item.get("cpu_percent")) for item in hosts]),
+            "ram_used_gb": _avg([_number(item.get("ram_used_gb")) for item in hosts]),
+            "disk_free_gb": _avg([_number(item.get("disk_free_gb")) for item in hosts]),
+            "load_1m": _avg([_number(item.get("load_1m")) for item in hosts]),
+            "gpu": {
+                "utilization_percent": _avg(
+                    [_number(item.get("utilization_percent")) for item in gpus]
+                ),
+                "memory_used_mib": _avg([_number(item.get("memory_used_mib")) for item in gpus]),
+                "temperature_c": _avg([_number(item.get("temperature_c")) for item in gpus]),
+            },
+        },
+        "queue": {
+            "active": max((int(item.get("active") or 0) for item in queues), default=0),
+            "waiting_total": max(
+                (int(item.get("waiting_total") or 0) for item in queues), default=0
+            ),
+            "oldest_wait_s": max(
+                (float(item.get("oldest_wait_s") or 0) for item in queues), default=0.0
+            ),
+        },
+        "users": users,
+        "services": {
+            key: value.get("ok")
+            for key, value in last_services.items()
+            if isinstance(value, dict)
+        },
+    }
 
 
 def _probe(client: httpx.Client, url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:

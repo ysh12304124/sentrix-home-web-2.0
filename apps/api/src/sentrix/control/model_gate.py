@@ -206,9 +206,13 @@ class ModelGate:
         return counts
 
     def describe(self) -> dict[str, object]:
+        now = time.monotonic()
+        oldest = min((item.enqueued_at for item in self._waiters), default=0.0)
         return {
             **self.target.describe(),
             "active": self._active,
             "waiting": self.waiting(),
+            "waiting_total": len(self._waiters),
+            "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,
             "last_ok_at": self._last_ok_at or None,
         }

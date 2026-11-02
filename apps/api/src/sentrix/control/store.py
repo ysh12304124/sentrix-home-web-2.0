@@ -418,6 +418,57 @@ class ControlStore:
         with self._database.connect() as connection, connection:
             connection.execute("DELETE FROM metric_samples WHERE sampled_at < ?", (cutoff,))
 
+    def list_metric_series(
+        self, *, source: str, since: str, limit: int = 1440
+    ) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT sampled_at, payload_json FROM metric_samples"
+                " WHERE source = ? AND sampled_at >= ? ORDER BY sampled_at ASC LIMIT ?",
+                (source, since, max(1, limit)),
+            ).fetchall()
+        return [
+            {"sampled_at": str(row["sampled_at"]), "payload": json.loads(row["payload_json"])}
+            for row in rows
+        ]
+
+    def purge_audit(self, *, older_than_days: int = 90) -> int:
+        cutoff = _iso(_now() - timedelta(days=older_than_days))
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute("DELETE FROM audit_events WHERE time < ?", (cutoff,))
+        return cursor.rowcount
+
+    def purge_feedback(self, *, older_than_days: int = 90) -> list[str]:
+        """返回被删反馈的截图路径，由调用方删除文件。"""
+        cutoff = _iso(_now() - timedelta(days=older_than_days))
+        with self._database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                paths = [
+                    str(row["storage_path"])
+                    for row in connection.execute(
+                        "SELECT storage_path FROM feedback_attachments WHERE feedback_id IN"
+                        " (SELECT id FROM feedback WHERE created_at < ?)",
+                        (cutoff,),
+                    ).fetchall()
+                ]
+                connection.execute(
+                    "DELETE FROM feedback_updates WHERE feedback_id IN"
+                    " (SELECT id FROM feedback WHERE created_at < ?)",
+                    (cutoff,),
+                )
+                connection.execute(
+                    "DELETE FROM feedback_attachments WHERE feedback_id IN"
+                    " (SELECT id FROM feedback WHERE created_at < ?)",
+                    (cutoff,),
+                )
+                connection.execute("DELETE FROM feedback WHERE created_at < ?", (cutoff,))
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+        return paths
+
     # ---- 反馈 ---------------------------------------------------------------
 
     def create_feedback(
@@ -492,6 +543,9 @@ class ControlStore:
         account_id: str = "",
         kind: str = "",
         status: str = "",
+        since: str = "",
+        until: str = "",
+        related: str = "",
         limit: int = 200,
     ) -> list[dict[str, object]]:
         clauses: list[str] = []
@@ -500,6 +554,17 @@ class ControlStore:
             if value:
                 clauses.append(f"{column} = ?")
                 parameters.append(value)
+        if since:
+            clauses.append("created_at >= ?")
+            parameters.append(since)
+        if until:
+            clauses.append("created_at <= ?")
+            parameters.append(until)
+        if related:
+            clauses.append(
+                "(job_id = ? OR turn_id = ? OR event_id = ? OR asset_id = ? OR request_id = ?)"
+            )
+            parameters.extend([related] * 5)
         sql = "SELECT * FROM feedback"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -508,6 +573,15 @@ class ControlStore:
         with self._database.connect() as connection:
             rows = connection.execute(sql, tuple(parameters)).fetchall()
         return [_feedback_admin(row) for row in rows]
+
+    def list_feedback_attachments(self, feedback_id: str) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, content_type, byte_size, created_at FROM feedback_attachments"
+                " WHERE feedback_id = ? ORDER BY created_at ASC",
+                (feedback_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_feedback_admin(self, feedback_id: str) -> dict[str, object] | None:
         with self._database.connect() as connection:
@@ -657,6 +731,40 @@ class ControlStore:
                 ),
             )
         return event_id
+
+    # ---- 重启操作的幂等记录 --------------------------------------------------
+
+    def get_restart_request(self, idempotency_key: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM restart_requests WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def save_restart_request(
+        self,
+        idempotency_key: str,
+        *,
+        service_id: str,
+        request_id: str,
+        status_code: int,
+        body: dict[str, object],
+    ) -> None:
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO restart_requests"
+                " (idempotency_key, service_id, request_id, status_code, body_json, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    idempotency_key,
+                    service_id,
+                    request_id,
+                    status_code,
+                    json.dumps(body, ensure_ascii=False),
+                    _iso(_now()),
+                ),
+            )
 
 
 def _feedback(row: sqlite3.Row) -> dict[str, object]:

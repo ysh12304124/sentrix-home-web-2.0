@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { newClientId } from "../../shared/id";
 import {
+  cancelTurn as cancelTurnRequest,
   pollTurn,
   startTurn,
   turnEventsUrl,
@@ -17,7 +18,12 @@ export interface TurnStream {
   /** 服务端执行子状态：recovering / waiting_dependency / retry_scheduled。 */
   executionState: string;
   attemptNo: number;
+  /** 本轮回合 ID；还没拿到或已清空时为 null。 */
+  turnId: string | null;
+  /** 用户已请求停止；服务端会在安全检查点收尾。 */
+  cancelled: boolean;
   ask: (conversationId: string, message: string) => Promise<void>;
+  cancel: () => Promise<void>;
 }
 
 const RECONNECT_BASE_MS = 800;
@@ -37,6 +43,8 @@ export function useTurnStream(): TurnStream {
   const [error, setError] = useState<string | null>(null);
   const [executionState, setExecutionState] = useState("");
   const [attemptNo, setAttemptNo] = useState(0);
+  const [turnId, setTurnId] = useState<string | null>(null);
+  const [cancelled, setCancelled] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
   const timerRef = useRef<number | null>(null);
   const finishedRef = useRef(false);
@@ -65,15 +73,18 @@ export function useTurnStream(): TurnStream {
       setError(null);
       setExecutionState("");
       setAttemptNo(0);
+      setTurnId(null);
+      setCancelled(false);
       setBusy(true);
 
       // 一次提问一枚键：网络重试命中同一个回合，不重复保存用户消息。
       const idempotencyKey = newClientId("turn");
 
-      let turnId: string;
+      let activeTurnId: string;
       try {
         const started = await startTurn(conversationId, message, idempotencyKey);
-        turnId = started.turn_id;
+        activeTurnId = started.turn_id;
+        setTurnId(activeTurnId);
       } catch (cause) {
         setError((cause as Error).message);
         setBusy(false);
@@ -99,7 +110,7 @@ export function useTurnStream(): TurnStream {
         if (finishedRef.current) return;
         let source: EventSource;
         try {
-          source = new EventSource(turnEventsUrl(turnId, cursorRef.current));
+          source = new EventSource(turnEventsUrl(activeTurnId, cursorRef.current));
         } catch {
           void pollUntilTerminal();
           return;
@@ -148,7 +159,7 @@ export function useTurnStream(): TurnStream {
         while (!finishedRef.current) {
           await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
           try {
-            const polled = await pollTurn(turnId);
+            const polled = await pollTurn(activeTurnId);
             polled.public_progress.forEach(pushProgress);
             if (polled.execution_state) setExecutionState(polled.execution_state);
             if (polled.attempt_no) setAttemptNo(polled.attempt_no);
@@ -158,6 +169,8 @@ export function useTurnStream(): TurnStream {
             }
             if (polled.status === "cancelled" || polled.status === "failed") {
               finishedRef.current = true;
+              if (polled.status === "cancelled") setCancelled(true);
+              else setError("这次回答没有完成，可以重新提问。");
               setBusy(false);
               return;
             }
@@ -172,5 +185,31 @@ export function useTurnStream(): TurnStream {
     [close],
   );
 
-  return { progress, result, busy, error, executionState, attemptNo, ask };
+  const cancel = useCallback(async () => {
+    if (turnId === null || finishedRef.current) return;
+    try {
+      await cancelTurnRequest(turnId);
+      // 停止接收后续帧：服务端会在安全检查点收尾，界面不再等一个不会来的 complete。
+      finishedRef.current = true;
+      close();
+      setCancelled(true);
+      setBusy(false);
+      setExecutionState("");
+    } catch (cause) {
+      setError((cause as Error).message);
+    }
+  }, [close, turnId]);
+
+  return {
+    progress,
+    result,
+    busy,
+    error,
+    executionState,
+    attemptNo,
+    turnId,
+    cancelled,
+    ask,
+    cancel,
+  };
 }

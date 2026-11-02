@@ -113,7 +113,17 @@ export function AssistantPanel({
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const { progress, result, busy, error, ask, executionState, attemptNo } = useTurnStream();
+  const {
+    progress,
+    result,
+    busy,
+    error,
+    ask,
+    cancel,
+    cancelled,
+    executionState,
+    attemptNo,
+  } = useTurnStream();
 
   const settled = useRef<string | null>(null);
   /** 当前这一轮是哪个会话的哪条 exchange——切换会话后到达的结果不该串台。 */
@@ -218,6 +228,18 @@ export function AssistantPanel({
     );
   }, [error, live]);
 
+  // 用户点了停止：就地收尾这一条，不再等一个不会到达的 complete。
+  useEffect(() => {
+    if (!cancelled || live === null) return;
+    setExchanges((previous) =>
+      previous.map((item) =>
+        item.key === live.key && item.status === "running"
+          ? { ...item, status: "cancelled", reason: "已停止" }
+          : item,
+      ),
+    );
+  }, [cancelled, live]);
+
   // 自动提问：等会话历史读完、且这个问题还没被消费过。
   useEffect(() => {
     const trimmed = initialQuestion.trim();
@@ -262,6 +284,11 @@ export function AssistantPanel({
         >
           {busy ? "处理中…" : "发送"}
         </button>
+        {busy ? (
+          <button type="button" className="ghost-action" onClick={() => void cancel()}>
+            停止回答
+          </button>
+        ) : null}
       </form>
 
       {error !== null ? <p className="error">{error}</p> : null}

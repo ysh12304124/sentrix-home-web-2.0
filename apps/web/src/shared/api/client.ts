@@ -443,6 +443,13 @@ export async function pollTurn(turnId: string): Promise<AssistantTurnPoll> {
   return request<AssistantTurnPoll>(`/assistant/turns/${encodeURIComponent(turnId)}`);
 }
 
+/** 停止本轮回答：持久写取消标志，执行器在下一个安全检查点收尾。 */
+export async function cancelTurn(
+  turnId: string,
+): Promise<{ operation_id: string; cancel_requested: boolean; cleanup_status: string }> {
+  return request(`/assistant/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" });
+}
+
 /**
  * 结果集授权原图 URL——1.0 ``src/api.js:67`` 的 ``resultSetPhoto``，同一条契约。
  *

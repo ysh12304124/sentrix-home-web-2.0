@@ -26,6 +26,19 @@ admin_router = APIRouter()
 MAX_SCREENSHOT = 5 * 1024 * 1024
 
 
+def _normalize_time(value: str) -> str:
+    """把浏览器的 ``Z`` 时间统一成库内 ``+00:00`` 形态，才能按字符串比较。"""
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid time filter") from None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat()
+
+
 class FeedbackCreate(BaseModel):
     kind: Literal["problem", "inaccurate", "suggestion"]
     body: str = Field(min_length=1, max_length=4000)
@@ -205,14 +218,24 @@ def admin_feedback(
     account_id: str = "",
     kind: str = "",
     status: str = "",
+    since: str = "",
+    until: str = "",
+    related: str = "",
     auth: AuthContext = Depends(require_admin),
 ) -> dict[str, object]:
     del auth
-    return {
-        "items": _store(request).list_feedback_admin(
-            account_id=account_id, kind=kind, status=status
-        )
-    }
+    store = _store(request)
+    items = store.list_feedback_admin(
+        account_id=account_id,
+        kind=kind,
+        status=status,
+        since=_normalize_time(since),
+        until=_normalize_time(until),
+        related=related,
+    )
+    for item in items:
+        item["attachments"] = store.list_feedback_attachments(str(item["id"]))
+    return {"items": items}
 
 
 @admin_router.get("/admin/feedback/{feedback_id}")
@@ -224,6 +247,7 @@ def admin_feedback_detail(
     if feedback is None:
         raise HTTPException(status_code=404, detail="feedback not found")
     feedback["updates"] = store.list_feedback_updates(feedback_id)
+    feedback["attachments"] = store.list_feedback_attachments(feedback_id)
     store.audit(
         "feedback.view",
         actor_account_id=auth.account.id,

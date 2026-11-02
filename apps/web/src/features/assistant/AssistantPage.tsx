@@ -5,9 +5,8 @@
  * 把会话的选择放在消息流旁边，而不是藏进一个下拉里；重命名/删除也在每一项上
  * （`:1414-1453`），删除有二次确认。
  *
- * **1.0 的「停止本轮回答」在 2.0 没有**：那要 `POST /assistant/turns/{id}/cancel`，
- * 2.0 的助手路由里没有这个端点（`grep cancel apps/api/src/sentrix` 只有状态枚举）。
- * 界面上不做假按钮。
+ * 「停止本轮回答」走 `POST /assistant/turns/{id}/cancel`：取消标志持久化，
+ * 执行器在安全检查点收尾；界面不会因为断流把同一次提问变成两次。
  */
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
