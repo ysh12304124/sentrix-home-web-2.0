@@ -25,8 +25,9 @@ from sentrix.control.auth import (
     require_csrf,
 )
 from sentrix.control.config import ControlSettings
+from sentrix.control.internal_model import router as internal_model_router
 from sentrix.control.metrics import collect_host_snapshot
-from sentrix.control.model_gate import ModelGate, ModelTarget
+from sentrix.control.model_gate import ModelClientTable, ModelGate, ModelTarget
 from sentrix.control.proxy import (
     PROXY_METHODS,
     RouteTable,
@@ -55,6 +56,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             slots=settings.model_slots,
         )
     )
+    model_clients = ModelClientTable.load(settings.model_clients_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -74,6 +76,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
     app.state.control_store = store
     app.state.route_table = routes
     app.state.model_gate = gate
+    app.state.model_client_table = model_clients
 
     router = APIRouter(prefix=CONTROL_PREFIX)
 
@@ -86,12 +89,15 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         database_ok = store.ping()
         route_ok = routes.ready
         healthy = database_ok and route_ok
+        clients_ok = model_clients.ready
+        healthy = healthy and clients_ok
         payload: dict[str, object] = {
             "status": "ready" if healthy else "not_ready",
             "build_sha": settings.build_sha,
             "checks": {
                 "control_db": "ok" if database_ok else "unavailable",
                 "routes": "ok" if route_ok else routes.error or "unavailable",
+                "model_clients": "ok" if clients_ok else model_clients.error,
             },
         }
         return JSONResponse(payload, status_code=200 if healthy else 503)
@@ -107,6 +113,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
 
     router.include_router(build_auth_router())
     app.include_router(router)
+    app.include_router(internal_model_router)
 
     @app.api_route(
         "/api/v1/{path:path}",

@@ -44,6 +44,7 @@ from sentrix.domain.media.scenes import KEYFRAME_DERIVED_KIND, SceneWindow, plan
 from sentrix.domain.memories.events import EventRecord
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
+from sentrix.runtime.work import import_task
 
 # 1.0 建场景事件时的占位地点（``db.py:2407`` 的 ``data.get("place") or "其他或不确定"``）。
 # 地点解析不出结果时事件不该是一行空字符串——那是「不知道」冒充「没有地点」。
@@ -110,6 +111,7 @@ class ExtractVideoScenes:
         self._scene_planner = scene_planner
         self._clock = clock
 
+    @import_task
     def execute(self, source_asset_id: str) -> VideoSceneExtraction:
         total_started = time.perf_counter()
         spans = StageSpans()

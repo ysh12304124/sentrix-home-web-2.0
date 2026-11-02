@@ -54,6 +54,7 @@ from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
 from sentrix.domain.media.ports import ObservationSemantics
 from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger(__name__)
 
@@ -273,7 +274,9 @@ def chat_json(
             "max_tokens": MAX_ANSWER_TOKENS,
         }
         fact["diagnostics"]["request_sent"] = None
-        response = httpx.post(endpoint, json=body, timeout=timeout_s)
+        response = httpx.post(
+            endpoint, json=body, timeout=timeout_s, headers=model_auth_headers()
+        )
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()

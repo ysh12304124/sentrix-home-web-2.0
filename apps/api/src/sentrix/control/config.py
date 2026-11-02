@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_CONTROL_DB = Path("/srv/sentrix/control/control.db")
 DEFAULT_USERS_FILE = Path("/srv/sentrix/control/users.json")
+DEFAULT_MODEL_CLIENTS_FILE = Path("/srv/sentrix/control/model-clients.json")
 
 
 class ControlSettings(BaseSettings):
@@ -33,8 +34,11 @@ class ControlSettings(BaseSettings):
     users_file: Path = DEFAULT_USERS_FILE
 
     model_upstream_url: str = "http://127.0.0.1:8100/v1"
+    model_upstream_api_key: str = ""
     model_id: str = ""
     model_slots: int = Field(default=2, ge=1)
+    # 令牌 → {user_id, kind=user|benchmark}；PhotoBench 令牌固定评测级。
+    model_clients_file: Path = DEFAULT_MODEL_CLIENTS_FILE
 
     sample_interval_s: float = Field(default=10.0, gt=0)
     restart_units: str = ""

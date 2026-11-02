@@ -52,6 +52,7 @@ from sentrix.application.media.stage_spans import StageSpans
 from sentrix.domain.media.models import Asset, AssetStatus
 from sentrix.domain.media.ports import AssetRepository
 from sentrix.domain.media.progress import OperationCancelled
+from sentrix.runtime.work import import_task
 
 log = logging.getLogger("sentrix.media.import_album")
 
@@ -169,6 +170,7 @@ class ImportAlbum:
         # 事件留在 ``待总结事件`` / ``待判断`` 两个占位值上，与 1.0 没跑收尾时一样。
         self._summarize_event = summarize_event
 
+    @import_task
     def execute(self, request: AlbumImportRequest) -> AlbumImportResult:
         root, paths = self._paths(request)
 
@@ -417,6 +419,7 @@ class ProcessAlbumPipeline:
         self._summarize_event = summarize_event
         self._workers = max(1, int(workers))
 
+    @import_task
     def execute(self, request: AlbumProcessRequest) -> AlbumProcessResult:
         total_started = time.perf_counter()
         # 保序去重，防止客户端拼多个目录时把同一资产重复提交。

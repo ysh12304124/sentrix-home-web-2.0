@@ -109,6 +109,7 @@ from sentrix.domain.media.ports import (
 from sentrix.domain.places.ports import AssetPlaceIndex
 from sentrix.domain.retrieval.ports import AssetVisualIndexer, LexicalIndex, PreparedVisual
 from sentrix.domain.spaces.ports import SpaceRepository
+from sentrix.runtime.work import import_task
 
 log = logging.getLogger("sentrix.media.import_assets")
 
@@ -292,6 +293,7 @@ class ImportAssets:
         self._spaces = spaces
         self._clock = clock
 
+    @import_task
     def execute(self, request: ImportRequest) -> ImportResult:
         """一次完整导入：落库 + 推理 + 写库。**行为与拆分前逐字一致。**
 
@@ -415,6 +417,7 @@ class ImportAssets:
             video_started=video_started,
         )
 
+    @import_task
     def finish(self, staged: StagedImport, prepared: PreparedImage) -> ImportResult:
         """后半段（**串行、且必须按整册的扫描顺序**）：图片流水线 → 抽帧 → 汇总。
 
@@ -473,6 +476,7 @@ class ImportAssets:
             },
         )
 
+    @import_task
     def resume(self, asset: Asset) -> StagedImport:
         """把已由“仅导入资产”阶段登记的源资产恢复成可处理账本。
 
@@ -491,6 +495,7 @@ class ImportAssets:
             video_started=self._clock() if video_probe is not None else None,
         )
 
+    @import_task
     def prepare_image(self, asset: Asset) -> PreparedImage:
         """跑完这张图需要的**全部模型推理**，**不碰任何仓储**。
 
