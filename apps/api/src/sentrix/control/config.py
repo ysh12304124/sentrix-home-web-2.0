@@ -61,6 +61,8 @@ class ControlSettings(BaseSettings):
     secure_cookie: bool = True
 
     build_sha: str = "development"
+    # 浏览器构建版本；前端据此发现旧标签页并自动刷新。
+    frontend_build: str = ""
 
     def ensure_directories(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

@@ -232,6 +232,7 @@ def build_router() -> APIRouter:
         return {
             "admin_only": settings.admin_only,
             "cookie_namespace": settings.cookie_namespace,
+            "frontend_build": settings.frontend_build,
             "build_sha": settings.build_sha,
         }
 

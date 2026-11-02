@@ -17,6 +17,9 @@ interface AuthValue {
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+const FRONTEND_BUILD = (import.meta.env.VITE_BUILD_SHA as string | undefined) ?? "";
+const RELOAD_MARKER = "sentrix.buildReloaded";
+
 function csrfToken(): string {
   if (typeof document === "undefined") return "";
   const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
@@ -49,12 +52,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      let meta: { admin_only?: boolean } = {};
+      let meta: { admin_only?: boolean; frontend_build?: string } = {};
       try {
         const response = await fetch("/control/v1/meta", { credentials: "same-origin" });
-        if (response.ok) meta = (await response.json()) as { admin_only?: boolean };
+        if (response.ok) meta = (await response.json()) as {
+          admin_only?: boolean;
+          frontend_build?: string;
+        };
       } catch {
         // 没有控制面（旧实例）时按普通入口处理。
+      }
+      if (
+        FRONTEND_BUILD !== "" &&
+        meta.frontend_build !== undefined &&
+        meta.frontend_build !== "" &&
+        meta.frontend_build !== FRONTEND_BUILD
+      ) {
+        // 部署了新构建：旧标签页自动换一次，避免继续跑旧代码。
+        try {
+          if (sessionStorage.getItem(RELOAD_MARKER) !== meta.frontend_build) {
+            sessionStorage.setItem(RELOAD_MARKER, meta.frontend_build);
+            window.location.reload();
+            return;
+          }
+        } catch {
+          // 无 sessionStorage 时最多刷新一次，由 marker 缺失避免循环；直接继续。
+        }
       }
       let value: Identity | null = null;
       try {
