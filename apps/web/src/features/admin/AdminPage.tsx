@@ -52,6 +52,7 @@ interface UserStatus {
   oldest_active_job?: string | null;
   active_jobs?: JobInfo[];
   recent_jobs?: JobInfo[];
+  postprocess_backlog?: number;
   turns?: Record<string, number>;
   turns_active?: number;
   oldest_active_turn?: string | null;
@@ -1018,11 +1019,31 @@ function UserRunCard({ account, state }: { account: string; state: ServiceState 
           在飞问答 <b>{status?.turns_active ?? activeTurns.length}</b>
         </span>
         <span className="queue-chip">
+          后处理待办 <b>{status?.postprocess_backlog ?? 0}</b>
+        </span>
+        <span className="queue-chip">
           最老作业活动 <b>{formatAge(status?.oldest_active_job)}</b>
         </span>
         <span className="queue-chip">
           最老回合活动 <b>{formatAge(status?.oldest_active_turn)}</b>
         </span>
+      </div>
+
+      <div className="queue-chips" style={{ marginTop: 8 }}>
+        {Object.entries(status?.jobs ?? {})
+          .filter(([, count]) => count > 0)
+          .map(([name, count]) => (
+            <span className="queue-chip" key={`job-${name}`}>
+              {JOB_STATUS_LABELS[name] ?? name} <b>{count}</b>
+            </span>
+          ))}
+        {Object.entries(status?.turns ?? {})
+          .filter(([, count]) => count > 0)
+          .map(([name, count]) => (
+            <span className="queue-chip" key={`turn-${name}`}>
+              问答 {TURN_STATUS_LABELS[name] ?? name} <b>{count}</b>
+            </span>
+          ))}
       </div>
 
       <div className="user-section">

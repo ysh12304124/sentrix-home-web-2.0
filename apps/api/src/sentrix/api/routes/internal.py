@@ -100,6 +100,7 @@ def internal_status(container: Container = Depends(get_container)) -> dict[str, 
             _job_view(job, with_stages=False, container=container)
             for job in recent_jobs[:RECENT_LIMIT]
         ],
+        "postprocess_backlog": container.import_jobs.scope_backlog(),
         "turns": container.turn_repository.status_counts(),
         "turns_active": len(active_turns),
         "oldest_active_turn": container.turn_repository.oldest_active_updated_at(),
