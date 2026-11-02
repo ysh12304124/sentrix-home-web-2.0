@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import uuid
 
@@ -112,8 +113,13 @@ def restart_service(
         raise HTTPException(status_code=403, detail="service is not in the restart allowlist")
     request_id = f"req_{uuid.uuid4().hex[:16]}"
     # 只接受固定单元名；不拼接用户输入，不经过 shell。
+    command = (
+        ["systemctl", "restart", service_id]
+        if os.geteuid() == 0
+        else ["sudo", "-n", "systemctl", "restart", service_id]
+    )
     completed = subprocess.run(
-        ["systemctl", "restart", service_id],
+        command,
         capture_output=True,
         text=True,
         timeout=120,
