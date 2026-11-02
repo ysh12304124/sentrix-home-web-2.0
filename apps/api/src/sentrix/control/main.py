@@ -24,6 +24,7 @@ from sentrix.control.auth import (
     require_admin,
     require_csrf,
 )
+from sentrix.control import feedback as feedback_routes
 from sentrix.control.config import ControlSettings
 from sentrix.control.internal_model import router as internal_model_router
 from sentrix.control.metrics import collect_host_snapshot
@@ -112,6 +113,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         return payload
 
     router.include_router(build_auth_router())
+    router.include_router(feedback_routes.router)
     app.include_router(router)
     app.include_router(internal_model_router)
 

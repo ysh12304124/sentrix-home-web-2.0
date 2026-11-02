@@ -336,6 +336,213 @@ class ControlStore:
         with self._database.connect() as connection, connection:
             connection.execute("DELETE FROM login_attempts WHERE attempted_at < ?", (cutoff,))
 
+    # ---- 反馈 ---------------------------------------------------------------
+
+    def create_feedback(
+        self,
+        account_id: str,
+        *,
+        kind: str,
+        body: str,
+        route: str,
+        scope_id: str,
+        job_id: str,
+        turn_id: str,
+        event_id: str,
+        asset_id: str,
+        request_id: str,
+        idempotency_key: str,
+        content_signature: str,
+    ) -> tuple[dict[str, object], bool]:
+        feedback_id = f"fb_{uuid.uuid4().hex[:16]}"
+        now = _iso(_now())
+        with self._database.connect() as connection, connection:
+            existing = connection.execute(
+                "SELECT * FROM feedback WHERE account_id = ? AND idempotency_key = ?",
+                (account_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["content_signature"]) != content_signature:
+                    raise AccountError("idempotency key reused for different feedback")
+                return _feedback(existing), False
+            connection.execute(
+                """
+                INSERT INTO feedback (
+                    id, account_id, kind, body, route, scope_id, job_id, turn_id,
+                    event_id, asset_id, request_id, status, idempotency_key,
+                    content_signature, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    account_id,
+                    kind,
+                    body,
+                    route,
+                    scope_id,
+                    job_id,
+                    turn_id,
+                    event_id,
+                    asset_id,
+                    request_id,
+                    idempotency_key,
+                    content_signature,
+                    now,
+                    now,
+                ),
+            )
+        row = self._feedback_row(feedback_id)
+        if row is None:  # pragma: no cover
+            raise AccountError("feedback insert did not persist")
+        return row, True
+
+    def list_feedback(self, account_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM feedback WHERE account_id = ? ORDER BY created_at DESC LIMIT ?",
+                (account_id, limit),
+            ).fetchall()
+        return [_feedback(row) for row in rows]
+
+    def list_feedback_admin(
+        self,
+        *,
+        account_id: str = "",
+        kind: str = "",
+        status: str = "",
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        parameters: list[object] = []
+        for column, value in (("account_id", account_id), ("kind", kind), ("status", status)):
+            if value:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        sql = "SELECT * FROM feedback"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        parameters.append(limit)
+        with self._database.connect() as connection:
+            rows = connection.execute(sql, tuple(parameters)).fetchall()
+        return [_feedback_admin(row) for row in rows]
+
+    def get_feedback_admin(self, feedback_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM feedback WHERE id = ?", (feedback_id,)
+            ).fetchone()
+        return _feedback_admin(row) if row is not None else None
+
+    def get_feedback(
+        self, feedback_id: str, *, account_id: str | None = None
+    ) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            if account_id is None:
+                row = connection.execute(
+                    "SELECT * FROM feedback WHERE id = ?", (feedback_id,)
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM feedback WHERE id = ? AND account_id = ?",
+                    (feedback_id, account_id),
+                ).fetchone()
+        return _feedback(row) if row is not None else None
+
+    def add_feedback_update(self, feedback_id: str, *, author: str, body: str) -> dict[str, object]:
+        update_id = f"fbu_{uuid.uuid4().hex[:16]}"
+        now = _iso(_now())
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT INTO feedback_updates (id, feedback_id, author, body, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (update_id, feedback_id, author, body, now),
+            )
+            connection.execute(
+                "UPDATE feedback SET updated_at = ? WHERE id = ?", (now, feedback_id)
+            )
+        return {"id": update_id, "feedback_id": feedback_id, "author": author, "body": body, "created_at": now}
+
+    def list_feedback_updates(self, feedback_id: str) -> list[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM feedback_updates WHERE feedback_id = ? ORDER BY created_at ASC",
+                (feedback_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_feedback_admin(
+        self,
+        feedback_id: str,
+        *,
+        status: str | None = None,
+        assignee: str | None = None,
+        severity: str | None = None,
+        internal_note: str | None = None,
+        reply: str | None = None,
+    ) -> bool:
+        fields: list[str] = []
+        values: list[object] = []
+        for column, value in (
+            ("status", status),
+            ("assignee", assignee),
+            ("severity", severity),
+            ("internal_note", internal_note),
+            ("reply", reply),
+        ):
+            if value is not None:
+                fields.append(f"{column} = ?")
+                values.append(value)
+        if not fields:
+            return True
+        fields.append("updated_at = ?")
+        values.append(_iso(_now()))
+        values.append(feedback_id)
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE feedback SET {', '.join(fields)} WHERE id = ?", tuple(values)
+            )
+        return cursor.rowcount > 0
+
+    def add_feedback_attachment(
+        self,
+        feedback_id: str,
+        *,
+        content_type: str,
+        byte_size: int,
+        sha256: str,
+        storage_path: str,
+    ) -> dict[str, object]:
+        attachment_id = f"fba_{uuid.uuid4().hex[:16]}"
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT INTO feedback_attachments"
+                " (id, feedback_id, content_type, byte_size, sha256, storage_path, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    attachment_id,
+                    feedback_id,
+                    content_type,
+                    byte_size,
+                    sha256,
+                    storage_path,
+                    _iso(_now()),
+                ),
+            )
+        return self.get_attachment(attachment_id) or {}
+
+    def get_attachment(self, attachment_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM feedback_attachments WHERE id = ?", (attachment_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _feedback_row(self, feedback_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
+        return _feedback(row) if row is not None else None
+
     # ---- 审计 ---------------------------------------------------------------
 
     def audit(
@@ -368,6 +575,39 @@ class ControlStore:
                 ),
             )
         return event_id
+
+
+def _feedback(row: sqlite3.Row) -> dict[str, object]:
+    """浏览器可见的反馈投影：不含内部备注。"""
+    return {
+        "id": str(row["id"]),
+        "kind": str(row["kind"]),
+        "body": str(row["body"]),
+        "route": str(row["route"]),
+        "scope_id": str(row["scope_id"]),
+        "job_id": str(row["job_id"]),
+        "turn_id": str(row["turn_id"]),
+        "event_id": str(row["event_id"]),
+        "asset_id": str(row["asset_id"]),
+        "request_id": str(row["request_id"]),
+        "status": str(row["status"]),
+        "reply": str(row["reply"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def _feedback_admin(row: sqlite3.Row) -> dict[str, object]:
+    values = _feedback(row)
+    values.update(
+        {
+            "account_id": str(row["account_id"]),
+            "assignee": str(row["assignee"]),
+            "severity": str(row["severity"]),
+            "internal_note": str(row["internal_note"]),
+        }
+    )
+    return values
 
 
 def _account(row: sqlite3.Row) -> Account:

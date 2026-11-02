@@ -32,6 +32,8 @@ class ControlSettings(BaseSettings):
 
     # 账号 ID → {api_url, api_token}。文件权限必须 0600；令牌不得回传浏览器。
     users_file: Path = DEFAULT_USERS_FILE
+    # 反馈截图单独存放；文件名随机，权限 0600。
+    feedback_dir: Path = Path("/srv/sentrix/control/feedback")
 
     model_upstream_url: str = "http://127.0.0.1:8100/v1"
     model_upstream_api_key: str = ""
@@ -51,6 +53,7 @@ class ControlSettings(BaseSettings):
 
     def ensure_directories(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.feedback_dir.mkdir(parents=True, exist_ok=True)
 
     def restart_unit_list(self) -> tuple[str, ...]:
         return tuple(unit.strip() for unit in self.restart_units.split(",") if unit.strip())

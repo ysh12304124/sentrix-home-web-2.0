@@ -15,6 +15,7 @@ import { Link, Outlet, useLocation, useNavigate } from "react-router";
 import { NAV_ITEMS, SYSTEM_ITEMS, activeNavItem } from "./nav";
 import { useScope } from "./ScopeProvider";
 import { CommandPalette } from "./CommandPalette";
+import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
 import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
 import { useToast } from "../shared/ui/Toast";
@@ -35,7 +36,7 @@ export function AppShell() {
   const { notify } = useToast();
   const { identity, logout } = useAuth();
   const [backendState, setBackendState] = useState<"ok" | "degraded" | "down">("ok");
-  const [overlay, setOverlay] = useState<"command" | null>(null);
+  const [overlay, setOverlay] = useState<"command" | "feedback" | null>(null);
 
   /**
    * 切换相册。1.0 的 `select-space` 直接写 state——但写 `localStorage` 会抛
@@ -165,6 +166,13 @@ export function AppShell() {
           <div className="top-actions">
             <button
               type="button"
+              className="text-button"
+              onClick={() => setOverlay("feedback")}
+            >
+              反馈问题
+            </button>
+            <button
+              type="button"
               className="icon-button"
               aria-label="打开命令搜索"
               onClick={() => setOverlay("command")}
@@ -190,6 +198,7 @@ export function AppShell() {
       {overlay === "command" ? (
         <CommandPalette onClose={() => setOverlay(null)} />
       ) : null}
+      {overlay === "feedback" ? <FeedbackPanel onClose={() => setOverlay(null)} /> : null}
     </main>
   );
 }
