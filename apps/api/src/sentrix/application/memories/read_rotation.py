@@ -200,7 +200,8 @@ class ReadRotation:
             time_label=_time_label(event.time_start),
             place_label=(event.place or event.admin_district or "").strip(),
             related_asset_count=related,
-            source_key=(asset.parent_asset_id or asset.id) if kind == "video" else event.id,
+            # 视频原片与它的关键帧场景共享同一原片血缘，不能被排到相邻两页。
+            source_key=asset.parent_asset_id or asset.id,
             sort_epoch=midpoint.timestamp(),
         )
 
