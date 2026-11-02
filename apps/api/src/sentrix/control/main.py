@@ -160,8 +160,14 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             root = dist.resolve()
             candidate = (root / full_path).resolve()
             if full_path and candidate.is_file() and root in candidate.parents:
-                return FileResponse(candidate)
-            return FileResponse(root / "index.html")
+                # 带哈希的构建产物可长缓存；index.html 必须每次校验，避免旧 JS。
+                cache = (
+                    "public, max-age=31536000, immutable"
+                    if full_path.startswith("assets/")
+                    else "no-store"
+                )
+                return FileResponse(candidate, headers={"Cache-Control": cache})
+            return FileResponse(root / "index.html", headers={"Cache-Control": "no-store"})
 
     return app
 

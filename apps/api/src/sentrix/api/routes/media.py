@@ -144,6 +144,8 @@ async def upload_media(
     idempotency_key = request.headers.get("idempotency-key", "").strip()
     if not idempotency_key or len(idempotency_key) > 200:
         raise HTTPException(status_code=400, detail="Idempotency-Key 缺失或过长")
+    # 上传必须落到一个具体相册；“全部相册”是读侧筛选，不适用于写入。
+    scope_id = (scope_id or "").strip() or "home-default"
     if not _SCOPE_PATTERN.fullmatch(scope_id):
         raise HTTPException(status_code=400, detail="scope_id 不合法")
     file_name = file.filename or "unnamed"

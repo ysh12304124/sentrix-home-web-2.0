@@ -732,7 +732,8 @@ class RunTurn:
                 question=record.question,
                 profile=self._profile,
             ),
-            ledger=EvidenceLedger(scope_id=record.scope_id, requirements=[]),
+            # “全部相册”在会话里是空串；账本只要求一个非空绑定值，检索仍用原 scope。
+            ledger=EvidenceLedger(scope_id=record.scope_id or "all", requirements=[]),
             emit=emit,
             fence=fence,
             attempt_no=attempt_no or 1,
