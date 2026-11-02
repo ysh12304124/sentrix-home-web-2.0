@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "../../app/AuthProvider";
 import { newClientId } from "../../shared/id";
@@ -276,6 +276,8 @@ export function AdminPage() {
   const [draft, setDraft] = useState<Record<string, { status: string; reply: string }>>({});
   const [saving, setSaving] = useState("");
   const [restarting, setRestarting] = useState("");
+  // 一次重启意图只生成一枚键；响应丢失后重试仍是同一操作，不会再次重启。
+  const restartKeys = useRef<Record<string, string>>({});
 
   const feedbackQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -423,6 +425,8 @@ export function AdminPage() {
       }
       setRestarting(unit);
       setError("");
+      const key = restartKeys.current[unit] ?? newClientId("restart");
+      restartKeys.current[unit] = key;
       try {
         const response = await fetch(
           `/control/v1/admin/services/${encodeURIComponent(unit)}/restart`,
@@ -431,10 +435,13 @@ export function AdminPage() {
             credentials: "same-origin",
             headers: {
               "x-csrf-token": csrfToken(),
-              "Idempotency-Key": newClientId("restart"),
+              "Idempotency-Key": key,
             },
           },
         );
+        // 服务端已经给出结论：这次意图结束。只有网络异常（响应没回来）才保留键，
+        // 让用户的“再试一次”落到同一次操作上。
+        delete restartKeys.current[unit];
         const body = (await response.json().catch(() => ({}))) as { detail?: string };
         if (!response.ok) {
           throw new Error(body.detail ?? `重启失败（${response.status}）`);
