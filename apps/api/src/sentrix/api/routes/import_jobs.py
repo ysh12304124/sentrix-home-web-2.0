@@ -78,3 +78,17 @@ def cancel_import_job(
     if job is None:
         raise HTTPException(status_code=404, detail="import job not found")
     return to_job_view(job)
+
+
+@router.post("/import-jobs/{job_id}/requeue")
+def requeue_import_job(
+    job_id: str,
+    container: Container = Depends(get_container),
+) -> ImportJobView:
+    """管理员重排：只接受已停下、未被执行器持有的作业。"""
+    job = container.import_jobs.requeue(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="import job not found")
+    if job.status != "queued":
+        raise HTTPException(status_code=409, detail="job is not in a requeueable state")
+    return to_job_view(job)

@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from sentrix.domain.assistant.models import TurnStatus
+from sentrix.runtime.turn import turn_attempt
 
 log = logging.getLogger("sentrix.assistant.executor")
 
@@ -64,6 +65,7 @@ class TurnExecutor:
         broker,
         dependencies_ready: Callable[[], tuple[bool, str]],
         operation_control=None,
+        result_sets=None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._turns = turns
@@ -71,6 +73,7 @@ class TurnExecutor:
         self._broker = broker
         self._dependencies_ready = dependencies_ready
         self._operation_control = operation_control
+        self._result_sets = result_sets
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -128,13 +131,16 @@ class TurnExecutor:
                     pending=True,
                 )
                 return
+            if self._result_sets is not None:
+                self._result_sets.purge_other_attempts(turn_id, record.attempt_no)
             runner = self._run_turn_factory()
-            runner.run(
-                turn_id,
-                emit=lambda event: self._broker.publish(turn_id, event),
-                fence=record.fence,
-                attempt_no=record.attempt_no,
-            )
+            with turn_attempt(turn_id, record.attempt_no):
+                runner.run(
+                    turn_id,
+                    emit=lambda event: self._broker.publish(turn_id, event),
+                    fence=record.fence,
+                    attempt_no=record.attempt_no,
+                )
         except Exception as error:  # noqa: BLE001 - 崩溃即重试/转失败
             log.exception("回合执行失败 turn=%s", turn_id)
             ready, reason = self._dependencies_ready()

@@ -48,6 +48,10 @@ class InputInvalid(JobFailure):
     category = "input_invalid"
 
 
+class JobCancelled(JobFailure):
+    category = "cancelled"
+
+
 class _Heartbeat:
     def __init__(
         self,
@@ -165,6 +169,8 @@ class ImportJobExecutor:
         heartbeat = _Heartbeat(self._jobs, job.id, job.fence, self._clock)
         heartbeat.start()
         try:
+            if self._jobs.is_cancel_requested(job.id):
+                raise JobCancelled("cancelled before start")
             ready, reason = self._dependencies_ready()
             if not ready:
                 raise DependencyUnavailable(reason)
@@ -214,6 +220,8 @@ class ImportJobExecutor:
         self._mark(job, "prepared", "running")
         prepared = importer.prepare_image(staged.asset)
         self._mark(job, "prepared", "done")
+        if self._jobs.is_cancel_requested(job.id):
+            raise JobCancelled("cancelled before commit")
 
         result = importer.finish(staged, prepared)
         if result.video_scene_error:
@@ -292,6 +300,18 @@ class ImportJobExecutor:
     def _handle_failure(self, job: ImportJob, error: JobFailure) -> None:
         now = self._clock()
         stage = job.stage or "asset_staged"
+        if isinstance(error, JobCancelled):
+            self._mark(job, stage, "skipped", "cancelled")
+            self._jobs.set_job_status(
+                job.id,
+                job.fence,
+                now=now,
+                status="cancelled",
+                stage="cancelled",
+                error_category="cancelled",
+                error_message=str(error),
+            )
+            return
         if isinstance(error, DependencyUnavailable):
             # 等待依赖不消耗阶段重试次数：认领时加过的这一次退回去。
             self._mark(job, stage, "waiting_dependency", str(error))

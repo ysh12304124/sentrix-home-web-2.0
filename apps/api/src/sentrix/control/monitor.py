@@ -10,7 +10,7 @@ import io
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -45,6 +45,13 @@ class Monitor:
         self._snapshot: dict[str, Any] = {"sampled_at": None, "stale": True}
         self._streaks: dict[str, int] = {}
         self._since: dict[str, float] = {}
+        self._last_encoding_check = 0.0
+        self._last_inference_check = 0.0
+        self._encoding: dict[str, dict[str, Any]] = {}
+        self._inference: dict[str, Any] = {}
+        self._unit_history: dict[str, list[tuple[float, float]]] = {}
+        self._gpu_temp_since: float | None = None
+        self._gpu_vram_since: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -99,7 +106,12 @@ class Monitor:
         host = self._host()
         services = self._services()
         units = self._units()
+        self._merge_encoding(services)
+        self._maybe_inference(services)
         self._evaluate(services, host, now)
+        self._evaluate_gpu(host, now)
+        self._evaluate_restarts(units, now)
+        self._evaluate_stalled(services, now)
         return {
             "sampled_at": now,
             "stale": False,
@@ -176,6 +188,167 @@ class Monitor:
                 users[account_id] = result
             services["users"] = users
         return services
+
+    def _merge_encoding(self, services: dict[str, Any]) -> None:
+        now = time.monotonic()
+        if now - self._last_encoding_check >= self._settings.encoding_probe_interval_s:
+            self._last_encoding_check = now
+            self._encoding = self._probe_encodings()
+        for name, result in self._encoding.items():
+            entry = services.get(name)
+            if not isinstance(entry, dict):
+                continue
+            entry["encoding"] = result
+            if not result.get("ok", False):
+                entry["ok"] = False
+                entry.setdefault("error", "encoding probe failed")
+
+    def _probe_encodings(self) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        settings = self._settings
+        with httpx.Client(timeout=10.0) as client:
+            for name, url, payload, dimension in (
+                ("bge", settings.bge_embed_url, {"texts": ["健康检查"]}, 1024),
+                ("clip", settings.clip_embed_url, {"text": "健康检查"}, 768),
+            ):
+                try:
+                    response = client.post(url, json=payload)
+                    body = response.json()
+                    vector = body.get("vector") or []
+                    ok = response.is_success and isinstance(vector, list) and len(vector) == dimension
+                    result[name] = {
+                        "ok": ok,
+                        "dimension": len(vector) if isinstance(vector, list) else 0,
+                        "expected": dimension,
+                        "checked_at": time.time(),
+                    }
+                except (httpx.HTTPError, ValueError, TypeError) as error:
+                    result[name] = {"ok": False, "error": str(error), "checked_at": time.time()}
+        return result
+
+    def _maybe_inference(self, services: dict[str, Any]) -> None:
+        now = time.monotonic()
+        if now - self._last_inference_check < self._settings.inference_probe_interval_s:
+            if self._inference:
+                services["model"]["inference"] = self._inference
+            return
+        self._last_inference_check = now
+        if self._gate.describe().get("active", 0):
+            # 只在空闲槽位做真实推理探针，避免监控抢占问答。
+            services["model"]["inference"] = {"ok": True, "skipped": "busy"}
+            return
+        settings = self._settings
+        payload = {
+            "model": settings.model_id or "default",
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    f"{settings.model_upstream_url.rstrip('/')}/chat/completions",
+                    json=payload,
+                )
+            self._inference = {"ok": response.is_success, "checked_at": time.time()}
+        except httpx.HTTPError as error:
+            self._inference = {"ok": False, "error": str(error), "checked_at": time.time()}
+        services["model"]["inference"] = self._inference
+        if not self._inference.get("ok", False):
+            services["model"]["ok"] = False
+
+    def _evaluate_gpu(self, host: dict[str, Any], now: str) -> None:
+        gpu = host.get("gpu") or {}
+        if gpu.get("status") != "ok":
+            return
+        moment = time.monotonic()
+        temperature = gpu.get("temperature_c")
+        if isinstance(temperature, (int, float)) and temperature > 80:
+            self._gpu_temp_since = self._gpu_temp_since or moment
+            if moment - self._gpu_temp_since >= 120:
+                self._store.open_incident(
+                    source="host",
+                    category="gpu_hot",
+                    severity="error",
+                    message=f"GPU 温度 {temperature}°C 持续超过 80°C",
+                    now=now,
+                )
+        else:
+            self._gpu_temp_since = None
+            self._store.close_incidents(source="host", category="gpu_hot", now=now, result="recovered")
+        used = gpu.get("memory_used_mib")
+        total = gpu.get("memory_total_mib")
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
+            ratio = used / total * 100
+            if ratio > 95:
+                self._gpu_vram_since = self._gpu_vram_since or moment
+                if moment - self._gpu_vram_since >= 300:
+                    self._store.open_incident(
+                        source="host",
+                        category="gpu_vram_high",
+                        severity="warning",
+                        message=f"整卡显存占用 {ratio:.0f}% 持续超过 95%",
+                        now=now,
+                    )
+            else:
+                self._gpu_vram_since = None
+                self._store.close_incidents(
+                    source="host", category="gpu_vram_high", now=now, result="recovered"
+                )
+
+    def _evaluate_restarts(self, units: dict[str, Any], now: str) -> None:
+        moment = time.monotonic()
+        for unit, value in units.items():
+            restarts = value.get("n_restarts")
+            if not isinstance(restarts, (int, float)):
+                continue
+            history = [item for item in self._unit_history.get(unit, []) if moment - item[0] <= 600]
+            history.append((moment, float(restarts)))
+            self._unit_history[unit] = history
+            baseline = min(count for _, count in history)
+            if float(restarts) - baseline >= 3:
+                self._store.open_incident(
+                    source=f"unit:{unit}",
+                    category="restart_loop",
+                    severity="error",
+                    message=f"{unit} 10 分钟内重启 {int(float(restarts) - baseline)} 次",
+                    now=now,
+                )
+            elif len(history) > 1 and float(restarts) <= baseline:
+                self._store.close_incidents(
+                    source=f"unit:{unit}", category="restart_loop", now=now, result="stable"
+                )
+
+    def _evaluate_stalled(self, services: dict[str, Any], now: str) -> None:
+        moment = datetime.now(UTC)
+        for account, value in (services.get("users") or {}).items():
+            status = value.get("status") if isinstance(value, dict) else None
+            if not isinstance(status, dict):
+                continue
+            for key, category, label in (
+                ("oldest_active_job", "job_stalled", "导入作业"),
+                ("oldest_active_turn", "turn_stalled", "问答回合"),
+            ):
+                stamp = status.get(key)
+                source = f"user:{account}"
+                if isinstance(stamp, str):
+                    try:
+                        age = (moment - datetime.fromisoformat(stamp)).total_seconds()
+                    except ValueError:
+                        age = 0
+                    if age > 600:
+                        self._store.open_incident(
+                            source=source,
+                            category=category,
+                            severity="warning",
+                            message=f"{account} 的{label}超过 10 分钟无进展",
+                            now=now,
+                            user_id=account,
+                        )
+                        continue
+                self._store.close_incidents(
+                    source=source, category=category, now=now, result="recovered"
+                )
 
     def _units(self) -> dict[str, Any]:
         units: dict[str, Any] = {}

@@ -65,6 +65,16 @@ interface Incident {
   occurrences: number;
 }
 
+interface AdminJob {
+  account: string;
+  job_id: string;
+  file_name: string;
+  status: string;
+  stage: string;
+  attempts: number;
+  error_message: string;
+}
+
 interface FeedbackItem {
   id: string;
   account_id: string;
@@ -101,6 +111,7 @@ export function AdminPage() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
+  const [problemJobs, setProblemJobs] = useState<AdminJob[]>([]);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<Record<string, { status: string; reply: string }>>({});
@@ -114,7 +125,31 @@ export function AdminPage() {
         fetch("/control/v1/admin/feedback", { credentials: "same-origin" }),
       ]);
       if (!overviewResponse.ok) throw new Error(`概览接口返回 ${overviewResponse.status}`);
-      setOverview((await overviewResponse.json()) as Overview);
+      const nextOverview = (await overviewResponse.json()) as Overview;
+      setOverview(nextOverview);
+      const accounts = Object.keys(nextOverview.services?.users ?? {});
+      const jobResponses = await Promise.all(
+        accounts.map(async (account) => {
+          const response = await fetch(`/control/v1/admin/users/${account}/jobs`, {
+            credentials: "same-origin",
+          });
+          if (!response.ok) return [] as AdminJob[];
+          const body = (await response.json()) as {
+            items?: Array<{
+              job_id: string;
+              file_name: string;
+              status: string;
+              stage: string;
+              attempts: number;
+              error_message: string;
+            }>;
+          };
+          return (body.items ?? [])
+            .filter((job) => job.status === "needs_attention" || job.status === "partial")
+            .map((job) => ({ ...job, account }));
+        }),
+      );
+      setProblemJobs(jobResponses.flat());
       setIncidents(
         incidentsResponse.ok
           ? ((await incidentsResponse.json()) as { items: Incident[] }).items
@@ -170,6 +205,29 @@ export function AdminPage() {
       }
     },
     [draft, load],
+  );
+
+  const requeue = useCallback(
+    async (job: AdminJob) => {
+      setSaving(job.job_id);
+      try {
+        const response = await fetch(
+          `/control/v1/admin/users/${job.account}/jobs/${job.job_id}/requeue`,
+          {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "x-csrf-token": csrfToken() },
+          },
+        );
+        if (!response.ok) throw new Error(`重排失败（${response.status}）`);
+        await load();
+      } catch (cause) {
+        setError((cause as Error).message);
+      } finally {
+        setSaving("");
+      }
+    },
+    [load],
   );
 
   const rows = useMemo(() => serviceRows(overview), [overview]);
@@ -381,6 +439,39 @@ export function AdminPage() {
           )}
         </article>
       </div>
+
+      <article className="panel">
+        <div className="panel-head">
+          <h2>需要处理的作业</h2>
+          <small>只有已停下、未被执行的作业允许重排</small>
+        </div>
+        {problemJobs.length === 0 ? (
+          <div className="empty-panel">当前没有需要人工介入的导入作业。</div>
+        ) : (
+          <div className="service-list">
+            {problemJobs.map((job) => (
+              <div key={`${job.account}-${job.job_id}`} className="service-row" data-ok="false">
+                <span className="status-dot bad" />
+                <div>
+                  <strong>{job.file_name}</strong>
+                  <small>
+                    {job.account} · {job.status} · {job.stage || "—"} · 第 {job.attempts} 次
+                    {job.error_message !== "" ? ` · ${job.error_message.slice(0, 90)}` : ""}
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  className="ghost-action"
+                  disabled={saving === job.job_id}
+                  onClick={() => void requeue(job)}
+                >
+                  {saving === job.job_id ? "重排中…" : "重新排队"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </article>
 
       <article className="panel">
         <div className="panel-head">

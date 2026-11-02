@@ -17,6 +17,7 @@ from datetime import datetime
 
 from sentrix.domain.assistant.result_set import ResultSet
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.runtime.turn import current_turn
 
 
 def _row_to_result_set(row: sqlite3.Row) -> ResultSet:
@@ -35,11 +36,13 @@ class SqliteResultSetRepository:
         self._database = database
 
     def add(self, result_set: ResultSet) -> None:
+        context = current_turn()
         with self._database.connect() as connection, connection:
             connection.execute(
                 "INSERT OR REPLACE INTO agent_result_sets"
-                " (id, scope_id, query, asset_ids_json, evidence_classes_json, total, created_at)"
-                " VALUES (?,?,?,?,?,?,?)",
+                " (id, scope_id, query, asset_ids_json, evidence_classes_json, total, created_at,"
+                "  turn_id, attempt_no)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     result_set.id,
                     result_set.scope_id,
@@ -48,8 +51,19 @@ class SqliteResultSetRepository:
                     json.dumps(dict(result_set.evidence_classes)),
                     len(result_set.asset_ids),
                     result_set.created_at.isoformat(),
+                    context.turn_id if context is not None else "",
+                    context.attempt_no if context is not None else 0,
                 ),
             )
+
+    def purge_other_attempts(self, turn_id: str, attempt_no: int) -> int:
+        """同一回合只保留当前尝试的结果集。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM agent_result_sets WHERE turn_id = ? AND attempt_no <> ?",
+                (turn_id, attempt_no),
+            )
+        return cursor.rowcount
 
     def get(self, result_set_id: str) -> ResultSet | None:
         with self._database.connect() as connection:

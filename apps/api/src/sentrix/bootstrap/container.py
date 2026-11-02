@@ -497,6 +497,7 @@ class Container:
             broker=self.turn_event_broker,
             dependencies_ready=self.dependencies_ready,
             operation_control=self.operation_control,
+            result_sets=self.result_set_repository,
         )
 
     def build_import_executor(self):

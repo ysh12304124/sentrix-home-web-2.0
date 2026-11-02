@@ -193,10 +193,39 @@ class SqliteImportJobRepository:
         return [_job(row) for row in rows]
 
     def cancel(self, job_id: str) -> ImportJob | None:
+        stamp = _now()
         with self._database.connect() as connection, connection:
             connection.execute(
-                "UPDATE import_jobs SET status = 'cancelled', updated_at = ? "
-                "WHERE id = ? AND status NOT IN ('running', 'completed', 'partial', 'cancelled', 'needs_attention')",
+                "UPDATE import_jobs SET cancel_requested = 1, updated_at = ? "
+                "WHERE id = ? AND status NOT IN "
+                "('completed', 'partial', 'cancelled', 'needs_attention')",
+                (stamp, job_id),
+            )
+            # 没在执行的作业立即终止；running 的由执行器在安全检查点收尾。
+            connection.execute(
+                "UPDATE import_jobs SET status = 'cancelled', stage = 'cancelled',"
+                " lease_expires_at = NULL, updated_at = ? "
+                "WHERE id = ? AND status NOT IN "
+                "('running', 'completed', 'partial', 'cancelled', 'needs_attention')",
+                (stamp, job_id),
+            )
+        return self.get(job_id)
+
+    def is_cancel_requested(self, job_id: str) -> bool:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT cancel_requested FROM import_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return bool(row["cancel_requested"]) if row is not None else False
+
+    def requeue(self, job_id: str) -> ImportJob | None:
+        """管理员重排：只对已停下且可安全重放的作业生效；围栏加一使旧执行者失效。"""
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE import_jobs SET status = 'queued', stage = 'requeued',"
+                " error_category = '', error_message = '', next_retry_at = NULL,"
+                " lease_expires_at = NULL, cancel_requested = 0, fence = fence + 1,"
+                " updated_at = ? WHERE id = ? AND status IN ('needs_attention', 'partial')",
                 (_now(), job_id),
             )
         return self.get(job_id)
@@ -340,7 +369,8 @@ class SqliteImportJobRepository:
                 ON CONFLICT(job_id, stage) DO UPDATE SET
                     status = excluded.status,
                     reason = excluded.reason,
-                    attempts = import_job_stages.attempts + 1,
+                    attempts = import_job_stages.attempts
+                        + (CASE WHEN excluded.status = 'running' THEN 1 ELSE 0 END),
                     error_category = excluded.error_category,
                     started_at = COALESCE(import_job_stages.started_at, excluded.started_at),
                     finished_at = excluded.finished_at,

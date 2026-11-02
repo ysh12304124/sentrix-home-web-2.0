@@ -7,7 +7,9 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from sentrix.control.auth import AuthContext, require_admin
+import httpx
+
+from sentrix.control.auth import AuthContext, require_admin, require_csrf
 
 router = APIRouter()
 
@@ -43,6 +45,59 @@ def user_detail(
     return {"account_id": account_id, "status": users[account_id]}
 
 
+def _route(request: Request, account_id: str):
+    routes = request.app.state.route_table
+    route = routes.get(account_id)
+    if route is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return route
+
+
+@router.get("/admin/users/{account_id}/jobs")
+async def user_jobs(
+    account_id: str, request: Request, _: AuthContext = Depends(require_admin)
+) -> dict[str, object]:
+    route = _route(request, account_id)
+    client: httpx.AsyncClient = request.app.state.http_client
+    response = await client.get(
+        f"{route.api_url}/api/v1/import-jobs",
+        headers={"x-sentrix-internal-token": route.api_token},
+    )
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail=f"user API returned {response.status_code}")
+    return response.json()
+
+
+@router.post("/admin/users/{account_id}/jobs/{job_id}/requeue")
+async def requeue_job(
+    account_id: str,
+    job_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_admin),
+) -> dict[str, object]:
+    require_csrf(request, auth)
+    route = _route(request, account_id)
+    client: httpx.AsyncClient = request.app.state.http_client
+    response = await client.post(
+        f"{route.api_url}/api/v1/import-jobs/{job_id}/requeue",
+        headers={"x-sentrix-internal-token": route.api_token},
+    )
+    result = "ok" if response.is_success else "failed"
+    _store(request).audit(
+        "job.requeue",
+        actor_account_id=auth.account.id,
+        target=f"{account_id}:{job_id}",
+        result=result,
+        detail={"status_code": response.status_code},
+    )
+    if not response.is_success:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 502,
+            detail="requeue rejected by user API",
+        )
+    return response.json()  # type: ignore[no-any-return]
+
+
 @router.post("/admin/services/{service_id}/restart")
 def restart_service(
     service_id: str,
@@ -52,6 +107,7 @@ def restart_service(
 ) -> dict[str, object]:
     settings = request.app.state.control_settings
     allowed = set(settings.restart_unit_list())
+    require_csrf(request, auth)
     if service_id not in allowed:
         raise HTTPException(status_code=403, detail="service is not in the restart allowlist")
     request_id = f"req_{uuid.uuid4().hex[:16]}"

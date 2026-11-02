@@ -39,6 +39,11 @@ class ControlSettings(BaseSettings):
     # 体验发行固定 legacy 嵌入：分别探活，失败只影响依赖它的阶段。
     bge_health_url: str = "http://127.0.0.1:8101/health"
     clip_health_url: str = "http://127.0.0.1:8103/health"
+    # 低频真实编码探针：维度不符同样算依赖不可用。
+    bge_embed_url: str = "http://127.0.0.1:8101/embed"
+    clip_embed_url: str = "http://127.0.0.1:8113/embed_text"
+    encoding_probe_interval_s: float = 60.0
+    inference_probe_interval_s: float = 300.0
     model_upstream_api_key: str = ""
     model_id: str = ""
     model_slots: int = Field(default=2, ge=1)

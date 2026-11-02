@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.identity.extract_moments import ExtractMoments
+from sentrix.application.identity.family_graph_service import FamilyGraphService
 from sentrix.application.identity.run_insights import RunInsights
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
 from sentrix.application.media.import_assets import ImportAssets
@@ -99,6 +100,7 @@ def build_media_postprocess(container: Container) -> Callable[[str], None]:
                 summarizer.execute(event.id)
             except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
                 log.warning("事件总结失败（event=%s）: %s", event.id, error)
+        _run_family_graph(container, scope_id)
         _run_insights(container)(scope_id)
 
     return run
@@ -120,6 +122,27 @@ def _confirmed_person_events(container: Container) -> ConfirmedPersonEvents:
         confirmed_people=container.entity_repository.confirmed_people_for_observation,
         confirmed_event_people=container.entity_repository.confirmed_people_for_event,
     )
+
+
+def _run_family_graph(container: Container, scope_id: str) -> None:
+    """批末家族图推断；已有 queued/running 的 run 或失败都不阻断其他后处理。"""
+    try:
+        repository = container.family_graph_repository
+        latest = repository.latest_run(scope_id)
+        if latest is not None and latest.status in {"queued", "running"}:
+            return
+        run = repository.create_run(
+            scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"}
+        )
+        service = FamilyGraphService(
+            family=repository,
+            events=container.event_repository,
+            entities=container.entity_repository,
+            model=container.chat_model,
+        )
+        service.run(run.id, scope_id)
+    except Exception as error:  # noqa: BLE001 - 家族图是导入副作用
+        log.warning("家族图推断失败（scope=%s）: %s", scope_id, error)
 
 
 def _run_insights(container: Container) -> RunInsights:

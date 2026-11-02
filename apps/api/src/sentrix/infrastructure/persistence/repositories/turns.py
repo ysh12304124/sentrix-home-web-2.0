@@ -475,6 +475,14 @@ class SqliteTurnRepository:
                 ),
             )
 
+    def oldest_active_updated_at(self) -> str | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT MIN(updated_at) AS value FROM agent_turns"
+                " WHERE status IN ('pending', 'running')"
+            ).fetchone()
+        return str(row["value"]) if row is not None and row["value"] is not None else None
+
     def status_counts(self) -> dict[str, int]:
         with self._database.connect() as connection:
             rows = connection.execute(
