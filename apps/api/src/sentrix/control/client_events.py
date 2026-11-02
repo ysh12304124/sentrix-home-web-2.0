@@ -28,7 +28,7 @@ def client_event(
     auth: AuthContext = Depends(current_auth),
 ) -> dict[str, object]:
     require_csrf(request, auth)
-    log.info(
+    log.warning(
         "client event account=%s kind=%s detail=%s ua=%s",
         auth.account.id,
         payload.kind,
