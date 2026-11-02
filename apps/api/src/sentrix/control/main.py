@@ -119,31 +119,41 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         return payload
 
     router.include_router(build_auth_router())
-    router.include_router(feedback_routes.router)
+    if settings.admin_only:
+        # 独立管理入口：只装管理侧接口，不转发用户 API，也不提供用户反馈提交。
+        router.include_router(feedback_routes.admin_router)
+    else:
+        router.include_router(feedback_routes.router)
+        router.include_router(feedback_routes.admin_router)
     router.include_router(admin_routes.router)
     app.include_router(router)
-    app.include_router(internal_model_router)
+    if not settings.admin_only:
+        app.include_router(internal_model_router)
 
-    @app.api_route(
-        "/api/v1/{path:path}",
-        methods=PROXY_METHODS,
-        include_in_schema=False,
-    )
-    async def proxy_api(
-        request: Request,
-        path: str,
-        auth: AuthContext = Depends(current_auth),
-    ):
-        del path
-        require_csrf(request, auth)
-        if auth.account.role != "user":
-            raise HTTPException(status_code=403, detail="administrator is not routed to a user API")
-        if denied_for_user(request.method, request.url.path):
-            raise HTTPException(status_code=403, detail="route not available in experience mode")
-        route = routes.get(auth.account.id)
-        if route is None:
-            raise HTTPException(status_code=503, detail="user API is not configured")
-        return await forward(request, route, request.app.state.http_client)
+        @app.api_route(
+            "/api/v1/{path:path}",
+            methods=PROXY_METHODS,
+            include_in_schema=False,
+        )
+        async def proxy_api(
+            request: Request,
+            path: str,
+            auth: AuthContext = Depends(current_auth),
+        ):
+            del path
+            require_csrf(request, auth)
+            if auth.account.role != "user":
+                raise HTTPException(
+                    status_code=403, detail="administrator is not routed to a user API"
+                )
+            if denied_for_user(request.method, request.url.path):
+                raise HTTPException(
+                    status_code=403, detail="route not available in experience mode"
+                )
+            route = routes.get(auth.account.id)
+            if route is None:
+                raise HTTPException(status_code=503, detail="user API is not configured")
+            return await forward(request, route, request.app.state.http_client)
 
     # 同一个 React 构建由控制面提供；API 前缀已在上面的路由里处理，SPA 只兜底其余 GET。
     dist = Path(__file__).resolve().parents[5] / "apps" / "web" / "dist"

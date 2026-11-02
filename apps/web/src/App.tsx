@@ -1,20 +1,52 @@
-/** 应用入口：认证门 → 路由宿主。 */
+/** 应用入口：认证门 → 用户路由或独立管理台。 */
 
 import { BrowserRouter, Route, Routes } from "react-router";
 
 import { AuthProvider, useAuth } from "./app/AuthProvider";
 import { NotAvailable, ROUTES, SHELL } from "./app/router";
 import { ScopeProvider } from "./app/ScopeProvider";
+import { AdminStandalone } from "./features/admin/AdminStandalone";
 import { LoginScreen } from "./features/auth/LoginScreen";
 import { ToastProvider } from "./shared/ui/Toast";
 
+function AdminPortNotice() {
+  const { logout } = useAuth();
+  const target = `${window.location.protocol}//${window.location.hostname}:8220/`;
+  return (
+    <main className="admin-port-notice">
+      <div>
+        <p className="admin-eyebrow">管理员账号</p>
+        <h1>请使用独立管理入口</h1>
+        <p>体验用户与管理员使用两个互不影响的会话，避免切换账号后丢失当前用户状态。</p>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <a className="primary-action" href={target}>
+            打开管理台
+          </a>
+          <button type="button" className="ghost-action" onClick={() => void logout()}>
+            退出管理员账号
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 function AppRoutes() {
-  const { identity, loading } = useAuth();
+  const { identity, loading, adminOnly } = useAuth();
   if (loading) {
-    return <main className="login-screen">正在载入…</main>;
+    return <main className="login-screen loading">正在载入…</main>;
+  }
+  if (adminOnly) {
+    if (identity === null || identity.role !== "admin") {
+      return <LoginScreen adminOnly />;
+    }
+    return <AdminStandalone />;
   }
   if (identity === null) {
     return <LoginScreen />;
+  }
+  if (identity.role === "admin") {
+    return <AdminPortNotice />;
   }
   return (
     <ScopeProvider>

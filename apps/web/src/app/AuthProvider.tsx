@@ -4,11 +4,13 @@ export interface Identity {
   account_id: string;
   display_name: string;
   role: "user" | "admin";
+  admin_only: boolean;
 }
 
 interface AuthValue {
   identity: Identity | null;
   loading: boolean;
+  adminOnly: boolean;
   login: (accountId: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -17,7 +19,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 
 function csrfToken(): string {
   if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_control_csrf=([^;]*)/);
+  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
   return match === null ? "" : decodeURIComponent(match[1]);
 }
 
@@ -27,7 +29,7 @@ async function fetchIdentity(): Promise<Identity | null> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!response.ok || !contentType.includes("application/json")) {
     // 旧 8191 没有控制面：保持本地单用户形态。
-    return { account_id: "local", display_name: "本地用户", role: "user" };
+    return { account_id: "local", display_name: "本地用户", role: "user", admin_only: false };
   }
   const body = (await response.json()) as Partial<Identity>;
   if (typeof body.account_id !== "string" || typeof body.role !== "string") return null;
@@ -35,25 +37,37 @@ async function fetchIdentity(): Promise<Identity | null> {
     account_id: body.account_id,
     display_name: typeof body.display_name === "string" ? body.display_name : body.account_id,
     role: body.role === "admin" ? "admin" : "user",
+    admin_only: body.admin_only === true,
   };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [loading, setLoading] = useState(true);
+  const [adminOnly, setAdminOnly] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetchIdentity()
-      .then((value) => {
-        if (!cancelled) setIdentity(value);
-      })
-      .catch(() => {
-        if (!cancelled) setIdentity(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    const load = async () => {
+      let meta: { admin_only?: boolean } = {};
+      try {
+        const response = await fetch("/control/v1/meta", { credentials: "same-origin" });
+        if (response.ok) meta = (await response.json()) as { admin_only?: boolean };
+      } catch {
+        // 没有控制面（旧实例）时按普通入口处理。
+      }
+      let value: Identity | null = null;
+      try {
+        value = await fetchIdentity();
+      } catch {
+        value = null;
+      }
+      if (cancelled) return;
+      setAdminOnly(meta.admin_only === true);
+      setIdentity(value);
+      setLoading(false);
+    };
+    void load();
     return () => {
       cancelled = true;
     };
@@ -85,8 +99,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthValue>(
-    () => ({ identity, loading, login, logout }),
-    [identity, loading, login, logout],
+    () => ({ identity, loading, adminOnly, login, logout }),
+    [identity, loading, adminOnly, login, logout],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -26,6 +26,9 @@ class ControlSettings(BaseSettings):
     db_path: Path = DEFAULT_CONTROL_DB
     listen_host: str = "127.0.0.1"
     listen_port: int = 8210
+    # 独立管理入口：只允许管理员登录，不转发用户 API，会话 cookie 与用户入口分开。
+    admin_only: bool = False
+    cookie_namespace: str = "sentrix_control"
 
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None

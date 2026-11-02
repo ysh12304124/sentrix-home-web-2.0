@@ -21,6 +21,7 @@ from sentrix.control.auth import (
 from sentrix.control.store import AccountError, ControlStore
 
 router = APIRouter()
+admin_router = APIRouter()
 
 MAX_SCREENSHOT = 5 * 1024 * 1024
 
@@ -198,7 +199,7 @@ def download_own_attachment(
 # ---- 管理员 ---------------------------------------------------------------
 
 
-@router.get("/admin/feedback")
+@admin_router.get("/admin/feedback")
 def admin_feedback(
     request: Request,
     account_id: str = "",
@@ -214,7 +215,7 @@ def admin_feedback(
     }
 
 
-@router.get("/admin/feedback/{feedback_id}")
+@admin_router.get("/admin/feedback/{feedback_id}")
 def admin_feedback_detail(
     feedback_id: str, request: Request, auth: AuthContext = Depends(require_admin)
 ) -> dict[str, object]:
@@ -232,7 +233,7 @@ def admin_feedback_detail(
     return feedback
 
 
-@router.patch("/admin/feedback/{feedback_id}")
+@admin_router.patch("/admin/feedback/{feedback_id}")
 def admin_patch_feedback(
     feedback_id: str,
     payload: AdminFeedbackPatch,
@@ -260,7 +261,7 @@ def admin_patch_feedback(
     return store.get_feedback_admin(feedback_id) or {}
 
 
-@router.get("/admin/feedback/attachments/{attachment_id}")
+@admin_router.get("/admin/feedback/attachments/{attachment_id}")
 def admin_download_attachment(
     attachment_id: str, request: Request, auth: AuthContext = Depends(require_admin)
 ) -> FileResponse:

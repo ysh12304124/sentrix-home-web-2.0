@@ -59,6 +59,13 @@ function parseApiError(raw: string): ApiErrorBody | null {
     if (typeof parsed === "object" && parsed !== null && "code" in parsed) {
       return parsed as ApiErrorBody;
     }
+    // FastAPI 的 HTTPException 只有 detail；把可读原因提到 message，便于就地展示。
+    if (typeof parsed === "object" && parsed !== null && "detail" in parsed) {
+      const detail = (parsed as { detail?: unknown }).detail;
+      if (typeof detail === "string") {
+        return { code: "http_error", message: detail, detail };
+      }
+    }
   } catch {
     // 非 JSON 的错误体（反向代理的 502 页面之类）原样留在 raw 里，走兜底分支。
   }
@@ -68,7 +75,7 @@ function parseApiError(raw: string): ApiErrorBody | null {
 /** 控制面用双提交 CSRF：非 HttpOnly cookie 的内容要原样进请求头。 */
 function csrfToken(): string {
   if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_control_csrf=([^;]*)/);
+  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
   return match === null ? "" : decodeURIComponent(match[1]);
 }
 

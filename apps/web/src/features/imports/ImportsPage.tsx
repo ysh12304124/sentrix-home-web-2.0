@@ -135,6 +135,12 @@ export function ImportsPage() {
           {scopeId === "" ? "（查看全部相册时默认导入这里）" : ""}
         </p>
       </header>
+      <div className="import-stats">
+        <article><span>全部作业</span><b>{jobs.length}</b></article>
+        <article><span>处理中</span><b>{jobs.filter((job) => ["accepted", "queued", "running", "waiting_dependency", "retry_scheduled"].includes(job.status)).length}</b></article>
+        <article><span>已完成</span><b>{jobs.filter((job) => job.status === "completed").length}</b></article>
+        <article><span>需要处理</span><b>{jobs.filter((job) => job.status === "needs_attention" || job.status === "partial").length}</b></article>
+      </div>
       <section className="import-layout">
       <div>
         <label
@@ -238,7 +244,26 @@ export function ImportsPage() {
                     {job.stage !== "" ? job.stage : ""}
                     {job.attempts > 0 ? ` · 第 ${job.attempts} 次` : ""}
                   </small>
-                  {job.error_message !== "" ? <small>{job.error_message}</small> : null}
+                  {job.error_message !== "" ? (
+                    <small className="job-error">{job.error_message}</small>
+                  ) : null}
+                  <div className="job-progress" aria-hidden="true">
+                    <i
+                      style={{
+                        width: `${
+                          job.stages.length === 0
+                            ? job.status === "completed"
+                              ? 100
+                              : 8
+                            : Math.round(
+                                (job.stages.filter((stage) => stage.status === "done" || stage.status === "skipped").length /
+                                  job.stages.length) *
+                                  100,
+                              )
+                        }%`,
+                      }}
+                    />
+                  </div>
                 </div>
                 {ACTIVE_JOB_STATUSES.has(job.status) ? (
                   <button

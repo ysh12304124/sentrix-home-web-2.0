@@ -17,7 +17,7 @@ const DRAFT_KEY = "sentrix.feedback.draft";
 
 function csrfToken(): string {
   if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_control_csrf=([^;]*)/);
+  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
   return match === null ? "" : decodeURIComponent(match[1]);
 }
 

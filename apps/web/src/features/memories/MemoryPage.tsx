@@ -173,6 +173,15 @@ export function MemoryPage() {
         key={card.event_id}
         onClick={() => setPaused(true)}
       >
+        <div
+          className="memory-backdrop"
+          style={{ backgroundImage: `url(${card.poster_url})` }}
+          aria-hidden="true"
+        />
+        <div className="memory-topline">
+          <span>{card.time_label !== "" ? card.time_label : "回忆"}</span>
+          <span>{paused ? "已暂停" : "自动播放中"}</span>
+        </div>
         {videoOpen && card.play_url !== null ? (
           <video
             className="memory-media"
@@ -189,6 +198,12 @@ export function MemoryPage() {
             alt={card.title || "回忆画面"}
             onLoad={() => setMediaReady(true)}
             onError={() => move(1, false)}
+            onClick={() => {
+              if (card.media_kind === "video" && card.play_url !== null) {
+                setVideoOpen(true);
+                setPaused(true);
+              }
+            }}
           />
         )}
         <div className="memory-overlay">
@@ -210,6 +225,25 @@ export function MemoryPage() {
             {paused ? "继续自动播放" : "暂停"}
           </button>
           <button type="button" onClick={() => move(1, true)}>下一页</button>
+          <Link className="memory-detail-link" to={`/timeline?event=${card.event_id}`}>
+            事件详情
+          </Link>
+        </div>
+        <div className="memory-dots" role="tablist" aria-label="回忆页序">
+          {cards.slice(0, 12).map((item, position) => (
+            <button
+              key={item.event_id}
+              type="button"
+              role="tab"
+              aria-selected={position === index}
+              aria-label={`第 ${position + 1} 页`}
+              className={position === index ? "memory-dot active" : "memory-dot"}
+              onClick={() => {
+                setPaused(true);
+                setIndex(position);
+              }}
+            />
+          ))}
         </div>
         <div className="memory-progress" aria-hidden="true">
           {index + 1} / {cards.length}{hasMore ? "+" : ""}
