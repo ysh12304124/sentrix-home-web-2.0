@@ -418,10 +418,15 @@ class ImportAssets:
         # content-type：上传方常常给不出具体类型（curl / 整册导入是
         # ``application/octet-stream``），而音频不转码、交出去的就是原文件，
         # 类型错了浏览器没有第二次机会。S8a 的验收在视频 ``?original=1`` 上见过同一现象。
+        declared_mime = request.content_type
+        if not declared_mime and request.file_name:
+            import mimetypes
+
+            declared_mime = mimetypes.guess_type(request.file_name)[0]
         mime_type = (
-            audio_mime_type(request.file_name, request.content_type)
+            audio_mime_type(request.file_name, declared_mime)
             if media_type is MediaType.AUDIO
-            else request.content_type
+            else declared_mime
         )
 
         now = self._clock()

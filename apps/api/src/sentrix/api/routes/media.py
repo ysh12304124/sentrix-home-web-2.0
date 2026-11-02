@@ -286,7 +286,10 @@ def asset_poster(asset_id: str, container: Container = Depends(get_container)) -
 
     cache = {"Cache-Control": "private, max-age=86400"}
     for derived in container.video_repository.list_derived(asset.id):
-        path = Path(derived.path)
+        derived_asset = container.asset_repository.get(derived.id)
+        if derived_asset is None:
+            continue
+        path = Path(derived_asset.path)
         if path.is_file():
             return FileResponse(path, media_type="image/jpeg", headers=cache)
     try:
