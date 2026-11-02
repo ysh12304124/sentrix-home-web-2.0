@@ -41,6 +41,7 @@ from sentrix.domain.identity.ports import (
     SemanticRepository,
 )
 from sentrix.domain.media.import_jobs import ImportJobRepository
+from sentrix.domain.memories.rotation import RotationRepository
 from sentrix.domain.media.ports import (
     AssetRepository,
     AudioMetadataReader,
@@ -137,6 +138,7 @@ from sentrix.infrastructure.persistence.repositories.relationships import (
     SqliteRelationshipRepository,
 )
 from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
+from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.result_sets import SqliteResultSetRepository
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
 from sentrix.infrastructure.persistence.repositories.semantic import (
@@ -280,6 +282,8 @@ class Container:
     result_set_repository: ResultSetRepository
     # 持久导入作业（任务 4/5）。接收确认与离线阶段都记在用户自己的 SQLite 里。
     import_jobs: ImportJobRepository
+    # 回忆首页序列与已看记录（任务 7）。
+    memory_rotation: RotationRepository
     person_directory: PersonDirectory
     # 内存里的实时事件流。它没有持久化的一面——历史事件在 agent_turn_events 表里，
     # 两半合起来才构成完整的 SSE 语义（见 domain/assistant/ports.py 的 TurnEventBroker）。
@@ -457,6 +461,7 @@ class Container:
             result_set_repository=SqliteResultSetRepository(database),
             person_directory=EntityPersonDirectory(entities=entities, family=family),
             import_jobs=SqliteImportJobRepository(database),
+            memory_rotation=SqliteRotationRepository(database),
             turn_event_broker=InProcessTurnEventBroker(),
         )
 

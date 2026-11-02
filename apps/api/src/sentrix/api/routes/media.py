@@ -275,6 +275,29 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
     return to_summary(asset)
 
 
+@router.get("/assets/{asset_id}/poster")
+def asset_poster(asset_id: str, container: Container = Depends(get_container)) -> Response:
+    """视频封面：优先复用已抽取的关键帧，没有就抽第一帧；图片直接给预览。"""
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type is not MediaType.VIDEO:
+        return deliver_asset(asset_id, original=False, container=container)
+
+    cache = {"Cache-Control": "private, max-age=86400"}
+    for derived in container.video_repository.list_derived(asset.id):
+        path = Path(derived.path)
+        if path.is_file():
+            return FileResponse(path, media_type="image/jpeg", headers=cache)
+    try:
+        path = container.video_keyframe_extractor.extract(Path(asset.path), asset.id, 0, 0.0)
+    except Exception as error:  # noqa: BLE001 - 取不到封面就明确 404
+        raise HTTPException(status_code=404, detail="video poster unavailable") from error
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="video poster unavailable")
+    return FileResponse(path, media_type="image/jpeg", headers=cache)
+
+
 def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Response:
     """按 ``original`` 交付一张资产：``True`` 原文件，``False`` 服务端转码的 JPEG 预览。
 
