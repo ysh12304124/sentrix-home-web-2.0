@@ -6,6 +6,8 @@ interface ServiceState {
   ok?: boolean;
   status_code?: number;
   error?: string;
+  encoding?: { ok?: boolean; dimension?: number; expected?: number; error?: string };
+  inference?: { ok?: boolean; skipped?: string; error?: string };
   status?: {
     jobs?: Record<string, number>;
     turns?: Record<string, number>;
@@ -598,9 +600,27 @@ function serviceRows(overview: Overview | null) {
 
 function serviceDetail(state: ServiceState | undefined): string {
   if (state === undefined) return "尚未采集";
-  if (state.ok === true) return `HTTP ${state.status_code ?? 200}`;
-  if (state.error !== undefined) return state.error.slice(0, 120);
-  return `HTTP ${state.status_code ?? "?"}`;
+  if (state.ok !== true) {
+    return state.error !== undefined ? state.error.slice(0, 120) : `HTTP ${state.status_code ?? "?"}`;
+  }
+  const parts = [`HTTP ${state.status_code ?? 200}`];
+  if (state.encoding !== undefined) {
+    parts.push(
+      `编码 ${state.encoding.dimension ?? "?"}d / 期望 ${state.encoding.expected ?? "?"}d${
+        state.encoding.ok === false ? "（异常）" : ""
+      }`,
+    );
+  }
+  if (state.inference !== undefined) {
+    parts.push(
+      state.inference.skipped === "busy"
+        ? "推理探针跳过高负载"
+        : state.inference.ok === true
+          ? "真实推理正常"
+          : "真实推理失败",
+    );
+  }
+  return parts.join(" · ");
 }
 
 function sum(values: Record<string, number> | undefined): number {
