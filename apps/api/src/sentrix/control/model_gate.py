@@ -46,9 +46,6 @@ class ModelTarget:
             "upstream": f"{parts.scheme}://{host}{port}{parts.path.rstrip('/')}",
             "model_id": self.model_id,
             "slots": self.slots,
-            "last_ok_at": self._last_ok_at or None,
-            "last_error_at": self._last_error_at or None,
-            "last_error": self._last_error,
         }
 
 
@@ -240,4 +237,6 @@ class ModelGate:
             "waiting_by_user": waiting_by_user,
             "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,
             "last_ok_at": self._last_ok_at or None,
+            "last_error_at": self._last_error_at or None,
+            "last_error": self._last_error,
         }
