@@ -115,6 +115,58 @@ class SqliteAssetRepository:
             ).fetchall()
         return [_row_to_asset(row) for row in rows]
 
+    def list_page(
+        self,
+        scope_id: str | None,
+        *,
+        media_type: str | None = None,
+        sort: str = "captured",
+        order: str = "desc",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[Sequence[Asset], int, dict[str, int]]:
+        """资料库分页：返回 (当页资产, 当前筛选总数, 当前范围各类型计数)。
+
+        计数查询覆盖完整范围，先取 200 条再统计会把「前 200 条」冒充总量。
+        排序键与方向由调用方按白名单给；SQL 里只拼这两列常量表达式。
+        """
+        scope_clause = "" if scope_id is None else " WHERE scope_id = ?"
+        scope_params: tuple[object, ...] = () if scope_id is None else (scope_id,)
+        type_clause = " WHERE media_type = ?" if media_type else ""
+        type_params: tuple[object, ...] = (media_type,) if media_type else ()
+        if scope_id is None:
+            where = type_clause
+            params = type_params
+        else:
+            where = scope_clause if not media_type else f"{scope_clause} AND media_type = ?"
+            params = (*scope_params, *type_params)
+
+        sort_expression = (
+            "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
+        )
+        direction = "ASC" if order == "asc" else "DESC"
+
+        with self._database.connect() as connection:
+            counts_rows = connection.execute(
+                "SELECT media_type, COUNT(*) AS n FROM assets"
+                f"{scope_clause} GROUP BY media_type",
+                scope_params,
+            ).fetchall()
+            counts = {str(row["media_type"]): int(row["n"]) for row in counts_rows}
+            counts["all"] = sum(counts.values())
+            total = (
+                counts.get(media_type or "", 0)
+                if media_type
+                else counts["all"]
+            )
+            rows = connection.execute(
+                f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
+                f" ORDER BY {sort_expression} {direction}, id {direction}"
+                " LIMIT ? OFFSET ?",
+                (*params, max(1, limit), max(0, offset)),
+            ).fetchall()
+        return [_row_to_asset(row) for row in rows], total, counts
+
     def find_by_hash(self, scope_id: str, content_sha256: str) -> Asset | None:
         with self._database.connect() as connection:
             row = connection.execute(

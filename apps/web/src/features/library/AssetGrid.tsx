@@ -18,11 +18,26 @@ import { AssetDetail } from "./AssetDetail";
 
 const TYPE_MARK: Readonly<Record<string, string>> = { image: "▦", video: "▶", audio: "♪", text: "¶" };
 
+const STATUS_LABEL: Readonly<Record<string, string>> = {
+  processed: "已整理",
+  processing: "正在整理",
+  queued: "等待整理",
+  failed: "整理失败",
+};
+
 function mediaLabel(mediaType: string): string {
-  return { image: "图片", video: "视频", audio: "音频", text: "文本" }[mediaType] ?? mediaType;
+  return { image: "图片", video: "视频", audio: "音频", text: "文本" }[mediaType] ?? "资料";
 }
 
-export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
+export function AssetGrid({
+  assets,
+  onOpen,
+  onMediaError,
+}: {
+  assets: readonly AssetSummary[];
+  onOpen?: (asset: AssetSummary) => void;
+  onMediaError?: (asset: AssetSummary) => void;
+}) {
   const [selected, setSelected] = useState<AssetDetailResponse | null>(null);
 
   /**
@@ -30,6 +45,7 @@ export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
    * 列表这边不用改就能显示。请求失败时退回列表已有的摘要，点开仍然可用。
    */
   async function open(asset: AssetSummary) {
+    onOpen?.(asset);
     try {
       setSelected(await getAsset(asset.id));
     } catch {
@@ -44,7 +60,12 @@ export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
           <button key={asset.id} type="button" className="asset-card" onClick={() => void open(asset)}>
             <div className="asset-thumb">
               {asset.media_type === "image" ? (
-                <img src={assetDisplayUrl(asset)} alt={asset.file_name} loading="lazy" />
+                <img
+                  src={assetDisplayUrl(asset)}
+                  alt={asset.file_name}
+                  loading="lazy"
+                  onError={() => onMediaError?.(asset)}
+                />
               ) : (
                 <span className="asset-type-mark" aria-hidden="true">{TYPE_MARK[asset.media_type] ?? "▦"}</span>
               )}
@@ -55,7 +76,7 @@ export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
                 <strong>{asset.file_name}</strong>
               </div>
               <small>{asset.captured_at ? asset.captured_at.slice(0, 10) : "未标注拍摄时间"}</small>
-              <span>{asset.status}</span>
+              <span>{STATUS_LABEL[asset.status] ?? "状态更新中"}</span>
             </div>
           </button>
         ))}

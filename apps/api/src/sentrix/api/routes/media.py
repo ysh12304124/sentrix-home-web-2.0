@@ -258,15 +258,37 @@ async def upload_media(
 @router.get("/assets")
 def list_assets(
     # 默认与空串都表示**全部相册**：1.0 的 `list_assets(scope_id=None)` 是 `if scope_id:`
-    # 才加过滤，而前端用 `""` 表达「全部」（`src/app.js` 的约定）。默认值从
-    # `"home-default"` 改成 `""` 是**行为修正**——原来不传 scope 会查一个叫
-    # home-default 的空间，而那个空间在 2.0 的空库里根本不存在。
+    # 才加过滤，而前端用 `""` 表达「全部」（`src/app.js` 的约定）。
     scope_id: str = "",
     limit: int = 200,
+    offset: int = 0,
+    media_type: str = "",
+    sort: str = "captured",
+    order: str = "desc",
     container: Container = Depends(get_container),
 ) -> AssetListResponse:
-    assets = container.asset_repository.list_by_scope(scope_id or None, min(limit, 1000))
-    return AssetListResponse(items=[to_summary(asset) for asset in assets])
+    if media_type not in {"", "image", "video", "audio", "text"}:
+        raise HTTPException(status_code=422, detail="unsupported media_type")
+    if sort not in {"captured", "created"}:
+        raise HTTPException(status_code=422, detail="unsupported sort key")
+    if order not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="unsupported sort order")
+    size = max(1, min(limit, 500))
+    assets, total, counts = container.asset_repository.list_page(
+        scope_id or None,
+        media_type=media_type or None,
+        sort=sort,
+        order=order,
+        offset=max(0, offset),
+        limit=size,
+    )
+    return AssetListResponse(
+        items=[to_summary(asset) for asset in assets],
+        total=total,
+        offset=max(0, offset),
+        limit=size,
+        counts=counts,
+    )
 
 
 @router.get("/assets/{asset_id}")

@@ -23,8 +23,38 @@ export interface AssetSummary {
   scope_id?: string;
 }
 
-interface AssetListResponse {
+export interface AssetPage {
   items: AssetSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  counts: Record<string, number>;
+}
+
+export interface AssetPageOptions {
+  offset?: number;
+  limit?: number;
+  mediaType?: string;
+  sort?: "captured" | "created";
+  order?: "asc" | "desc";
+}
+
+/** 资料库分页。筛选、排序与计数都由后端覆盖完整范围。 */
+export async function listAssetPage(
+  scopeId: string,
+  options: AssetPageOptions = {},
+): Promise<AssetPage> {
+  const params = new URLSearchParams({
+    scope_id: scopeId,
+    offset: String(Math.max(0, options.offset ?? 0)),
+    limit: String(options.limit ?? 60),
+    sort: options.sort ?? "captured",
+    order: options.order ?? "desc",
+  });
+  if (options.mediaType !== undefined && options.mediaType !== "") {
+    params.set("media_type", options.mediaType);
+  }
+  return request<AssetPage>(`/assets?${params.toString()}`);
 }
 
 /** 后端统一错误体的形状（``apps/api/src/sentrix/api/errors.py``）。 */
@@ -97,7 +127,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listAssets(scopeId: string): Promise<AssetSummary[]> {
-  const body = await request<AssetListResponse>(`/assets?scope_id=${encodeURIComponent(scopeId)}`);
+  const body = await listAssetPage(scopeId, { limit: 200 });
   return body.items;
 }
 

@@ -48,3 +48,9 @@ class AssetSummary(BaseModel):
 
 class AssetListResponse(BaseModel):
     items: list[AssetSummary]
+    # 分页信封。旧调用方只读 items 仍然可用；新调用方不能用 len(items) 冒充总量。
+    total: int = 0
+    offset: int = 0
+    limit: int = 200
+    # 当前相册范围各媒体类型的真实计数（含 all）。
+    counts: dict[str, int] = {}
