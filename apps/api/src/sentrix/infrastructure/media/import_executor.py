@@ -118,6 +118,8 @@ class ImportJobExecutor:
     def start(self) -> None:
         if self._thread is not None:
             return
+        # 上次进程在批末后处理中途退出时，processing_generation 会挡住后续认领。
+        self._jobs.recover_postprocess(now=self._clock())
         self._thread = threading.Thread(target=self._loop, name="import-executor", daemon=True)
         self._thread.start()
 

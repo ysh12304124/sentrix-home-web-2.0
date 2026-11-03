@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sentrix.domain.media.models import GpsPoint
 
@@ -284,16 +284,23 @@ class EventCandidateScore:
         }
 
 
+def _as_utc(value: datetime) -> datetime:
+    """历史事件的 time_start 可能来自无时区元数据；统一按 UTC 比较。"""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def within_candidate_window(anchor_at: datetime | None, event_at: datetime | None) -> bool:
     """1.0 ``db.py:1967``：时间差超过 6 小时的活动事件连打分都不打。"""
     if anchor_at is None or event_at is None:
         return True
-    return abs((anchor_at - event_at).total_seconds()) <= CANDIDATE_WINDOW_HOURS * 3600
+    return abs((_as_utc(anchor_at) - _as_utc(event_at)).total_seconds()) <= (
+        CANDIDATE_WINDOW_HOURS * 3600
+    )
 
 
 def _time_score(anchor_at: datetime | None, event_at: datetime | None) -> float:
     if anchor_at and event_at:
-        minutes = abs((anchor_at - event_at).total_seconds()) / 60.0
+        minutes = abs((_as_utc(anchor_at) - _as_utc(event_at)).total_seconds()) / 60.0
         return _decay(minutes, TIME_DECAY_MINUTES)
     return MISSING_TIME_SCORE
 

@@ -436,6 +436,16 @@ class SqliteImportJobRepository:
             connection.commit()
         return int(row["dirty_generation"])
 
+    def recover_postprocess(self, *, now: datetime) -> int:
+        """进程启动时清掉上次崩溃留下的“处理中”标记，否则该相册永远不会再被认领。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE scope_postprocess SET processing_generation = NULL,"
+                " next_attempt_at = NULL, updated_at = ? WHERE processing_generation IS NOT NULL",
+                (now.isoformat(),),
+            )
+        return cursor.rowcount
+
     def claim_postprocess(self, *, now: datetime) -> tuple[str, int] | None:
         with self._database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
