@@ -14,11 +14,11 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { id: "memories", path: "/", icon: "◐", label: "回忆" },
-  { id: "imports", path: "/imports", icon: "↓", label: "导入" },
-  { id: "assistant", path: "/assistant", icon: "⌕", label: "问答" },
+  { id: "assistant", path: "/assistant", icon: "⌕", label: "提问" },
+  { id: "timeline", path: "/timeline", icon: "↕", label: "时间线" },
   { id: "people", path: "/people", icon: "◎", label: "人物" },
   { id: "library", path: "/library", icon: "▦", label: "资料库" },
-  { id: "timeline", path: "/timeline", icon: "↕", label: "时间线" },
+  { id: "imports", path: "/imports", icon: "↓", label: "添加资料" },
 ];
 
 /** 管理入口只在管理员角色下显示；路由本身仍存在并由后端校验权限。 */

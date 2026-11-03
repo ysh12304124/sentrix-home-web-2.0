@@ -98,3 +98,299 @@
   .stats-grid, .asset-grid, .library-grid { grid-template-columns: 1fr; }
   .page-heading h1 { font-size: 30px; }
 }
+
+/* ---- 顶部横向壳层（体验版） --------------------------------------------- */
+
+:root { --topbar-h: 64px; }
+
+.app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(12px);
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: inherit;
+  text-decoration: none;
+  flex: none;
+}
+
+.topbar-brand strong {
+  display: block;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.topbar-brand small {
+  display: block;
+  margin-top: 1px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.top-nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.top-nav-link:hover {
+  color: var(--ink);
+  background: var(--soft);
+}
+
+.top-nav-link[aria-current="page"] {
+  color: var(--green-strong);
+  background: var(--lime);
+  font-weight: 700;
+}
+
+.nav-more,
+.nav-menu {
+  position: relative;
+  display: none;
+}
+
+.nav-more > summary,
+.nav-menu > summary {
+  list-style: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.nav-more > summary::-webkit-details-marker,
+.nav-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.nav-more[open] > summary,
+.nav-menu[open] > summary,
+.nav-more > summary:hover,
+.nav-menu > summary:hover {
+  color: var(--ink);
+  background: var(--soft);
+}
+
+.nav-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  min-width: 210px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--shadow-pop);
+}
+
+.nav-popover .top-nav-link {
+  display: block;
+  padding: 9px 10px;
+}
+
+.nav-popover-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--line);
+}
+
+.nav-popover-action {
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.nav-popover-action:hover {
+  color: var(--ink);
+  background: var(--soft);
+}
+
+.nav-popover .scope-switcher-top {
+  padding: 6px 10px;
+}
+
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.scope-switcher-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.scope-switcher-top select {
+  max-width: 170px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.health-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.health-pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.health-pill[data-state="ok"] i {
+  background: var(--green);
+}
+
+.health-pill[data-state="degraded"] i {
+  background: #d97706;
+}
+
+.health-pill[data-state="unknown"] i {
+  background: var(--faint);
+}
+
+.top-user-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-root {
+  flex: 1;
+  width: 100%;
+  padding: 28px 32px 64px;
+  max-width: 1600px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+/* 回忆路由不套普通内容留白，画布占满顶栏以下的可用高度。 */
+.view-root.memory-view {
+  padding: 0;
+  max-width: none;
+  height: calc(100vh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 1100px) {
+  .top-nav > .top-nav-link:nth-child(n + 4) {
+    display: none;
+  }
+
+  .nav-more {
+    display: block;
+  }
+
+  .topbar-actions > .scope-switcher-top {
+    display: none;
+  }
+
+  .view-root {
+    padding: 24px 24px 56px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-topbar {
+    gap: 10px;
+    padding: 0 14px;
+  }
+
+  .topbar-brand small {
+    display: none;
+  }
+
+  .top-nav > .top-nav-link,
+  .nav-more {
+    display: none;
+  }
+
+  .nav-menu {
+    display: block;
+  }
+
+  .topbar-actions {
+    gap: 8px;
+  }
+
+  .topbar-actions > .topbar-action,
+  .topbar-actions > .health-pill,
+  .topbar-actions > .top-user .avatar,
+  .topbar-actions > .top-user > .top-user-name {
+    display: none;
+  }
+
+  .view-root {
+    padding: 20px 16px 48px;
+  }
+}

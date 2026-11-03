@@ -27,10 +27,15 @@ import "./assistantDetail.css";
 
 export function AssistantPage() {
   const { scopeId } = useScope();
-  // 概览页的提问框把问题塞在 `?q=` 里交过来（1.0 的 searchBar() 是直接 push 一个
-  // assistant turn）。读出来交给面板，面板问完就不再重复。
-  const [searchParams] = useSearchParams();
-  const initialQuestion = searchParams.get("q") ?? "";
+  // 旧链接可能把问题放在 `?q=`：只清掉参数，停在提问页，不自动重复提交。
+  // 用户主动输入的问答正文只走受认证的问答请求，不再进地址栏与浏览器历史。
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (!searchParams.has("q")) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("q");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [conversations, setConversations] = useState<readonly ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -252,7 +257,7 @@ export function AssistantPage() {
           <AssistantPanel
             conversationId={activeId}
             scopeId={scopeId}
-            initialQuestion={initialQuestion}
+            initialQuestion=""
           />
         </div>
       </div>
