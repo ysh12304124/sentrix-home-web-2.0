@@ -48,13 +48,13 @@ export const TOURS: Readonly<Record<string, readonly TourStep[]>> = {
   timeline: [
     {
       selector: ".axis-year",
-      title: "一条竖轴看完所有记录",
-      body: "年份和月份是轴上的分组，有记录的日期是节点；没有记录的日期不会出现。",
+      title: "最左侧是整条时间轴",
+      body: "年份和月份是轴上的节点；展开后日期和每条事件的时间也会落在同一条轴上。",
     },
     {
-      selector: ".timeline-day-toggle",
-      title: "展开某一天",
-      body: "日期默认收起；点开后才加载当天的卡片，不会一次加载整月。",
+      selector: ".axis-month",
+      title: "点月份展开日期",
+      body: "月份默认收起；点开后只列出有记录的日期，再点日期才展开当天的全部事件。",
     },
     {
       selector: ".filter-row",
