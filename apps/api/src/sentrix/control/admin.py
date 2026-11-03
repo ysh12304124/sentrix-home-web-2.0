@@ -94,6 +94,49 @@ def _route(request: Request, account_id: str):
     return route
 
 
+@router.get("/admin/users/{account_id}/client-events")
+def user_client_events(
+    account_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_admin),
+    after_id: int = 0,
+    limit: int = 50,
+) -> dict[str, object]:
+    # 只允许查询配置中的体验账号；管理员账号没有用户 API，也不该有轨迹。
+    _route(request, account_id)
+    items, has_more = _store(request).list_client_events(
+        account_id, after_id=max(0, after_id), limit=limit
+    )
+    if after_id <= 0:
+        # 打开轨迹记一条审计；2 秒轮询带 after_id，不重复记。
+        _store(request).audit(
+            "client_events.view",
+            actor_account_id=auth.account.id,
+            target=account_id,
+            result="ok",
+        )
+    visible = [
+        {
+            "id": int(item["id"]),
+            "received_at": str(item["received_at"]),
+            "operation_id": str(item["operation_id"]),
+            "event_name": str(item["event_name"]),
+            "route": str(item["route"]),
+            "result": str(item["result"]),
+            "scope_id": str(item["scope_id"]),
+            "job_id": str(item["job_id"]),
+            "turn_id": str(item["turn_id"]),
+            "event_id": str(item["event_id"]),
+            "asset_id": str(item["asset_id"]),
+            "entity_id": str(item["entity_id"]),
+            "error_code": str(item["error_code"]),
+        }
+        for item in items
+    ]
+    next_cursor = int(visible[-1]["id"]) if visible else after_id
+    return {"items": visible, "next_cursor": next_cursor, "has_more": has_more}
+
+
 @router.get("/admin/users/{account_id}/jobs")
 async def user_jobs(
     account_id: str, request: Request, _: AuthContext = Depends(require_admin)

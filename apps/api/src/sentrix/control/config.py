@@ -64,6 +64,7 @@ class ControlSettings(BaseSettings):
     metric_retention_days: int = Field(default=30, gt=0)
     audit_retention_days: int = Field(default=90, gt=0)
     feedback_retention_days: int = Field(default=90, gt=0)
+    client_event_retention_days: int = Field(default=7, gt=0)
 
     session_idle_s: int = Field(default=8 * 3600, gt=0)
     session_max_s: int = Field(default=7 * 24 * 3600, gt=0)

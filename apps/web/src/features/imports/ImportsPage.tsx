@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
-import { csrfToken } from "../../shared/csrf";
 import { newClientId } from "../../shared/id";
 import {
+  errorCodeFromStatus,
+  newOperationId,
+  reportClientEvent,
+} from "../../shared/clientEvents";
+import {
+  ApiError,
   cancelImportJob,
   listImportJobs,
   uploadMedia,
@@ -116,14 +121,32 @@ export function ImportsPage() {
     async (entry: Entry) => {
       updateEntry(entry.key, { status: "uploading", error: "" });
       try {
-        void reportClientEvent("upload.started", `${entry.file.name}:${entry.file.size}`);
+        void reportClientEvent({
+          eventName: "import.upload_start",
+          result: "started",
+          operationId: entry.key,
+          scopeId: targetScope,
+        });
         const accepted = await uploadMedia(entry.file, targetScope, entry.key);
         updateEntry(entry.key, { status: "accepted", jobId: accepted.job_id });
-        void reportClientEvent("upload.accepted", `${entry.file.name}:${accepted.job_id}`);
+        void reportClientEvent({
+          eventName: "import.upload_accepted",
+          result: "accepted",
+          operationId: entry.key,
+          scopeId: targetScope,
+          jobId: accepted.job_id,
+          assetId: accepted.asset_id,
+        });
       } catch (cause) {
         const message = (cause as Error).message;
         updateEntry(entry.key, { status: "failed", error: message });
-        void reportClientEvent("upload.failed", `${entry.file.name}:${message}`);
+        void reportClientEvent({
+          eventName: "import.upload_failed",
+          result: "failed",
+          operationId: entry.key,
+          scopeId: targetScope,
+          errorCode: cause instanceof ApiError ? errorCodeFromStatus(cause.status) : "network",
+        });
       }
     },
     [targetScope, updateEntry],
@@ -142,10 +165,12 @@ export function ImportsPage() {
         }));
         setEntries((previous) => [...additions, ...previous]);
         setError("");
-        void reportClientEvent(
-          "upload.selected",
-          additions.map((entry) => `${entry.file.name}:${entry.file.size}:${entry.file.type}`).join(","),
-        );
+        void reportClientEvent({
+          eventName: "import.pick",
+          result: "ok",
+          operationId: newOperationId(),
+          scopeId: targetScope,
+        });
         const queue = [...additions];
         await Promise.all(
           Array.from({ length: Math.min(MAX_CONCURRENT, queue.length) }, async () => {
@@ -160,7 +185,7 @@ export function ImportsPage() {
         setError(`上传没有开始：${(cause as Error).message}`);
       }
     },
-    [refreshJobs, uploadOne],
+    [refreshJobs, targetScope, uploadOne],
   );
 
   const completedCount = jobs.filter((job) => job.status === "completed").length;
@@ -354,7 +379,17 @@ export function ImportsPage() {
                   <button
                     type="button"
                     className="text-button"
-                    onClick={() => void cancelImportJob(job.job_id).then(refreshJobs)}
+                    onClick={() => {
+                      void reportClientEvent({
+                        eventName: "import.cancel",
+                        result: "started",
+                        scopeId: targetScope,
+                        jobId: job.job_id,
+                      });
+                      void cancelImportJob(job.job_id)
+                        .then(refreshJobs)
+                        .catch(() => undefined);
+                    }}
                   >
                     取消
                   </button>
@@ -367,18 +402,4 @@ export function ImportsPage() {
       </section>
     </>
   );
-}
-
-async function reportClientEvent(kind: string, detail: string): Promise<void> {
-  try {
-    const csrf = csrfToken();
-    await fetch("/control/v1/client-events", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "x-csrf-token": csrf },
-      body: JSON.stringify({ kind, detail: detail.slice(0, 500) }),
-    });
-  } catch {
-    // 诊断日志失败不能影响主流程。
-  }
 }

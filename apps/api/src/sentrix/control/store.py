@@ -713,6 +713,114 @@ class ControlStore:
             row = connection.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
         return _feedback(row) if row is not None else None
 
+    # ---- 客户端操作轨迹 ------------------------------------------------------
+
+    def record_client_event(
+        self,
+        *,
+        account_id: str,
+        session_id: str,
+        operation_id: str,
+        event_name: str,
+        route: str,
+        result: str,
+        scope_id: str = "",
+        job_id: str = "",
+        turn_id: str = "",
+        event_id: str = "",
+        asset_id: str = "",
+        entity_id: str = "",
+        error_code: str = "",
+    ) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO client_events (
+                    received_at, account_id, session_id, operation_id, event_name,
+                    route, result, scope_id, job_id, turn_id, event_id, asset_id,
+                    entity_id, error_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _iso(_now()),
+                    account_id,
+                    session_id,
+                    operation_id,
+                    event_name,
+                    route,
+                    result,
+                    scope_id,
+                    job_id,
+                    turn_id,
+                    event_id,
+                    asset_id,
+                    entity_id,
+                    error_code,
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def list_client_events(
+        self, account_id: str, *, after_id: int = 0, limit: int = 50
+    ) -> tuple[list[dict[str, object]], bool]:
+        """返回 (按时间正序的事件, has_more)。
+
+        首次查询（after_id=0）取最近有限条后在响应中恢复正序，不整表拉回。
+        增量查询按自增游标升序，避免同一批事件被重复返回。
+        """
+        size = max(1, min(limit, 200))
+        with self._database.connect() as connection:
+            if after_id <= 0:
+                rows = connection.execute(
+                    "SELECT * FROM client_events WHERE account_id = ?"
+                    " ORDER BY id DESC LIMIT ?",
+                    (account_id, size),
+                ).fetchall()
+                return [dict(row) for row in reversed(rows)], False
+            rows = connection.execute(
+                "SELECT * FROM client_events WHERE account_id = ? AND id > ?"
+                " ORDER BY id ASC LIMIT ?",
+                (account_id, after_id, size),
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        return items, len(items) >= size
+
+    def latest_client_event_times(
+        self, account_ids: list[str]
+    ) -> dict[str, dict[str, object]]:
+        """按账号批量取最新一条事件（id/时间），不逐账号扫描整段轨迹。"""
+        if not account_ids:
+            return {}
+        placeholders = ",".join("?" for _ in account_ids)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.account_id, c.id, c.received_at, c.event_name
+                FROM client_events c
+                JOIN (
+                    SELECT account_id, MAX(id) AS max_id FROM client_events
+                    WHERE account_id IN ({placeholders}) GROUP BY account_id
+                ) latest ON latest.max_id = c.id
+                """,
+                tuple(account_ids),
+            ).fetchall()
+        return {
+            str(row["account_id"]): {
+                "id": int(row["id"]),
+                "received_at": str(row["received_at"]),
+                "event_name": str(row["event_name"]),
+            }
+            for row in rows
+        }
+
+    def purge_client_events(self, *, older_than_days: int = 7) -> int:
+        cutoff = _iso(_now() - timedelta(days=older_than_days))
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM client_events WHERE received_at < ?", (cutoff,)
+            )
+        return cursor.rowcount
+
     # ---- 审计 ---------------------------------------------------------------
 
     def audit(

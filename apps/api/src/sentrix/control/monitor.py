@@ -190,6 +190,9 @@ class Monitor:
         try:
             self._store.purge_metrics(older_than_days=settings.metric_retention_days)
             self._store.purge_audit(older_than_days=settings.audit_retention_days)
+            self._store.purge_client_events(
+                older_than_days=settings.client_event_retention_days
+            )
             for path in self._store.purge_feedback(
                 older_than_days=settings.feedback_retention_days
             ):
