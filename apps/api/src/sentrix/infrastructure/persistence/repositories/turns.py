@@ -26,7 +26,7 @@ from sentrix.infrastructure.persistence.database import Database
 _TURN_COLUMNS = (
     "id, conversation_id, scope_id, question, status, termination_reason, answer,"
     " attachments_json, requirements_json, candidates_json, trace_json, created_at, updated_at,"
-    " idempotency_key, execution_state, attempt_no, lease_expires_at, fence,"
+    " idempotency_key, execution_state, attempt_no, failure_count, lease_expires_at, fence,"
     " waiting_reason, next_retry_at, cancel_requested"
 )
 
@@ -57,6 +57,7 @@ def _row_to_turn(row: sqlite3.Row) -> TurnRecord:
         idempotency_key=str(row["idempotency_key"] or ""),
         execution_state=str(row["execution_state"] or ""),
         attempt_no=int(row["attempt_no"] or 0),
+        failure_count=int(row["failure_count"] or 0),
         lease_expires_at=_parse(row["lease_expires_at"]),
         fence=int(row["fence"] or 0),
         waiting_reason=str(row["waiting_reason"] or ""),
@@ -225,7 +226,9 @@ class SqliteTurnRepository:
             try:
                 row = connection.execute(
                     f"SELECT {_TURN_COLUMNS} FROM agent_turns WHERE "
-                    "(status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= ?)) "
+                    "(status = 'pending' AND execution_state <> 'waiting_dependency'"
+                    " AND (next_retry_at IS NULL OR next_retry_at <= ?)) "
+                    "OR (status = 'pending' AND cancel_requested = 1) "
                     "OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
                     "ORDER BY created_at ASC, rowid ASC LIMIT 1",
                     (stamp, stamp),
@@ -244,6 +247,53 @@ class SqliteTurnRepository:
                 raise
             connection.commit()
         return self.get(str(row["id"]))
+
+    def wake_waiting(self, *, now: datetime) -> int:
+        """依赖恢复后把等待回合放回可认领状态；取消请求的回合不提前唤醒。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE agent_turns SET status = 'pending', execution_state = '',"
+                " waiting_reason = '', next_retry_at = NULL, updated_at = ?"
+                " WHERE status = 'pending' AND execution_state = 'waiting_dependency'"
+                " AND cancel_requested = 0",
+                (now.isoformat(),),
+            )
+        return cursor.rowcount
+
+    def record_failure(self, turn_id: str, fence: int, *, now: datetime) -> int | None:
+        """只在围栏匹配时递增普通失败计数；返回新计数。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE agent_turns SET failure_count = failure_count + 1, updated_at = ?"
+                " WHERE id = ? AND fence = ? AND status = 'running'",
+                (now.isoformat(), turn_id, fence),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = connection.execute(
+                "SELECT failure_count FROM agent_turns WHERE id = ?", (turn_id,)
+            ).fetchone()
+        return int(row["failure_count"] or 0) if row is not None else None
+
+    def finish_with_fence(
+        self,
+        turn_id: str,
+        *,
+        fence: int,
+        now: datetime,
+        status: str,
+        termination_reason: str,
+    ) -> bool:
+        """异常终态的围栏化提交；租约已失效时返回 False，旧执行者不得覆盖。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE agent_turns SET status = ?, termination_reason = ?,"
+                " execution_state = '', waiting_reason = '', next_retry_at = NULL,"
+                " lease_expires_at = NULL, updated_at = ?"
+                " WHERE id = ? AND fence = ? AND status = 'running'",
+                (status, termination_reason, now.isoformat(), turn_id, fence),
+            )
+        return cursor.rowcount > 0
 
     def heartbeat(self, turn_id: str, fence: int, *, now: datetime, lease_s: int) -> bool:
         with self._database.connect() as connection, connection:
@@ -498,6 +548,50 @@ class SqliteTurnRepository:
                 (conversation_id, max(1, limit)),
             ).fetchall()
         return [_row_to_turn(row) for row in rows]
+
+    def list_for_conversation_page(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+    ) -> tuple[Sequence[TurnRecord], bool, str | None]:
+        """按回合分页：默认最新一页；cursor 指向更早一页的最旧回合。"""
+        size = max(1, min(limit, 200))
+        with self._database.connect() as connection:
+            if cursor:
+                anchor = connection.execute(
+                    "SELECT created_at, rowid FROM agent_turns"
+                    " WHERE id = ? AND conversation_id = ?",
+                    (cursor, conversation_id),
+                ).fetchone()
+                if anchor is None:
+                    raise KeyError(cursor)
+                rows = connection.execute(
+                    f"SELECT {_TURN_COLUMNS} FROM agent_turns"
+                    " WHERE conversation_id = ? AND (created_at < ?"
+                    " OR (created_at = ? AND rowid < ?))"
+                    " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (
+                        conversation_id,
+                        str(anchor["created_at"]),
+                        str(anchor["created_at"]),
+                        int(anchor["rowid"]),
+                        size + 1,
+                    ),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"SELECT {_TURN_COLUMNS} FROM agent_turns"
+                    " WHERE conversation_id = ?"
+                    " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (conversation_id, size + 1),
+                ).fetchall()
+        has_more = len(rows) > size
+        page_rows = rows[:size]
+        turns = [_row_to_turn(row) for row in reversed(page_rows)]
+        next_cursor = turns[0].id if has_more and turns else None
+        return turns, has_more, next_cursor
 
     def list_active(self, *, limit: int = 20) -> Sequence[TurnRecord]:
         """在飞回合：控制面只读运行元数据，不读问题与答案正文。"""

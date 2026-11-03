@@ -109,6 +109,9 @@ class TurnExecutor:
             return True
         ready, _ = self._dependencies_ready()
         self._ready_streak = self._ready_streak + 1 if ready else 0
+        if self._ready_streak >= 2:
+            # 连续两轮可用才唤醒等待回合，避免一次抖动把整批放出来。
+            self._turns.wake_waiting(now=now)
         return False
 
     def _execute(self, record) -> None:
@@ -153,18 +156,23 @@ class TurnExecutor:
                     waiting_reason=reason,
                     pending=True,
                 )
-            elif record.attempt_no < MAX_ATTEMPTS:
-                self._turns.set_execution_state(
-                    turn_id,
-                    record.fence,
-                    now=self._clock(),
-                    execution_state="retry_scheduled",
-                    waiting_reason=str(error),
-                    next_retry_at=self._clock() + timedelta(seconds=_backoff(record.attempt_no)),
-                    pending=True,
-                )
             else:
-                self._finish_simple(turn_id, record, TurnStatus.FAILED, "worker_failed")
+                failures = self._turns.record_failure(
+                    turn_id, record.fence, now=self._clock()
+                )
+                if failures is not None and failures < MAX_ATTEMPTS:
+                    self._turns.set_execution_state(
+                        turn_id,
+                        record.fence,
+                        now=self._clock(),
+                        execution_state="retry_scheduled",
+                        waiting_reason=str(error),
+                        next_retry_at=self._clock()
+                        + timedelta(seconds=_backoff(failures)),
+                        pending=True,
+                    )
+                else:
+                    self._finish_simple(turn_id, record, TurnStatus.FAILED, "worker_failed")
         finally:
             heartbeat.stop()
             self._broker.finish(turn_id)
@@ -172,14 +180,17 @@ class TurnExecutor:
                 self._operation_control.finish("turn:" + turn_id)
 
     def _finish_simple(self, turn_id: str, record, status: TurnStatus, reason: str) -> None:
-        self._turns.finish(
+        finished = self._turns.finish_with_fence(
             turn_id,
+            fence=record.fence,
+            now=self._clock(),
             status=status.value,
             termination_reason=reason,
-            answer="",
-            attachments=(),
-            requirements=(),
-            retrieved_candidates=(),
-            trace={"worker_error": reason},
-            updated_at=self._clock(),
         )
+        if not finished:
+            log.warning(
+                "回合终态未提交：租约已失效 turn=%s fence=%s status=%s",
+                turn_id,
+                record.fence,
+                status.value,
+            )

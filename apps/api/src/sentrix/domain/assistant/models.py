@@ -270,6 +270,7 @@ class TurnRecord:
     idempotency_key: str = ""
     execution_state: str = ""
     attempt_no: int = 0
+    failure_count: int = 0
     lease_expires_at: datetime | None = None
     fence: int = 0
     waiting_reason: str = ""
