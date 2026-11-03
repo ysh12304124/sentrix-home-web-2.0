@@ -14,6 +14,7 @@ import {
   type AssetSummary,
 } from "../../shared/api/client";
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
+import { scopeDisplayName } from "../../shared/spaceName";
 import { AssetGrid } from "./AssetGrid";
 import "../../styles/library.css";
 
@@ -46,7 +47,7 @@ export function LibraryPage() {
   const requestSeq = useRef(0);
   const knownTotal = useRef<number | null>(null);
 
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const scopeName = scopeDisplayName(spaces, scopeId);
 
   useEffect(() => {
     void reportClientEvent({

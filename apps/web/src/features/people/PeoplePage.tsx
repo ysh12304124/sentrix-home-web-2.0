@@ -13,6 +13,7 @@
 import { useState } from "react";
 
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
+import { spaceDisplayName } from "../../shared/spaceName";
 import { useSearchParams } from "react-router";
 
 import { mergeFamilyScopes, runFamilyGraph } from "../../shared/api/client";
@@ -210,7 +211,7 @@ export function PeoplePage() {
                           )
                         }
                       />
-                      {space.name}
+                      {spaceDisplayName(space)}
                     </label>
                   </li>
                 ))}

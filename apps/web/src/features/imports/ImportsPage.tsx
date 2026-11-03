@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
+import { spaceDisplayName, scopeDisplayName } from "../../shared/spaceName";
 import { newClientId } from "../../shared/id";
 import {
   errorCodeFromStatus,
@@ -80,10 +81,12 @@ function jobStatusLabel(job: ImportJobView): string {
 
 export function ImportsPage() {
   const { scopeId, spaces } = useScope();
-  // “全部相册”是读侧筛选；写入必须落到具体相册，默认是 home-default。
-  const targetScope = scopeId || "home-default";
-  const targetName =
-    spaces.find((space) => space.id === targetScope)?.name ?? targetScope;
+  // “全部相册”是读侧筛选；写入必须落到后端列表里的具体相册。
+  const defaultSpace = spaces.find((space) => space.kind === "household") ?? spaces[0];
+  const targetScope = scopeId !== "" ? scopeId : (defaultSpace?.id ?? "");
+  const targetName = scopeId === ""
+    ? spaceDisplayName(defaultSpace)
+    : scopeDisplayName(spaces, scopeId);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [jobs, setJobs] = useState<ImportJobView[]>([]);
   const [error, setError] = useState("");
@@ -208,7 +211,7 @@ export function ImportsPage() {
         <h1>把照片和视频交给回忆</h1>
         <p>
           上传成功后会继续整理，关闭页面也不会中断。当前导入目标：<strong>{targetName}</strong>
-          {scopeId === "" ? "（查看全部相册时默认导入这里）" : ""}
+          {scopeId === "" ? "（未选择具体相册时，默认导入这里）" : ""}
         </p>
       </header>
       <div className="import-overall">
@@ -351,7 +354,7 @@ export function ImportsPage() {
             刷新 ↻
           </button>
         </div>
-        <p className="live-label">当前范围：{spaces.find((space) => space.id === scopeId)?.name ?? "全部相册"}</p>
+        <p className="live-label">当前范围：{scopeDisplayName(spaces, scopeId)}</p>
         {jobs.length === 0 ? (
           <p className="empty">这个范围还没有导入作业。</p>
         ) : (

@@ -18,6 +18,7 @@ import { OverlayProvider } from "./OverlayContext";
 import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
 import { newOperationId, reportClientEvent } from "../shared/clientEvents";
+import { spaceDisplayName } from "../shared/spaceName";
 import { useToast } from "../shared/ui/Toast";
 
 type HealthState = "ok" | "degraded" | "unknown";
@@ -143,7 +144,7 @@ export function AppShell() {
     (item) => item.path === location.pathname || (item.path !== "/" && location.pathname.startsWith(`${item.path}/`)),
   );
   const activeSpace = spaces.find((space) => space.id === scopeId);
-  const spaceLabel = activeSpace?.name ?? "全部相册";
+  const spaceLabel = scopeId === "" ? "全部相册" : spaceDisplayName(activeSpace);
   const stale = lastHealthAt === null || clock - lastHealthAt > 90_000;
   const healthLabel = stale || health === "unknown"
     ? "状态待确认"
@@ -169,7 +170,7 @@ export function AppShell() {
       >
         <option value="">全部相册</option>
         {spaces.map((space) => (
-          <option key={space.id} value={space.id}>{space.name}</option>
+          <option key={space.id} value={space.id}>{spaceDisplayName(space)}</option>
         ))}
       </select>
     </label>

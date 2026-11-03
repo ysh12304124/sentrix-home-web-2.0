@@ -23,10 +23,12 @@ body {
   color: var(--ex-ink);
 }
 
+/* 顶部横向导航壳层：侧栏规则保留但不再参与布局。 */
 .app-shell {
-  display: grid;
-  grid-template-columns: 252px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   background:
     radial-gradient(900px 500px at 85% -10%, rgba(204, 245, 110, 0.18), transparent 60%),
     var(--ex-paper);
@@ -292,13 +294,6 @@ body {
 .app-shell .text-button:hover {
   background: #fff;
   border-color: #cfc9b8;
-}
-
-.app-shell .view-root {
-  width: 100%;
-  max-width: 1340px;
-  margin: 0 auto;
-  padding: 30px 34px 56px;
 }
 
 /* 旧页面里常见的标题块统一留白 */
@@ -998,9 +993,6 @@ body {
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1080px) {
-  .app-shell {
-    grid-template-columns: 220px minmax(0, 1fr);
-  }
   .kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1019,18 +1011,9 @@ body {
 }
 
 @media (max-width: 760px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .app-shell .sidebar {
     position: static;
     height: auto;
-  }
-  .app-shell .view-root {
-    padding: 20px 16px 40px;
-  }
-  .app-shell .topbar {
-    padding: 0 16px;
   }
   .kpi-grid {
     grid-template-columns: minmax(0, 1fr);

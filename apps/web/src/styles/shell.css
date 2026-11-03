@@ -334,6 +334,8 @@
 .view-root.memory-view {
   padding: 0;
   max-width: none;
+  /* 普通页由内容撑高；回忆页是固定首屏，必须让 height 压过 flex:1。 */
+  flex: none;
   height: calc(100vh - var(--topbar-h));
   height: calc(100dvh - var(--topbar-h));
   min-height: 0;

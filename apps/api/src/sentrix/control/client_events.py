@@ -64,7 +64,7 @@ RESULT_CODES = frozenset(
 ERROR_CODES = frozenset(
     {"network", "timeout", "http_4xx", "http_5xx", "media_load", "video_play", "unknown"}
 )
-_ID = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_ID = r"^$|^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 
 
 class ClientEventRequest(BaseModel):
@@ -72,7 +72,7 @@ class ClientEventRequest(BaseModel):
 
     event_name: str = Field(min_length=1, max_length=64)
     route: str = Field(min_length=1, max_length=32)
-    operation_id: str = Field(min_length=1, max_length=64, pattern=_ID)
+    operation_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
     result: str = Field(min_length=1, max_length=16)
     error_code: str = Field(default="", max_length=16)
     scope_id: str = Field(default="", max_length=128, pattern=_ID)

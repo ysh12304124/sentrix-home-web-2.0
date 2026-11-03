@@ -10,12 +10,13 @@ import { useSearchParams } from "react-router";
 
 import { useScope } from "../../app/ScopeProvider";
 import { PageHeader } from "../../shared/ui/PageHeader";
+import { scopeDisplayName } from "../../shared/spaceName";
 import { Timeline } from "./Timeline";
 import "../../styles/timeline.css";
 
 export function TimelinePage() {
   const { scopeId, spaces, setScopeId } = useScope();
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const scopeName = scopeDisplayName(spaces, scopeId);
   const [searchParams, setSearchParams] = useSearchParams();
   const focusedEventId = searchParams.get("event");
 

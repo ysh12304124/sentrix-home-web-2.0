@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useNavigate } from "react-router";
 
 import { useScope } from "../../app/ScopeProvider";
+import { scopeDisplayName } from "../../shared/spaceName";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Section } from "../../shared/ui/Section";
 import { StatCard } from "../../shared/ui/StatCard";
@@ -76,7 +77,7 @@ export function OverviewPage() {
   }
 
   const eventCount = days.reduce((sum, day) => sum + day.events.length, 0);
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const scopeName = scopeDisplayName(spaces, scopeId);
   const show = (value: number | null) => (value === null ? "—" : value);
 
   return (
