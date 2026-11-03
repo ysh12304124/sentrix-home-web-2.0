@@ -31,6 +31,20 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _unique_original_bytes(connection) -> int:
+    """按唯一原件路径计配额；空路径的作业各自单独计数。"""
+    unique = connection.execute(
+        "SELECT COALESCE(SUM(size), 0) AS n FROM ("
+        "  SELECT MAX(size_bytes) AS size FROM import_jobs"
+        "  WHERE original_path <> '' GROUP BY original_path"
+        ")"
+    ).fetchone()["n"]
+    empty = connection.execute(
+        "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM import_jobs WHERE original_path = ''"
+    ).fetchone()["n"]
+    return int(unique) + int(empty)
+
+
 class SqliteImportJobRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -59,9 +73,7 @@ class SqliteImportJobRepository:
                 ).fetchone()["n"]
                 if int(inflight) >= max_inflight:
                     raise UploadBusy("too many concurrent uploads")
-                original = connection.execute(
-                    "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM import_jobs"
-                ).fetchone()["n"]
+                original = _unique_original_bytes(connection)
                 reserved = connection.execute(
                     "SELECT COALESCE(SUM(expected_bytes), 0) AS n FROM upload_reservations"
                 ).fetchone()["n"]
@@ -115,9 +127,7 @@ class SqliteImportJobRepository:
                         raise IdempotencyConflict("idempotency key reused for different content")
                     return _job(existing), False
 
-                original = connection.execute(
-                    "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM import_jobs"
-                ).fetchone()["n"]
+                original = _unique_original_bytes(connection)
                 reserved_other = connection.execute(
                     "SELECT COALESCE(SUM(expected_bytes), 0) AS n FROM upload_reservations "
                     "WHERE id <> ?",
@@ -218,6 +228,24 @@ class SqliteImportJobRepository:
             ).fetchone()
         return bool(row["cancel_requested"]) if row is not None else False
 
+    def adopt_original_path(
+        self,
+        job_id: str,
+        fence: int,
+        *,
+        asset_id: str,
+        original_path: str,
+        now: datetime,
+    ) -> bool:
+        """去重命中后把作业指向权威原件；围栏不匹配时不改。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE import_jobs SET asset_id = ?, original_path = ?, updated_at = ?"
+                " WHERE id = ? AND fence = ?",
+                (asset_id, original_path, now.isoformat(), job_id, fence),
+            )
+        return cursor.rowcount > 0
+
     def requeue(self, job_id: str) -> ImportJob | None:
         """管理员重排：只对已停下且可安全重放的作业生效；围栏加一使旧执行者失效。"""
         with self._database.connect() as connection, connection:
@@ -232,10 +260,7 @@ class SqliteImportJobRepository:
 
     def original_bytes(self) -> int:
         with self._database.connect() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM import_jobs"
-            ).fetchone()
-        return int(row["n"]) if row is not None else 0
+            return _unique_original_bytes(connection)
 
     def referenced_paths(self) -> set[str]:
         """作业原件与已登记资产路径的并集；启动清理只删不在这张表里的文件。"""

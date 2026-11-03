@@ -119,6 +119,8 @@ class ImportRequest:
     scope_id: str
     file_name: str
     content_type: str | None
+    # 接收阶段已确认并持久化的类型；优先于扩展名/MIME 推断。
+    media_type: MediaType | None = None
     content: bytes = b""
     # ``True`` 只完成资产落盘/登记，把关键帧与记忆构建留给显式流水线阶段。
     # 默认 False，保证既有单张导入与 ``POST /imports`` 的外部行为不变。
@@ -347,7 +349,9 @@ class ImportAssets:
             if request.source_path is not None
             else hashlib.sha256(request.content).hexdigest()
         )
-        media_type = MediaType.from_upload(request.content_type, request.file_name)
+        media_type = request.media_type or MediaType.from_upload(
+            request.content_type, request.file_name
+        )
 
         existing = self._assets.find_by_hash(request.scope_id, content_sha256)
         if existing is not None:

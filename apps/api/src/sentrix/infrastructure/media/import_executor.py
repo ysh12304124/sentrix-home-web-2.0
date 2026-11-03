@@ -215,12 +215,17 @@ class ImportJobExecutor:
             source = Path(job.original_path)
             if not source.is_file():
                 raise InputInvalid("original media file is missing")
+            try:
+                persisted_type = MediaType(job.media_type)
+            except ValueError:
+                raise InputInvalid(f"unsupported persisted media type: {job.media_type}") from None
             self._mark(job, "asset_staged", "running")
             outcome = importer.stage(
                 ImportRequest(
                     scope_id=job.scope_id,
                     file_name=job.file_name,
                     content_type=None,
+                    media_type=persisted_type,
                     source_path=source,
                     source_move=False,
                     asset_id=job.asset_id,
@@ -304,6 +309,25 @@ class ImportJobExecutor:
             asset_id=result.asset_id,
             completed_items=1,
         )
+        authority = self._assets.get(result.asset_id)
+        if authority is not None and authority.path:
+            redirected = self._jobs.adopt_original_path(
+                job.id,
+                job.fence,
+                asset_id=result.asset_id,
+                original_path=authority.path,
+                now=self._clock(),
+            )
+            if redirected and job.original_path and job.original_path != authority.path:
+                try:
+                    Path(job.original_path).unlink(missing_ok=True)
+                except OSError:
+                    log.warning(
+                        "去重后删除重复原件失败 job=%s path=%s",
+                        job.id,
+                        job.original_path,
+                        exc_info=True,
+                    )
 
     def _mark(self, job: ImportJob, stage: str, status: str, reason: str = "") -> None:
         if status in {"running", "done", "skipped"}:
