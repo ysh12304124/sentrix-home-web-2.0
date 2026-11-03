@@ -201,6 +201,25 @@ export interface TimelinePhoto {
   place: string;
 }
 
+export interface TimelineEventSummary {
+  id: string;
+  title: string;
+  time_start: string | null;
+  time_end: string | null;
+  place: string;
+  admin_district: string;
+  summary: string;
+  // 旧响应与旧测试夹具可能没有这三个字段；消费方按“可能缺失”处理。
+  representative_asset_id?: string | null;
+  representative_media_type?: string | null;
+  asset_count?: number;
+  // 兼容旧概览数据；新列表不再依赖这些字段。
+  event_type?: string;
+  activity?: string;
+  confidence?: number;
+  photos?: TimelinePhoto[];
+}
+
 export interface TimelineEvent {
   id: string;
   title: string;
@@ -213,11 +232,14 @@ export interface TimelineEvent {
   summary: string;
   confidence: number;
   photos: TimelinePhoto[];
+  /** 服务端算好的事件归属日期。 */
+  timeline_date?: string;
+  scope_id?: string;
 }
 
 export interface TimelineDay {
   date: string;
-  events: TimelineEvent[];
+  events: TimelineEventSummary[];
 }
 
 export interface TimelineResponse {
@@ -228,8 +250,30 @@ export interface TimelineResponse {
   days: TimelineDay[];
 }
 
+export interface CalendarDay {
+  date: string;
+  count: number;
+}
+
+export interface CalendarMonth {
+  month: number;
+  count: number;
+  days: CalendarDay[];
+}
+
+export interface CalendarYear {
+  year: number;
+  count: number;
+  months: CalendarMonth[];
+}
+
+export interface TimelineCalendarResponse {
+  scope_id: string;
+  years: CalendarYear[];
+}
+
 /**
- * 时间线。**地点筛选走后端**：前端只把用户输入原样传过去，不解析任何地名。
+ * 时间线。**地点、有没有地点、日期筛选都走后端**：前端只把用户输入原样传过去。
  *
  * `place` 为空时不传这个参数——「用户没筛」与「用户筛了一个空串」是两件事。
  */
@@ -238,24 +282,41 @@ export async function fetchTimeline(
   offset = 0,
   limit = 20,
   place = "",
+  options: { hasPlace?: boolean; date?: string } = {},
 ): Promise<TimelineResponse> {
   const params = new URLSearchParams({
     scope_id: scopeId,
     offset: String(offset),
     limit: String(limit),
   });
-  if (place) {
-    params.set("place", place);
-  }
+  if (place) params.set("place", place);
+  if (options.hasPlace === true) params.set("has_place", "true");
+  if (options.date !== undefined && options.date !== "") params.set("date", options.date);
   return request<TimelineResponse>(`/timeline?${params.toString()}`);
 }
 
+/** 有记录的年/月/日索引；没有事件的日期不会返回。 */
+export async function fetchTimelineCalendar(
+  scopeId: string,
+  place = "",
+  hasPlace = false,
+): Promise<TimelineCalendarResponse> {
+  const params = new URLSearchParams({ scope_id: scopeId });
+  if (place) params.set("place", place);
+  if (hasPlace) params.set("has_place", "true");
+  return request<TimelineCalendarResponse>(`/timeline/calendar?${params.toString()}`);
+}
+
 /**
- * 单个事件。与 `/timeline` 里的一项**是同一个模型**（后端 `_event_payload`），
- * 没有额外的人物 / 事实 / Observation 字段——详情页只展示实际存在的这些。
+ * 单个事件：完整事件与全部素材。列表卡片不再走这个模型。
  */
 export async function fetchEvent(eventId: string): Promise<TimelineEvent> {
   return request<TimelineEvent>(`/events/${encodeURIComponent(eventId)}`);
+}
+
+/** 事件的代表图/封面。图片与视频都走既有 poster 路由，不下载视频原片。 */
+export function timelinePosterUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/poster`;
 }
 // ---- 助手 -------------------------------------------------------------------
 

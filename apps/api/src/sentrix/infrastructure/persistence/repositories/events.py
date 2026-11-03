@@ -31,11 +31,23 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def _scope_clause(scope_id: str | None, place: str) -> tuple[str, tuple[object, ...]]:
+PLACE_PLACEHOLDERS = ("", "其他或不确定", "未知", "未知地点")
+
+
+def _scope_clause(
+    scope_id: str | None,
+    place: str,
+    *,
+    has_place: bool = False,
+    date: str = "",
+) -> tuple[str, tuple[object, ...]]:
     """拼 WHERE。``scope_id=None`` = 跨全部相册（1.0 ``db.py:1514`` 的 ``if scope_id:``）。
 
     无条件写 ``WHERE scope_id = ?`` 会让空串查 ``scope_id = ''``，返回空表——
     **而那个空表看起来与「这个范围真的没有事件」一模一样**。
+
+    日期索引、计数与按日列表共用同一组谓词；事件按 ``time_start`` 归日，
+    缺失时退回 ``created_at``，与 ``ReadTimeline._day_key`` 一致。
     """
     clause = " WHERE status = 'active'"
     params: list[object] = []
@@ -45,6 +57,12 @@ def _scope_clause(scope_id: str | None, place: str) -> tuple[str, tuple[object, 
     if place:
         clause += " AND (place LIKE ? OR admin_district LIKE ?)"
         params.extend((f"%{place}%", f"%{place}%"))
+    if has_place:
+        clause += " AND TRIM(COALESCE(place, '')) NOT IN (?, ?, ?, ?)"
+        params.extend(PLACE_PLACEHOLDERS)
+    if date:
+        clause += " AND substr(COALESCE(time_start, created_at), 1, 10) = ?"
+        params.append(date)
     return clause, tuple(params)
 
 
@@ -143,9 +161,16 @@ class SqliteEventRepository:
         return [_row_to_event(row) for row in rows]
 
     def list_by_scope(
-        self, scope_id: str | None, *, limit: int, offset: int = 0, place: str = ""
+        self,
+        scope_id: str | None,
+        *,
+        limit: int,
+        offset: int = 0,
+        place: str = "",
+        has_place: bool = False,
+        date: str = "",
     ) -> Sequence[EventRecord]:
-        clause, params = _scope_clause(scope_id, place)
+        clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_COLUMNS} FROM events{clause}"
@@ -154,11 +179,32 @@ class SqliteEventRepository:
             ).fetchall()
         return [_row_to_event(row) for row in rows]
 
-    def count_by_scope(self, scope_id: str | None, *, place: str = "") -> int:
-        clause, params = _scope_clause(scope_id, place)
+    def count_by_scope(
+        self,
+        scope_id: str | None,
+        *,
+        place: str = "",
+        has_place: bool = False,
+        date: str = "",
+    ) -> int:
+        clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
             row = connection.execute(f"SELECT COUNT(*) AS n FROM events{clause}", params).fetchone()
         return int(row["n"]) if row else 0
+
+    def calendar(
+        self, scope_id: str | None, *, place: str = "", has_place: bool = False
+    ) -> Sequence[tuple[str, int]]:
+        """有活动事件的日期及计数；只查日期，不展开事件或媒体。"""
+        clause, params = _scope_clause(scope_id, place, has_place=has_place)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT substr(COALESCE(time_start, created_at), 1, 10) AS day,"
+                " COUNT(*) AS n FROM events"
+                f"{clause} GROUP BY day ORDER BY day ASC",
+                params,
+            ).fetchall()
+        return [(str(row["day"]), int(row["n"])) for row in rows if row["day"]]
 
     def apply_summary(
         self,
@@ -200,6 +246,23 @@ class SqliteEventRepository:
                 (event_id,),
             ).fetchall()
         return [row["observation_id"] for row in rows]
+
+    def observation_ids_many(self, event_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """一页事件的观察 ID，一次 IN 查完；避免每条事件各查一次。"""
+        unique = list(dict.fromkeys(event_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT event_id, observation_id FROM event_observations"
+                f" WHERE event_id IN ({placeholders}) ORDER BY event_id, observation_id",
+                tuple(unique),
+            ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["event_id"]), []).append(str(row["observation_id"]))
+        return {key: tuple(values) for key, values in grouped.items()}
 
     def events_for_observations(self, observation_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         """这些观察各自落在哪些事件上（``event_observations`` 的反向查询）。

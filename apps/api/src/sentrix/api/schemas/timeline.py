@@ -29,11 +29,51 @@ class TimelineEvent(BaseModel):
     summary: str
     confidence: float
     photos: list[TimelinePhoto]
+    # 服务端算好的归属日期与相册；浏览器不从时间戳重新推断。
+    timeline_date: str = ""
+    scope_id: str = ""
+
+
+class TimelineEventSummary(BaseModel):
+    """按日列表的紧凑卡片：代表素材与关联素材总数，不展开全部照片。"""
+
+    id: str
+    title: str
+    time_start: str | None
+    time_end: str | None
+    place: str
+    admin_district: str
+    summary: str
+    representative_asset_id: str | None = None
+    representative_media_type: str | None = None
+    asset_count: int = 0
 
 
 class TimelineDay(BaseModel):
     date: str
-    events: list[TimelineEvent]
+    events: list[TimelineEventSummary]
+
+
+class CalendarDay(BaseModel):
+    date: str
+    count: int
+
+
+class CalendarMonth(BaseModel):
+    month: int
+    count: int
+    days: list[CalendarDay]
+
+
+class CalendarYear(BaseModel):
+    year: int
+    count: int
+    months: list[CalendarMonth]
+
+
+class TimelineCalendarResponse(BaseModel):
+    scope_id: str
+    years: list[CalendarYear]
 
 
 class TimelineResponse(BaseModel):

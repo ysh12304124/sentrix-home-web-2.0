@@ -155,7 +155,7 @@ export function OverviewPage() {
                 >
                   <strong>{event.title}</strong>
                   <small>{day.date} · {event.place || "未解析出地点"}</small>
-                  <span>{event.photos.length} 张照片 · 可回到原始证据</span>
+                  <span>{event.asset_count ?? event.photos?.length ?? 0} 份资料 · 可查看详情</span>
                 </button>
               )),
             )}

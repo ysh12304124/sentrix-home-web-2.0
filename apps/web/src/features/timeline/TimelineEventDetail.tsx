@@ -114,49 +114,18 @@ export function TimelineEventDetail({
               </div>
               <div>
                 <dt>地点</dt>
-                <dd>{event.place || "未解析出地点"}</dd>
+                <dd>{event.place || "地点未记录"}</dd>
               </div>
               <div>
                 <dt>行政区</dt>
-                <dd>{event.admin_district || "—"}</dd>
-              </div>
-              <div>
-                <dt>类型</dt>
-                <dd>{event.event_type || "—"}</dd>
-              </div>
-              <div>
-                <dt>活动</dt>
-                <dd>{event.activity || "—"}</dd>
-              </div>
-              <div>
-                <dt>置信度</dt>
-                <dd>{Math.round(event.confidence * 100)}%</dd>
+                <dd>{event.admin_district || "未记录"}</dd>
               </div>
             </dl>
 
             <section className="timeline-event-section">
-              <h3>封面照片</h3>
+              <h3>全部资料（{event.photos.length} 份）</h3>
               {event.photos.length === 0 ? (
-                <p className="timeline-event-note">这个事件没有关联照片。</p>
-              ) : (
-                <a
-                  className="timeline-event-cover"
-                  href={timelinePhotoUrl(event.photos[0])}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <img
-                    src={timelinePhotoUrl(event.photos[0])}
-                    alt={`${event.title}的封面`}
-                  />
-                </a>
-              )}
-            </section>
-
-            <section className="timeline-event-section">
-              <h3>原始证据（{event.photos.length} 张照片）</h3>
-              {event.photos.length === 0 ? (
-                <p className="timeline-event-note">没有可回溯的照片。</p>
+                <p className="timeline-event-note">这个事件暂时没有可展示的资料。</p>
               ) : (
                 <ul className="timeline-event-photo-list">
                   {event.photos.map((photo) => (
@@ -179,24 +148,12 @@ export function TimelineEventDetail({
                           <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
                         </a>
                       )}
-                      <small>{photo.file_name}</small>
                       <small>{formatDateTime(photo.captured_at)}</small>
                       {photo.place ? <small>{photo.place}</small> : null}
                     </li>
                   ))}
                 </ul>
               )}
-              <p className="timeline-event-note">
-                接口返回的是照片（Asset），不含 Observation 的 ID 与描述。
-              </p>
-            </section>
-
-            <section className="timeline-event-section">
-              <h3>人物、实体与关联事实</h3>
-              <p className="timeline-event-note">
-                事件详情端点不返回人物、实体或关联事实，2.0 也没有按事件查询它们的端点；
-                这里不编造数据。
-              </p>
             </section>
           </>
         )}

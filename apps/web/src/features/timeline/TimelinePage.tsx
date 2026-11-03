@@ -14,7 +14,7 @@ import { Timeline } from "./Timeline";
 import "../../styles/timeline.css";
 
 export function TimelinePage() {
-  const { scopeId, spaces } = useScope();
+  const { scopeId, spaces, setScopeId } = useScope();
   const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
   const [searchParams, setSearchParams] = useSearchParams();
   const focusedEventId = searchParams.get("event");
@@ -36,9 +36,9 @@ export function TimelinePage() {
   return (
     <>
       <PageHeader
-        kicker="记忆组织 / 事件"
-        title="家里的时间线，不只是文件列表。"
-        description={`当前范围：${scopeName}。照片和视频片段按真实拍摄时间统一整理。`}
+        kicker="家庭记忆"
+        title="时间线"
+        description={`当前范围：${scopeName}。先选年份和月份，再展开某一天查看当天的回忆。`}
       />
       <section className="timeline-layout">
         <div className="timeline-main">
@@ -46,6 +46,7 @@ export function TimelinePage() {
             scopeId={scopeId}
             focusEventId={focusedEventId}
             onOpenEvent={openEvent}
+            onSwitchScope={setScopeId}
           />
         </div>
       </section>

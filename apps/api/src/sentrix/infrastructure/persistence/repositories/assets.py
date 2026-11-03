@@ -99,6 +99,18 @@ class SqliteAssetRepository:
             ).fetchone()
         return _row_to_asset(row) if row else None
 
+    def get_many(self, asset_ids: Sequence[str]) -> dict[str, Asset]:
+        unique = list(dict.fromkeys(asset_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["id"]): _row_to_asset(row) for row in rows}
+
     def list_by_scope(self, scope_id: str | None, limit: int = 200) -> Sequence[Asset]:
         """``scope_id=None`` = 跨全部相册。
 
@@ -340,6 +352,18 @@ class SqliteObservationRepository:
                 f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE id = ?", (observation_id,)
             ).fetchone()
         return row_to_observation(row) if row else None
+
+    def get_many(self, observation_ids: Sequence[str]) -> dict[str, Observation]:
+        unique = list(dict.fromkeys(observation_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["id"]): row_to_observation(row) for row in rows}
 
     def list_by_asset(self, asset_id: str) -> Sequence[Observation]:
         with self._database.connect() as connection:
