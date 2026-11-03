@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
+import { csrfToken } from "../../shared/csrf";
 import { newClientId } from "../../shared/id";
 import {
   cancelImportJob,
@@ -370,8 +371,7 @@ export function ImportsPage() {
 
 async function reportClientEvent(kind: string, detail: string): Promise<void> {
   try {
-    const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
-    const csrf = match === null ? "" : decodeURIComponent(match[1]);
+    const csrf = csrfToken();
     await fetch("/control/v1/client-events", {
       method: "POST",
       credentials: "same-origin",

@@ -5,6 +5,7 @@ import { newClientId } from "../../shared/id";
 import { useAuth } from "../../app/AuthProvider";
 import { useScope } from "../../app/ScopeProvider";
 import "./feedback.css";
+import { csrfToken } from "../../shared/csrf";
 
 interface FeedbackRecord {
   id: string;
@@ -16,12 +17,6 @@ interface FeedbackRecord {
 }
 
 const DRAFT_KEY = "sentrix.feedback.draft";
-
-function csrfToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
-  return match === null ? "" : decodeURIComponent(match[1]);
-}
 
 export function FeedbackPanel({ onClose }: { onClose: () => void }) {
   const { identity } = useAuth();

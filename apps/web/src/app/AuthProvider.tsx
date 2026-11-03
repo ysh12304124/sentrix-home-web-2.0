@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { csrfToken, setCookieNamespace } from "../shared/csrf";
+
 export interface Identity {
   account_id: string;
   display_name: string;
@@ -19,12 +21,6 @@ const AuthContext = createContext<AuthValue | null>(null);
 
 const FRONTEND_BUILD = (import.meta.env.VITE_BUILD_SHA as string | undefined) ?? "";
 const RELOAD_MARKER = "sentrix.buildReloaded";
-
-function csrfToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
-  return match === null ? "" : decodeURIComponent(match[1]);
-}
 
 async function fetchIdentity(): Promise<Identity | null> {
   const response = await fetch("/control/v1/auth/me", { credentials: "same-origin" });
@@ -52,11 +48,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      let meta: { admin_only?: boolean; frontend_build?: string } = {};
+      let meta: { admin_only?: boolean; cookie_namespace?: string; frontend_build?: string } = {};
       try {
         const response = await fetch("/control/v1/meta", { credentials: "same-origin" });
         if (response.ok) meta = (await response.json()) as {
           admin_only?: boolean;
+          cookie_namespace?: string;
           frontend_build?: string;
         };
       } catch {
@@ -86,6 +83,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         value = null;
       }
       if (cancelled) return;
+      // 8210 与 8220 可能在同一浏览器各有一份会话；后续写请求只带当前入口的 CSRF。
+      if (meta.cookie_namespace !== undefined) setCookieNamespace(meta.cookie_namespace);
       setAdminOnly(meta.admin_only === true);
       setIdentity(value);
       setLoading(false);

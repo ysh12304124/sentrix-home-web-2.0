@@ -1,3 +1,5 @@
+import { csrfToken } from "../csrf";
+
 const BASE = "/api/v1";
 
 export interface AssetSummary {
@@ -70,13 +72,6 @@ function parseApiError(raw: string): ApiErrorBody | null {
     // 非 JSON 的错误体（反向代理的 502 页面之类）原样留在 raw 里，走兜底分支。
   }
   return null;
-}
-
-/** 控制面用双提交 CSRF：非 HttpOnly cookie 的内容要原样进请求头。 */
-function csrfToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
-  return match === null ? "" : decodeURIComponent(match[1]);
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

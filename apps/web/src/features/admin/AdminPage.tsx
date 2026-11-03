@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAuth } from "../../app/AuthProvider";
+import { csrfToken } from "../../shared/csrf";
 import { newClientId } from "../../shared/id";
 
 interface JobStage {
@@ -205,12 +206,6 @@ const EMPTY_FILTERS: FeedbackFilters = {
   since: "",
   until: "",
 };
-
-function csrfToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)sentrix_(?:control|admin)_csrf=([^;]*)/);
-  return match === null ? "" : decodeURIComponent(match[1]);
-}
 
 const KIND_LABELS: Record<string, string> = {
   problem: "问题",
