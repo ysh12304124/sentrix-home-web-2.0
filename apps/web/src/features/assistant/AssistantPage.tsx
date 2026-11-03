@@ -153,9 +153,9 @@ export function AssistantPage() {
   return (
     <>
       <PageHeader
-        kicker="记忆组织 / 对话"
+        kicker="家庭问答"
         title="你想找回哪一段记忆？"
-        description="从人物、时间、地点、物体或一句描述开始，答案会带回原始证据。"
+        description="从人物、时间、地点或一句描述开始，答案会带回相关照片和视频。"
       />
       {error ? <p className="error">{error}</p> : null}
       <div className="assistant-layout">

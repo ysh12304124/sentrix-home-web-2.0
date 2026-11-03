@@ -75,7 +75,7 @@ export function PersonInsights({ scopeId }: Props) {
   }
 
   if (!loaded) {
-    return <p className="empty">正在读取人物画像…</p>;
+    return <p className="empty">正在读取人物介绍…</p>;
   }
 
   return (
@@ -87,7 +87,7 @@ export function PersonInsights({ scopeId }: Props) {
       )}
 
       {data !== null && TIERS.every((tier) => data.tiers[tier.key].length === 0) ? (
-        <p className="empty">这个相册还没有可治理的人物画像。</p>
+        <p className="empty">这个相册还没有可查看的人物介绍。</p>
       ) : null}
 
       {data === null
@@ -124,7 +124,7 @@ export function PersonInsights({ scopeId }: Props) {
                         </p>
                         <div className="detail-empty">
                           {portrait === null
-                            ? "还没有生成画像。"
+                            ? "还没有生成介绍。"
                             : `${portrait.portrait_text}${currentFeedback === null ? "" : `（你的反馈：${currentFeedback}）`}`}
                         </div>
                         {portrait === null ? null : (

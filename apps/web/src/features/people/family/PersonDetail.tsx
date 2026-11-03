@@ -236,7 +236,7 @@ export function PersonDetail({
         </label>
         <form className="detail-form" onSubmit={submitPortrait}>
           <label>
-            家庭画像
+            人物介绍
             <textarea
               rows={3}
               value={portrait}
@@ -251,9 +251,9 @@ export function PersonDetail({
             type="submit"
             className="button ghost small"
             disabled={busy || portrait.trim() === ""}
-            title={portrait.trim() === "" ? "画像不能为空" : undefined}
+            title={portrait.trim() === "" ? "介绍不能为空" : undefined}
           >
-            保存画像
+            保存介绍
           </button>
         </form>
       </section>
