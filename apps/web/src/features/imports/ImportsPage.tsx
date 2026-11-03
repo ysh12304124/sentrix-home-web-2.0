@@ -207,7 +207,7 @@ export function ImportsPage() {
         <p className="eyebrow">资料导入</p>
         <h1>把照片和视频交给回忆</h1>
         <p>
-          上传后会进入持久作业，关闭页面也会继续处理。当前导入目标：<strong>{targetName}</strong>
+          上传成功后会继续整理，关闭页面也不会中断。当前导入目标：<strong>{targetName}</strong>
           {scopeId === "" ? "（查看全部相册时默认导入这里）" : ""}
         </p>
       </header>
@@ -290,8 +290,8 @@ export function ImportsPage() {
         <div className="import-notice">
           <span className="notice-mark" aria-hidden="true">i</span>
           <div>
-            <strong>已接收不等于已处理</strong>
-            <p>列表里的状态来自服务器上的持久作业；刷新或重新登录都能看到同一批进度。</p>
+            <strong>上传成功后会继续整理</strong>
+            <p>上传成功后服务器会继续整理；刷新或重新登录都能看到同一批进度。</p>
           </div>
         </div>
 

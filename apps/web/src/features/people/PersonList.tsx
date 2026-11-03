@@ -29,7 +29,7 @@ export function PersonList({ people, busy, onRename }: PersonListProps) {
   }
 
   if (people.length === 0) {
-    return <p className="empty">还没有已确认的人物。先在上面确认一个簇。</p>;
+    return <p className="empty">还没有已确认的人物。先在上面确认一位。</p>;
   }
 
   return (

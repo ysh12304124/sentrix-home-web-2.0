@@ -106,11 +106,11 @@ export function BatchConfirmPanel({
 
   return (
     <form className="merge-bar" aria-label="批量确认人物" onSubmit={submit}>
-      <h3>批量确认 {clusters.length} 个簇</h3>
+      <h3>批量确认 {clusters.length} 位人物</h3>
       <p className="merge-hint">
         为每个成员填写姓名；留空的行不会提交。关系行是可选的，提交后会在这两个人之间
         建立正式关系。
-        {skipped > 0 ? ` 有 ${skipped} 个簇还没有人物实体，已跳过。` : ""}
+        {skipped > 0 ? ` 有 ${skipped} 位还没有可用的身份，已跳过。` : ""}
       </p>
 
       <ul className="merge-choices">

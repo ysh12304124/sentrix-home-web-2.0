@@ -49,6 +49,15 @@ export function LibraryPage() {
   const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
 
   useEffect(() => {
+    void reportClientEvent({
+      eventName: "library.view",
+      result: "ok",
+      operationId: newOperationId(),
+      scopeId,
+    });
+  }, [scopeId]);
+
+  useEffect(() => {
     let cancelled = false;
     const seq = ++requestSeq.current;
     setLoading(true);

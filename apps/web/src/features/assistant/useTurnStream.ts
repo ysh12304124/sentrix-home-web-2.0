@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { newClientId } from "../../shared/id";
+import { errorCodeFromStatus, reportClientEvent } from "../../shared/clientEvents";
 import {
+  ApiError,
   cancelTurn as cancelTurnRequest,
   pollTurn,
   startTurn,
@@ -52,6 +54,7 @@ export function useTurnStream(): TurnStream {
   const seenRef = useRef<Set<number>>(new Set());
   // 回合 ID 还没返回时用户就点了停止：等 ID 到手后立刻补发取消，而不是静默吞掉。
   const cancelRequestedRef = useRef(false);
+  const operationIdRef = useRef("");
 
   const close = useCallback(() => {
     sourceRef.current?.close();
@@ -82,15 +85,33 @@ export function useTurnStream(): TurnStream {
 
       // 一次提问一枚键：网络重试命中同一个回合，不重复保存用户消息。
       const idempotencyKey = newClientId("turn");
+      operationIdRef.current = idempotencyKey;
+      void reportClientEvent({
+        eventName: "assistant.ask",
+        result: "started",
+        operationId: idempotencyKey,
+      });
 
       let activeTurnId: string;
       try {
         const started = await startTurn(conversationId, message, idempotencyKey);
         activeTurnId = started.turn_id;
         setTurnId(activeTurnId);
+        void reportClientEvent({
+          eventName: "assistant.accepted",
+          result: "accepted",
+          operationId: idempotencyKey,
+          turnId: activeTurnId,
+        });
       } catch (cause) {
         setError((cause as Error).message);
         setBusy(false);
+        void reportClientEvent({
+          eventName: "assistant.ask",
+          result: "failed",
+          operationId: idempotencyKey,
+          errorCode: cause instanceof ApiError ? errorCodeFromStatus(cause.status) : "network",
+        });
         return;
       }
 
@@ -121,6 +142,21 @@ export function useTurnStream(): TurnStream {
         setResult(payload);
         setBusy(false);
         close();
+        const result =
+          payload.status === "partial"
+            ? "partial"
+            : payload.status === "failed" || payload.status === "blocked"
+              ? "failed"
+              : payload.status === "cancelled"
+                ? "cancelled"
+                : "ok";
+        void reportClientEvent({
+          eventName: "assistant.complete",
+          result,
+          operationId: operationIdRef.current,
+          turnId: payload.turn_id || activeTurnId,
+          errorCode: result === "failed" ? "unknown" : undefined,
+        });
       };
 
       let attempt = 0;
@@ -207,11 +243,24 @@ export function useTurnStream(): TurnStream {
     if (finishedRef.current) return;
     if (turnId === null) {
       // 回合还在创建：先记下意图，startTurn 返回后立即取消。
-      if (busy) cancelRequestedRef.current = true;
+      if (busy) {
+        cancelRequestedRef.current = true;
+        void reportClientEvent({
+          eventName: "assistant.stop",
+          result: "cancelled",
+          operationId: operationIdRef.current,
+        });
+      }
       return;
     }
     try {
       await cancelTurnRequest(turnId);
+      void reportClientEvent({
+        eventName: "assistant.stop",
+        result: "cancelled",
+        operationId: operationIdRef.current,
+        turnId,
+      });
       // 停止接收后续帧：服务端会在安全检查点收尾，界面不再等一个不会来的 complete。
       finishedRef.current = true;
       close();
