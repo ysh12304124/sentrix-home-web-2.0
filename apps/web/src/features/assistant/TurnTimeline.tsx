@@ -162,7 +162,7 @@ function toolLabel(tool: string): string {
 
 function terminalLabel(status: string): string {
   if (status === "complete") return "回答完成。";
-  if (status === "partial") return "回答完成，但有一小部分内容暂时没找到。";
+  if (status === "partial") return "回答完成。";
   if (status === "cancelled") return "已停止回答。";
   if (status === "blocked") return "这一步被安全规则拦住了。";
   return "这次没有完成，可以再问一次。";
@@ -236,7 +236,7 @@ function PhaseEvent({ event, previous }: { event: AssistantProgressEvent; previo
  *
  * 状态着色沿用 1.0 的三态：running（进行中）/ blocked（被拦、报错、取消）/ complete。
  */
-const BLOCKED_STATUSES = new Set(["blocked", "denied", "error", "cancelled", "partial"]);
+const BLOCKED_STATUSES = new Set(["blocked", "denied", "error", "cancelled"]);
 
 function PhaseCard({ card }: { card: TimelineCard }) {
   const running = card.events.some((event) => event.status === "running");
