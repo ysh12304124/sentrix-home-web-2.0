@@ -31,10 +31,26 @@ function AdminPortNotice() {
   );
 }
 
+function AuthUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <main className="login-screen loading">
+      <section className="login-card" style={{ maxWidth: 420 }}>
+        <h2>暂时无法确认登录状态</h2>
+        <p role="alert">{message}</p>
+        <p className="login-sub">服务恢复后重试即可，不会丢失你已有的相册和资料。</p>
+        <button type="button" onClick={onRetry}>重试</button>
+      </section>
+    </main>
+  );
+}
+
 function AppRoutes() {
-  const { identity, loading, adminOnly } = useAuth();
+  const { identity, loading, adminOnly, authError, retry } = useAuth();
   if (loading) {
     return <main className="login-screen loading">正在载入…</main>;
+  }
+  if (authError !== null) {
+    return <AuthUnavailable message={authError} onRetry={retry} />;
   }
   if (adminOnly) {
     if (identity === null || identity.role !== "admin") {

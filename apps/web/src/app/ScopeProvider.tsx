@@ -19,6 +19,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { listMemorySpaces, type MemorySpace } from "../shared/api/client";
+import { useAuth } from "./AuthProvider";
 
 const LEGACY_STORAGE_KEY = "sentrix.scopeId";
 const ACCOUNT_STORAGE_PREFIX = "sentrix.scopeId.";
@@ -61,52 +62,30 @@ function clearQueryScope(): void {
   window.history.replaceState(null, "", url);
 }
 
-interface Identity {
-  readonly accountId: string | null;
-  /** 控制服务不存在（旧 8191）；保留 1.0 的存储键，旧实例行为不变。 */
-  readonly legacy: boolean;
-}
-
-function isControlSession(response: Response): boolean {
-  if (response.status === 401 || response.status === 403) return true;
-  return response.ok && (response.headers.get("content-type") ?? "").includes("application/json");
-}
-
 export function ScopeProvider({ children }: { children: ReactNode }) {
+  const { identity: authIdentity, loading } = useAuth();
   const [spaces, setSpaces] = useState<readonly MemorySpace[]>([]);
   const [spacesError, setSpacesError] = useState<string | null>(null);
-  const [identity, setIdentity] = useState<Identity | null>(null);
   const [scopeId, setScopeIdState] = useState<string>(ALL_SCOPES);
+  // 旧 8191 兼容只由 AuthProvider 在明确的旧版构建下返回 `local`。
+  const accountId = authIdentity?.account_id ?? null;
+  const legacy = accountId === "local";
 
   useEffect(() => {
+    if (loading) return;
+    if (accountId === null) {
+      // 身份未确认或未登录：不读相册存储，也不保留上个账号的列表。
+      setSpaces([]);
+      setSpacesError(null);
+      setScopeIdState(ALL_SCOPES);
+      return;
+    }
     let cancelled = false;
-    fetch("/control/v1/auth/me", { credentials: "same-origin" })
-      .then(async (response) => {
-        if (cancelled) return;
-        if (!isControlSession(response)) {
-          setIdentity({ accountId: null, legacy: true });
-          return;
-        }
-        if (!response.ok) {
-          setIdentity({ accountId: null, legacy: false });
-          return;
-        }
-        const body = (await response.json()) as { account_id?: unknown };
-        const accountId = typeof body.account_id === "string" ? body.account_id : null;
-        setIdentity({ accountId, legacy: false });
-      })
-      .catch(() => {
-        if (!cancelled) setIdentity({ accountId: null, legacy: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (identity === null) return;
-    let cancelled = false;
-    const storageKey = scopeStorageKey(identity.accountId, identity.legacy);
+    // 账号切换先卸载旧账号的列表、错误与选择，避免短暂显示别人相册。
+    setSpaces([]);
+    setSpacesError(null);
+    setScopeIdState(ALL_SCOPES);
+    const storageKey = scopeStorageKey(accountId, legacy);
     listMemorySpaces()
       .then((items) => {
         if (cancelled) return;
@@ -119,7 +98,12 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
           setScopeIdState(resolved);
           return;
         }
-        const stored = storageKey === null ? "" : (window.localStorage.getItem(storageKey) ?? "");
+        let stored = "";
+        try {
+          stored = storageKey === null ? "" : (window.localStorage.getItem(storageKey) ?? "");
+        } catch {
+          stored = "";
+        }
         setScopeIdState(stored === "" ? ALL_SCOPES : resolveStoredScope(stored, items));
       })
       .catch((cause: Error) => {
@@ -129,21 +113,26 @@ export function ScopeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [identity]);
+  }, [accountId, legacy, loading]);
 
   const setScopeId = useCallback(
     (next: string) => {
       setScopeIdState(next);
-      const storageKey =
-        identity === null ? null : scopeStorageKey(identity.accountId, identity.legacy);
-      if (storageKey !== null) window.localStorage.setItem(storageKey, next);
+      const storageKey = accountId === null ? null : scopeStorageKey(accountId, legacy);
+      if (storageKey !== null) {
+        try {
+          window.localStorage.setItem(storageKey, next);
+        } catch {
+          // 存储不可用时本会话仍可切换，只是下次打开不恢复。
+        }
+      }
       const url = new URL(window.location.href);
       if (next === ALL_SCOPES) url.searchParams.delete("scope");
       else url.searchParams.set("scope", next);
       // replaceState：切相册是筛选，不该往浏览器历史里塞一条。
       window.history.replaceState(null, "", url);
     },
-    [identity],
+    [accountId, legacy],
   );
 
   const value = useMemo<ScopeValue>(

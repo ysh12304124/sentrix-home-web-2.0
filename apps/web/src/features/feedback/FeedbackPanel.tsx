@@ -6,6 +6,12 @@ import { useAuth } from "../../app/AuthProvider";
 import { useScope } from "../../app/ScopeProvider";
 import "./feedback.css";
 import { csrfToken } from "../../shared/csrf";
+import {
+  clearFeedbackDraft,
+  clearLegacyFeedbackDraft,
+  readFeedbackDraft,
+  saveFeedbackDraft,
+} from "./draft";
 
 interface FeedbackRecord {
   id: string;
@@ -16,11 +22,10 @@ interface FeedbackRecord {
   created_at: string;
 }
 
-const DRAFT_KEY = "sentrix.feedback.draft";
-
 export function FeedbackPanel({ onClose }: { onClose: () => void }) {
   const { identity } = useAuth();
   const { scopeId } = useScope();
+  const accountId = identity?.account_id ?? null;
   const [kind, setKind] = useState("problem");
   const [body, setBody] = useState("");
   const [screenshot, setScreenshot] = useState<File | null>(null);
@@ -32,19 +37,33 @@ export function FeedbackPanel({ onClose }: { onClose: () => void }) {
   const keyRef = useRef("");
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(DRAFT_KEY);
-    if (stored !== null) setBody(stored);
+    clearLegacyFeedbackDraft();
+    if (accountId === null) {
+      // 身份未确认前不读任何用户草稿。
+      setBody("");
+      setRecords([]);
+      return;
+    }
+    let cancelled = false;
+    setBody(readFeedbackDraft(accountId));
+    setMessage("");
+    setRecords([]);
     void fetch("/control/v1/feedback", { credentials: "same-origin" })
       .then(async (response) =>
         response.ok ? ((await response.json()) as { items: FeedbackRecord[] }).items : [],
       )
-      .then(setRecords)
+      .then((items) => {
+        if (!cancelled) setRecords(items);
+      })
       .catch(() => undefined);
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   useEffect(() => {
     keyRef.current = newClientId("fb");
-  }, []);
+  }, [accountId]);
 
   useEffect(() => {
     if (screenshot === null) {
@@ -88,7 +107,7 @@ export function FeedbackPanel({ onClose }: { onClose: () => void }) {
           body: form,
         });
       }
-      window.localStorage.removeItem(DRAFT_KEY);
+      if (accountId !== null) clearFeedbackDraft(accountId);
       setBody("");
       setScreenshot(null);
       setConfirmed(false);
@@ -97,7 +116,7 @@ export function FeedbackPanel({ onClose }: { onClose: () => void }) {
       const list = await fetch("/control/v1/feedback", { credentials: "same-origin" });
       if (list.ok) setRecords(((await list.json()) as { items: FeedbackRecord[] }).items);
     } catch (cause) {
-      window.localStorage.setItem(DRAFT_KEY, body);
+      if (accountId !== null) saveFeedbackDraft(accountId, body);
       setMessage(`${(cause as Error).message}；草稿已保存在本机，可重试。`);
     } finally {
       setBusy(false);
