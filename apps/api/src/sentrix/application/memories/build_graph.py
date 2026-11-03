@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sentrix.domain.identity.ports import EntityRepository, RelationshipRepository
 from sentrix.domain.media.models import Observation
@@ -36,6 +36,11 @@ log = logging.getLogger("sentrix.memories.build_graph")
 
 GRAPH_READ_LIMIT = 100_000
 TEMPORAL_EDGE_MAX_SECONDS = 6 * 60 * 60
+
+
+def _aware(value: datetime) -> datetime:
+    """事件时间可能来自无时区元数据；图内比较统一按 UTC。"""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _iso(value: datetime | None) -> str:
@@ -604,11 +609,11 @@ class BuildMemoryGraph:
     ) -> None:
         ordered = sorted(
             (event for event in events if event.time_start is not None),
-            key=lambda event: (event.time_start, event.id),
+            key=lambda event: (_aware(event.time_start), event.id),
         )
         for left, right in zip(ordered, ordered[1:], strict=False):
             assert left.time_start is not None and right.time_start is not None
-            gap = (right.time_start - left.time_start).total_seconds()
+            gap = (_aware(right.time_start) - _aware(left.time_start)).total_seconds()
             if 0 <= gap <= TEMPORAL_EDGE_MAX_SECONDS:
                 add_edge(
                     _node_id("event", left.id),
