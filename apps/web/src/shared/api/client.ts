@@ -405,11 +405,20 @@ export interface ConversationDetail {
   conversation: ConversationSummary;
   messages: ConversationMessage[];
   turns: ConversationTurn[];
+  has_more?: boolean;
+  next_cursor?: string | null;
 }
 
-export async function getConversation(conversationId: string): Promise<ConversationDetail> {
+/** 默认取最新一页回合；cursor 指向更早一页的最旧回合。 */
+export async function getConversation(
+  conversationId: string,
+  cursor = "",
+  limit = 50,
+): Promise<ConversationDetail> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
   return request<ConversationDetail>(
-    `/assistant/conversations/${encodeURIComponent(conversationId)}`,
+    `/assistant/conversations/${encodeURIComponent(conversationId)}?${params.toString()}`,
   );
 }
 

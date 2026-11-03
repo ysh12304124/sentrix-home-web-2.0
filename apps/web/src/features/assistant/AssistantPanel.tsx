@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import {
   deliveredPhotoUrl,
   getConversation,
+  pollTurn,
   type AssistantAttachment,
   type AssistantProgressEvent,
+  type AssistantTurnPoll,
   type ConversationDetail,
 } from "../../shared/api/client";
 import { Lightbox } from "../../shared/ui/Lightbox";
@@ -30,7 +32,9 @@ interface Exchange {
  * 消息与回合是两个数组：`messages` 给顺序与文本，`turns` 给附件与终态。用
  * `turn_id` 对起来——**交付的照片只存在回合那一侧**，只看 messages 会全部丢掉。
  */
-function replayExchanges(detail: ConversationDetail): Exchange[] {
+function replayExchanges(
+  detail: Pick<ConversationDetail, "messages" | "turns">,
+): Exchange[] {
   const turns = new Map(detail.turns.map((turn) => [turn.id, turn]));
   const exchanges: Exchange[] = [];
   const byTurn = new Map<string, Exchange>();
@@ -113,6 +117,9 @@ export function AssistantPanel({
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyCursor, setHistoryCursor] = useState("");
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const {
     progress,
     result,
@@ -123,6 +130,7 @@ export function AssistantPanel({
     cancelled,
     executionState,
     attemptNo,
+    turnId: liveTurnId,
   } = useTurnStream();
 
   const settled = useRef<string | null>(null);
@@ -132,6 +140,8 @@ export function AssistantPanel({
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
   const progressRef = useRef<AssistantProgressEvent[]>([]);
   const historyToken = useRef(0);
+  const pollTimers = useRef<Map<string, number>>(new Map());
+  const pollGeneration = useRef(0);
   const sequence = useRef(0);
 
   useEffect(() => {
@@ -152,11 +162,15 @@ export function AssistantPanel({
     }
 
     setExchanges([]);
+    setHistoryCursor("");
+    setHistoryHasMore(false);
     setHistoryLoading(true);
     getConversation(conversationId)
       .then((detail) => {
         if (token !== historyToken.current) return;
         setExchanges(replayExchanges(detail));
+        setHistoryCursor(detail.next_cursor ?? "");
+        setHistoryHasMore(detail.has_more === true);
       })
       .catch((cause: Error) => {
         if (token !== historyToken.current) return;
@@ -167,6 +181,100 @@ export function AssistantPanel({
         if (token === historyToken.current) setHistoryLoading(false);
       });
   }, [conversationId]);
+
+  const loadEarlier = useCallback(async () => {
+    if (conversationId === null || historyCursor === "" || loadingEarlier) return;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    const token = historyToken.current;
+    const beforeHeight = document.documentElement.scrollHeight;
+    const beforeY = window.scrollY;
+    try {
+      const page = await getConversation(conversationId, historyCursor);
+      if (token !== historyToken.current) return;
+      const older = replayExchanges(page);
+      setExchanges((previous) => {
+        const keys = new Set(previous.map((item) => item.key));
+        return [...older.filter((item) => !keys.has(item.key)), ...previous];
+      });
+      setHistoryCursor(page.next_cursor ?? "");
+      setHistoryHasMore(page.has_more === true);
+      window.requestAnimationFrame(() => {
+        const grown = document.documentElement.scrollHeight - beforeHeight;
+        window.scrollTo(0, beforeY + Math.max(0, grown));
+      });
+    } catch (cause) {
+      if (token === historyToken.current) {
+        setHistoryError((cause as Error).message);
+      }
+    } finally {
+      if (token === historyToken.current) setLoadingEarlier(false);
+    }
+  }, [conversationId, historyCursor, loadingEarlier]);
+
+  // R7：历史里的非终态回合用现有轮询接口跟踪；切换会话时清空所有定时器。
+  useEffect(() => {
+    const token = ++pollGeneration.current;
+    return () => {
+      pollGeneration.current += 1;
+      for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
+      pollTimers.current.clear();
+      void token;
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    const generation = pollGeneration.current;
+    const apply = (poll: AssistantTurnPoll) => {
+      setExchanges((previous) =>
+        previous.map((item) =>
+          item.turnId === poll.turn_id
+            ? {
+                ...item,
+                status: poll.status,
+                reason: poll.waiting_reason || item.reason,
+                answer: poll.result?.answer || item.answer,
+                attachments: poll.result?.attachments ?? item.attachments,
+              }
+            : item,
+        ),
+      );
+    };
+    const schedule = (turnId: string, delay: number) => {
+      if (pollTimers.current.has(turnId)) return;
+      const timer = window.setTimeout(async () => {
+        pollTimers.current.delete(turnId);
+        if (generation !== pollGeneration.current) return;
+        try {
+          const poll = await pollTurn(turnId);
+          if (generation !== pollGeneration.current) return;
+          apply(poll);
+          if (!isTerminalStatus(poll.status)) schedule(turnId, 2000);
+        } catch {
+          if (generation === pollGeneration.current) {
+            schedule(turnId, Math.min(10_000, delay * 2));
+          }
+        }
+      }, delay);
+      pollTimers.current.set(turnId, timer);
+    };
+
+    for (const exchange of exchanges) {
+      if (exchange.turnId === "") continue;
+      if (isTerminalStatus(exchange.status)) {
+        const timer = pollTimers.current.get(exchange.turnId);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          pollTimers.current.delete(exchange.turnId);
+        }
+        continue;
+      }
+      // 当前页面发起的回合由 SSE 负责，避免同一回合重复轮询。
+      if (busy && exchange.turnId === liveTurnId) continue;
+      schedule(exchange.turnId, 1500);
+    }
+  }, [busy, conversationId, exchanges, liveTurnId]);
 
   const runQuestion = useCallback(
     (question: string) => {
@@ -298,6 +406,16 @@ export function AssistantPanel({
       {historyLoading ? <p className="assistant-history">正在加载历史消息…</p> : null}
 
       <div className="assistant-log">
+        {historyHasMore ? (
+          <button
+            type="button"
+            className="button ghost assistant-load-earlier"
+            disabled={loadingEarlier}
+            onClick={() => void loadEarlier()}
+          >
+            {loadingEarlier ? "正在加载更早消息…" : "加载更早消息"}
+          </button>
+        ) : null}
         {exchanges.map((exchange) => {
           const liveExchange =
             busy && live !== null && live.key === exchange.key && live.conversationId === conversationId;

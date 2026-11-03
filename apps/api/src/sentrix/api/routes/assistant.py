@@ -52,7 +52,10 @@ from sentrix.api.schemas.assistant import (
     TurnSummary,
 )
 from sentrix.api.schemas.operations import OperationCancellationResponse
-from sentrix.application.assistant.manage_conversations import ManageConversations
+from sentrix.application.assistant.manage_conversations import (
+    InvalidCursor,
+    ManageConversations,
+)
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.run_turn import (
     RunTurn,
@@ -133,12 +136,20 @@ def list_conversations(
 
 @router.get("/assistant/conversations/{conversation_id}")
 def get_conversation(
-    conversation_id: str, container: Container = Depends(get_container)
+    conversation_id: str,
+    cursor: str = "",
+    limit: int = 50,
+    container: Container = Depends(get_container),
 ) -> ConversationDetailResponse:
     use_case = ManageConversations(
         conversations=container.conversation_repository, turns=container.turn_repository
     )
-    detail = use_case.detail(conversation_id)
+    try:
+        detail = use_case.detail(
+            conversation_id, limit=max(1, min(limit, 200)), cursor=cursor
+        )
+    except InvalidCursor:
+        raise HTTPException(status_code=400, detail="cursor is not a turn of this conversation") from None
     if detail is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     return ConversationDetailResponse(
@@ -154,6 +165,8 @@ def get_conversation(
             for message in detail.messages
         ],
         turns=[_turn_summary(turn) for turn in detail.turns],
+        has_more=detail.has_more,
+        next_cursor=detail.next_cursor,
     )
 
 

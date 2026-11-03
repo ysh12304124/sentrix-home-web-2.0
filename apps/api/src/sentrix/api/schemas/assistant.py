@@ -57,6 +57,9 @@ class ConversationDetailResponse(BaseModel):
     conversation: ConversationSummary
     messages: list[MessageSummary]
     turns: list[TurnSummary]
+    # 向前分页：next_cursor 指向更早一页的最旧回合；has_more 表示还有更早的回合。
+    has_more: bool = False
+    next_cursor: str | None = None
 
 
 class StartTurnRequest(BaseModel):
