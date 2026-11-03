@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 
 import { useScope } from "../../app/ScopeProvider";
+import { useOverlayBlocked } from "../../app/OverlayContext";
 import { fetchRotation, markRotationViewed, type RotationCard } from "../../shared/api/client";
 import { reportClientEvent } from "../../shared/clientEvents";
 import { Modal } from "../../shared/ui/Modal";
@@ -19,6 +20,7 @@ function prefersReducedMotion(): boolean {
 
 export function MemoryPage() {
   const { scopeId } = useScope();
+  const overlayBlocked = useOverlayBlocked();
   const [cards, setCards] = useState<RotationCard[]>([]);
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [hasMore, setHasMore] = useState(false);
@@ -155,7 +157,8 @@ export function MemoryPage() {
     [atLastCard, card, cards.length, hasMore, index, loadMore, scopeId],
   );
 
-  const autoAdvance = !paused && !hovered && !focusWithin && visible && mediaReady;
+  const autoAdvance =
+    !paused && !hovered && !focusWithin && visible && mediaReady && !overlayBlocked;
   useEffect(() => {
     if (!autoAdvance || videoOpen || detailOpen || showEnd || card === undefined) return;
     const timer = window.setTimeout(() => move(1, false), SLIDE_MS);

@@ -7,12 +7,14 @@
  */
 
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 
 import { NAV_ITEMS } from "./nav";
 import { useScope } from "./ScopeProvider";
 import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
 import { HelpModal } from "./HelpModal";
+import { Onboarding } from "./Onboarding";
+import { OverlayProvider } from "./OverlayContext";
 import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
 import { newOperationId, reportClientEvent } from "../shared/clientEvents";
@@ -43,13 +45,16 @@ function NavLinkItem({ path, label, onNavigate }: { path: string; label: string;
 
 export function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { scopeId, spaces, setScopeId } = useScope();
   const { notify } = useToast();
-  const { identity, logout } = useAuth();
+  const { identity, logout, markOnboardingSeen } = useAuth();
   const [health, setHealth] = useState<HealthState>("unknown");
   const [lastHealthAt, setLastHealthAt] = useState<number | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const [overlay, setOverlay] = useState<"help" | "feedback" | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const autoOpenedOnboarding = useRef(false);
   const moreRef = useRef<HTMLDetailsElement | null>(null);
   const menuRef = useRef<HTMLDetailsElement | null>(null);
 
@@ -112,6 +117,27 @@ export function AppShell() {
     moreRef.current?.removeAttribute("open");
     menuRef.current?.removeAttribute("open");
   }, [location.pathname, scopeId]);
+
+  useEffect(() => {
+    if (autoOpenedOnboarding.current) return;
+    if (identity?.onboarding_show !== true) return;
+    autoOpenedOnboarding.current = true;
+    setOnboardingOpen(true);
+    void reportClientEvent({ eventName: "onboarding.open", result: "ok" });
+  }, [identity]);
+
+  const finishOnboarding = async (kind: "skip" | "complete") => {
+    setOnboardingOpen(false);
+    void reportClientEvent({
+      eventName: kind === "skip" ? "onboarding.skip" : "onboarding.complete",
+      result: "ok",
+    });
+    try {
+      await markOnboardingSeen();
+    } catch {
+      notify("这次选择尚未保存，下次登录可能再次出现。", "error");
+    }
+  };
 
   const current = NAV_ITEMS.find(
     (item) => item.path === location.pathname || (item.path !== "/" && location.pathname.startsWith(`${item.path}/`)),
@@ -280,16 +306,35 @@ export function AppShell() {
       </header>
 
       <div className="main-content">
-        <div
-          className={location.pathname === "/" ? "view-root memory-view" : "view-root"}
-          data-page={current?.id ?? "unknown"}
-        >
-          <Outlet />
-        </div>
+        <OverlayProvider blocked={overlay !== null || onboardingOpen}>
+          <div
+            className={location.pathname === "/" ? "view-root memory-view" : "view-root"}
+            data-page={current?.id ?? "unknown"}
+          >
+            <Outlet />
+          </div>
+        </OverlayProvider>
       </div>
 
-      {overlay === "help" ? <HelpModal onClose={() => setOverlay(null)} /> : null}
+      {overlay === "help" ? (
+        <HelpModal
+          page={current?.id ?? "memories"}
+          onClose={() => setOverlay(null)}
+          onOpenOnboarding={() => {
+            setOverlay(null);
+            setOnboardingOpen(true);
+            void reportClientEvent({ eventName: "onboarding.open", result: "ok" });
+          }}
+        />
+      ) : null}
       {overlay === "feedback" ? <FeedbackPanel onClose={() => setOverlay(null)} /> : null}
+      {onboardingOpen ? (
+        <Onboarding
+          onSkip={() => void finishOnboarding("skip")}
+          onComplete={() => void finishOnboarding("complete")}
+          onNavigate={(path) => navigate(path)}
+        />
+      ) : null}
     </main>
   );
 }

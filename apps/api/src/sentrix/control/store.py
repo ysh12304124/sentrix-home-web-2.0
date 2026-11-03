@@ -37,6 +37,7 @@ class Account:
     password_salt: str
     password_hash: str
     password_params: str
+    onboarding_version_seen: int = 0
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,19 @@ class ControlStore:
             row = connection.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
         return _account(row) if row is not None else None
 
+    def mark_onboarding_seen(self, account_id: str, version: int) -> int:
+        now = _iso(_now())
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE accounts SET onboarding_version_seen = ?, updated_at = ?"
+                " WHERE id = ? AND onboarding_version_seen < ?",
+                (version, now, account_id, version),
+            )
+            row = connection.execute(
+                "SELECT onboarding_version_seen FROM accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+        return int(row["onboarding_version_seen"] or 0) if row is not None else 0
+
     def set_password(self, account_id: str, password: str) -> bool:
         salt, digest, params = security.hash_password(password)
         with self._database.connect() as connection, connection:
@@ -246,7 +260,7 @@ class ControlStore:
                 """
                 SELECT s.*, a.id AS a_id, a.display_name, a.role, a.disabled,
                        a.api_url, a.data_root, a.password_algo, a.password_salt,
-                       a.password_hash, a.password_params_json
+                       a.password_hash, a.password_params_json, a.onboarding_version_seen
                 FROM sessions s JOIN accounts a ON a.id = s.account_id
                 WHERE s.id = ?
                 """,
@@ -288,6 +302,7 @@ class ControlStore:
                 password_salt=str(row["password_salt"]),
                 password_hash=str(row["password_hash"]),
                 password_params=str(row["password_params_json"]),
+                onboarding_version_seen=int(row["onboarding_version_seen"] or 0),
             )
         return SessionView(account=account, session=session)
 
@@ -934,4 +949,5 @@ def _account(row: sqlite3.Row) -> Account:
         password_salt=str(row["password_salt"]),
         password_hash=str(row["password_hash"]),
         password_params=str(row["password_params_json"]),
+        onboarding_version_seen=int(row["onboarding_version_seen"] or 0),
     )

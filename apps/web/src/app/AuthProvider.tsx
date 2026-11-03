@@ -23,6 +23,7 @@ interface AuthValue {
   login: (accountId: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   retry: () => void;
+  markOnboardingSeen: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -175,6 +176,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     throw new Error(result.message);
   }, []);
 
+  const markOnboardingSeen = useCallback(async () => {
+    const response = await fetch("/control/v1/auth/onboarding-seen", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "x-csrf-token": csrfToken() },
+    });
+    if (!response.ok) throw new Error(`保存引导状态失败（${response.status}）`);
+    const body = (await response.json()) as { onboarding_seen_version?: number };
+    setIdentity((previous) =>
+      previous === null
+        ? previous
+        : {
+            ...previous,
+            onboarding_seen_version: body.onboarding_seen_version ?? previous.onboarding_version,
+            onboarding_show: false,
+          },
+    );
+  }, []);
+
   const logout = useCallback(async () => {
     const accountId = identity?.account_id;
     await fetch("/control/v1/auth/logout", {
@@ -187,8 +207,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [identity]);
 
   const value = useMemo<AuthValue>(
-    () => ({ identity, loading, authError, adminOnly, login, logout, retry }),
-    [identity, loading, authError, adminOnly, login, logout, retry],
+    () => ({ identity, loading, authError, adminOnly, login, logout, retry, markOnboardingSeen }),
+    [identity, loading, authError, adminOnly, login, logout, retry, markOnboardingSeen],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

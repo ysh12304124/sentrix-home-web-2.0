@@ -22,6 +22,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 LOGIN_WINDOW_S = 600
 MAX_PAIR_FAILURES = 5
 MAX_IP_FAILURES = 20
+ONBOARDING_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -218,12 +219,37 @@ def build_router() -> APIRouter:
     def me(
         request: Request, auth: AuthContext = Depends(current_auth)
     ) -> dict[str, object]:
+        seen = auth.account.onboarding_version_seen
         return {
             "account_id": auth.account.id,
             "display_name": auth.account.display_name,
             "role": auth.account.role,
             "expires_at": auth.session.expires_at,
             "admin_only": _settings(request).admin_only,
+            "onboarding_version": ONBOARDING_VERSION,
+            "onboarding_seen_version": seen,
+            "onboarding_show": auth.account.role == "user" and seen < ONBOARDING_VERSION,
+        }
+
+    @router.post("/auth/onboarding-seen")
+    def onboarding_seen(
+        request: Request, auth: AuthContext = Depends(current_auth)
+    ) -> dict[str, object]:
+        require_csrf(request, auth)
+        # 只记录服务端当前版本，不接受浏览器自报更高版本。
+        seen = _store(request).mark_onboarding_seen(
+            auth.account.id, ONBOARDING_VERSION
+        )
+        _store(request).audit(
+            "onboarding.seen",
+            actor_account_id=auth.account.id,
+            target=auth.account.id,
+            result="ok",
+            detail={"version": ONBOARDING_VERSION},
+        )
+        return {
+            "onboarding_version": ONBOARDING_VERSION,
+            "onboarding_seen_version": seen,
         }
 
     @router.get("/meta")
