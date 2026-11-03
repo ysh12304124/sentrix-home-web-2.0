@@ -137,7 +137,10 @@ async def chat_completions(request: Request) -> StreamingResponse:
     except BaseException:
         await lease.__aexit__(*sys.exc_info())
         raise
-    gate.mark_ok()
+    if upstream.is_success:
+        gate.mark_ok()
+    else:
+        gate.mark_error(f"upstream HTTP {upstream.status_code}")
 
     response_headers = {
         name: value

@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,6 +106,7 @@ from sentrix.infrastructure.media.vlm_observer import OpenAIVlmObserver
 from sentrix.infrastructure.memories.causal_judge import OpenAICausalJudge
 from sentrix.infrastructure.models.face_adapter import FaceAdapter
 from sentrix.infrastructure.models.face_detector import RetinaFaceTiledDetector
+from sentrix.infrastructure.models.generation_health import ModelGenerationHealth
 from sentrix.infrastructure.models.legacy import (
     BgeSidecarEmbedder,
     ChineseClipSidecarEmbedder,
@@ -162,19 +165,71 @@ log = logging.getLogger("sentrix.bootstrap.container")
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "infrastructure" / "persistence" / "migrations"
 
 
-class _UnavailableEmbeddingHealth:
-    """体验实例启动时嵌入不可用的状态投影：保持进程可服务，只让依赖它的阶段等待。"""
+class RecoveringEmbeddingHealth:
+    """体验实例的嵌入健康投影：启动失败不锁死，后续按冷却时间自动重探。
 
-    def __init__(self, wrapped: object, error: str) -> None:
+    同一时刻只允许一个线程做真实 smoke_test；失败结果短期缓存，避免执行器每秒
+    轮询时反复打侧车。成功后仍会按成功 TTL 复查，侧车之后再坏也能重新进入等待。
+    """
+
+    def __init__(
+        self,
+        wrapped: object,
+        *,
+        initially_available: bool,
+        error: str,
+        success_ttl_s: float = 30.0,
+        failure_ttl_s: float = 5.0,
+        clock=time.monotonic,
+    ) -> None:
         self._wrapped = wrapped
-        self.load_error = error
+        self._success_ttl_s = success_ttl_s
+        self._failure_ttl_s = failure_ttl_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._available = initially_available
+        self._error = "" if initially_available else error
+        self._next_check = clock() + (
+            success_ttl_s if initially_available else failure_ttl_s
+        )
+
+    def _refresh(self) -> None:
+        with self._lock:
+            now = self._clock()
+            if now < self._next_check:
+                return
+            try:
+                ok, error = self._wrapped.smoke_test()
+            except Exception as exc:  # noqa: BLE001 - 探针失败只更新状态
+                ok, error = False, f"{type(exc).__name__}: {exc}"
+            self._available = ok
+            self._error = "" if ok else (error or "embedding smoke test failed")
+            self._next_check = now + (
+                self._success_ttl_s if ok else self._failure_ttl_s
+            )
 
     @property
     def available(self) -> bool:
-        return False
+        self._refresh()
+        return self._available
+
+    @property
+    def load_error(self) -> str:
+        return self._error
 
     def smoke_test(self) -> tuple[bool, str]:
-        return False, self.load_error
+        try:
+            ok, error = self._wrapped.smoke_test()
+        except Exception as exc:  # noqa: BLE001
+            ok, error = False, f"{type(exc).__name__}: {exc}"
+        now = self._clock()
+        with self._lock:
+            self._available = ok
+            self._error = "" if ok else (error or "embedding smoke test failed")
+            self._next_check = now + (
+                self._success_ttl_s if ok else self._failure_ttl_s
+            )
+        return ok, self._error
 
 
 @dataclass(frozen=True)
@@ -216,6 +271,7 @@ class Container:
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
     # ``/health`` 一路回 ok。没有这一格，降级在运维侧不可见。
     embedding_health: EmbeddingHealthProbe
+    model_health: ModelGenerationHealth
 
     # 时间线（S4）。地点是纯离线的：区县走 PyGeoCN 的面，乡镇/村庄走 GeoNames 的
     # 最近邻点，运行时零网络依赖。
@@ -357,15 +413,20 @@ class Container:
                 "体验实例嵌入维度不符：视觉必须是 768，文本必须是 1024"
             )
         smoke_ok, smoke_error = embedding_health.smoke_test()
-        if not smoke_ok:
-            if not settings.experience_mode:
-                raise RuntimeError(
-                    f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
-                    f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
-                )
-            # 体验实例允许“浏览/作业查询/恢复”先起来；依赖不可用只让受影响阶段等待。
-            log.warning("体验实例嵌入依赖暂不可用，API 仍启动: %s", smoke_error)
-            embedding_health = _UnavailableEmbeddingHealth(embedding_health, smoke_error)
+        if not smoke_ok and not settings.experience_mode:
+            raise RuntimeError(
+                f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
+                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+            )
+        if settings.experience_mode:
+            # 体验实例允许先起来；失败不再永久锁死，投影会按冷却时间重探。
+            embedding_health = RecoveringEmbeddingHealth(
+                embedding_health,
+                initially_available=smoke_ok,
+                error=smoke_error,
+            )
+            if not smoke_ok:
+                log.warning("体验实例嵌入依赖暂不可用，将自动重试: %s", smoke_error)
         log.info("嵌入方案启动测试通过（%s）", settings.embedding_scheme)
         log.info(
             "嵌入方案=%s 视觉=%s/%sd 文本=%s/%sd",
@@ -404,6 +465,9 @@ class Container:
             visual_embedder=visual_embedder,
             text_embedder=text_embedder,
             embedding_health=embedding_health,
+            model_health=ModelGenerationHealth(
+                settings.vlm_base_url, served_model.current
+            ),
             place_resolver=OfflinePlaceResolver(
                 admin=PyGeoCNAdminResolver(),
                 nearest=GeoNamesNearestResolver(settings.geo_dir),
@@ -469,19 +533,9 @@ class Container:
         """执行器开始一条作业前的依赖门槛：嵌入可用且主模型可响应。"""
         if not self.embedding_health.available:
             return False, f"embedding_unavailable: {self.embedding_health.load_error}"
-        try:
-            import httpx
-
-            from sentrix.infrastructure.models.gateway import model_auth_headers
-
-            response = httpx.get(
-                f"{self.settings.vlm_base_url.rstrip('/')}/models",
-                headers=model_auth_headers(),
-                timeout=3.0,
-            )
-            response.raise_for_status()
-        except Exception as error:  # noqa: BLE001 - 只回答可用性
-            return False, f"model_unavailable: {error}"
+        ready, reason = self.model_health.check()
+        if not ready:
+            return False, f"model_unavailable: {reason}"
         return True, ""
 
     def build_turn_executor(self):

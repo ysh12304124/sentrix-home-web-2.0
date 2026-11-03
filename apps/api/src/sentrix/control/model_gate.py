@@ -46,6 +46,9 @@ class ModelTarget:
             "upstream": f"{parts.scheme}://{host}{port}{parts.path.rstrip('/')}",
             "model_id": self.model_id,
             "slots": self.slots,
+            "last_ok_at": self._last_ok_at or None,
+            "last_error_at": self._last_error_at or None,
+            "last_error": self._last_error,
         }
 
 
@@ -116,6 +119,8 @@ class ModelGate:
     _last_admitted: dict[str, float] = field(default_factory=dict)
     _chat_since_import: int = 0
     _last_ok_at: float = 0.0
+    _last_error_at: float = 0.0
+    _last_error: str = ""
     _condition: asyncio.Condition = field(default_factory=asyncio.Condition)
 
     def __post_init__(self) -> None:
@@ -207,6 +212,11 @@ class ModelGate:
 
     def mark_ok(self) -> None:
         self._last_ok_at = time.time()
+        self._last_error = ""
+
+    def mark_error(self, message: str) -> None:
+        self._last_error_at = time.time()
+        self._last_error = message[:300]
 
     def waiting(self) -> dict[str, int]:
         counts = {kind: 0 for kind in KINDS}
