@@ -14,7 +14,6 @@ import {
   type AssetSummary,
 } from "../../shared/api/client";
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
-import { scopeDisplayName } from "../../shared/spaceName";
 import { AssetGrid } from "./AssetGrid";
 import "../../styles/library.css";
 
@@ -32,7 +31,7 @@ const FILTERS: readonly (readonly [MediaFilter, string])[] = [
 ];
 
 export function LibraryPage() {
-  const { scopeId, spaces } = useScope();
+  const { scopeId } = useScope();
   const [assets, setAssets] = useState<readonly AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -47,7 +46,6 @@ export function LibraryPage() {
   const requestSeq = useRef(0);
   const knownTotal = useRef<number | null>(null);
 
-  const scopeName = scopeDisplayName(spaces, scopeId);
 
   useEffect(() => {
     void reportClientEvent({
@@ -150,7 +148,7 @@ export function LibraryPage() {
       <PageHeader
         kicker="家庭资料"
         title="所有资料"
-        description={`当前范围：${scopeName}。可以按类型筛选、按拍摄或导入时间排序；这里的总数来自服务器上的全部资料。`}
+        description="可以按类型筛选、按拍摄或导入时间排序；这里的总数来自服务器上的全部资料。"
       />
 
       <div className="library-summary">

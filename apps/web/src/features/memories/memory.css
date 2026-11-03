@@ -1,15 +1,12 @@
-/* 回忆页：顶栏下方的固定首屏画布。
-   媒体行可收缩、等比例 contain；说明与控制各占一行，桌面首屏不需要纵向滚动。 */
+/* 回忆页：与其它页面一致的浅色画布，固定首屏高度。
+   媒体行可收缩、等比例 contain；说明只放标题和时间地点，控制常驻。 */
 
 .memory-stage {
   flex: 1;
   min-height: 0;
   display: flex;
   padding: clamp(8px, 1.6vw, 22px);
-  background:
-    radial-gradient(900px 420px at 50% -10%, rgba(47, 107, 69, 0.22), transparent 70%),
-    #0d110d;
-  color: #f5f3ee;
+  background: var(--ex-paper, #f4f1e8);
 }
 
 .memory-frame {
@@ -20,10 +17,10 @@
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ex-line, #e3dfd2);
   border-radius: 22px;
-  background: #0b0f0b;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(31, 39, 30, 0.08);
   animation: memory-fade 380ms ease;
 }
 
@@ -32,7 +29,7 @@
 }
 
 @keyframes memory-fade {
-  from { opacity: 0.3; }
+  from { opacity: 0.35; }
   to { opacity: 1; }
 }
 
@@ -43,7 +40,7 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: #090c09;
+  background: #f1f3ee;
 }
 
 .memory-stage .memory-backdrop {
@@ -51,9 +48,9 @@
   inset: -40px;
   background-size: cover;
   background-position: center;
-  filter: blur(46px) saturate(0.72) brightness(0.3);
+  filter: blur(48px) saturate(0.8) brightness(1.08);
   transform: scale(1.12);
-  opacity: 0.9;
+  opacity: 0.18;
   pointer-events: none;
 }
 
@@ -78,16 +75,17 @@
   gap: 10px;
   padding: 28px;
   text-align: center;
-  color: rgba(245, 243, 238, 0.8);
+  color: var(--ex-muted, #6f7268);
 }
 
 .memory-media-error strong {
+  color: var(--ex-ink, #191c17);
   font-size: 17px;
 }
 
 .memory-media-error span {
   max-width: 380px;
-  color: rgba(245, 243, 238, 0.55);
+  color: var(--ex-muted, #6f7268);
   font-size: 12.5px;
   line-height: 1.6;
 }
@@ -102,8 +100,9 @@
   position: relative;
   z-index: 2;
   padding: 14px clamp(18px, 2.6vw, 32px) 10px;
-  background: linear-gradient(180deg, rgba(11, 15, 11, 0.9), #0b0f0b 40%);
-  max-height: 34vh;
+  background: #fff;
+  border-top: 1px solid var(--ex-line, #e3dfd2);
+  max-height: 30vh;
   overflow-y: auto;
 }
 
@@ -119,7 +118,8 @@
 }
 
 .memory-caption h1 {
-  margin: 0 0 5px;
+  margin: 0;
+  color: var(--ex-ink, #191c17);
   font-size: clamp(20px, 2.2vw, 30px);
   letter-spacing: -0.025em;
   overflow: hidden;
@@ -128,15 +128,10 @@
 }
 
 .memory-caption p {
-  max-width: 920px;
-  margin: 0;
-  color: rgba(245, 243, 238, 0.72);
-  font-size: 13px;
+  margin: 4px 0 0;
+  color: var(--ex-muted, #6f7268);
+  font-size: 12.5px;
   line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .memory-stage .memory-meta {
@@ -144,27 +139,26 @@
   flex-wrap: wrap;
   gap: 5px 14px;
   margin: 0 0 7px;
-  color: rgba(245, 243, 238, 0.5);
-  font-size: 11px;
-  letter-spacing: 0.05em;
+  color: var(--ex-muted, #6f7268);
+  font-size: 11.5px;
 }
 
 .memory-detail-button {
   flex: none;
   align-self: center;
   padding: 7px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--ex-line, #e3dfd2);
   border-radius: 999px;
-  background: transparent;
-  color: rgba(245, 243, 238, 0.8);
+  background: #fff;
+  color: var(--ex-ink, #191c17);
   font: inherit;
   font-size: 11.5px;
   cursor: pointer;
 }
 
 .memory-detail-button:hover {
-  border-color: rgba(255, 255, 255, 0.4);
-  color: #fff;
+  border-color: var(--green);
+  color: var(--green-strong);
 }
 
 .memory-footer {
@@ -175,7 +169,8 @@
   align-items: center;
   gap: 8px 10px;
   padding: 8px clamp(18px, 2.6vw, 32px) 16px;
-  background: #0b0f0b;
+  background: #fff;
+  border-top: 1px solid var(--ex-line, #e3dfd2);
 }
 
 .memory-button,
@@ -183,16 +178,17 @@
   min-height: 38px;
   padding: 0 15px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.06);
-  color: #f5f3ee;
+  border: 1px solid var(--ex-line, #e3dfd2);
+  background: #fff;
+  color: var(--ex-ink, #191c17);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
 .memory-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--faint);
+  background: var(--soft);
 }
 
 .memory-button:disabled {
@@ -203,27 +199,26 @@
 .memory-footer .memory-toggle {
   min-width: 84px;
   border-color: transparent;
-  background: var(--ex-lime, #ccf56e);
-  color: #0b0f0b;
+  background: var(--lime);
+  color: var(--green-strong);
   font-weight: 700;
 }
 
 .memory-position {
-  color: rgba(245, 243, 238, 0.6);
+  color: var(--ex-muted, #6f7268);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
 .memory-hint {
   margin-left: auto;
-  color: rgba(245, 243, 238, 0.4);
+  color: var(--faint);
   font-size: 11px;
   text-align: right;
 }
 
 .memory-inline-error {
-  color: #f0b4a8 !important;
-  -webkit-line-clamp: initial !important;
+  color: #a33a2d !important;
 }
 
 .memory-empty,
@@ -232,6 +227,7 @@
   max-width: 560px;
   padding: 48px 24px;
   text-align: center;
+  color: var(--ex-ink, #191c17);
 }
 
 .memory-empty h1 {
@@ -241,14 +237,14 @@
 
 .memory-empty p {
   margin: 0;
-  color: rgba(245, 243, 238, 0.62);
+  color: var(--ex-muted, #6f7268);
   font-size: 13.5px;
   line-height: 1.7;
 }
 
 .memory-error-detail {
   margin-top: 8px !important;
-  color: rgba(245, 243, 238, 0.4) !important;
+  color: var(--faint) !important;
   font-size: 11.5px !important;
 }
 
@@ -268,9 +264,9 @@
   min-height: 42px;
   padding: 10px 16px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  background: rgba(0, 0, 0, 0.45);
-  color: inherit;
+  border: 1px solid var(--ex-line, #e3dfd2);
+  background: #fff;
+  color: var(--ex-ink, #191c17);
   text-decoration: none;
   display: inline-flex;
   align-items: center;
@@ -297,9 +293,62 @@
   white-space: pre-wrap;
 }
 
+/* ---- 全屏屏保：只显示画面与时间地点 ---- */
+
+.memory-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  cursor: none;
+}
+
+.memory-fullscreen-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.memory-fullscreen-meta {
+  position: absolute;
+  left: clamp(20px, 4vw, 52px);
+  bottom: clamp(18px, 3vw, 40px);
+  display: flex;
+  gap: 16px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.6);
+}
+
+.memory-fullscreen-exit {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 160ms ease;
+}
+
+.memory-fullscreen:hover .memory-fullscreen-exit,
+.memory-fullscreen-exit:focus-visible {
+  opacity: 1;
+}
+
 @media (max-width: 900px) {
   .memory-caption {
-    max-height: 40vh;
+    max-height: 36vh;
   }
 
   .memory-caption-main {
@@ -328,7 +377,7 @@
   }
 
   .memory-caption {
-    max-height: 42vh;
+    max-height: 38vh;
     padding: 12px 14px 8px;
   }
 

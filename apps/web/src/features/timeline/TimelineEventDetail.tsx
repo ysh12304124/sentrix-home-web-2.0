@@ -138,14 +138,14 @@ export function TimelineEventDetail({
                           type="button"
                           className="timeline-photo-open"
                           onClick={() =>
-                            onOpenImage(timelinePhotoUrl(photo), photo.file_name)
+                            onOpenImage(timelinePhotoUrl(photo), photo.place || formatDateTime(photo.captured_at))
                           }
                         >
-                          <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
+                          <img src={timelinePhotoUrl(photo)} alt="事件照片" loading="lazy" />
                         </button>
                       ) : (
                         <a href={timelinePhotoUrl(photo)} target="_blank" rel="noreferrer">
-                          <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
+                          <img src={timelinePhotoUrl(photo)} alt="事件照片" loading="lazy" />
                         </a>
                       )}
                       <small>{formatDateTime(photo.captured_at)}</small>

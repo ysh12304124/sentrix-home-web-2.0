@@ -13,10 +13,9 @@
 import { useState } from "react";
 
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
-import { spaceDisplayName } from "../../shared/spaceName";
 import { useSearchParams } from "react-router";
 
-import { mergeFamilyScopes, runFamilyGraph } from "../../shared/api/client";
+import { runFamilyGraph } from "../../shared/api/client";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Section } from "../../shared/ui/Section";
 import { useScope } from "../../app/ScopeProvider";
@@ -40,15 +39,13 @@ const TABS: readonly { value: View; label: string }[] = [
 ];
 
 export function PeoplePage() {
-  const { scopeId, spaces } = useScope();
+  const { scopeId } = useScope();
   const { state, people, relationships, error, reload, refresh } = useFamilyGraph(scopeId);
   const [view, setView] = useState<View>("roster");
   const [searchParams, setSearchParams] = useSearchParams();
   const [relateTo, setRelateTo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [mergeIds, setMergeIds] = useState<string[]>([]);
-  const [mergeBusy, setMergeBusy] = useState(false);
 
   /**
    * **一条关系在库里是两行**（正向 + 反向）。后端 `set_relationship` 一次写两行，
@@ -104,21 +101,6 @@ export function PeoplePage() {
       setActionError(describeReviewError(cause));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function handleMerge() {
-    if (mergeIds.length < 2) return;
-    setMergeBusy(true);
-    setActionError(null);
-    try {
-      await mergeFamilyScopes(mergeIds);
-      setMergeIds([]);
-      reload();
-    } catch (cause) {
-      setActionError(describeReviewError(cause));
-    } finally {
-      setMergeBusy(false);
     }
   }
 
@@ -189,43 +171,6 @@ export function PeoplePage() {
             <FamilyRoster people={people} selectedId={selectedId} onSelect={(id) => selectPerson(id)} />
           )}
 
-          {spaces.length > 1 ? (
-            <details className="scope-merge">
-              <summary>合并相册范围</summary>
-              <p>
-                把同一家人的几个相册并成一张图。合并后人物与关系会跨相册铺开，
-                推断出的图也共用一份。
-              </p>
-              <ul className="scope-merge-list">
-                {spaces.map((space) => (
-                  <li key={space.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={mergeIds.includes(space.id)}
-                        onChange={() =>
-                          setMergeIds((current) =>
-                            current.includes(space.id)
-                              ? current.filter((id) => id !== space.id)
-                              : [...current, space.id],
-                          )
-                        }
-                      />
-                      {spaceDisplayName(space)}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-              <button
-                type="button"
-                className="button ghost small"
-                disabled={mergeBusy || mergeIds.length < 2}
-                onClick={() => void handleMerge()}
-              >
-                合并选中的 {mergeIds.length} 个相册
-              </button>
-            </details>
-          ) : null}
         </Section>
       ) : null}
 

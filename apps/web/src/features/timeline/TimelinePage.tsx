@@ -10,13 +10,11 @@ import { useSearchParams } from "react-router";
 
 import { useScope } from "../../app/ScopeProvider";
 import { PageHeader } from "../../shared/ui/PageHeader";
-import { scopeDisplayName } from "../../shared/spaceName";
 import { Timeline } from "./Timeline";
 import "../../styles/timeline.css";
 
 export function TimelinePage() {
-  const { scopeId, spaces, setScopeId } = useScope();
-  const scopeName = scopeDisplayName(spaces, scopeId);
+  const { scopeId } = useScope();
   const [searchParams, setSearchParams] = useSearchParams();
   const focusedEventId = searchParams.get("event");
 
@@ -39,7 +37,7 @@ export function TimelinePage() {
       <PageHeader
         kicker="家庭记忆"
         title="时间线"
-        description={`当前范围：${scopeName}。先选年份和月份，再展开某一天查看当天的回忆。`}
+        description="先选年份和月份，再展开某一天查看当天的回忆。"
       />
       <section className="timeline-layout">
         <div className="timeline-main">
@@ -47,7 +45,6 @@ export function TimelinePage() {
             scopeId={scopeId}
             focusEventId={focusedEventId}
             onOpenEvent={openEvent}
-            onSwitchScope={setScopeId}
           />
         </div>
       </section>

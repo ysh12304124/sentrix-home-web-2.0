@@ -10,6 +10,8 @@ export interface AssetSummary {
   size_bytes: number;
   status: string;
   captured_at: string | null;
+  /** 服务端解析好的地点；没有地点时为空串。 */
+  place?: string;
   gps: { latitude: number; longitude: number } | null;
   /** 关键帧血缘（`GET /assets` 的 `AssetSummary` 会带）。普通资产为 null。 */
   derived_kind?: string | null;

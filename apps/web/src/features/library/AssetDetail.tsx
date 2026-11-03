@@ -104,7 +104,7 @@ export function AssetDetail({
 
   const media = useMemo(() => {
     if (asset.media_type === "image") {
-      return <img src={assetInlineUrl(asset)} alt={asset.file_name} />;
+      return <img src={assetInlineUrl(asset)} alt="资料图片" />;
     }
     if (asset.media_type === "video") {
       return (
@@ -113,7 +113,7 @@ export function AssetDetail({
           preload="metadata"
           playsInline
           src={assetInlineUrl(asset)}
-          aria-label={asset.file_name}
+          aria-label="视频"
           onLoadedMetadata={(event) => {
             if (initialTimeSec !== null && Number.isFinite(initialTimeSec)) {
               // 命中视频帧时直接停在那一秒，用户不必自己拖动。
@@ -124,7 +124,7 @@ export function AssetDetail({
       );
     }
     if (asset.media_type === "audio") {
-      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label={asset.file_name} />;
+      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label="音频" />;
     }
     if (asset.media_type === "text") {
       return textError !== null ? (
@@ -133,7 +133,7 @@ export function AssetDetail({
         <pre className="asset-text">{textContent ?? "读取文本中…"}</pre>
       );
     }
-    return <p className="asset-detail-note">{asset.file_name}</p>;
+    return <p className="asset-detail-note">这份资料暂时不能直接预览。</p>;
   }, [asset, initialTimeSec, textContent, textError]);
 
   return (
@@ -141,11 +141,10 @@ export function AssetDetail({
       <button type="button" className="close" onClick={onClose}>关闭</button>
       <div className="asset-detail-media">{media}</div>
       <dl>
-        <dt>文件名</dt><dd>{asset.file_name}</dd>
         <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? "资料"}</dd>
         <dt>拍摄时间</dt><dd>{asset.captured_at ?? "未标注"}</dd>
         <dt>地点</dt>
-        <dd>{asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "没有记录地点"}</dd>
+        <dd>{asset.place !== undefined && asset.place !== "" ? asset.place : asset.gps ? `${asset.gps.latitude.toFixed(4)}, ${asset.gps.longitude.toFixed(4)}` : "地点未记录"}</dd>
         {initialTimeSec !== null ? (
           <>
             <dt>命中时间</dt><dd>{initialTimeSec.toFixed(2)} 秒</dd>

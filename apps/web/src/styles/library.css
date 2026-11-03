@@ -100,3 +100,8 @@
   .library-summary div { border-right: 0; border-bottom: 1px solid var(--line); }
   .library-summary div:last-child { border-bottom: 0; }
 }
+
+/* 卡片下只显示时间和拍摄地点，不显示文件名。 */
+.asset-info { display: flex; flex-direction: column; gap: 4px; }
+.asset-info .asset-time { color: var(--ink); font-size: 11px; font-weight: 600; margin-top: 0; }
+.asset-info .asset-place { color: var(--muted); font-size: 10.5px; margin-top: 0; }

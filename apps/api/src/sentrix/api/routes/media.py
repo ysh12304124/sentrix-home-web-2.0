@@ -39,7 +39,7 @@ PREVIEW_MAX_DIMENSION = 1600
 PREVIEW_QUALITY = 85
 
 
-def to_summary(asset: Asset) -> AssetSummary:
+def to_summary(asset: Asset, place: str = "") -> AssetSummary:
     return AssetSummary(
         id=asset.id,
         file_name=asset.file_name,
@@ -48,6 +48,7 @@ def to_summary(asset: Asset) -> AssetSummary:
         size_bytes=asset.size_bytes,
         status=asset.status.value,
         captured_at=asset.captured_at.isoformat() if asset.captured_at else None,
+        place=place,
         gps=(
             {"latitude": asset.captured_location.latitude, "longitude": asset.captured_location.longitude}
             if asset.captured_location
@@ -282,8 +283,12 @@ def list_assets(
         offset=max(0, offset),
         limit=size,
     )
+    places = container.asset_place_repository.get_many([asset.id for asset in assets])
     return AssetListResponse(
-        items=[to_summary(asset) for asset in assets],
+        items=[
+            to_summary(asset, places[asset.id].display() if asset.id in places else "")
+            for asset in assets
+        ],
         total=total,
         offset=max(0, offset),
         limit=size,
@@ -296,7 +301,8 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
     asset = container.asset_repository.get(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
-    return to_summary(asset)
+    place = container.asset_place_repository.get(asset_id)
+    return to_summary(asset, place.display() if place else "")
 
 
 @router.get("/assets/{asset_id}/poster")

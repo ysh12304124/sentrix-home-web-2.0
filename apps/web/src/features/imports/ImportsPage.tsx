@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
-import { spaceDisplayName, scopeDisplayName } from "../../shared/spaceName";
 import { newClientId } from "../../shared/id";
 import {
   errorCodeFromStatus,
@@ -64,6 +63,22 @@ function keyFor(_file: File): string {
   return newClientId("upload");
 }
 
+function mediaKindLabel(mediaType: string): string {
+  return { image: "图片", video: "视频", audio: "音频", text: "文件" }[mediaType] ?? "资料";
+}
+
+function fileKindLabel(file: File): string {
+  if (file.type.startsWith("video/")) return "视频";
+  if (file.type.startsWith("audio/")) return "音频";
+  return "图片";
+}
+
+function formatUploadTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("zh-CN", { hour12: false }).slice(0, 16);
+}
+
 function jobStatusLabel(job: ImportJobView): string {
   const labels: Record<string, string> = {
     accepted: "已接收",
@@ -80,13 +95,9 @@ function jobStatusLabel(job: ImportJobView): string {
 }
 
 export function ImportsPage() {
-  const { scopeId, spaces } = useScope();
-  // “全部相册”是读侧筛选；写入必须落到后端列表里的具体相册。
-  const defaultSpace = spaces.find((space) => space.kind === "household") ?? spaces[0];
-  const targetScope = scopeId !== "" ? scopeId : (defaultSpace?.id ?? "");
-  const targetName = scopeId === ""
-    ? spaceDisplayName(defaultSpace)
-    : scopeDisplayName(spaces, scopeId);
+  const { scopeId } = useScope();
+  // 界面不再区分相册；写入交给后端默认相册。
+  const targetScope = "";
   const [entries, setEntries] = useState<Entry[]>([]);
   const [jobs, setJobs] = useState<ImportJobView[]>([]);
   const [error, setError] = useState("");
@@ -188,7 +199,7 @@ export function ImportsPage() {
         setError(`上传没有开始：${(cause as Error).message}`);
       }
     },
-    [refreshJobs, targetScope, uploadOne],
+    [refreshJobs, uploadOne],
   );
 
   const completedCount = jobs.filter((job) => job.status === "completed").length;
@@ -210,13 +221,12 @@ export function ImportsPage() {
         <p className="eyebrow">资料导入</p>
         <h1>把照片和视频交给回忆</h1>
         <p>
-          上传成功后会继续整理，关闭页面也不会中断。当前导入目标：<strong>{targetName}</strong>
-          {scopeId === "" ? "（未选择具体相册时，默认导入这里）" : ""}
+          上传成功后会继续整理，关闭页面也不会中断。
         </p>
       </header>
       <div className="import-overall">
         <div className="import-overall-copy">
-          <span>当前相册处理进度</span>
+          <span>资料整理进度</span>
           <b>
             {completedCount} / {batchTotal}
           </b>
@@ -291,14 +301,13 @@ export function ImportsPage() {
         </section>
 
         <div className="import-notice">
-          <span className="notice-mark" aria-hidden="true">i</span>
           <div>
             <strong>上传成功后会继续整理</strong>
             <p>上传成功后服务器会继续整理；刷新或重新登录都能看到同一批进度。</p>
           </div>
         </div>
 
-        {error !== "" ? <p role="alert">作业状态读取失败：{error}</p> : null}
+        {error !== "" ? <p role="alert">整理进度读取失败：{error}</p> : null}
 
         {entries.length > 0 ? (
           <>
@@ -308,7 +317,7 @@ export function ImportsPage() {
                 <div key={entry.key} className="queue-row">
                   <span className="queue-type">FILE</span>
                   <div>
-                    <strong>{entry.file.name}</strong>
+                    <strong>{fileKindLabel(entry.file)}</strong>
                     <small>
                       <span
                         className="job-status"
@@ -329,7 +338,7 @@ export function ImportsPage() {
                               : "上传失败"}
                       </span>{" "}
                       {entry.status === "accepted"
-                        ? `作业 ${entry.jobId}`
+                        ? "已进入整理"
                         : entry.status === "failed"
                           ? entry.error
                           : ""}
@@ -349,26 +358,26 @@ export function ImportsPage() {
 
       <aside className="import-status">
         <div className="panel-title">
-          <h2>导入作业{jobs.length > 0 ? `（${jobs.length}）` : ""}</h2>
+          <h2>整理进度{jobs.length > 0 ? `（${jobs.length}）` : ""}</h2>
           <button type="button" className="text-button" onClick={() => void refreshJobs()}>
             刷新 ↻
           </button>
         </div>
-        <p className="live-label">当前范围：{scopeDisplayName(spaces, scopeId)}</p>
+        <p className="live-label">全部上传记录</p>
         {jobs.length === 0 ? (
-          <p className="empty">这个范围还没有导入作业。</p>
+          <p className="empty">这里还没有上传记录。</p>
         ) : (
           <div className="queue-list job-queue">
             {jobs.map((job) => (
               <div key={job.job_id} className="queue-row">
                 <span className="queue-type">{job.media_type.slice(0, 3).toUpperCase()}</span>
                 <div>
-                  <strong>{job.file_name}</strong>
+                  <strong>{mediaKindLabel(job.media_type)}</strong>
                   <small>
                     <span className="job-status" data-status={job.status}>
                       {jobStatusLabel(job)}
                     </span>{" "}
-                    {job.stage !== "" ? job.stage : ""}
+                    上传于 {formatUploadTime(job.accepted_at)}
                     {job.attempts > 0 ? ` · 第 ${job.attempts} 次` : ""}
                   </small>
                   {job.error_message !== "" ? (

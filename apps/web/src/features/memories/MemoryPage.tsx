@@ -44,7 +44,9 @@ export function MemoryPage() {
   const [showEnd, setShowEnd] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [liveMode, setLiveMode] = useState<"off" | "polite">("off");
+  const [fullscreen, setFullscreen] = useState(false);
   const touchStart = useRef<number | null>(null);
+  const fullscreenRef = useRef<HTMLDivElement | null>(null);
   const card = cards[index];
   const atLastCard = index >= cards.length - 1;
 
@@ -166,10 +168,30 @@ export function MemoryPage() {
   }, [autoAdvance, videoOpen, detailOpen, showEnd, card, move]);
 
   useEffect(() => {
+    if (fullscreen) {
+      void fullscreenRef.current?.requestFullscreen?.().catch(() => undefined);
+    } else if (document.fullscreenElement !== null) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+  }, [fullscreen]);
+
+  useEffect(() => {
+    const onChange = () => {
+      if (document.fullscreenElement === null) setFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       if (event.target instanceof HTMLVideoElement) return;
       if (detailOpen) return;
+      if (event.key === "Escape" && fullscreen) {
+        setFullscreen(false);
+        return;
+      }
       if (event.key === "ArrowRight") move(1, true);
       if (event.key === "ArrowLeft") move(-1, true);
       if (event.key === " ") {
@@ -408,31 +430,27 @@ export function MemoryPage() {
           <div className="memory-meta">
             <span>{card.time_label !== "" ? card.time_label : "时间未记录"}</span>
             <span>{card.place_label !== "" ? card.place_label : "地点未记录"}</span>
-            <span>共 {card.related_asset_count} 份相关资料</span>
           </div>
           <div className="memory-caption-main">
             <div>
               <h1>{card.title !== "" ? card.title : "一段没有标题的回忆"}</h1>
-              {card.summary !== "" ? <p>{card.summary}</p> : null}
               {videoError ? (
                 <p className="memory-inline-error" role="alert">
                   视频暂时无法播放，可以回到封面或看下一段。
                 </p>
               ) : null}
             </div>
-            {card.summary !== "" ? (
-              <button
-                type="button"
-                className="memory-detail-button"
-                onClick={() => {
-                  setPaused(true);
-                  setDetailOpen(true);
-                  setLiveMode("polite");
-                }}
-              >
-                查看完整描述
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="memory-detail-button"
+              onClick={() => {
+                setPaused(true);
+                setDetailOpen(true);
+                setLiveMode("polite");
+              }}
+            >
+              查看完整描述
+            </button>
           </div>
         </div>
 
@@ -466,6 +484,16 @@ export function MemoryPage() {
               播放视频
             </button>
           ) : null}
+          <button
+            type="button"
+            className="memory-button memory-fullscreen-trigger"
+            onClick={() => {
+              setFullscreen(true);
+              setPaused(false);
+            }}
+          >
+            全屏
+          </button>
           <span className="memory-position">
             {index + 1} / {cards.length}
             {hasMore ? "+" : ""}
@@ -475,6 +503,28 @@ export function MemoryPage() {
           </span>
         </div>
       </div>
+
+      {fullscreen ? (
+        <div className="memory-fullscreen" ref={fullscreenRef}>
+          <img
+            className="memory-fullscreen-media"
+            src={posterSrc}
+            alt=""
+            onClick={() => move(1, true)}
+          />
+          <div className="memory-fullscreen-meta">
+            <span>{card.time_label !== "" ? card.time_label : "时间未记录"}</span>
+            <span>{card.place_label !== "" ? card.place_label : "地点未记录"}</span>
+          </div>
+          <button
+            type="button"
+            className="memory-fullscreen-exit"
+            onClick={() => setFullscreen(false)}
+          >
+            退出全屏
+          </button>
+        </div>
+      ) : null}
 
       {detailOpen ? (
         <Modal kicker="回忆详情" title={card.title !== "" ? card.title : "这一段回忆"} onClose={() => setDetailOpen(false)}>

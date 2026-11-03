@@ -341,8 +341,7 @@ export function PersonDetail({
           <ul className="detail-media">
             {person.representative_media.map((media) => (
               <li key={media.id}>
-                <img src={deliveredPhotoUrl(media.id, media.file_name)} alt={media.file_name} loading="lazy" />
-                <small>{media.file_name}</small>
+                <img src={deliveredPhotoUrl(media.id, media.file_name)} alt="人物照片" loading="lazy" />
               </li>
             ))}
           </ul>

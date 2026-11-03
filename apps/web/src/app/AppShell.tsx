@@ -10,15 +10,14 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 
 import { NAV_ITEMS } from "./nav";
-import { useScope } from "./ScopeProvider";
+import { GuidedTour } from "./GuidedTour";
+import { TOURS } from "./tours";
 import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
-import { HelpModal } from "./HelpModal";
 import { Onboarding } from "./Onboarding";
 import { OverlayProvider } from "./OverlayContext";
 import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
 import { newOperationId, reportClientEvent } from "../shared/clientEvents";
-import { spaceDisplayName } from "../shared/spaceName";
 import { useToast } from "../shared/ui/Toast";
 
 type HealthState = "ok" | "degraded" | "unknown";
@@ -47,35 +46,16 @@ function NavLinkItem({ path, label, onNavigate }: { path: string; label: string;
 export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { scopeId, spaces, setScopeId } = useScope();
   const { notify } = useToast();
   const { identity, logout, markOnboardingSeen } = useAuth();
   const [health, setHealth] = useState<HealthState>("unknown");
   const [lastHealthAt, setLastHealthAt] = useState<number | null>(null);
   const [clock, setClock] = useState(() => Date.now());
-  const [overlay, setOverlay] = useState<"help" | "feedback" | null>(null);
+  const [overlay, setOverlay] = useState<"guide" | "feedback" | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const autoOpenedOnboarding = useRef(false);
   const moreRef = useRef<HTMLDetailsElement | null>(null);
   const menuRef = useRef<HTMLDetailsElement | null>(null);
-
-  function switchScope(next: string) {
-    if (next !== "" && !spaces.some((space) => space.id === next)) {
-      notify("相册切换失败：该相册已不在列表中", "error");
-      return;
-    }
-    try {
-      setScopeId(next);
-      void reportClientEvent({
-        eventName: "scope.change",
-        result: "ok",
-        operationId: newOperationId(),
-        scopeId: next,
-      });
-    } catch (cause) {
-      notify(`相册切换失败：${(cause as Error).message}`, "error");
-    }
-  }
 
   useEffect(() => {
     let cancelled = false;
@@ -112,12 +92,11 @@ export function AppShell() {
       eventName: "page.view",
       result: "ok",
       operationId: newOperationId(),
-      scopeId,
     });
     // 页面切换关掉展开的导航菜单。
     moreRef.current?.removeAttribute("open");
     menuRef.current?.removeAttribute("open");
-  }, [location.pathname, scopeId]);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (autoOpenedOnboarding.current) return;
@@ -143,8 +122,6 @@ export function AppShell() {
   const current = NAV_ITEMS.find(
     (item) => item.path === location.pathname || (item.path !== "/" && location.pathname.startsWith(`${item.path}/`)),
   );
-  const activeSpace = spaces.find((space) => space.id === scopeId);
-  const spaceLabel = scopeId === "" ? "全部相册" : spaceDisplayName(activeSpace);
   const stale = lastHealthAt === null || clock - lastHealthAt > 90_000;
   const healthLabel = stale || health === "unknown"
     ? "状态待确认"
@@ -159,22 +136,6 @@ export function AppShell() {
     ref.current?.removeAttribute("open");
     ref.current?.querySelector("summary")?.focus();
   };
-
-  const scopeSelect = (
-    <label className="scope-switcher-top">
-      <span>相册</span>
-      <select
-        aria-label="切换全部相册或独立相册"
-        value={scopeId}
-        onChange={(event) => switchScope(event.target.value)}
-      >
-        <option value="">全部相册</option>
-        {spaces.map((space) => (
-          <option key={space.id} value={space.id}>{spaceDisplayName(space)}</option>
-        ))}
-      </select>
-    </label>
-  );
 
   return (
     <main className="app-shell">
@@ -230,13 +191,12 @@ export function AppShell() {
                 />
               ))}
               <div className="nav-popover-divider" />
-              {scopeSelect}
               <button
                 type="button"
                 className="nav-popover-action"
                 onClick={() => {
                   closeDetails(menuRef);
-                  setOverlay("help");
+                  setOverlay("guide");
                   void reportClientEvent({ eventName: "help.open", result: "ok" });
                 }}
               >
@@ -258,7 +218,6 @@ export function AppShell() {
         </nav>
 
         <div className="topbar-actions">
-          {scopeSelect}
           <span
             className="health-pill"
             data-state={stale ? "unknown" : health}
@@ -271,7 +230,7 @@ export function AppShell() {
             type="button"
             className="text-button topbar-action"
             onClick={() => {
-              setOverlay("help");
+              setOverlay("guide");
               void reportClientEvent({ eventName: "help.open", result: "ok" });
             }}
           >
@@ -289,7 +248,7 @@ export function AppShell() {
           </button>
           <span className="top-user">
             <span className="avatar tiny">{identity?.display_name.slice(0, 1) ?? "S"}</span>
-            <span className="top-user-name">{identity?.display_name ?? spaceLabel}</span>
+            <span className="top-user-name">{identity?.display_name ?? "家庭"}</span>
             {identity?.account_id !== "local" ? (
               <button
                 type="button"
@@ -317,12 +276,12 @@ export function AppShell() {
         </OverlayProvider>
       </div>
 
-      {overlay === "help" ? (
-        <HelpModal
-          page={current?.id ?? "memories"}
+      {overlay === "guide" ? (
+        <GuidedTour
+          pageLabel={current?.label ?? "回忆"}
+          steps={TOURS[current?.id ?? "memories"] ?? TOURS.memories}
           onClose={() => setOverlay(null)}
           onOpenOnboarding={() => {
-            setOverlay(null);
             setOnboardingOpen(true);
             void reportClientEvent({ eventName: "onboarding.open", result: "ok" });
           }}

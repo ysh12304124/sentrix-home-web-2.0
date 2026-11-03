@@ -18,13 +18,6 @@ import { AssetDetail } from "./AssetDetail";
 
 const TYPE_MARK: Readonly<Record<string, string>> = { image: "▦", video: "▶", audio: "♪", text: "¶" };
 
-const STATUS_LABEL: Readonly<Record<string, string>> = {
-  processed: "已整理",
-  processing: "正在整理",
-  queued: "等待整理",
-  failed: "整理失败",
-};
-
 function mediaLabel(mediaType: string): string {
   return { image: "图片", video: "视频", audio: "音频", text: "文本" }[mediaType] ?? "资料";
 }
@@ -62,7 +55,7 @@ export function AssetGrid({
               {asset.media_type === "image" ? (
                 <img
                   src={assetDisplayUrl(asset)}
-                  alt={asset.file_name}
+                  alt="资料图片"
                   loading="lazy"
                   onError={() => onMediaError?.(asset)}
                 />
@@ -72,11 +65,12 @@ export function AssetGrid({
               <b>{mediaLabel(asset.media_type)}</b>
             </div>
             <div className="asset-info">
-              <div className="asset-info-head">
-                <strong>{asset.file_name}</strong>
-              </div>
-              <small>{asset.captured_at ? asset.captured_at.slice(0, 10) : "未标注拍摄时间"}</small>
-              <span>{STATUS_LABEL[asset.status] ?? "状态更新中"}</span>
+              <small className="asset-time">
+                {asset.captured_at ? asset.captured_at.slice(0, 10) : "时间未记录"}
+              </small>
+              <span className="asset-place">
+                {asset.place !== undefined && asset.place !== "" ? asset.place : "地点未记录"}
+              </span>
             </div>
           </button>
         ))}

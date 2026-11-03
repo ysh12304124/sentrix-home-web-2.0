@@ -312,10 +312,11 @@ export function AssistantPanel({
                 </p>
               ) : null}
               {exchange.answer ? <p className="answer">{exchange.answer}</p> : null}
-              {exchange.status !== "running" && exchange.status !== "complete" ? (
+              {["cancelled", "failed", "blocked"].includes(exchange.status) ? (
                 <p className="note">
-                  这一轮的状态：{exchange.status}
-                  {exchange.reason !== "" ? `（${exchange.reason}）` : ""}
+                  {exchange.status === "cancelled"
+                    ? "已停止回答。"
+                    : "这次回答没有完成，可以再问一次。"}
                 </p>
               ) : null}
               {exchange.attachments.length > 0 ? (
@@ -330,13 +331,13 @@ export function AssistantPanel({
                         onClick={() =>
                           setLightbox({
                             src: deliveredPhotoUrl(photo.asset_id, photo.file_name),
-                            caption: photo.file_name,
+                            caption: "相关照片",
                           })
                         }
                       >
                         <img
                           src={deliveredPhotoUrl(photo.asset_id, photo.file_name)}
-                          alt={photo.file_name}
+                          alt="相关照片"
                           loading="lazy"
                         />
                       </button>
