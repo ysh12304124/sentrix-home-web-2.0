@@ -53,6 +53,7 @@
 | `metric_samples`（含分钟趋势） | 30 天 | `SENTRIX_CONTROL_METRIC_RETENTION_DAYS` |
 | `audit_events` | 90 天 | `SENTRIX_CONTROL_AUDIT_RETENTION_DAYS` |
 | `feedback` / 截图文件 | 90 天 | `SENTRIX_CONTROL_FEEDBACK_RETENTION_DAYS` |
+| `client_events` | 7 天 | `SENTRIX_CONTROL_CLIENT_EVENT_RETENTION_DAYS` |
 
 运行日志由 systemd journal 管理，保留 30 天。宿主机执行（需 root）：
 
@@ -92,3 +93,14 @@ journalctl -u sentrix-demo-admin.service --since today | grep -E 'service.restar
 - 单用户导入执行器仍是一个提交线程（相册内事件顺序约束），4 个模型槽位主要服务多用户并发，
   单个用户的 300+ 批量导入仍需逐张处理。
 - 用户 API 取消只保证在安全检查点停止，不强制杀死在飞的模型 HTTP 请求。
+
+
+## 7. 用户操作轨迹
+
+- 用户入口只接受固定事件名、固定路由模板、结果码和已有对象 ID；不写文件名、问答/反馈正文、
+  媒体地址或异常文本。账号、会话和服务端接收时间由认证上下文填写。
+- 管理员在 8220 展开某个用户后，页面每约 2 秒按 `after_id` 增量读取；浏览器标签页在后台或
+  用户收起面板时停止高频请求。断线保留最后一次记录并显示最后成功时间，不把旧数据标成实时。
+- 首次打开某用户轨迹记一条 `client_events.view` 审计；轮询不重复记。
+- 查询上限单次 200 条，面板最多保留最近 300 条并提示截断；7 天后由主监测器清理。
+- 引导状态按账号记录已见版本；跳过与完成都写当前版本。接口只接受服务端当前版本。
