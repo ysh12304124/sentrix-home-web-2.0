@@ -47,19 +47,19 @@ export const TOURS: Readonly<Record<string, readonly TourStep[]>> = {
   ],
   timeline: [
     {
-      selector: ".timeline-years",
-      title: "先选年份",
-      body: "这里只列出真的有记录的年份。",
+      selector: ".axis-year",
+      title: "一条竖轴看完所有记录",
+      body: "年份和月份是轴上的分组，有记录的日期是节点；没有记录的日期不会出现。",
     },
     {
-      selector: ".timeline-months",
-      title: "再选月份",
-      body: "数字是当月的回忆数量。没有记录的月份不会出现。",
-    },
-    {
-      selector: ".timeline-days",
+      selector: ".timeline-day-toggle",
       title: "展开某一天",
-      body: "默认收起；点开后才加载当天的卡片，不会一次加载整月。",
+      body: "日期默认收起；点开后才加载当天的卡片，不会一次加载整月。",
+    },
+    {
+      selector: ".filter-row",
+      title: "按地点筛选",
+      body: "地点和“只看有地点”都作用在完整记录上，筛选后竖轴会同步重建。",
     },
   ],
   people: [

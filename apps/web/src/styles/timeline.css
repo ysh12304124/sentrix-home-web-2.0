@@ -399,3 +399,191 @@
     gap: 2px;
   }
 }
+
+/* ---- 单列竖轴：年份 → 月份 → 日期节点 → 当天卡片 ---- */
+
+.timeline-axis {
+  position: relative;
+  padding: 2px 0 28px;
+}
+
+.timeline-axis::before {
+  content: "";
+  position: absolute;
+  left: 74px;
+  top: 12px;
+  bottom: 20px;
+  width: 2px;
+  background: var(--line);
+}
+
+.timeline-year-block,
+.timeline-month-block {
+  position: relative;
+}
+
+.axis-year {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  padding: 26px 0 8px;
+}
+
+.axis-year::before {
+  content: "";
+  position: absolute;
+  left: 68px;
+  top: 40px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--green);
+  border: 3px solid var(--ex-paper, #f4f1e8);
+}
+
+.axis-year-label {
+  width: 72px;
+  margin-right: 2px;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--ink);
+  font-size: clamp(20px, 2vw, 27px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.axis-year-count {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.axis-month {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 9px 0 6px;
+}
+
+.axis-month::before {
+  content: "";
+  position: absolute;
+  left: 70px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--faint);
+  border: 2px solid #fff;
+}
+
+.axis-month-label {
+  width: 64px;
+  margin-right: 10px;
+  text-align: right;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.axis-month-count {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.timeline-day-block {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  box-shadow: none;
+}
+
+.timeline-day-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-day-toggle:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.timeline-day-block.open .timeline-day-toggle {
+  color: var(--ink);
+}
+
+.axis-day-label {
+  width: 64px;
+  margin-right: 10px;
+  text-align: right;
+  color: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.axis-dot {
+  position: absolute;
+  left: 70px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--green);
+  border: 2px solid var(--ex-paper, #f4f1e8);
+}
+
+.timeline-day-toggle small {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.timeline-day-toggle b {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.timeline-day-events {
+  margin-left: 106px;
+  padding: 4px 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .timeline-axis::before { left: 54px; }
+  .axis-year::before { left: 48px; }
+  .axis-month::before { left: 50px; }
+  .axis-dot { left: 50px; }
+  .axis-year-label { width: 52px; margin-right: 2px; }
+  .axis-month-label,
+  .axis-day-label { width: 48px; margin-right: 6px; }
+  .axis-year-count,
+  .axis-month-count,
+  .timeline-day-toggle small { margin-left: 24px; }
+  .timeline-day-events { margin-left: 78px; }
+}

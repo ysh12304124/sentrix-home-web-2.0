@@ -68,8 +68,14 @@ export function GuidedTour({
       setRect(null);
       return;
     }
-    element.scrollIntoView({ block: "center", inline: "nearest" });
-    setRect(toRect(element));
+    const box = toRect(element);
+    // 超大区域（整条时间轴、整页）不滚动居中，否则会把页面拉到中间。
+    if (box.height < window.innerHeight * 0.7) {
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+      setRect(toRect(element));
+    } else {
+      setRect(box);
+    }
   }, [step]);
 
   useEffect(() => {
@@ -131,6 +137,14 @@ export function GuidedTour({
   const placement = useMemo(() => {
     if (highlight === null) {
       return { top: viewport.height / 2 - 130, left: viewport.width / 2 - BOX_WIDTH / 2, arrow: null as number | null, side: "center" as const };
+    }
+    if (highlight.height > viewport.height * 0.55) {
+      return {
+        top: viewport.height / 2 - 130,
+        left: viewport.width / 2 - BOX_WIDTH / 2,
+        arrow: null as number | null,
+        side: "center" as const,
+      };
     }
     const spaceBelow = viewport.height - (highlight.top + highlight.height);
     const side = spaceBelow >= 210 || spaceBelow >= highlight.top ? "bottom" : "top";

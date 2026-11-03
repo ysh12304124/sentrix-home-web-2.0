@@ -37,7 +37,7 @@ export function TimelinePage() {
       <PageHeader
         kicker="家庭记忆"
         title="时间线"
-        description="先选年份和月份，再展开某一天查看当天的回忆。"
+        description="按时间从上往下浏览；点开某一天查看当天的回忆。"
       />
       <section className="timeline-layout">
         <div className="timeline-main">
