@@ -26,7 +26,7 @@
 | 独立管理入口 | 8220 | `sentrix-demo-admin.service` |
 | Alice API | 8301 | `sentrix-demo-alice.service` |
 | Bob API | 8302 | `sentrix-demo-bob.service` |
-| 共享主模型 | 8100 | `sentrix-demo-llama.service` |
+| 共享主模型 | 8100 | `sentrix-demo-llama.service`（153 当前 `--parallel 4`，控制面槽位 4） |
 | Chinese-CLIP | 8113 | `sentrix-demo-clip.service` |
 | BGE-M3 | 8101 | 1.0 `sentrix-api.service` 的子进程（见 §6） |
 
@@ -87,6 +87,8 @@ journalctl -u sentrix-demo-admin.service --since today | grep -E 'service.restar
 
 - BGE 8101 目前是 1.0 API 的子进程，没有独立 systemd 单元；子进程挂掉不会由 systemd 单独拉起。
   正式切 3–5 人前应拆成独立受管单元（`sentrix-legacy-bge.service`）。
-- 8100 的旁路消费者（8194、8291、8091 等）未接入控制入口时，管理台会显示“共享模型调度未全覆盖”；
-  此时不能宣称问答优先级全局生效。
+- 8100 仍有直连消费者（8194、8291、8091、8772 等）。管理台按产品要求不再显示旁路横幅；
+  这些请求不受体验入口的槽位与优先级约束，因此优先级只对体验实例内部生效。
+- 单用户导入执行器仍是一个提交线程（相册内事件顺序约束），4 个模型槽位主要服务多用户并发，
+  单个用户的 300+ 批量导入仍需逐张处理。
 - 用户 API 取消只保证在安全检查点停止，不强制杀死在飞的模型 HTTP 请求。
