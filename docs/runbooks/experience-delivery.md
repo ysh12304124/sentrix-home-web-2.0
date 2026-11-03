@@ -82,15 +82,17 @@ PY
 
 ## 5. 静态检查记录（实施代理执行）
 
-在 153 的 `sentrix-home-web2.0-codex` 工作树执行（2026-11-03，后端 SHA `ea83c4c`，前端构建 `034708c`）：
+在 153 的 `sentrix-home-web2.0-codex` 工作树执行（2026-11-03，后端 SHA `5eba59c`，前端构建 `5eba59c`）：
 
 - `git diff --check`：通过。
 - `.venv/bin/python -m compileall -q apps/api/src/sentrix`：通过。
 - `PYTHONPATH=apps/api/src .venv/bin/python -c "import sentrix.control.admin, ..."`：通过。
 - `cd apps/web && npx tsc -b --force`：通过。
-- `cd apps/web && VITE_BUILD_SHA=034708c npx vite build`：通过。
+- `cd apps/web && VITE_BUILD_SHA=5eba59c npx vite build`：通过。
 - 批量导入回归：344 个文件全部接收并完成，期间修复了带时区/无时区事件时间比较的 `TypeError`，
   并补上进程重启后清理 `processing_generation` 的后处理恢复；记忆图的时间边比较也统一按 UTC。
+- CSRF 回归：同一浏览器同时持有 8210/8220 会话时，按 `/meta` 的 `cookie_namespace` 读取对应 token，
+  已验证用户提问与管理员登出均成功、两个会话互不影响。
 - `.venv/bin/lint-imports`：11 条契约全部 KEPT。
 - 针对性浏览器验证：8220 管理台加载构建 SHA、按用户运行、趋势、反馈筛选与重启按钮，
   并确认旁路横幅已移除、模型槽位显示 4；8210 问答点击“停止回答”后服务端回合为 `cancelled`；
