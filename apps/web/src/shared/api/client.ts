@@ -972,9 +972,9 @@ export interface ImportJobView {
   stages: ImportJobStageView[];
 }
 
-export async function listImportJobs(scopeId: string): Promise<ImportJobView[]> {
+export async function listImportJobs(scopeId: string, limit = 1000): Promise<ImportJobView[]> {
   const body = await request<{ items: ImportJobView[] }>(
-    `/import-jobs?scope_id=${encodeURIComponent(scopeId)}`,
+    `/import-jobs?scope_id=${encodeURIComponent(scopeId)}&limit=${limit}`,
   );
   return body.items;
 }

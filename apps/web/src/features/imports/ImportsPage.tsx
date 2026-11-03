@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
 import { newClientId } from "../../shared/id";
@@ -27,6 +27,30 @@ const ACTIVE_JOB_STATUSES = new Set([
   "waiting_dependency",
   "retry_scheduled",
 ]);
+
+// 与后端固定阶段顺序一致；列表接口不回传每个作业的 stage 行，用当前阶段估算单张进度。
+const STAGE_ORDER = [
+  "asset_staged",
+  "prepared",
+  "visual_indexed",
+  "observation_saved",
+  "faces_saved",
+  "event_assigned",
+  "text_indexed",
+  "entities_saved",
+  "facts_saved",
+  "lexical_indexed",
+  "video_scenes_done",
+];
+
+function jobPercent(job: ImportJobView): number {
+  if (job.status === "completed") return 100;
+  if (job.status === "cancelled") return 0;
+  if (job.stage === "postprocess") return 95;
+  const index = STAGE_ORDER.indexOf(job.stage);
+  if (index >= 0) return Math.round(((index + 1) / STAGE_ORDER.length) * 100);
+  return job.status === "accepted" || job.status === "queued" ? 4 : 8;
+}
 
 function keyFor(_file: File): string {
   // HTTP 头只能带 ISO-8859-1；中文文件名绝不能进 Idempotency-Key。
@@ -57,8 +81,7 @@ export function ImportsPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [jobs, setJobs] = useState<ImportJobView[]>([]);
   const [error, setError] = useState("");
-  const entriesRef = useRef<Entry[]>([]);
-  entriesRef.current = entries;
+  const [dragging, setDragging] = useState(false);
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -139,6 +162,19 @@ export function ImportsPage() {
     [refreshJobs, uploadOne],
   );
 
+  const completedCount = jobs.filter((job) => job.status === "completed").length;
+  const processingCount = jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)).length;
+  const problemCount = jobs.filter(
+    (job) => job.status === "needs_attention" || job.status === "partial",
+  ).length;
+  const waitingUploads = entries.filter(
+    (entry) => entry.status === "waiting" || entry.status === "uploading",
+  ).length;
+  const failedUploads = entries.filter((entry) => entry.status === "failed").length;
+  const batchTotal = jobs.length + waitingUploads;
+  const batchPercent =
+    batchTotal > 0 ? Math.round((completedCount / batchTotal) * 100) : 0;
+
   return (
     <>
       <header className="import-head">
@@ -149,33 +185,81 @@ export function ImportsPage() {
           {scopeId === "" ? "（查看全部相册时默认导入这里）" : ""}
         </p>
       </header>
+      <div className="import-overall">
+        <div className="import-overall-copy">
+          <span>当前相册处理进度</span>
+          <b>
+            {completedCount} / {batchTotal}
+          </b>
+        </div>
+        <div className="import-overall-bar" aria-hidden="true">
+          <i style={{ width: `${batchPercent}%` }} />
+        </div>
+        <small>
+          完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
+          {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
+        </small>
+      </div>
+
       <div className="import-stats">
-        <article><span>全部作业</span><b>{jobs.length}</b></article>
-        <article><span>处理中</span><b>{jobs.filter((job) => ["accepted", "queued", "running", "waiting_dependency", "retry_scheduled"].includes(job.status)).length}</b></article>
-        <article><span>已完成</span><b>{jobs.filter((job) => job.status === "completed").length}</b></article>
-        <article><span>需要处理</span><b>{jobs.filter((job) => job.status === "needs_attention" || job.status === "partial").length}</b></article>
+        <article><span>已接收</span><b>{jobs.length}</b></article>
+        <article><span>处理中</span><b>{processingCount}</b></article>
+        <article><span>已完成</span><b>{completedCount}</b></article>
+        <article><span>需要处理</span><b>{problemCount}</b></article>
       </div>
       <section className="import-layout">
       <div>
-        <label
-          className="dropzone"
-          onDragOver={(event) => event.preventDefault()}
+        <section
+          className={dragging ? "import-picker dragging" : "import-picker"}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
           onDrop={(event) => {
             event.preventDefault();
+            setDragging(false);
             void startUploads(Array.from(event.dataTransfer.files));
           }}
         >
-          <input
-            type="file"
-            multiple
-            accept="image/*,video/*,audio/*"
-            onChange={(event) => void startUploads(Array.from(event.target.files ?? []))}
-          />
-          <span className="drop-icon" aria-hidden="true">↓</span>
-          <strong>拖入照片或视频，或点击选择</strong>
-          <small>同一时间最多接收 2 个文件；关闭页面后处理仍会继续。</small>
-          <span className="button primary">选择资料</span>
-        </label>
+          <span className="import-picker-mark" aria-hidden="true">↓</span>
+          <div className="import-picker-copy">
+            <strong>拖入照片或视频</strong>
+            <small>也可以一次选择整个文件夹；上传后关闭页面，处理仍会继续。</small>
+          </div>
+          <div className="import-picker-actions">
+            <label className="button primary file-button">
+              选择文件
+              <input
+                type="file"
+                multiple
+                accept="image/*,video/*,audio/*"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void startUploads(files);
+                }}
+              />
+            </label>
+            <label className="button ghost file-button">
+              选择文件夹
+              <input
+                type="file"
+                multiple
+                ref={(node) => {
+                  if (node === null) return;
+                  node.setAttribute("webkitdirectory", "");
+                  node.setAttribute("directory", "");
+                }}
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void startUploads(files);
+                }}
+              />
+            </label>
+          </div>
+        </section>
 
         <div className="import-notice">
           <span className="notice-mark" aria-hidden="true">i</span>
@@ -189,8 +273,8 @@ export function ImportsPage() {
 
         {entries.length > 0 ? (
           <>
-            <h2>本次上传</h2>
-            <div className="queue-list">
+            <h2>本次上传（{entries.length}）</h2>
+            <div className="queue-list upload-queue">
               {entries.map((entry) => (
                 <div key={entry.key} className="queue-row">
                   <span className="queue-type">FILE</span>
@@ -236,7 +320,7 @@ export function ImportsPage() {
 
       <aside className="import-status">
         <div className="panel-title">
-          <h2>导入作业</h2>
+          <h2>导入作业{jobs.length > 0 ? `（${jobs.length}）` : ""}</h2>
           <button type="button" className="text-button" onClick={() => void refreshJobs()}>
             刷新 ↻
           </button>
@@ -245,7 +329,7 @@ export function ImportsPage() {
         {jobs.length === 0 ? (
           <p className="empty">这个范围还没有导入作业。</p>
         ) : (
-          <div className="queue-list">
+          <div className="queue-list job-queue">
             {jobs.map((job) => (
               <div key={job.job_id} className="queue-row">
                 <span className="queue-type">{job.media_type.slice(0, 3).toUpperCase()}</span>
@@ -262,21 +346,7 @@ export function ImportsPage() {
                     <small className="job-error">{job.error_message}</small>
                   ) : null}
                   <div className="job-progress" aria-hidden="true">
-                    <i
-                      style={{
-                        width: `${
-                          job.stages.length === 0
-                            ? job.status === "completed"
-                              ? 100
-                              : 8
-                            : Math.round(
-                                (job.stages.filter((stage) => stage.status === "done" || stage.status === "skipped").length /
-                                  job.stages.length) *
-                                  100,
-                              )
-                        }%`,
-                      }}
-                    />
+                    <i style={{ width: `${jobPercent(job)}%` }} />
                   </div>
                 </div>
                 {ACTIVE_JOB_STATUSES.has(job.status) ? (

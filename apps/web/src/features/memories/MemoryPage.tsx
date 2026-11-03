@@ -171,82 +171,74 @@ export function MemoryPage() {
       <div
         className={reduced ? "memory-frame memory-frame-reduced" : "memory-frame"}
         key={card.event_id}
-        onClick={() => setPaused(true)}
       >
-        <div
-          className="memory-backdrop"
-          style={{ backgroundImage: `url(${card.poster_url})` }}
-          aria-hidden="true"
-        />
-        <div className="memory-topline">
-          <span>{card.time_label !== "" ? card.time_label : "回忆"}</span>
-          <span>{paused ? "已暂停" : "自动播放中"}</span>
-        </div>
-        {videoOpen && card.play_url !== null ? (
-          <video
-            className="memory-media"
-            src={card.play_url}
-            controls
-            autoPlay
-            onEnded={() => setVideoOpen(false)}
-            onPause={() => setPaused(true)}
+        <div className="memory-visual" onClick={() => setPaused(true)}>
+          <div
+            className="memory-backdrop"
+            style={{ backgroundImage: `url(${card.poster_url})` }}
+            aria-hidden="true"
           />
-        ) : (
-          <img
-            className="memory-media"
-            src={card.poster_url}
-            alt={card.title || "回忆画面"}
-            onLoad={() => setMediaReady(true)}
-            onError={() => move(1, false)}
-            onClick={() => {
-              if (card.media_kind === "video" && card.play_url !== null) {
-                setVideoOpen(true);
+          {videoOpen && card.play_url !== null ? (
+            <video
+              className="memory-media"
+              src={card.play_url}
+              controls
+              autoPlay
+              onEnded={() => setVideoOpen(false)}
+              onPause={() => setPaused(true)}
+            />
+          ) : (
+            <img
+              className="memory-media"
+              src={card.poster_url}
+              alt={card.title || "回忆画面"}
+              onLoad={() => setMediaReady(true)}
+              onError={() => move(1, false)}
+              onClick={() => {
                 setPaused(true);
-              }
-            }}
-          />
-        )}
-        <div className="memory-overlay">
-          {card.title !== "" ? <h1>{card.title}</h1> : null}
-          {card.summary !== "" ? <p>{card.summary}</p> : null}
+                if (card.media_kind === "video" && card.play_url !== null) {
+                  setVideoOpen(true);
+                }
+              }}
+            />
+          )}
+        </div>
+
+        <div className="memory-caption" aria-live="polite">
           <div className="memory-meta">
             {card.time_label !== "" ? <span>{card.time_label}</span> : null}
             {card.place_label !== "" ? <span>{card.place_label}</span> : null}
+            <span>
+              {index + 1} / {cards.length}
+              {hasMore ? "+" : ""}
+            </span>
           </div>
+          {card.title !== "" ? <h1>{card.title}</h1> : null}
+          {card.summary !== "" ? <p>{card.summary}</p> : null}
         </div>
-        <div className="memory-controls">
-          {card.media_kind === "video" && card.play_url !== null && !videoOpen ? (
-            <button type="button" onClick={() => { setVideoOpen(true); setPaused(true); }}>
-              播放原视频
-            </button>
-          ) : null}
-          <button type="button" onClick={() => move(-1, true)}>上一页</button>
-          <button type="button" onClick={() => setPaused((value) => !value)}>
-            {paused ? "继续自动播放" : "暂停"}
+
+        <div className="memory-footer">
+          <button
+            type="button"
+            className="button primary memory-toggle"
+            aria-pressed={!paused}
+            onClick={() => setPaused((value) => !value)}
+          >
+            {paused ? "开始" : "暂停"}
           </button>
-          <button type="button" onClick={() => move(1, true)}>下一页</button>
-          <Link className="memory-detail-link" to={`/timeline?event=${card.event_id}`}>
-            事件详情
-          </Link>
-        </div>
-        <div className="memory-dots" role="tablist" aria-label="回忆页序">
-          {cards.slice(0, 12).map((item, position) => (
-            <button
-              key={item.event_id}
-              type="button"
-              role="tab"
-              aria-selected={position === index}
-              aria-label={`第 ${position + 1} 页`}
-              className={position === index ? "memory-dot active" : "memory-dot"}
-              onClick={() => {
-                setPaused(true);
-                setIndex(position);
-              }}
-            />
-          ))}
-        </div>
-        <div className="memory-progress" aria-hidden="true">
-          {index + 1} / {cards.length}{hasMore ? "+" : ""}
+          <span className="memory-hint">
+            {card.media_kind === "video" && card.play_url !== null && !videoOpen
+              ? "点击画面播放原视频 · 键盘 ← → 切换 · 空格暂停"
+              : "键盘 ← → 切换 · 空格暂停"}
+          </span>
+          <div className="memory-dots" aria-hidden="true">
+            {cards.slice(0, 12).map((item, position) => (
+              <span
+                key={item.event_id}
+                className={position === index ? "memory-dot active" : "memory-dot"}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </section>

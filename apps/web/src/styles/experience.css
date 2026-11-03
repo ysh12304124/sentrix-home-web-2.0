@@ -570,41 +570,6 @@ body {
   font-size: 13px;
 }
 
-.app-shell .dropzone {
-  min-height: 300px;
-  border: 1.5px dashed #c9c4b3;
-  border-radius: 20px;
-  background:
-    radial-gradient(500px 240px at 50% 0%, rgba(204, 245, 110, 0.18), transparent 70%),
-    var(--ex-surface);
-  gap: 12px;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
-}
-
-.app-shell .dropzone:hover {
-  border-color: var(--ex-green);
-  transform: translateY(-1px);
-}
-
-.app-shell .drop-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 18px;
-  background: var(--ex-forest);
-  color: var(--ex-lime);
-  font-size: 22px;
-}
-
-.app-shell .dropzone strong {
-  font-size: 15px;
-  letter-spacing: -0.01em;
-}
-
-.app-shell .dropzone small {
-  font-size: 11.5px;
-  color: var(--ex-muted);
-}
-
 .app-shell .import-status {
   border: 1px solid var(--ex-line);
   border-radius: 20px;
@@ -1029,25 +994,6 @@ body {
 .feedback-panel button {
   background: var(--ex-forest);
   border-radius: 12px;
-}
-
-/* ---------- 回忆页细节 ---------- */
-.memory-controls button {
-  backdrop-filter: blur(12px);
-  border-color: rgba(255, 255, 255, 0.22);
-  transition: background 140ms ease, transform 140ms ease;
-}
-
-.memory-controls button:hover {
-  background: rgba(204, 245, 110, 0.18);
-  transform: translateY(-1px);
-}
-
-.memory-progress {
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(8px);
 }
 
 /* ---------- 响应式 ---------- */
@@ -1592,103 +1538,6 @@ body {
   }
 }
 
-/* ---------- 回忆页精修 ---------- */
-.memory-backdrop {
-  position: absolute;
-  inset: -40px;
-  background-size: cover;
-  background-position: center;
-  filter: blur(46px) saturate(0.75) brightness(0.42);
-  transform: scale(1.12);
-  opacity: 0.9;
-  pointer-events: none;
-}
-
-.memory-media {
-  position: relative;
-  z-index: 1;
-}
-
-.memory-topline {
-  position: absolute;
-  z-index: 2;
-  top: 20px;
-  left: 24px;
-  right: 24px;
-  display: flex;
-  justify-content: space-between;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
-.memory-topline span {
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(10px);
-}
-
-.memory-overlay {
-  z-index: 2;
-}
-
-.memory-controls {
-  z-index: 3;
-}
-
-.memory-controls .memory-detail-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 16px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
-  color: inherit;
-  text-decoration: none;
-  font-size: 13px;
-  background: rgba(0, 0, 0, 0.32);
-  backdrop-filter: blur(12px);
-}
-
-.memory-controls .memory-detail-link:hover {
-  background: rgba(204, 245, 110, 0.16);
-}
-
-.memory-dots {
-  position: absolute;
-  z-index: 3;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 7px;
-}
-
-.memory-dot {
-  width: 8px;
-  height: 8px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.32);
-  cursor: pointer;
-  transition: width 160ms ease, background 160ms ease;
-}
-
-.memory-dot.active {
-  width: 24px;
-  border-radius: 999px;
-  background: var(--ex-lime);
-}
-
-.memory-progress {
-  z-index: 3;
-  bottom: 12px;
-}
-
 /* ---------- 导入页精修 ---------- */
 .import-stats {
   display: grid;
@@ -1743,13 +1592,6 @@ body {
 @media (max-width: 760px) {
   .import-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .memory-topline {
-    left: 12px;
-    right: 12px;
-  }
-  .memory-controls .memory-detail-link {
-    display: none;
   }
 }
 
@@ -1958,5 +1800,157 @@ body {
 @media (max-width: 760px) {
   .user-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- 导入页：批量进度与选择区 ---- */
+
+.import-overall {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--ex-line);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(204, 245, 110, 0.14), transparent 55%),
+    var(--ex-surface);
+  box-shadow: 0 10px 30px rgba(31, 39, 30, 0.05);
+}
+
+.import-overall-copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.import-overall-copy span {
+  color: var(--ex-muted);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.import-overall-copy b {
+  font-size: 30px;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.import-overall-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ex-soft);
+  overflow: hidden;
+}
+
+.import-overall-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--ex-green), #86b45f);
+  transition: width 300ms ease;
+}
+
+.import-overall small {
+  color: var(--ex-muted);
+  font-size: 11.5px;
+}
+
+.import-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 24px;
+  border: 1.5px dashed #c9c4b3;
+  border-radius: 20px;
+  background:
+    radial-gradient(520px 220px at 15% 0%, rgba(204, 245, 110, 0.18), transparent 70%),
+    var(--ex-surface);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.import-picker.dragging {
+  border-color: var(--ex-green);
+  background:
+    radial-gradient(520px 220px at 15% 0%, rgba(204, 245, 110, 0.3), transparent 72%),
+    var(--ex-surface);
+  transform: translateY(-1px);
+}
+
+.import-picker-mark {
+  width: 54px;
+  height: 54px;
+  border-radius: 18px;
+  background: var(--ex-forest);
+  color: var(--ex-lime);
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+}
+
+.import-picker-copy strong {
+  display: block;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.import-picker-copy small {
+  display: block;
+  margin-top: 5px;
+  color: var(--ex-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.import-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.file-button {
+  position: relative;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.file-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-button:focus-within {
+  outline: 3px solid rgba(47, 107, 69, 0.22);
+  outline-offset: 2px;
+}
+
+.upload-queue,
+.job-queue {
+  max-height: 540px;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 900px) {
+  .import-picker {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .import-picker-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 }

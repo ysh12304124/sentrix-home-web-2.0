@@ -89,8 +89,6 @@ interface Overview {
   build_sha?: string;
   frontend_build?: string;
   shared_model_units?: string[];
-  unmanaged_model_consumers?: string[];
-  scheduling_complete?: boolean;
   host?: {
     cpu_percent?: number | null;
     load_1m?: number | null;
@@ -490,7 +488,6 @@ export function AdminPage() {
     );
   }
 
-  const unmanaged = overview?.unmanaged_model_consumers ?? [];
 
   return (
     <section className="admin-page">
@@ -516,17 +513,6 @@ export function AdminPage() {
       </header>
 
       {error !== "" ? <div className="empty-panel" role="alert">{error}</div> : null}
-
-      {!overview?.scheduling_complete ? (
-        <article className="panel scheduling-warning">
-          <strong>共享模型调度未全覆盖</strong>
-          <p>
-            以下消费者仍直连 8100，未纳入控制入口的优先级与轮转：
-            {unmanaged.length > 0 ? unmanaged.join("、") : "尚未枚举"}。
-            在这些旁路接入前，「问答优先、导入不饿死」只对体验实例生效。
-          </p>
-        </article>
-      ) : null}
 
       <div className="kpi-grid">
         <article className="kpi-card">

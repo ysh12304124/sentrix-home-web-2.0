@@ -42,9 +42,12 @@ def to_job_view(job: ImportJob, stages: list[ImportJobStageView] | None = None) 
 @router.get("/import-jobs")
 def list_import_jobs(
     scope_id: str = "",
+    limit: int = 1000,
     container: Container = Depends(get_container),
 ) -> ImportJobListResponse:
-    jobs = container.import_jobs.list_for_scope(scope_id or None)
+    jobs = container.import_jobs.list_for_scope(
+        scope_id or None, limit=min(max(limit, 1), 5000)
+    )
     return ImportJobListResponse(items=[to_job_view(job) for job in jobs])
 
 
