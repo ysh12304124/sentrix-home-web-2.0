@@ -3,6 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../app/AuthProvider";
 import { csrfToken } from "../../shared/csrf";
 import { newClientId } from "../../shared/id";
+import {
+  listClientEvents,
+  type ClientEventView,
+} from "../../shared/api/client";
 
 interface JobStage {
   stage: string;
@@ -72,6 +76,7 @@ interface ServiceState {
   encoding?: { ok?: boolean; dimension?: number; expected?: number; error?: string };
   inference?: { ok?: boolean; skipped?: string; error?: string };
   status?: UserStatus;
+  last_client_event?: { id: number; received_at: string; event_name: string };
 }
 
 interface GpuState {
@@ -248,6 +253,67 @@ const STAGE_LABELS: Record<string, string> = {
   cancelled: "已取消",
 };
 
+const EVENT_LABELS: Record<string, string> = {
+  "page.view": "打开页面",
+  "nav.click": "切换导航",
+  "scope.change": "切换相册",
+  "feedback.open": "打开反馈",
+  "auth.logout": "退出登录",
+  "onboarding.open": "打开引导",
+  "onboarding.skip": "跳过引导",
+  "onboarding.complete": "完成引导",
+  "help.open": "打开帮助",
+  "memory.next": "下一段回忆",
+  "memory.prev": "上一段回忆",
+  "memory.pause": "暂停回忆",
+  "memory.resume": "继续回忆",
+  "memory.video_play": "播放回忆视频",
+  "memory.media_error": "回忆素材失败",
+  "import.pick": "选择资料",
+  "import.upload_start": "开始上传",
+  "import.upload_accepted": "上传已接收",
+  "import.upload_failed": "上传失败",
+  "import.cancel": "取消导入",
+  "assistant.ask": "提交问题",
+  "assistant.accepted": "问题已接收",
+  "assistant.stop": "停止回答",
+  "assistant.complete": "回答结束",
+  "people.view": "查看人物",
+  "people.detail_open": "打开人物详情",
+  "people.confirm_submit": "提交人物确认",
+  "people.confirm_result": "人物确认结果",
+  "people.filter": "筛选人物",
+  "library.view": "查看资料库",
+  "library.detail_open": "打开资料详情",
+  "library.filter": "筛选资料",
+  "library.media_error": "资料预览失败",
+  "timeline.month": "切换月份",
+  "timeline.date": "展开日期",
+  "timeline.event_open": "打开事件",
+  "timeline.media_error": "时间线素材失败",
+};
+
+const CLIENT_RESULT_LABELS: Record<string, string> = {
+  started: "已开始",
+  accepted: "已接收",
+  ok: "完成",
+  partial: "部分完成",
+  failed: "失败",
+  cancelled: "已取消",
+  rejected: "被拒绝",
+  ignored: "已忽略",
+};
+
+const CLIENT_ERROR_LABELS: Record<string, string> = {
+  network: "网络不可用",
+  timeout: "超时",
+  http_4xx: "请求被拒绝",
+  http_5xx: "服务异常",
+  media_load: "素材加载失败",
+  video_play: "视频无法播放",
+  unknown: "未知原因",
+};
+
 const TURN_STATUS_LABELS: Record<string, string> = {
   pending: "排队",
   running: "运行中",
@@ -273,6 +339,9 @@ export function AdminPage() {
   const [restarting, setRestarting] = useState("");
   // 一次重启意图只生成一枚键；响应丢失后重试仍是同一操作，不会再次重启。
   const restartKeys = useRef<Record<string, string>>({});
+  // 展开状态独立于 10 秒总览刷新；默认全部收起，顺序按账号稳定排序。
+  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
+  const [focusedRunId, setFocusedRunId] = useState("");
 
   const feedbackQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -455,7 +524,9 @@ export function AdminPage() {
   const okCount = rows.filter((row) => row.state?.ok === true).length;
   const waiting = overview?.model_queue?.waiting ?? {};
   const queued = Object.values(waiting).reduce((total, value) => total + value, 0);
-  const users = Object.entries(overview?.services?.users ?? {});
+  const users = Object.entries(overview?.services?.users ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
   const activeJobsTotal = users.reduce(
     (total, [, state]) => total + (state.status?.jobs_active ?? activeJobCount(state.status)),
     0,
@@ -662,18 +733,29 @@ export function AdminPage() {
 
       <div className="panel-head" style={{ marginTop: 22 }}>
         <h2>按用户运行</h2>
-        <small>只展示运行元数据，不读取问答正文与媒体内容</small>
+        <small>默认收起；展开后显示运行详情与该账号的关键操作轨迹，不读取正文与媒体</small>
       </div>
-      <div className="user-grid">
+      <div className="user-summary-list">
         {users.length === 0 ? (
           <div className="empty-panel">路由表里没有用户 API。</div>
         ) : (
           users.map(([account, state]) => (
-            <UserRunCard
+            <UserSummary
               key={account}
               account={account}
               state={state}
               modelQueue={overview?.model_queue}
+              expanded={expandedUsers.has(account)}
+              onToggle={() =>
+                setExpandedUsers((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(account)) next.delete(account);
+                  else next.add(account);
+                  return next;
+                })
+              }
+              focusedRunId={focusedRunId}
+              onFocusRun={setFocusedRunId}
             />
           ))
         )}
@@ -705,24 +787,17 @@ export function AdminPage() {
               ? ` · 队列采样 ${formatTime(overview.model_queue_sampled_at)}`
               : ""}
           </p>
-          <div className="service-list" style={{ marginTop: 14 }}>
-            {users.map(([account, state]) => (
-              <div key={account} className="service-row" data-ok={state.ok === true}>
-                <span className={`status-dot ${state.ok === true ? "" : "bad"}`} />
-                <div>
-                  <strong>{account}</strong>
-                  <small>
-                    作业 {sum(state.status?.jobs)} · 回合 {sum(state.status?.turns)} · 资产{" "}
-                    {state.status?.assets ?? 0}
-                  </small>
-                </div>
-                <span className="service-badge">{state.ok === true ? "在线" : "离线"}</span>
-              </div>
+          <div className="queue-chips" style={{ marginTop: 14 }}>
+            {users.map(([account]) => (
+              <span key={account} className="queue-chip">
+                {account} 执行 <b>{overview?.model_queue?.active_by_user?.[account] ?? 0}</b> ·
+                排队 <b>{sum(overview?.model_queue?.waiting_by_user?.[account])}</b>
+              </span>
             ))}
           </div>
         </article>
 
-        <article className="panel">
+        <article className="panel" id="admin-alerts">
           <div className="panel-head">
             <h2>告警与事件</h2>
             <small>近 30 条</small>
@@ -985,45 +1060,99 @@ export function AdminPage() {
   );
 }
 
-function UserRunCard({
+function UserSummary({
   account,
   state,
   modelQueue,
+  expanded,
+  onToggle,
+  focusedRunId,
+  onFocusRun,
 }: {
   account: string;
   state: ServiceState;
   modelQueue?: Overview["model_queue"];
+  expanded: boolean;
+  onToggle: () => void;
+  focusedRunId: string;
+  onFocusRun: (id: string) => void;
+}) {
+  const status = state.status;
+  const activeJobs = status?.jobs_active ?? status?.active_jobs?.length ?? 0;
+  const activeTurns = status?.turns_active ?? status?.active_turns?.length ?? 0;
+  const needsAttention =
+    (status?.jobs?.needs_attention ?? 0) + (status?.jobs?.partial ?? 0);
+  const abnormal = state.ok !== true;
+  const last = state.last_client_event;
+  return (
+    <article className="panel user-summary" data-abnormal={abnormal} id={`user-${account}`}>
+      <button
+        type="button"
+        className="user-summary-toggle"
+        aria-expanded={expanded}
+        aria-controls={`user-detail-${account}`}
+        onClick={onToggle}
+      >
+        <span className="summary-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+        <span className="summary-account">{account}</span>
+        <span className="summary-state" data-ok={!abnormal}>
+          {abnormal ? "异常" : "在线"}
+        </span>
+        <span className="summary-metric">在飞导入 <b>{activeJobs}</b></span>
+        <span className="summary-metric">在飞问答 <b>{activeTurns}</b></span>
+        <span className="summary-metric" data-warn={needsAttention > 0}>
+          需处理 <b>{needsAttention}</b>
+        </span>
+        <span className="summary-metric">
+          最近操作 <b>{last ? formatAge(last.received_at) : "—"}</b>
+        </span>
+        <span className="summary-hint">{expanded ? "收起" : "展开"}</span>
+      </button>
+      {expanded ? (
+        <div className="user-summary-detail" id={`user-detail-${account}`}>
+          <UserRunDetail
+            account={account}
+            state={state}
+            modelQueue={modelQueue}
+            focusedRunId={focusedRunId}
+          />
+          <UserTrajectory account={account} onFocusRun={onFocusRun} />
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function UserRunDetail({
+  account,
+  state,
+  modelQueue,
+  focusedRunId,
+}: {
+  account: string;
+  state: ServiceState;
+  modelQueue?: Overview["model_queue"];
+  focusedRunId: string;
 }) {
   const status = state.status;
   const activeJobs = status?.active_jobs ?? [];
   const activeTurns = status?.active_turns ?? [];
   const recentJobs = status?.recent_jobs ?? [];
   const recentTurns = status?.recent_turns ?? [];
+
+  useEffect(() => {
+    if (focusedRunId === "") return;
+    const target = document.getElementById(`run-${focusedRunId}`);
+    target?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusedRunId]);
+
   return (
-    <article className="panel user-panel">
-      <div className="panel-head">
-        <h2>{account}</h2>
-        <small>{state.api_url ?? "未配置地址"}</small>
-      </div>
+    <div className="user-run-detail">
+      <p className="user-detail-meta">{state.api_url ?? "未配置地址"}</p>
       <div className="queue-chips">
-        <span className="queue-chip">
-          状态 <b>{state.ok === true ? "在线" : "离线"}</b>
-        </span>
-        <span className="queue-chip">
-          版本 <b>{status?.build_revision ?? "—"}</b>
-        </span>
-        <span className="queue-chip">
-          资产 <b>{status?.assets ?? 0}</b>
-        </span>
-        <span className="queue-chip">
-          在飞作业 <b>{status?.jobs_active ?? activeJobs.length}</b>
-        </span>
-        <span className="queue-chip">
-          在飞问答 <b>{status?.turns_active ?? activeTurns.length}</b>
-        </span>
-        <span className="queue-chip">
-          后处理待办 <b>{status?.postprocess_backlog ?? 0}</b>
-        </span>
+        <span className="queue-chip">版本 <b>{status?.build_revision ?? "—"}</b></span>
+        <span className="queue-chip">资产 <b>{status?.assets ?? 0}</b></span>
+        <span className="queue-chip">后处理待办 <b>{status?.postprocess_backlog ?? 0}</b></span>
         <span className="queue-chip">
           模型执行 <b>{modelQueue?.active_by_user?.[account] ?? 0}</b>
         </span>
@@ -1066,7 +1195,12 @@ function UserRunCard({
             const percent = total > 0 ? Math.min(100, (done / total) * 100) : 0;
             const current = job.stages?.find((stage) => stage.stage === job.stage);
             return (
-              <div className="flow-row" key={job.job_id}>
+              <div
+                className="flow-row"
+                key={job.job_id}
+                id={`run-${job.job_id}`}
+                data-focused={focusedRunId === job.job_id}
+              >
                 <div className="flow-head">
                   <strong>{job.file_name}</strong>
                   <span>
@@ -1099,7 +1233,12 @@ function UserRunCard({
           <div className="empty-panel">没有正在执行的问答。</div>
         ) : (
           activeTurns.map((turn) => (
-            <div className="flow-row" key={turn.turn_id}>
+            <div
+              className="flow-row"
+              key={turn.turn_id}
+              id={`run-${turn.turn_id}`}
+              data-focused={focusedRunId === turn.turn_id}
+            >
               <div className="flow-head">
                 <strong>{shortId(turn.turn_id)}</strong>
                 <span>
@@ -1163,7 +1302,207 @@ function UserRunCard({
           )}
         </div>
       </details>
-    </article>
+    </div>
+  );
+}
+
+const TRAJECTORY_LIMIT = 300;
+const POLL_INTERVAL_MS = 2000;
+
+function UserTrajectory({
+  account,
+  onFocusRun,
+}: {
+  account: string;
+  onFocusRun: (id: string) => void;
+}) {
+  const [items, setItems] = useState<ClientEventView[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const [lastSuccess, setLastSuccess] = useState("");
+  const [paused, setPaused] = useState(false);
+  const cursorRef = useRef(0);
+  const busyRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+  const cancelledRef = useRef(false);
+
+  const merge = useCallback((incoming: ClientEventView[]) => {
+    if (incoming.length === 0) return;
+    setItems((previous) => {
+      const byId = new Map(previous.map((item) => [item.id, item]));
+      for (const item of incoming) byId.set(item.id, item);
+      return [...byId.values()]
+        .sort((a, b) => a.id - b.id)
+        .slice(-TRAJECTORY_LIMIT);
+    });
+  }, []);
+
+  const pull = useCallback(
+    async (initial = false) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      try {
+        const page = await listClientEvents(account, initial ? 0 : cursorRef.current, initial ? 60 : 100);
+        if (cancelledRef.current) return;
+        merge(page.items);
+        cursorRef.current = Math.max(cursorRef.current, page.next_cursor);
+        setHasMore(page.has_more);
+        setError("");
+        setLastSuccess(new Date().toISOString());
+      } catch {
+        if (!cancelledRef.current) setError("连接中断，信息可能过期");
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [account, merge],
+  );
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    cursorRef.current = 0;
+    setItems([]);
+    setHasMore(false);
+    setError("");
+    setLastSuccess("");
+    const stopTimer = () => {
+      if (timerRef.current !== null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+    const startTimer = () => {
+      if (timerRef.current !== null) return;
+      timerRef.current = window.setInterval(() => {
+        if (document.visibilityState === "visible") void pull();
+      }, POLL_INTERVAL_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        setPaused(false);
+        void pull();
+        startTimer();
+      } else {
+        setPaused(true);
+        // 标签页在后台时不发高频请求；恢复时立即补一次增量。
+        stopTimer();
+      }
+    };
+    void pull(true);
+    if (document.visibilityState === "visible") startTimer();
+    else setPaused(true);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelledRef.current = true;
+      stopTimer();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [account, pull]);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      await pull();
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  return (
+    <div className="user-trajectory">
+      <div className="panel-head trajectory-head">
+        <h3>关键操作轨迹</h3>
+        <small>
+          {error !== ""
+            ? `${error}${lastSuccess ? ` · 最后成功 ${formatAge(lastSuccess)}` : ""}`
+            : lastSuccess
+              ? `最近更新 ${formatAge(lastSuccess)}`
+              : "正在读取…"}
+          {paused ? " · 标签页在后台，已暂停刷新" : ""}
+        </small>
+      </div>
+      {items.length === 0 ? (
+        <div className="empty-panel">
+          {error !== "" ? "暂时读不到轨迹，恢复后会自动继续。" : "还没有可显示的操作记录。"}
+        </div>
+      ) : (
+        <>
+          <ol className="trajectory-list">
+            {items.map((item) => (
+              <TrajectoryRow key={item.id} item={item} onFocusRun={onFocusRun} />
+            ))}
+          </ol>
+          {items.length >= TRAJECTORY_LIMIT ? (
+            <small className="trajectory-note">仅显示最近 {TRAJECTORY_LIMIT} 条。</small>
+          ) : null}
+          {hasMore ? (
+            <button
+              type="button"
+              className="ghost-action"
+              disabled={loadingMore}
+              onClick={() => void loadMore()}
+            >
+              {loadingMore ? "加载中…" : "继续加载"}
+            </button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function TrajectoryRow({
+  item,
+  onFocusRun,
+}: {
+  item: ClientEventView;
+  onFocusRun: (id: string) => void;
+}) {
+  const related: Array<{ kind: string; id: string; focus: boolean }> = [];
+  if (item.job_id) related.push({ kind: "作业", id: item.job_id, focus: true });
+  if (item.turn_id) related.push({ kind: "回合", id: item.turn_id, focus: true });
+  if (item.event_id) related.push({ kind: "事件", id: item.event_id, focus: false });
+  if (item.asset_id) related.push({ kind: "资料", id: item.asset_id, focus: false });
+  if (item.entity_id) related.push({ kind: "人物", id: item.entity_id, focus: false });
+  return (
+    <li className="trajectory-row" data-result={item.result}>
+      <time dateTime={item.received_at}>{formatClock(item.received_at)}</time>
+      <span className="trajectory-action">
+        {EVENT_LABELS[item.event_name] ?? "未命名操作"}
+      </span>
+      <span className="job-status" data-status={item.result}>
+        {CLIENT_RESULT_LABELS[item.result] ?? "状态更新中"}
+      </span>
+      <span className="trajectory-route">{item.route}</span>
+      {item.error_code ? (
+        <span className="trajectory-error">
+          {CLIENT_ERROR_LABELS[item.error_code] ?? "未知原因"}
+        </span>
+      ) : null}
+      {related.map((entry) =>
+        entry.focus ? (
+          <button
+            key={`${entry.kind}-${entry.id}`}
+            type="button"
+            className="trajectory-link"
+            onClick={() => onFocusRun(entry.id)}
+            title={`定位到同一用户的${entry.kind}`}
+          >
+            {entry.kind} {shortId(entry.id)}
+          </button>
+        ) : (
+          <span key={`${entry.kind}-${entry.id}`} className="trajectory-chip">
+            {entry.kind} {shortId(entry.id)}
+          </span>
+        ),
+      )}
+      {item.result === "failed" || item.result === "rejected" ? (
+        <a className="trajectory-link" href="#admin-alerts">
+          查看告警
+        </a>
+      ) : null}
+    </li>
   );
 }
 
@@ -1286,6 +1625,14 @@ function formatDuration(start: string, end: string): string {
   if (seconds < 60) return `${seconds} 秒`;
   if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
   return `${(seconds / 3600).toFixed(1)} 小时`;
+}
+
+function formatClock(value: string): string {
+  try {
+    return new Date(value).toLocaleTimeString("zh-CN", { hour12: false });
+  } catch {
+    return value;
+  }
 }
 
 function formatTime(value: string): string {

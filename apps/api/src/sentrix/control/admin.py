@@ -51,6 +51,23 @@ def overview(request: Request, _: AuthContext = Depends(require_admin)) -> dict[
             "scheduling_complete": not unmanaged,
         }
     )
+    # 最近操作时间从控制库按账号批量取，不能为每个用户扫描整段轨迹。
+    services = payload.get("services")
+    if isinstance(services, dict):
+        users = services.get("users")
+        if isinstance(users, dict):
+            latest = _store(request).latest_client_event_times(list(users.keys()))
+            payload["services"] = {
+                **services,
+                "users": {
+                    account_id: (
+                        {**value, "last_client_event": latest[account_id]}
+                        if isinstance(value, dict) and account_id in latest
+                        else value
+                    )
+                    for account_id, value in users.items()
+                },
+            }
     return payload
 
 

@@ -1800,3 +1800,49 @@ export async function reprocessVideo(assetId: string): Promise<VideoReprocessRes
     { method: "POST" },
   );
 }
+
+// ---- 管理端操作轨迹（控制面） ------------------------------------------------------
+
+/** 控制库里的关键操作事件；只有固定名称、结果码和已有对象 ID。 */
+export interface ClientEventView {
+  id: number;
+  received_at: string;
+  operation_id: string;
+  event_name: string;
+  route: string;
+  result: string;
+  scope_id: string;
+  job_id: string;
+  turn_id: string;
+  event_id: string;
+  asset_id: string;
+  entity_id: string;
+  error_code: string;
+}
+
+interface ClientEventPage {
+  items: ClientEventView[];
+  next_cursor: number;
+  has_more: boolean;
+}
+
+/** 管理端按账号增量读取轨迹。afterId=0 表示取最近一页。 */
+export async function listClientEvents(
+  accountId: string,
+  afterId = 0,
+  limit = 60,
+): Promise<ClientEventPage> {
+  const params = new URLSearchParams({
+    after_id: String(Math.max(0, afterId)),
+    limit: String(limit),
+  });
+  const response = await fetch(
+    `/control/v1/admin/users/${encodeURIComponent(accountId)}/client-events?${params.toString()}`,
+    { credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as ClientEventPage;
+}
