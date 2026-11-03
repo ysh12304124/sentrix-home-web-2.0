@@ -178,10 +178,13 @@ class ReadRotation:
             if not Path(asset.path).is_file():
                 continue
             related += 1
+            # 与事件中点越近越优先；等距按稳定 ID。缺少拍摄时间时视为与中点重合。
+            captured = _as_utc(asset.captured_at) or midpoint
+            distance = abs(captured.timestamp() - midpoint.timestamp())
             if asset.media_type is MediaType.IMAGE:
-                photos.append((-abs((asset.captured_at or midpoint).timestamp() - midpoint.timestamp()), asset.id, asset))
+                photos.append((distance, asset.id, asset))
             elif asset.media_type is MediaType.VIDEO and self._videos.list_derived(asset.id):
-                videos.append((-abs((asset.captured_at or midpoint).timestamp() - midpoint.timestamp()), asset.id, asset))
+                videos.append((distance, asset.id, asset))
         chosen = min(photos, key=lambda item: (item[0], item[1])) if photos else (
             min(videos, key=lambda item: (item[0], item[1])) if videos else None
         )
@@ -231,7 +234,16 @@ class ReadRotation:
         return "no_eligible_event"
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """事件与资产时间可能无时区；统一到 UTC 后再做差。"""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _midpoint(start: datetime | None, end: datetime | None) -> datetime:
+    start = _as_utc(start)
+    end = _as_utc(end)
     if start is None:
         return datetime.now(UTC)
     if end is None or end <= start:
