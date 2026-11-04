@@ -19,11 +19,14 @@ S3 上线四个，S6 加了 ``query_memory_facts``（T121）、``query_photo_peo
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
+
+# 检索宽度：推理模式也不放开 top-k，固定生产值。
+_SEARCH_LIMIT = 6
 
 
 class CostClass(StrEnum):
@@ -63,6 +66,10 @@ class ToolSpec:
     required: tuple[str, ...] = ()
     # 默认便宜：1.0 的 ``ToolSpec`` 默认值就是 ``"cheap"``，只有两个视觉工具是昂贵的。
     cost_class: CostClass = CostClass.CHEAP
+    #: 无约束模式发给云端模型的描述。**只保留「这个工具能给什么」**，去掉「一次 /
+    #: 最多 N 次 / 昂贵 / 会被拒绝」这类端侧预算话术——那些句子对 4B 模型是护栏，
+    #: 对云端模型是把它往「少用工具、早点收口」上推的噪声。为空时退回 ``brief``。
+    free_description: str = ""
 
     def as_openai_tool(self) -> Mapping[str, Any]:
         return {
@@ -105,10 +112,12 @@ SEARCH_MEMORIES = ToolSpec(
         "返回值里另有 group_photo_count / group_photo_sizes / group_photo_rows："
         "**这一页里有几张多人照片、各是几人**，已经替你数好了，问「几张合影/各是几人」"
         "直接引用它们，不要自己数 preview。"
-        "一次对话只需要检索一次；检索按融合排序返回最多 6 张候选，本页显示前 6 张。"
-        "total 是本次检索的候选数（上限 6）——**它不是相册里该对象的真实数量，"
-        "不要拿它回答数量题**。候选超过 6 张时可用 get_result_page 看第 7 张起的部分"
-        "（每回合只能翻一次）；不超过 6 张时不会出现翻页工具。不要改词重搜。"
+        f"一次对话只需要检索一次；检索按融合排序返回最多 {_SEARCH_LIMIT} 张候选，"
+        f"本页显示前 {_SEARCH_LIMIT} 张。"
+        f"total 是本次检索的候选数（上限 {_SEARCH_LIMIT}）——**它不是相册里该对象的真实数量，"
+        f"不要拿它回答数量题**。候选超过 {_SEARCH_LIMIT} 张时可用 get_result_page 看第 "
+        f"{_SEARCH_LIMIT + 1} 张起的部分"
+        f"（每回合只能翻一次）；不超过 {_SEARCH_LIMIT} 张时不会出现翻页工具。不要改词重搜。"
         "要把照片展示给用户，在 final_answer 的 selected_image_handles 里填这些 handle。"
     ),
     parameters=_object_schema(
@@ -119,23 +128,36 @@ SEARCH_MEMORIES = ToolSpec(
             },
             "limit": {
                 "type": "integer",
-                "description": "本次检索保留多少张候选，默认 6、最多 6。",
+                "description": f"本次检索保留多少张候选，默认 {_SEARCH_LIMIT}、最多 {_SEARCH_LIMIT}。",
                 "minimum": 1,
-                "maximum": 6,
+                "maximum": _SEARCH_LIMIT,
             },
         },
         ["query"],
     ),
     satisfies=(EvidenceType.PHOTO_SET,),
     required=("query",),
+    free_description=(
+        f"按内容词检索家庭照片（人/物/场景/衣着/颜色/地点特征），返回结果集摘要与最多 "
+        f"{_SEARCH_LIMIT} 条 preview。"
+        "每条 preview 带 captured_at（拍摄时间）、place（拍摄地的行政区划，由 GPS 反解；无 GPS 时为空）、"
+        "people（已确认人物）、people_count（照片上一共几个人）、media_kind（image/video）、"
+        "source_kind（photo 是照片，video_keyframe 是视频抽帧）、level（exact/strong/approximate）、"
+        "scene_hint（画面场景描述，**不是地点**）、evidence_summary（画面内容、物品、衣着与图内文字）、"
+        "以及本页的 group_photo_count / group_photo_sizes / group_photo_rows（多人照片的数量与各自人数）。"
+        f"total 是本次检索的候选数（上限 {_SEARCH_LIMIT}），不是相册里该对象的真实数量。"
+        "要把照片展示给用户，在 final_answer 的 selected_image_handles 里填这些 handle。"
+    ),
 )
 
 GET_RESULT_PAGE = ToolSpec(
     name="get_result_page",
-    brief="看结果集第 7 张起的部分；只有一次机会，候选不超过 6 张时没有这个工具。",
+    brief=f"看结果集第 {_SEARCH_LIMIT + 1} 张起的部分；只有一次机会，"
+    f"候选不超过 {_SEARCH_LIMIT} 张时没有这个工具。",
     description=(
-        "查看结果集的第 2 页（**从第 7 张开始直到最后**）。只有本次检索的候选超过 6 张时"
-        "才有第 2 页；不超过 6 张时这个工具不会出现。"
+        f"查看结果集的第 2 页（**从第 {_SEARCH_LIMIT + 1} 张开始直到最后**）。"
+        f"只有本次检索的候选超过 {_SEARCH_LIMIT} 张时"
+        f"才有第 2 页；不超过 {_SEARCH_LIMIT} 张时这个工具不会出现。"
         "**每回合只能翻一次**：成功返回后工具就会消失，所以 page 必须是 2，"
         "不要用它重读第 1 页（第 1 页就是 search_memories 的返回）。"
         # **2026-10-09 的引导保留一句。** 那一轮 56 个以 ``step_budget_exhausted``
@@ -153,6 +175,10 @@ GET_RESULT_PAGE = ToolSpec(
     ),
     satisfies=(EvidenceType.PHOTO_SET,),
     required=("result_set_id", "page"),
+    free_description=(
+        "查看结果集的下一页（从第 7 张开始直到最后）。第 1 页就是 search_memories 的返回；"
+        "result_set_id 用最近一次检索返回的 id。"
+    ),
 )
 
 #: 终止动作的工具名。**交付是它的一个字段，不是一次单独的工具调用**——这是 1.0 的
@@ -208,6 +234,11 @@ FINAL_ANSWER = ToolSpec(
     # 「声明要交付」与「交付了」不是一回事，一张都没交时销账会让那一轮假装不缺证据。
     satisfies=(EvidenceType.DELIVERED_PHOTO,),
     required=("answer", "selected_image_handles"),
+    free_description=(
+        "给出最终回答并结束本轮。answer 是要说给用户的中文回答；"
+        "要展示的照片在同一次调用里填进 selected_image_handles"
+        "（来自当前结果集的 handle，例如 photo_1，最多 6 张）。不展示照片就填空数组。"
+    ),
 )
 
 GET_PERSON_PROFILE = ToolSpec(
@@ -226,6 +257,10 @@ GET_PERSON_PROFILE = ToolSpec(
     ),
     satisfies=(EvidenceType.PERSON_PROFILE,),
     required=("person",),
+    free_description=(
+        "读取一位已确认人物的家庭归属、人物关系与已有画像。关系来自家庭图谱，逐条标了来源。"
+        "relationships 为空只表示还没有关系数据，不代表查不到这个人。"
+    ),
 )
 
 QUERY_MEMORY_FACTS = ToolSpec(
@@ -292,6 +327,11 @@ QUERY_MEMORY_FACTS = ToolSpec(
     ),
     satisfies=(EvidenceType.STRUCTURED_FACT,),
     required=("operation", "subject"),
+    free_description=(
+        "精确统计当前相册（数量、最早/最晚、按月/地点/媒体/状态分组），答案是一个确定的数字或时间，"
+        "不经过相似度检索。颜色/物体/场景/活动/关系/金额/桌数这类条件它答不了；"
+        "search_memories 返回的 total 是候选池大小，不是相册里的总数。"
+    ),
 )
 
 
@@ -336,6 +376,10 @@ QUERY_PHOTO_PEOPLE = ToolSpec(
     # ``people: []`` 也照样销），**全 487 题 ``get_person_profile`` 调用 0 次**。
     satisfies=(EvidenceType.PHOTO_IDENTITY,),
     required=("result_set_id", "asset_handle"),
+    free_description=(
+        "读取一张已检索照片自己的已确认人物和未确认同行者。asset_handle 必须来自当前结果集的 preview。"
+        "未确认的人没有名字，只报个数；membership 一栏来自人物实体上的家庭角色，尚无可推断亲属关系的图谱。"
+    ),
 )
 
 
@@ -383,6 +427,11 @@ INSPECT_PHOTO = ToolSpec(
     # 让「可省略」当场失效（策略层会以 ``missing_argument`` 拒掉）。
     required=("result_set_id", "question"),
     cost_class=CostClass.EXPENSIVE,
+    free_description=(
+        "复核已检索照片的视觉细节（物体/衣着/颜色/场景）。"
+        "asset_handle 用 search_memories preview 里的 handle（photo_1…），省略则用结果集第一张；"
+        "question 用用户问题里的实词；问题只针对某位已确认人物时填 target_person。"
+    ),
 )
 
 
@@ -430,6 +479,11 @@ READ_PHOTO_TEXT = ToolSpec(
     # 说的就是这句话。
     required=("result_set_id",),
     cost_class=CostClass.EXPENSIVE,
+    free_description=(
+        "读取这张照片**已经存下来的**文字内容（菜单/价格/招牌/店名/电话/年份/小字）。"
+        "文字是导入时由视觉模型抽取并落库的，本工具不重新识别；没存下就如实说读不到。"
+        "asset_handle 用 preview 里的 handle，可省略（默认第一张）。"
+    ),
 )
 
 
@@ -448,6 +502,16 @@ TOOLS_BY_NAME: Mapping[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
 
 # 能产出一组照片的检索工具。门禁用它判断「有没有检索过」。
 RETRIEVAL_TOOLS = frozenset({"search_memories", "get_result_page"})
+
+
+def unrestricted_tools(specs: Sequence[ToolSpec] = TOOL_SPECS) -> tuple[ToolSpec, ...]:
+    """无约束模式下发给云端模型的**全量**工具集。
+
+    与 ``jit.select_tools`` 的区别是结构性的：那个函数按「还开着哪条证据需求」剪枝，
+    没有结果集时连照片级工具都不发；这里一份不剪，把「下一步该用什么」完整交给模型。
+    描述换成 ``free_description``——保留能力说明，去掉端侧预算话术。
+    """
+    return tuple(replace(spec, description=spec.free_description or spec.brief) for spec in specs)
 
 
 def openai_tools(specs: Sequence[ToolSpec] = TOOL_SPECS) -> tuple[Mapping[str, Any], ...]:

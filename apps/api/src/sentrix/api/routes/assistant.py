@@ -60,7 +60,7 @@ from sentrix.application.assistant.run_turn import (
 from sentrix.application.assistant.tools import AssistantToolbox
 from sentrix.bootstrap.container import Container
 from sentrix.domain.assistant.models import Conversation, ProgressEvent, TurnRecord
-from sentrix.domain.assistant.profile import DEFAULT_PROFILE
+from sentrix.domain.assistant.profile import DEFAULT_PROFILE, REASONING_PROFILE
 
 log = logging.getLogger("sentrix.api.assistant")
 
@@ -99,7 +99,15 @@ def _turn_summary(record: TurnRecord) -> TurnSummary:
     )
 
 
-def _run_turn(container: Container) -> RunTurn:
+def _run_turn(container: Container, *, reasoning: bool = False) -> RunTurn:
+    # 推理模式是**按回合**的选择，不是进程级开关：同一进程里普通回合与推理回合
+    # 可以并存。墙钟 1200s 是这一档的固定值，不能沿用部署的 180s——那会在模型
+    # 还没看完第二张图时把回合截断。
+    profile = (
+        REASONING_PROFILE
+        if reasoning
+        else replace(DEFAULT_PROFILE, wall_time_s=container.settings.agent_wall_time_s)
+    )
     return RunTurn(
         model=container.chat_model,
         operation_control=container.operation_control,
@@ -128,12 +136,9 @@ def _run_turn(container: Container) -> RunTurn:
             # 不是 ``observations.place``（VLM 的场景描述）——理由见 ``_place_label``。
             asset_places=container.asset_place_repository,
         ),
-        # 墙钟是部署事实：Mac/CPU 上 4 并发时一次 inspect 就可能 30-60s，
-        # 180s 的默认值会把正常回合截成 timeout。由 Settings 注入，153 仍用 180。
-        profile=replace(
-            DEFAULT_PROFILE,
-            wall_time_s=container.settings.agent_wall_time_s,
-        ),
+        profile=profile,
+        # 推理模式不按“还开着哪条证据需求”剪枝，发全量契约。
+        use_all_tools=reasoning,
     )
 
 
@@ -229,7 +234,7 @@ def start_turn(
     manage = ManageConversations(
         conversations=container.conversation_repository, turns=container.turn_repository
     )
-    run_turn = _run_turn(container)
+    run_turn = _run_turn(container, reasoning=payload.reasoning)
     # 回合的 scope 由会话决定，请求里没有这个字段可传。会话不存在时 ``start`` 抛
     # ``TurnNotFoundError``（带 404 的码），路由**只放行**——映射在 ``api/errors.py``。
     try:

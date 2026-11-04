@@ -103,7 +103,12 @@ from sentrix.domain.assistant.ports import (
 from sentrix.domain.assistant.profile import DEFAULT_PROFILE, TurnProfile
 from sentrix.domain.assistant.task_state import ACTING, FINALIZING, TaskState, ToolCallRecord
 from sentrix.domain.assistant.tool_policy import ToolAction, ToolPolicy
-from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOLS_BY_NAME, ToolSpec
+from sentrix.domain.assistant.tools import (
+    FINAL_ANSWER_TOOL,
+    TOOLS_BY_NAME,
+    ToolSpec,
+    unrestricted_tools,
+)
 from sentrix.domain.errors import DomainError
 from sentrix.domain.media.ports import OperationControl
 from sentrix.domain.media.progress import OperationCancelled
@@ -611,6 +616,7 @@ class RunTurn:
         toolbox: AssistantToolbox,
         profile: TurnProfile = DEFAULT_PROFILE,
         operation_control: OperationControl | None = None,
+        use_all_tools: bool = False,
     ) -> None:
         self._operation_control = operation_control
         self._model = model
@@ -618,6 +624,8 @@ class RunTurn:
         self._turns = turns
         self._toolbox = toolbox
         self._profile = profile
+        # 推理模式：不按证据需求剪工具，发全量契约让模型自己决定下一步。
+        self._use_all_tools = use_all_tools
         self._policy = ToolPolicy()
         self._guard = FinalGuard()
         # 规划是一次模型调用，与主循环同一个端点（1.0 也是同一个 ``chat_fn``）。
@@ -985,11 +993,15 @@ class RunTurn:
             # 「这一转不该再调工具了」，而 ``select_tools`` 对它的处置是**一个工具都不发**：
             # 模型于是别无选择，只能说话。实测 ``step_budget_exhausted`` 的 123 道里
             # 102 道判 0，根子就是模型到最后几步仍然只在撞墙、从没被逼着开口。
-            specs = select_tools(
-                session.ledger,
-                has_result_set=state.current_result_set_id is not None,
-                tools_exhausted=not state.can_call_tool(),
-                page_available=_page_available(state),
+            specs = (
+                unrestricted_tools()
+                if self._use_all_tools
+                else select_tools(
+                    session.ledger,
+                    has_result_set=state.current_result_set_id is not None,
+                    tools_exhausted=not state.can_call_tool(),
+                    page_available=_page_available(state),
+                )
             )
             try:
                 reply = self._complete_recorded(session, messages, specs)

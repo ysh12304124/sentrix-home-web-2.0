@@ -13,7 +13,7 @@ export interface TurnStream {
   result: AssistantCompleteEvent | null;
   busy: boolean;
   error: string | null;
-  ask: (conversationId: string, message: string) => Promise<void>;
+  ask: (conversationId: string, message: string, reasoning?: boolean) => Promise<void>;
 }
 
 /** 1.0 ``src/app.js:1524`` 的回退轮询间隔与上限，照抄。 */
@@ -48,7 +48,7 @@ export function useTurnStream(): TurnStream {
   useEffect(() => close, [close]);
 
   const ask = useCallback(
-    async (conversationId: string, message: string) => {
+    async (conversationId: string, message: string, reasoning = false) => {
       close();
       finishedRef.current = false;
       setProgress([]);
@@ -58,7 +58,7 @@ export function useTurnStream(): TurnStream {
 
       let turnId: string;
       try {
-        const started = await startTurn(conversationId, message);
+        const started = await startTurn(conversationId, message, reasoning);
         turnId = started.turn_id;
       } catch (cause) {
         setError((cause as Error).message);

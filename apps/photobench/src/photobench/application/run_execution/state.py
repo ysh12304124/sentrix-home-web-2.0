@@ -46,6 +46,12 @@ log = logging.getLogger(__name__)
 
 PERSIST_DEBOUNCE_SECONDS = max(0.05, float(os.environ.get("PHOTOBENCH_PERSIST_DEBOUNCE_SECONDS", "0.25")))
 
+#: 单次快照落盘的等待上限。**10s 对 487 题的大 run 不够**：2026-10-30 那轮
+#: ``run.json`` 约 271 MB，写完时收尾线程等不到提交就超时，整轮被误判成 failed，
+#: 而 487 条 results 其实一条不少。落盘是后台线程，调大它只影响收尾等待，不影响
+#: 评测墙钟；需要时可用 ``PHOTOBENCH_PERSIST_TIMEOUT_SECONDS`` 覆盖。
+PERSIST_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("PHOTOBENCH_PERSIST_TIMEOUT_SECONDS", "180")))
+
 
 class RunState:
     """带锁的 run 状态字典 + 相位记账 + 后台写线程 + 取消信号。"""
@@ -57,7 +63,7 @@ class RunState:
         run_id: str = "",
         writer: RunResultWriter | None = None,
         debounce: float = PERSIST_DEBOUNCE_SECONDS,
-        persist_timeout: float = 10.0,
+        persist_timeout: float = PERSIST_TIMEOUT_SECONDS,
     ) -> None:
         self._lock = threading.RLock()
         self.data = initial
@@ -185,9 +191,23 @@ class RunState:
         self._persist_thread.start()
 
     def snapshot(self) -> dict[str, Any]:
-        """Detach a consistent state; never hold the condition while taking state.lock."""
-        with self._lock:
-            return copy.deepcopy(self.data)
+        """Detach a consistent state; never hold the condition while taking state.lock.
+
+        ``telemetry_live`` 是唯一一块**在锁外被采样线程改写**的嵌套字典
+        （``service._sample_writer`` 拿到 ``mutate`` 的返回值后自己更新）。收尾时
+        采样线程可能还有一个在飞的回调，``deepcopy`` 会撞上
+        ``dictionary changed size during iteration``——2026-10-31 那轮 487 题全部
+        跑完、就是最后这一下把整轮判成 failed。重试几次即可；持续失败才向上抛。
+        """
+        for attempt in range(10):
+            try:
+                with self._lock:
+                    return copy.deepcopy(self.data)
+            except RuntimeError as error:
+                if "changed size during iteration" not in str(error) or attempt == 9:
+                    raise
+                time.sleep(0.05)
+        raise AssertionError("unreachable")
 
     def _persist_loop(self) -> None:
         try:

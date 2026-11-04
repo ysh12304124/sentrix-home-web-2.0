@@ -76,6 +76,12 @@ class StartTurnRequest(BaseModel):
         default=False,
         description="是否在回合轨迹里记录每次模型调用的完整输入与原始输出（默认关闭）",
     )
+    # **用户可选的推理模式，默认关闭。** 打开后本轮改用 ``REASONING_PROFILE``
+    # （全量工具、24/8/4/2/3、1200s 墙钟）；不改变其他回合与生产默认。
+    reasoning: bool = Field(
+        default=False,
+        description="是否用推理模式参数执行本轮（更多证据工具与步数，默认关闭）",
+    )
 
 
 class StartTurnResponse(BaseModel):

@@ -337,11 +337,14 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 export async function startTurn(
   conversationId: string,
   message: string,
+  reasoning = false,
 ): Promise<{ turn_id: string; conversation_id: string; status: string }> {
   return request(`/assistant/conversations/${conversationId}/turns`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    // ``reasoning`` 是**按回合**的选择：默认 false，后端据此决定用普通 profile
+    // 还是推理 profile；不建议把它做成会话级状态，用户可能只想让某一问想久一点。
+    body: JSON.stringify({ message, reasoning }),
   });
 }
 

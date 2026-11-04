@@ -110,6 +110,8 @@ export function AssistantPanel({
   // 一次导航，而用户按「后退」时那条 URL 又是对的——两件事会打架。
   const consumed = useRef<string | null>(null);
   const [text, setText] = useState("");
+  // 推理模式是**下一问的开关**，不是会话状态：用户开一次问完，可以再关掉。
+  const [reasoning, setReasoning] = useState(false);
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -176,9 +178,9 @@ export function AssistantPanel({
           events: [],
         },
       ]);
-      void ask(conversationId, question);
+      void ask(conversationId, question, reasoning);
     },
-    [ask, conversationId],
+    [ask, conversationId, reasoning],
   );
 
   // ``complete`` 到了就补到发起它的那条提问上。**按 key 定位**，不按「最后一条」——
@@ -261,6 +263,16 @@ export function AssistantPanel({
           disabled={busy || historyLoading || conversationId === null || text.trim() === ""}
         >
           {busy ? "处理中…" : "发送"}
+        </button>
+        <button
+          type="button"
+          className={reasoning ? "assistant-reasoning on" : "assistant-reasoning"}
+          aria-pressed={reasoning}
+          onClick={() => setReasoning((value) => !value)}
+          disabled={conversationId === null || historyLoading}
+          title="开启后会调用更多取证工具，回答更慢、更完整"
+        >
+          {reasoning ? "推理模式：开" : "推理模式：关"}
         </button>
       </form>
 

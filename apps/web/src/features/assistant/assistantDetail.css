@@ -219,6 +219,28 @@
   .timeline-card, .timeline-card.running .timeline-dot { animation: none; }
 }
 
+/* 推理模式开关：默认关；开启后这一问用更大的工具/步数预算。 */
+.assistant-reasoning {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.assistant-reasoning.on {
+  border-color: var(--green);
+  color: var(--green-strong);
+  background: var(--lime);
+}
+.assistant-reasoning:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
 /* 结果集缩略图：点开是放大（Lightbox），不是新标签打开原图。 */
 .result-set-open {
   display: block; padding: 0; border: 0; background: transparent;

@@ -79,3 +79,18 @@ DEFAULT_PROFILE = TurnProfile(
     wall_time_s=180.0,
     final_reserve_s=10.0,
 )
+
+#: 推理模式：全工具 + 24 步 / 8 工具 / 4 检索 / 2 翻页 / 3 精读，墙钟 1200s。
+#: 默认 profile 为小模型收敛压低了视觉工具与步数；这一档不压，代价是更慢。
+#: **它不是“难题模式”**，而是“多看视觉证据”的高成本档；默认不启用，
+#: 由前端开关按回合选择。
+REASONING_PROFILE = TurnProfile(
+    name="reasoning",
+    max_steps=24,
+    max_tool_calls=8,
+    max_search_calls=4,
+    max_page_calls=2,
+    max_inspections=3,
+    wall_time_s=1200.0,
+    final_reserve_s=10.0,
+)
