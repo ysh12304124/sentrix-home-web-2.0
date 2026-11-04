@@ -110,6 +110,18 @@ from sentrix.domain.places.ports import AssetPlaceIndex
 from sentrix.domain.retrieval.ports import AssetVisualIndexer, LexicalIndex, PreparedVisual
 from sentrix.domain.spaces.ports import SpaceRepository
 
+
+def _local_naive_datetime(value: datetime) -> datetime:
+    """Return the local wall-clock time without tzinfo for legacy event arithmetic.
+
+    EXIF/ffprobe timestamps are normalized by their metadata models.  The only timestamp
+    created here is the import-time fallback used when a video has no usable probe metadata;
+    it must follow the same naive-local contract before event assignment subtracts it from
+    photo timestamps.
+    """
+
+    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
+
 log = logging.getLogger("sentrix.media.import_assets")
 
 
@@ -383,6 +395,7 @@ class ImportAssets:
         )
 
         now = self._clock()
+        captured_at_value = captured_at if captured_at is not None else _local_naive_datetime(now)
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -393,7 +406,7 @@ class ImportAssets:
             size_bytes=len(request.content),
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
-            captured_at=captured_at or now,
+            captured_at=captured_at_value,
             captured_location=gps,
             created_at=now,
             updated_at=now,

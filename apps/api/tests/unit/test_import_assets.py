@@ -290,6 +290,23 @@ def test_video_probe_failure_is_recorded_not_swallowed():
     assert "ffprobe failed: boom" in probe.probe_error
 
 
+def test_video_probe_failure_uses_a_naive_import_time_fallback():
+    """没有可用拍摄时间时，事件链仍必须拿到无时区的本地时间。"""
+    aware_now = datetime(2026, 11, 3, 15, 21, 20, tzinfo=UTC)
+    use_case, assets, _ = build_video(
+        metadata_reader=FakeVideoMetadata(error="ffprobe failed: transient"),
+        clock=lambda: aware_now,
+    )
+
+    result = use_case.execute(
+        ImportRequest(scope_id="album1", file_name="clip.mov", content_type=None, content=b"mov")
+    )
+
+    captured_at = assets.get(result.asset_id).captured_at
+    assert captured_at == aware_now.astimezone().replace(tzinfo=None)
+    assert captured_at.tzinfo is None
+
+
 def test_transcode_failure_keeps_the_import_and_records_the_reason():
     """转码是增强：失败回落原片，但失败原因要留下来（1.0 的 browser_preview_error）。"""
     use_case, _, videos = build_video(

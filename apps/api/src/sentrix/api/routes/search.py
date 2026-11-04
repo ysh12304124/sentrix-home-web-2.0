@@ -28,7 +28,7 @@ log = logging.getLogger("sentrix.api.search")
 router = APIRouter(tags=["search"])
 
 
-def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
+def build_retrieve_evidence(container: Container, *, graph_enabled: bool = True) -> RetrieveEvidence:
     """把四条召回通道与编排接起来。**只在这里接一次**。
 
     1.0 的对应物是 ``build_default_retrievers`` 加 ``EvidenceRetrievalKernel`` 的构造
@@ -62,7 +62,7 @@ def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
             aliases=container.place_aliases,
             confirmed_people=_confirmed_people(container),
         ),
-        graph=RetrieveGraph(graph=container.memory_graph),
+        graph=RetrieveGraph(graph=container.memory_graph) if graph_enabled else None,
     )
 
 

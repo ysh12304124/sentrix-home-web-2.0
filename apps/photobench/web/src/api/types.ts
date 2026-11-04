@@ -260,6 +260,15 @@ export interface GraphQaByTypeRow {
   graph_gt_worsened_count?: number;
   graph_rank_changed_count?: number;
   graph_candidate_set_changed_count?: number;
+  final_media_without_graph_recall?: number | null;
+  final_media_with_graph_recall?: number | null;
+  final_media_recall_delta?: number | null;
+  final_media_without_graph_precision?: number | null;
+  final_media_with_graph_precision?: number | null;
+  final_media_precision_delta?: number | null;
+  final_media_without_graph_quality?: number | null;
+  final_media_with_graph_quality?: number | null;
+  final_media_quality_delta?: number | null;
   telemetry_status?: string;
   retrieval_recall?: number | null;
   retrieval_precision?: number | null;
@@ -272,6 +281,8 @@ export interface GraphQaByTypeRow {
 export interface GraphQaOverall {
   available?: boolean;
   telemetry_status?: string;
+  /** 顶层对比口径；有配对 baseline 时是最终媒体交付，否则是候选头诊断。 */
+  comparison_basis?: "final_media_delivery" | "candidate_heads" | string;
   sample_count?: number;
   graph_routed_count?: number;
   graph_enabled_count?: number;
@@ -290,6 +301,26 @@ export interface GraphQaOverall {
     retrieval_recall?: number | null;
     retrieval_precision?: number | null;
     answer_quality_mean?: number | null;
+  };
+  /** 候选头 primary → fused，仅反映图对检索候选集的影响。 */
+  candidate_effect?: {
+    without_graph?: { retrieval_recall?: number | null; retrieval_precision?: number | null };
+    with_graph?: { retrieval_recall?: number | null; retrieval_precision?: number | null };
+    delta?: { retrieval_recall?: number | null; retrieval_precision?: number | null };
+  };
+  /** 完整 QA run 的最终交付媒体指标；需要同题 graph-off 对照 run。 */
+  final_media_effect?: {
+    available?: boolean;
+    status?: string;
+    baseline_run_id?: string | null;
+    with_graph_run_id?: string | null;
+    sample_count?: number;
+    baseline_sample_count?: number | null;
+    with_graph_sample_count?: number | null;
+    without_graph?: { media_retrieval_recall?: number | null; media_retrieval_precision?: number | null; answer_quality_mean?: number | null };
+    with_graph?: { media_retrieval_recall?: number | null; media_retrieval_precision?: number | null; answer_quality_mean?: number | null };
+    delta?: { media_retrieval_recall?: number | null; media_retrieval_precision?: number | null; answer_quality_mean?: number | null };
+    note?: string;
   };
   quality_comparison_status?: string;
   quality_comparison_note?: string;
@@ -334,6 +365,8 @@ export interface Run {
   model_profile?: string;
   model_name?: string | null;
   endpoint_model?: string;
+  graph_enabled?: boolean;
+  graph_baseline_run_id?: string | null;
   model_identity?: Record<string, unknown> | null;
   execution_budgets?: Record<string, unknown> | null;
   snapshot_source?: string;

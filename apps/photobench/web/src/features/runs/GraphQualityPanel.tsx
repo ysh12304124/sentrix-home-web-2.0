@@ -71,28 +71,49 @@ function transition(before: number | null | undefined, after: number | null | un
 }
 
 function overallGainCards(overall: GraphQaOverall) {
-  const without = overall.without_graph || {};
-  const withGraph = overall.with_graph || {};
-  const delta = overall.delta || {};
+  const candidate = overall.candidate_effect || {
+    without_graph: overall.without_graph,
+    with_graph: overall.with_graph,
+    delta: overall.delta,
+  };
+  const without = candidate.without_graph || {};
+  const withGraph = candidate.with_graph || {};
+  const delta = candidate.delta || {};
+  const final = overall.final_media_effect;
+  const finalWithout = final?.without_graph || {};
+  const finalWith = final?.with_graph || {};
+  const finalDelta = final?.delta || {};
   return [
     metricCard(
-      "召回率（无图 → 有图）",
-      transition(without.retrieval_recall, withGraph.retrieval_recall),
-      `变化 ${signedRatio(delta.retrieval_recall)}`,
+      "最终媒体召回率（无图 → 有图）",
+      final?.available ? transition(finalWithout.media_retrieval_recall, finalWith.media_retrieval_recall) : "需配对无图 run",
+      final?.available
+        ? `变化 ${signedRatio(finalDelta.media_retrieval_recall)}`
+        : (final?.note || "必须使用同相册、同题集、同模型的 graph_enabled=false 完整测评作对照"),
     ),
     metricCard(
-      "精确率 P（无图 → 有图）",
+      "最终媒体精确率（无图 → 有图）",
+      final?.available ? transition(finalWithout.media_retrieval_precision, finalWith.media_retrieval_precision) : "需配对无图 run",
+      final?.available ? `变化 ${signedRatio(finalDelta.media_retrieval_precision)}` : "与最终媒体召回使用同一对照 run",
+    ),
+    metricCard(
+      "最终回答质量分（无图 → 有图）",
+      final?.available ? transition(finalWithout.answer_quality_mean, finalWith.answer_quality_mean) : "需配对无图 run",
+      final?.available ? `变化 ${typeof finalDelta.answer_quality_mean === "number" ? finalDelta.answer_quality_mean.toFixed(3) : "—"}` : "同题对照后计算",
+    ),
+    metricCard(
+      "候选召回率（primary → fused）",
+      transition(without.retrieval_recall, withGraph.retrieval_recall),
+      `候选层变化 ${signedRatio(delta.retrieval_recall)}，不等同于最终媒体召回率`,
+    ),
+    metricCard(
+      "候选精确率（primary → fused）",
       transition(without.retrieval_precision, withGraph.retrieval_precision),
       `变化 ${signedRatio(delta.retrieval_precision)}`,
     ),
     metricCard(
-      "回答质量分（有图）",
-      typeof withGraph.answer_quality_mean === "number" ? withGraph.answer_quality_mean.toFixed(2) : "—",
-      "无图质量对照未记录，暂不计算质量分变化",
-    ),
-    metricCard(
       "有效对照题数",
-      number(overall.sample_count),
+      number(final?.available ? final.sample_count : overall.sample_count),
       `图路由 ${number(overall.graph_routed_count)} · 图生效 ${number(overall.graph_enabled_count)}`,
     ),
   ];
@@ -109,7 +130,8 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
             <th>题数</th>
             <th>图路由</th>
             <th>图生效</th>
-            <th>图召回 Δ</th>
+            <th>候选头召回 Δ</th>
+            <th>最终媒体召回 Δ</th>
             <th>图精确率 Δ</th>
             <th>检索 R</th>
             <th>回答质量</th>
@@ -125,6 +147,7 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
               <td>{number(row.graph_routed_count)}</td>
               <td>{number(row.graph_effect_count)}</td>
               <td>{row.graph_recall_delta == null ? "—" : `${row.graph_recall_delta >= 0 ? "+" : ""}${(row.graph_recall_delta * 100).toFixed(1)}%`}</td>
+              <td>{signedRatio(row.final_media_recall_delta)}</td>
               <td>{signedRatio(row.graph_precision_delta)}</td>
               <td>{qaCell(row.retrieval_recall)}</td>
               <td>{row.answer_quality_mean == null ? "—" : row.answer_quality_mean.toFixed(2)}</td>
@@ -172,10 +195,11 @@ export function GraphQualityPanel({ quality }: { quality: GraphQuality | null })
 
       <h4>总体图增益（同题无图 → 有图）</h4>
       <p className="metric-calc-time">
-        召回率和精确率比较 primary（图晋升前）与 fused（图晋升后）；回答质量分只来自本轮有图回答，
-        需要同题、同模型的无图对照 run 才能计算质量分变化。
+        最终媒体指标严格读取完整 QA 的交付媒体结果（列表中的“媒体召回率”，例如 39.3%），
+        需要同题、同相册、同模型的 graph-off 对照 run；候选 primary → fused 只作为辅助诊断。
       </p>
-      {quality.graph_qa_overall?.available ? (
+      {quality.graph_qa_overall &&
+      (quality.graph_qa_overall.available || quality.graph_qa_overall.final_media_effect?.available) ? (
         <div className="phase-metrics graph-quality-metrics">{overallGainCards(quality.graph_qa_overall)}</div>
       ) : (
         <p className="metric-calc-time">总体图增益：暂无可比较的图遥测或 GT。</p>

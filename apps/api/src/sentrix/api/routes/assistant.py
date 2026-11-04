@@ -98,7 +98,7 @@ def _turn_summary(record: TurnRecord) -> TurnSummary:
     )
 
 
-def _run_turn(container: Container) -> RunTurn:
+def _run_turn(container: Container, *, graph_enabled: bool = True) -> RunTurn:
     return RunTurn(
         model=container.chat_model,
         conversations=container.conversation_repository,
@@ -107,7 +107,7 @@ def _run_turn(container: Container) -> RunTurn:
         # 1.0 的两个入口（HTTP 侧与 ``agent_runtime/tools.py``）都是同一个
         # ``EvidenceRetrievalKernel``，只有一份融合排名。
         toolbox=AssistantToolbox(
-            retrieval=build_retrieve_evidence(container),
+            retrieval=build_retrieve_evidence(container, graph_enabled=graph_enabled),
             assets=container.asset_repository,
             result_sets=container.result_set_repository,
             people=container.person_directory,
@@ -227,7 +227,7 @@ def start_turn(
     manage = ManageConversations(
         conversations=container.conversation_repository, turns=container.turn_repository
     )
-    run_turn = _run_turn(container)
+    run_turn = _run_turn(container, graph_enabled=payload.graph_enabled)
     # 回合的 scope 由会话决定，请求里没有这个字段可传。会话不存在时 ``start`` 抛
     # ``TurnNotFoundError``（带 404 的码），路由**只放行**——映射在 ``api/errors.py``。
     record = run_turn.start(
@@ -235,6 +235,7 @@ def start_turn(
             conversation_id=conversation_id,
             question=payload.message,
             include_debug=payload.include_debug,
+            graph_enabled=payload.graph_enabled,
         )
     )
     manage.ensure_title(conversation_id, payload.message)

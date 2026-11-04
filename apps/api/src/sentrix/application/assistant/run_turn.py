@@ -491,6 +491,7 @@ class TurnRequest:
     #: 只在评测/复盘时打开：把每次模型调用实际发送的 messages / tools / 原始回复
     #: 收进 ``TurnRecord.trace["debug_calls"]``。默认关闭——产品对话不为它付体积。
     include_debug: bool = False
+    graph_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -615,7 +616,10 @@ class RunTurn:
             updated_at=now,
             # 开关要跨 ``start`` / ``run`` 两个调用点，而它们之间只有这条落库的记录。
             # 放进 trace（而不是进程内 dict）：重启后拿到的回合仍然知道自己要不要采。
-            trace={"include_debug": True} if request.include_debug else {},
+            trace={
+                **({"include_debug": True} if request.include_debug else {}),
+                "graph_enabled": request.graph_enabled,
+            },
         )
         self._turns.create(record)
         self._conversations.add_message(

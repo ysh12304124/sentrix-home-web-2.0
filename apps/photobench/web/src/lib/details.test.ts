@@ -378,17 +378,17 @@ describe("pipelineMetricRows：缺失阶段走不同回退（1.0 :2199-2232）",
     expect(pipelineMetricRows({ pipeline_metrics: {} })[0][1]).toBe("未记录");
   });
 
-  it("显式流水线把不同阶段耗时列成独立指标", () => {
+  it("显式流水线把图内部耗时合并成图结构构建指标", () => {
     const rows = pipelineMetricRows({
       timings: { source_memory_prepare: 10, video_keyframe_extraction: 4, memory_graph: 0.4, causal_graph: 0.2 },
       pipeline_metrics: {},
     });
-    expect(rows.slice(0, 4)).toEqual([
+    expect(rows.slice(0, 3)).toEqual([
       ["源媒体模型准备", "10s", "并发 worker 累计耗时"],
       ["关键帧提取", "4s", "ffmpeg 抽帧墙钟累计"],
-      ["记忆图构建", "0.4s", "结构化图节点与边重建"],
-      ["因果边判定", "0.2s", "规则信号筛选与文本模型因果判定；包含在记忆图构建耗时内"],
+      ["记忆图构建", "0.4s", "普通图片图、关键帧图、语义/因果边及图写入合计"],
     ]);
+    expect(rows.map((row) => row[0])).not.toContain("因果边判定");
   });
 });
 

@@ -160,6 +160,14 @@ def test_start_turn_can_request_the_full_debug_trace():
     assert http.calls[0][1] == {"message": "海边有谁？", "include_debug": True}
 
 
+def test_start_turn_can_disable_graph_retrieval_for_a_paired_baseline_run():
+    client, http = _client({"turns": {"turn_id": "turn_1", "status": "running"}})
+
+    client.start_turn(conversation_id="conv_1", message="海边有谁？", graph_enabled=False)
+
+    assert http.calls[0][1] == {"message": "海边有谁？", "graph_enabled": False}
+
+
 def test_relationship_batch_sends_the_explicit_name_mapping():
     """``entity_by_name`` 优先于 2.0 内部的名字索引——「我」这类代称在库里重名时，
     不给映射就会被解析到别人身上。"""

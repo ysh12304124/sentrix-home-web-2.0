@@ -32,6 +32,7 @@ from sentrix.domain.retrieval.ports import VectorRepository
 
 from .image_graph import project_image_graph
 from .keyframe_graph import project_keyframe_graph
+from .semantic_graph import project_semantic_graph
 
 log = logging.getLogger("sentrix.memories.build_graph")
 
@@ -93,6 +94,7 @@ class BuildMemoryGraph:
         scope = str(scope_id or "").strip()
         if not scope:
             raise ValueError("构建记忆图需要明确的 scope_id")
+        graph_started = time.perf_counter()
 
         assets = tuple(self._assets.list_by_scope(scope, limit=GRAPH_READ_LIMIT))
         observations = tuple(self._observations.list_scope(scope, limit=GRAPH_READ_LIMIT))
@@ -115,7 +117,9 @@ class BuildMemoryGraph:
         asset_by_id = {item.id: item for item in assets}
         entity_by_id = {item.id: item for item in entities}
         entity_by_name = {
-            _normalise(item.canonical_name): item for item in entities if _normalise(item.canonical_name)
+            _normalise(item.canonical_name): item
+            for item in entities
+            if item.status == "confirmed" and _normalise(item.canonical_name)
         }
         scene_by_asset: dict[str, str] = {}
 
@@ -319,6 +323,8 @@ class BuildMemoryGraph:
                         "activity": observation.activity,
                         "place": observation.place,
                         "event_type": observation.event_type,
+                        # OCR 只作为观察节点属性保留，不从 OCR 单独派生图边。
+                        "ocr_text": observation.ocr_text,
                         "objects": list(observation.objects),
                         "clothing": list(observation.clothing),
                         "people": list(observation.people),
@@ -458,6 +464,30 @@ class BuildMemoryGraph:
 
         self._add_temporal_edges(events, scope, add_edge)
 
+        confirmed_mention_edges = 0
+        list_mentions = getattr(self._entities, "list_mentions", None)
+        mentions = list_mentions(scope, limit=GRAPH_READ_LIMIT) if callable(list_mentions) else ()
+        for mention in mentions:
+            if mention.observation_id not in observation_by_id or mention.entity_id not in entity_by_id:
+                continue
+            entity = entity_by_id[mention.entity_id]
+            if entity.status != "confirmed" or entity.entity_type != "person":
+                continue
+            add_edge(
+                _node_id("observation", mention.observation_id),
+                _node_id("entity", mention.entity_id),
+                "observation_mentions_confirmed_entity",
+                weight=mention.confidence or 1.0,
+                attributes={
+                    "mention_id": mention.id,
+                    "face_instance_id": mention.face_instance_id or "",
+                    "confidence": mention.confidence,
+                    "evidence_tier": "confirmed",
+                },
+                discriminator=mention.id,
+            )
+            confirmed_mention_edges += 1
+
         keyframe_stats = project_keyframe_graph(
             assets=assets,
             latest_observations=latest_by_asset,
@@ -481,9 +511,21 @@ class BuildMemoryGraph:
                 discriminator=discriminator,
             ),
         )
-        project_image_graph(
+        image_stats = project_image_graph(
             assets=assets,
             latest_observations=latest_by_asset,
+            vectors=self._vectors,
+            add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
+                source,
+                target,
+                relation,
+                weight=weight,
+                attributes=attributes,
+                discriminator=discriminator,
+            ),
+        )
+        semantic_stats = project_semantic_graph(
+            observations=observations,
             vectors=self._vectors,
             add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
                 source,
@@ -589,11 +631,13 @@ class BuildMemoryGraph:
             edges=tuple(edges.values()),
             build_revision=build_revision,
         )
+        graph_structure_seconds = time.perf_counter() - graph_started
         log.info(
-            "记忆图已重建 scope=%s nodes=%d edges=%d revision=%s",
+            "记忆图已重建 scope=%s nodes=%d edges=%d graph_structure_seconds=%.3f revision=%s",
             scope,
             result.node_count,
             result.edge_count,
+            graph_structure_seconds,
             build_revision[:12],
         )
         return replace(
@@ -602,12 +646,22 @@ class BuildMemoryGraph:
             causal_edges=causal_edges,
             causal_status=causal_status,
             causal_seconds=round(causal_seconds, 3),
+            graph_structure_seconds=round(graph_structure_seconds, 3),
             keyframe_count=keyframe_stats.frame_count,
             keyframe_temporal_edges=keyframe_stats.temporal_edges,
             keyframe_object_edges=keyframe_stats.object_edges,
             keyframe_relation_edges=keyframe_stats.relation_edges,
             keyframe_visual_edges=keyframe_stats.visual_edges,
             keyframe_visual_status=keyframe_stats.visual_status,
+            image_count=image_stats.image_count,
+            image_temporal_edges=image_stats.temporal_edges,
+            image_object_edges=image_stats.object_edges,
+            image_visual_edges=image_stats.visual_edges,
+            image_visual_status=image_stats.visual_status,
+            semantic_observation_count=semantic_stats.observation_count,
+            semantic_edges=semantic_stats.semantic_edges,
+            semantic_status=semantic_stats.status,
+            confirmed_mention_edges=confirmed_mention_edges,
         )
 
     @staticmethod

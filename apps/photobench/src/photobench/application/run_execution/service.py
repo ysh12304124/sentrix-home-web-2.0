@@ -221,6 +221,10 @@ class RunRequest:
     import_timeout: int = 7200
     turn_timeout: int = 900
     qa_concurrency: int = 0
+    #: 是否启用图记忆检索；关闭时仍保留同一相册和同一 QA 流程，用于最终媒体指标对照。
+    graph_enabled: bool = True
+    #: 有图 run 可填写对应的无图完整 run，用于配对最终媒体召回率。
+    graph_baseline_run_id: str = ""
     runtime_framework: str = ""
     judge_url: str = ""
     judge_model: str = ""
@@ -627,6 +631,8 @@ class RunExecution:
             "album_id": album_id,
             "album_name": manifest.get("album_name"),
             "model_profile": request.model_profile,
+            "graph_enabled": request.graph_enabled,
+            "graph_baseline_run_id": request.graph_baseline_run_id or None,
             "model_name": None,
             "endpoint_model": request.endpoint_model or None,
             "model_identity": {"status": "pending"},
@@ -2224,6 +2230,7 @@ class RunExecution:
                     conversation_id=conversation_id,
                     message=message,
                     include_debug=True,
+                    **({"graph_enabled": False} if not request.graph_enabled else {}),
                     timeout=300,
                 )
                 turn_id = str(started_turn.get("turn_id") or "")

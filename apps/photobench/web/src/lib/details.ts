@@ -373,8 +373,7 @@ export function pipelineMetricRows(phase: Phase = {}): MetricRow[] {
       ["关键帧记忆构建", "video_keyframe_memory", "VLM/OCR/人脸/实体/事实累计"],
       ["事件总结", "event_summarize", "批末事件摘要"],
       ["参与者投影", "participant_projection", "已确认身份投影到事件"],
-      ["记忆图构建", "memory_graph", "结构化图节点与边重建"],
-      ["因果边判定", "causal_graph", "规则信号筛选与文本模型因果判定；包含在记忆图构建耗时内"],
+      ["记忆图构建", "memory_graph", "普通图片图、关键帧图、语义/因果边及图写入合计"],
       ["家庭图谱", "family_graph", "家庭关系推断"],
       ["人物画像", "person_insights", "人物画像收尾"],
     ] as Array<[string, string, string]>

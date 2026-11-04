@@ -70,6 +70,16 @@ def _judge_score(value: object) -> float | None:
     return float(score) if isinstance(score, (int, float)) else None
 
 
+def _has_final_media_metric(item: Mapping[str, Any]) -> bool:
+    counts = item.get("media_retrieval_counts")
+    return bool(
+        str(item.get("answerability") or "").strip().lower() != "unanswerable"
+        and "retrieval_media_refs" in item
+        and isinstance(counts, Mapping)
+        and int(counts.get("gt") or 0) > 0
+    )
+
+
 def _graph_heads(trace: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     """Return the primary (without graph promotion) and fused graph heads."""
 
@@ -112,7 +122,242 @@ def _graph_comparison(item: Mapping[str, Any], trace: Mapping[str, Any]) -> dict
     }
 
 
-def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
+def _final_media_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """按 run 列表页的口径计算最终交付媒体宏平均指标。
+
+    这里故意读取 ``media_retrieval_counts``，而不是图的候选头。前者的 predicted
+    是模型最终交付的媒体，正是列表里的 ``media_retrieval_recall_macro`` 来源。
+    """
+    rows = [
+        item.get("media_retrieval_counts")
+        for item in items
+        if _has_final_media_metric(item)
+    ]
+    if not rows:
+        return {"available": False, "sample_count": 0}
+    values = {"precision": [], "recall": [], "f1": []}
+    for row in rows:
+        gt = int(row.get("gt") or 0)
+        predicted = int(row.get("predicted") or 0)
+        matched = int(row.get("matched") or 0)
+        precision = matched / predicted if predicted else 0.0
+        recall = matched / gt
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        values["precision"].append(precision)
+        values["recall"].append(recall)
+        values["f1"].append(f1)
+    scores = [score for item in items if (score := _judge_score(item.get("judge"))) is not None]
+    return {
+        "available": True,
+        "sample_count": len(rows),
+        "media_retrieval_precision": sum(values["precision"]) / len(rows),
+        "media_retrieval_recall": sum(values["recall"]) / len(rows),
+        "media_retrieval_f1": sum(values["f1"]) / len(rows),
+        "answer_quality_mean": sum(scores) / len(scores) if scores else None,
+        "judge_valid_count": len(scores),
+    }
+
+
+def _paired_final_media_effect(
+    graph_items: list[dict[str, Any]],
+    no_graph_items: list[dict[str, Any]] | None,
+    *,
+    baseline_run_id: str | None = None,
+    graph_run_id: str | None = None,
+    graph_run_valid: bool = True,
+    baseline_run_valid: bool = True,
+    pairing_error: str | None = None,
+) -> dict[str, Any]:
+    if no_graph_items is None:
+        return {
+            "available": False,
+            "status": "requires_paired_no_graph_run",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": "需要同相册、同题集、同模型的 graph_enabled=false 完整测评作对照",
+        }
+    if pairing_error or not graph_run_valid or not baseline_run_valid:
+        note = pairing_error or "有图和无图 run 都必须是 completed 且 run_valid=true，才能比较最终媒体结果"
+        return {
+            "available": False,
+            "status": "requires_complete_paired_runs",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": note,
+        }
+    no_graph_by_id = {str(item.get("qa_id") or ""): item for item in no_graph_items}
+    paired_graph: list[dict[str, Any]] = []
+    paired_no_graph: list[dict[str, Any]] = []
+    for item in graph_items:
+        qa_id = str(item.get("qa_id") or "")
+        baseline = no_graph_by_id.get(qa_id)
+        if qa_id and baseline is not None:
+            paired_graph.append(item)
+            paired_no_graph.append(baseline)
+    graph_metrics = _final_media_metrics(paired_graph)
+    no_graph_metrics = _final_media_metrics(paired_no_graph)
+    if not graph_metrics.get("available") or not no_graph_metrics.get("available"):
+        return {
+            "available": False,
+            "status": "paired_media_metrics_unavailable",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": "配对题目缺少最终媒体交付指标，不能用候选头代替",
+        }
+    without = {
+        "media_retrieval_recall": no_graph_metrics["media_retrieval_recall"],
+        "media_retrieval_precision": no_graph_metrics["media_retrieval_precision"],
+        "media_retrieval_f1": no_graph_metrics["media_retrieval_f1"],
+        "answer_quality_mean": no_graph_metrics["answer_quality_mean"],
+    }
+    with_graph = {
+        "media_retrieval_recall": graph_metrics["media_retrieval_recall"],
+        "media_retrieval_precision": graph_metrics["media_retrieval_precision"],
+        "media_retrieval_f1": graph_metrics["media_retrieval_f1"],
+        "answer_quality_mean": graph_metrics["answer_quality_mean"],
+    }
+    delta = {
+        key: (
+            with_graph[key] - without[key]
+            if isinstance(with_graph[key], (int, float)) and isinstance(without[key], (int, float))
+            else None
+        )
+        for key in (
+            "media_retrieval_recall",
+            "media_retrieval_precision",
+            "media_retrieval_f1",
+            "answer_quality_mean",
+        )
+    }
+    return {
+        "available": True,
+        "status": "paired",
+        "baseline_run_id": baseline_run_id,
+        "with_graph_run_id": graph_run_id,
+        "sample_count": sum(
+            1
+            for graph_item, baseline_item in zip(paired_graph, paired_no_graph, strict=True)
+            if _has_final_media_metric(graph_item) and _has_final_media_metric(baseline_item)
+        ),
+        "without_graph": without,
+        "with_graph": with_graph,
+        "delta": delta,
+        "note": "最终媒体召回率来自完整 QA 的交付媒体，不是 graph primary/fused 候选头",
+    }
+
+
+def final_media_effect_from_run_summaries(
+    graph_summary: Mapping[str, Any] | None,
+    no_graph_summary: Mapping[str, Any] | None,
+    *,
+    baseline_run_id: str | None = None,
+    graph_run_id: str | None = None,
+    graph_run_valid: bool = True,
+    baseline_run_valid: bool = True,
+    pairing_error: str | None = None,
+) -> dict[str, Any]:
+    """Compare the final-media summary values shown on the run list.
+
+    The overall card must use the exact run-level macro metrics (for example 39.3%), not
+    recompute a possibly smaller intersection of item IDs.  Item-level ``qa_id`` pairing is
+    still used by the question-type table, where it is needed to explain which questions
+    improved or failed.
+    """
+
+    if no_graph_summary is None:
+        return {
+            "available": False,
+            "status": "requires_paired_no_graph_run",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": "需要同相册、同题集、同模型的 graph_enabled=false 完整测评作对照",
+        }
+    if graph_summary is None:
+        return {
+            "available": False,
+            "status": "run_summary_unavailable",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": "当前 run 缺少最终媒体汇总结果",
+        }
+    if pairing_error or not graph_run_valid or not baseline_run_valid:
+        return {
+            "available": False,
+            "status": "requires_complete_paired_runs",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": pairing_error
+            or "有图和无图 run 都必须是 completed 且 run_valid=true，才能比较最终媒体结果",
+        }
+
+    def metric(summary: Mapping[str, Any], key: str) -> float | None:
+        value = summary.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    keys = {
+        "media_retrieval_recall": "media_retrieval_recall_macro",
+        "media_retrieval_precision": "media_retrieval_precision_macro",
+        "media_retrieval_f1": "media_retrieval_f1_macro",
+        "answer_quality_mean": "answer_quality_mean",
+    }
+    without = {name: metric(no_graph_summary, key) for name, key in keys.items()}
+    with_graph = {name: metric(graph_summary, key) for name, key in keys.items()}
+    required = ("media_retrieval_recall", "media_retrieval_precision", "media_retrieval_f1")
+    if any(without[name] is None or with_graph[name] is None for name in required):
+        return {
+            "available": False,
+            "status": "run_summary_media_metrics_unavailable",
+            "baseline_run_id": baseline_run_id,
+            "with_graph_run_id": graph_run_id,
+            "sample_count": 0,
+            "note": "两轮 run 的 summary 缺少最终媒体 P/R/F1，不能用候选头代替",
+        }
+    delta = {
+        name: (
+            with_graph[name] - without[name]
+            if with_graph[name] is not None and without[name] is not None
+            else None
+        )
+        for name in keys
+    }
+    baseline_count = no_graph_summary.get("media_retrieval_metric_count")
+    graph_count = graph_summary.get("media_retrieval_metric_count")
+    counts = [int(value) for value in (baseline_count, graph_count) if isinstance(value, (int, float))]
+    return {
+        "available": True,
+        "status": "run_summary",
+        "baseline_run_id": baseline_run_id,
+        "with_graph_run_id": graph_run_id,
+        "sample_count": (
+            int(graph_count)
+            if isinstance(graph_count, (int, float))
+            else (counts[0] if counts else 0)
+        ),
+        "baseline_sample_count": int(baseline_count) if isinstance(baseline_count, (int, float)) else None,
+        "with_graph_sample_count": int(graph_count) if isinstance(graph_count, (int, float)) else None,
+        "without_graph": without,
+        "with_graph": with_graph,
+        "delta": delta,
+        "note": "总体指标直接读取两轮 run 列表的最终媒体汇总值；题型明细另按 qa_id 配对",
+    }
+
+
+def aggregate_graph_qa_overall(
+    items: list[dict[str, Any]],
+    baseline_items: list[dict[str, Any]] | None = None,
+    *,
+    baseline_run_id: str | None = None,
+    graph_run_id: str | None = None,
+    graph_run_valid: bool = True,
+    baseline_run_valid: bool = True,
+    pairing_error: str | None = None,
+) -> dict[str, Any]:
     """Aggregate the same-question primary→fused comparison for the whole run.
 
     A single graph-on run has no answer generated from the primary-only candidates, so
@@ -148,6 +393,45 @@ def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
             if score is not None:
                 graph_judge_scores.append(score)
 
+    candidate_effect: dict[str, Any] = {
+        "without_graph": {
+            "retrieval_recall": (
+                _mean([row["baseline_recall"] for row in comparisons]) if comparisons else None
+            ),
+            "retrieval_precision": (
+                _mean([row["baseline_precision"] for row in comparisons]) if comparisons else None
+            ),
+        },
+        "with_graph": {
+            "retrieval_recall": (
+                _mean([row["graph_recall"] for row in comparisons]) if comparisons else None
+            ),
+            "retrieval_precision": (
+                _mean([row["graph_precision"] for row in comparisons]) if comparisons else None
+            ),
+        },
+    }
+    candidate_effect["delta"] = {
+        "retrieval_recall": (
+            candidate_effect["with_graph"]["retrieval_recall"]
+            - candidate_effect["without_graph"]["retrieval_recall"]
+            if comparisons else None
+        ),
+        "retrieval_precision": (
+            candidate_effect["with_graph"]["retrieval_precision"]
+            - candidate_effect["without_graph"]["retrieval_precision"]
+            if comparisons else None
+        ),
+    }
+    final_effect = _paired_final_media_effect(
+        items,
+        baseline_items,
+        baseline_run_id=baseline_run_id,
+        graph_run_id=graph_run_id,
+        graph_run_valid=graph_run_valid,
+        baseline_run_valid=baseline_run_valid,
+        pairing_error=pairing_error,
+    )
     if not comparisons:
         return {
             "available": False,
@@ -156,6 +440,11 @@ def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
             "graph_routed_count": routed_count,
             "graph_enabled_count": enabled_count,
             "quality_comparison_status": "requires_paired_no_graph_run",
+            "comparison_basis": (
+                "final_media_delivery" if final_effect.get("available") else "candidate_heads"
+            ),
+            "candidate_effect": candidate_effect,
+            "final_media_effect": final_effect,
         }
 
     baseline_recall = _mean([row["baseline_recall"] for row in comparisons])
@@ -163,7 +452,7 @@ def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
     graph_recall = _mean([row["graph_recall"] for row in comparisons])
     graph_precision = _mean([row["graph_precision"] for row in comparisons])
     quality_mean = round(sum(graph_judge_scores) / len(graph_judge_scores), 3) if graph_judge_scores else None
-    return {
+    report = {
         "available": True,
         "telemetry_status": "recorded",
         "sample_count": len(comparisons),
@@ -191,10 +480,42 @@ def aggregate_graph_qa_overall(items: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "quality_comparison_status": "requires_paired_no_graph_run",
         "quality_comparison_note": "质量分需要同题、同模型、关闭图检索的对照 run；本轮只记录了有图回答。",
+        "candidate_effect": candidate_effect,
+        "final_media_effect": final_effect,
     }
+    # 一旦用户提供了同题 graph-off run，顶层的“无图/有图/变化”必须采用列表页
+    # 的最终媒体交付口径。primary → fused 只能保留在 candidate_effect 里做诊断，
+    # 不能再伪装成最终媒体召回率。
+    if final_effect.get("available"):
+        report["comparison_basis"] = "final_media_delivery"
+        report["without_graph"] = {
+            "retrieval_recall": final_effect["without_graph"]["media_retrieval_recall"],
+            "retrieval_precision": final_effect["without_graph"]["media_retrieval_precision"],
+            "answer_quality_mean": final_effect["without_graph"]["answer_quality_mean"],
+        }
+        report["with_graph"] = {
+            "retrieval_recall": final_effect["with_graph"]["media_retrieval_recall"],
+            "retrieval_precision": final_effect["with_graph"]["media_retrieval_precision"],
+            "answer_quality_mean": final_effect["with_graph"]["answer_quality_mean"],
+        }
+        report["delta"] = {
+            "retrieval_recall": final_effect["delta"]["media_retrieval_recall"],
+            "retrieval_precision": final_effect["delta"]["media_retrieval_precision"],
+            "answer_quality_mean": final_effect["delta"]["answer_quality_mean"],
+        }
+    else:
+        report["comparison_basis"] = "candidate_heads"
+    return report
 
 
-def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def aggregate_graph_qa_by_type(
+    items: list[dict[str, Any]],
+    baseline_items: list[dict[str, Any]] | None = None,
+    *,
+    graph_run_valid: bool = True,
+    baseline_run_valid: bool = True,
+    pairing_error: str | None = None,
+) -> list[dict[str, Any]]:
     """按题型汇总检索、回答质量和图拓展带来的 GT 召回变化。
 
     没有 ``graph_*`` 遥测的历史 run 仍然会出表，但 ``graph_effect_count`` 为 0，
@@ -208,6 +529,9 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
         buckets.setdefault(key, []).append(item)
 
     rows: list[dict[str, Any]] = []
+    baseline_by_id = {
+        str(item.get("qa_id") or ""): item for item in (baseline_items or []) if item.get("qa_id")
+    }
     for key, bucket in buckets.items():
         recalls = [
             float(value)
@@ -322,6 +646,33 @@ def aggregate_graph_qa_by_type(items: list[dict[str, Any]]) -> list[dict[str, An
                 "quality_comparison_status": "requires_paired_no_graph_run",
             }
         )
+        if baseline_items is not None:
+            paired = [
+                item
+                for item in bucket
+                if str(item.get("qa_id") or "") in baseline_by_id
+            ]
+            paired_baseline = [baseline_by_id[str(item.get("qa_id") or "")] for item in paired]
+            effect = _paired_final_media_effect(
+                paired,
+                paired_baseline,
+                graph_run_valid=graph_run_valid,
+                baseline_run_valid=baseline_run_valid,
+                pairing_error=pairing_error,
+            )
+            row = rows[-1]
+            if effect.get("available"):
+                row.update(
+                    final_media_without_graph_recall=effect["without_graph"]["media_retrieval_recall"],
+                    final_media_with_graph_recall=effect["with_graph"]["media_retrieval_recall"],
+                    final_media_recall_delta=effect["delta"]["media_retrieval_recall"],
+                    final_media_without_graph_precision=effect["without_graph"]["media_retrieval_precision"],
+                    final_media_with_graph_precision=effect["with_graph"]["media_retrieval_precision"],
+                    final_media_precision_delta=effect["delta"]["media_retrieval_precision"],
+                    final_media_without_graph_quality=effect["without_graph"]["answer_quality_mean"],
+                    final_media_with_graph_quality=effect["with_graph"]["answer_quality_mean"],
+                    final_media_quality_delta=effect["delta"]["answer_quality_mean"],
+                )
     return sorted(rows, key=lambda row: (-row["sample_count"], row["type"]))
 
 

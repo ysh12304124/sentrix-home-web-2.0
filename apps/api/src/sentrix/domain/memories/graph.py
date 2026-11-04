@@ -47,12 +47,23 @@ class GraphBuildStats:
     causal_edges: int = 0
     causal_status: str = "not_configured"
     causal_seconds: float = 0.0
+    # 普通图片图、关键帧图、语义边和最终图写入的统一墙钟耗时。
+    graph_structure_seconds: float = 0.0
     keyframe_count: int = 0
     keyframe_temporal_edges: int = 0
     keyframe_object_edges: int = 0
     keyframe_relation_edges: int = 0
     keyframe_visual_edges: int = 0
     keyframe_visual_status: str = "no_frames"
+    image_count: int = 0
+    image_temporal_edges: int = 0
+    image_object_edges: int = 0
+    image_visual_edges: int = 0
+    image_visual_status: str = "no_images"
+    semantic_observation_count: int = 0
+    semantic_edges: int = 0
+    semantic_status: str = "no_observations"
+    confirmed_mention_edges: int = 0
 
 
 @dataclass(frozen=True, slots=True)

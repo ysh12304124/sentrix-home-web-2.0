@@ -308,6 +308,8 @@ class RunSuites:
                     qa_concurrency=int(
                         payload.get("qa_concurrency", self._budget_defaults.get("qa_concurrency", 0))
                     ),
+                    graph_enabled=payload.get("graph_enabled", True) is not False,
+                    graph_baseline_run_id=str(payload.get("graph_baseline_run_id") or "").strip(),
                     turn_timeout=int(payload.get("turn_timeout") or 900),
                     # 整册导入在 Mac/CPU 上可能远超默认 2h；允许按 run 放宽客户端超时。
                     import_timeout=int(
@@ -415,6 +417,8 @@ class RunSuites:
             mode="reuse",
             scope_id=scope_id,
             runtime_framework=str(saved.get("runtime_framework") or ""),
+            graph_enabled=saved.get("graph_enabled", True) is not False,
+            graph_baseline_run_id=str(saved.get("graph_baseline_run_id") or "").strip(),
             judge_url=str(saved.get("judge_url") or ""),
             judge_model=str(saved.get("judge_model") or ""),
             prior_items=prior_items,

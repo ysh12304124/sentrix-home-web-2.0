@@ -137,6 +137,7 @@ class SentrixClient(Protocol):
         conversation_id: str,
         message: str,
         include_debug: bool = False,
+        graph_enabled: bool = True,
         timeout: int = 300,
     ) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations/{cid}/turns``，返回 ``{turn_id, status}``。
@@ -147,6 +148,8 @@ class SentrixClient(Protocol):
         ``include_debug=True`` 让主 API 在终态载荷的 ``trace.debug_calls`` 里带上每次
         模型调用**实际发送的 messages / tools 与原始回复**。评测侧打开它；其他调用方
         不打开，产品对话就不会把那几十 KB 的提示词写进 ``agent_turns``。
+
+        ``graph_enabled=False`` 用于最终媒体召回率对照 run；默认不发送关闭标记。
         """
         ...
 

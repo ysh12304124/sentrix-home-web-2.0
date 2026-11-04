@@ -310,8 +310,15 @@ def process_album_pipeline(
 
     graph_started = time.perf_counter()
     graph = refresh_memory_graph(container, request.scope_id)
-    timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
-    timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
+    # 统一口径：普通图片图、关键帧图、语义边、因果边及 replace_scope 写入都算
+    # 「图结构构建」，不再把 causal_graph 作为另一段耗时展示。
+    timings["memory_graph"] = (
+        graph.graph_structure_seconds
+        if graph is not None and graph.graph_structure_seconds > 0
+        else round(time.perf_counter() - graph_started, 3)
+    )
+    # 兼容旧客户端读取该键；它不再代表独立阶段，UI 只展示上面的统一 graph_structure。
+    timings.setdefault("causal_graph", 0.0)
 
     family_started = time.perf_counter()
     family_graph = _maybe_run_family_graph(container, request.scope_id)
@@ -340,6 +347,16 @@ def process_album_pipeline(
                 causal_candidate_pairs=graph.causal_candidate_pairs,
                 causal_edges=graph.causal_edges,
                 causal_status=graph.causal_status,
+                graph_structure_seconds=graph.graph_structure_seconds,
+                image_count=graph.image_count,
+                image_temporal_edges=graph.image_temporal_edges,
+                image_object_edges=graph.image_object_edges,
+                image_visual_edges=graph.image_visual_edges,
+                image_visual_status=graph.image_visual_status,
+                semantic_observation_count=graph.semantic_observation_count,
+                semantic_edges=graph.semantic_edges,
+                semantic_status=graph.semantic_status,
+                confirmed_mention_edges=graph.confirmed_mention_edges,
                 causal_seconds=graph.causal_seconds,
                 keyframe_count=graph.keyframe_count,
                 keyframe_temporal_edges=graph.keyframe_temporal_edges,

@@ -13,9 +13,11 @@
  */
 import type { useConfig } from "../../hooks/useConfig.ts";
 import type { useReuseMode } from "../../hooks/useReuseMode.ts";
+import type { Run } from "../../api/types.ts";
 import { ModelAdvancedPanel, ModelServicePanel, type CloudModelProfile, type ModelServicePanelProps } from "./ModelServicePanel.tsx";
 import { ReuseBasePicker } from "./ReuseBasePicker.tsx";
 import { StartActions, type StartActionsProps } from "./StartActions.tsx";
+import { filterGraphBaselineRuns } from "./baselineRuns.ts";
 import { albumCountLabel, qaOptionsFor, RUN_MODES_UI, runModeMeta } from "./rules.ts";
 
 type ConfigApi = ReturnType<typeof useConfig>;
@@ -66,6 +68,8 @@ export interface ConfigSectionProps {
   >;
   album: ConfigAlbumProps;
   start: StartActionsProps;
+  /** 当前已加载的运行记录，用于在配置区直接选择匹配的无图基线。 */
+  baselineRuns?: Run[];
   /** 1.0 `error`（`:286`）。 */
   error: string;
 }
@@ -82,10 +86,27 @@ export function ConfigSection({
   reuse,
   album,
   start,
+  baselineRuns = [],
   error,
 }: ConfigSectionProps) {
   const meta = runModeMeta(reuse.runMode);
   const qaOptions = qaOptionsFor(connection.manifests, album.selectedAlbum);
+  const graphEnabled = start.graphEnabled ?? true;
+  const baselineCandidates = filterGraphBaselineRuns(baselineRuns, {
+    albumId: album.selectedAlbum,
+    qaSet: album.selectedQa,
+    modelName: model.selectedEndpointModel,
+  });
+
+  const baselineLabel = (run: Run): string => {
+    const finished = run.finished_at
+      ? new Date(run.finished_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+      : "时间未知";
+    const count = run.qa_count ?? run.item_count;
+    const recall = run.summary?.media_retrieval_recall_macro ?? run.summary?.retrieval_recall_macro;
+    const recallLabel = typeof recall === "number" ? ` · 媒体召回 ${(recall * 100).toFixed(1)}%` : "";
+    return `${run.run_id} · ${finished} · ${count ?? "?"} 题${recallLabel}`;
+  };
 
   // 1.0 `:17-20`：`config?.cloud_model_profile || {...}`（整对象兜底，不逐字段补）。
   const cloudModelProfile: CloudModelProfile = connection.config?.cloud_model_profile
@@ -227,6 +248,60 @@ export function ConfigSection({
                     : "从当前相册的题目集中选题；10 题适合快速验证。"}
                 </span>
               </label>
+            )}
+            {reuse.runMode !== "build" && (
+              <label className="config-checkbox-label">
+                <span>图记忆检索</span>
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={graphEnabled}
+                    disabled={start.suiteRunning || start.hasRunning}
+                    onChange={(event) => start.onGraphEnabledChange?.(event.target.checked)}
+                  />
+                  启用图检索
+                </span>
+                <span className="config-help">
+                  关闭后会跑同一题集的无图对照；有图 run 可填写对应的无图 run ID。
+                </span>
+              </label>
+            )}
+            {reuse.runMode !== "build" && graphEnabled && (
+              <>
+                <label>
+                  无图基线 run
+                  <select
+                    value={start.graphBaselineRunId ?? ""}
+                    disabled={start.suiteRunning || start.hasRunning}
+                    onChange={(event) => start.onGraphBaselineRunIdChange?.(event.target.value)}
+                  >
+                    <option value="">
+                      {baselineCandidates.length > 0 ? "请选择同配置的无图测评" : "暂无匹配的已完成无图测评"}
+                    </option>
+                    {baselineCandidates.map((run) => (
+                      <option key={run.run_id} value={run.run_id}>
+                        {baselineLabel(run)}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="config-help">
+                    已按当前相册、QA 数据集和模型过滤，只显示已完成且关闭图检索的测评。
+                  </span>
+                </label>
+                <label>
+                  或手动输入无图对照 run ID（可选）
+                <input
+                  type="text"
+                  value={start.graphBaselineRunId ?? ""}
+                  disabled={start.suiteRunning || start.hasRunning}
+                  placeholder="先跑无图，再把 run_id 填到这里"
+                  onChange={(event) => start.onGraphBaselineRunIdChange?.(event.target.value)}
+                />
+                <span className="config-help">
+                  只有关联 graph_enabled=false 的完整 run，才会显示最终媒体召回率的无图→有图变化。
+                </span>
+                </label>
+              </>
             )}
           </div>
         </div>

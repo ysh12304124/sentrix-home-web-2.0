@@ -15,6 +15,10 @@ import { runModeMeta, startDisabledReason, type StartDisabledInput } from "./rul
 export interface StartActionsProps extends StartDisabledInput {
   deleteScopeAfterRun: boolean;
   onDeleteScopeAfterRunChange: (next: boolean) => void;
+  graphEnabled?: boolean;
+  onGraphEnabledChange?: (next: boolean) => void;
+  graphBaselineRunId?: string;
+  onGraphBaselineRunIdChange?: (next: string) => void;
   onStart: () => void;
   onStop: () => void;
 }
