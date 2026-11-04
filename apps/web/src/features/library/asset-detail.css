@@ -3,6 +3,8 @@
 
 .asset-detail {
   overflow-y: auto;
+  /* 顶部栏是 sticky z-index:4；详情必须盖住它，否则右上角关闭会被“退出”截获。 */
+  z-index: 60;
 }
 
 .asset-detail .close {
