@@ -568,6 +568,7 @@ class Container:
             importer_factory=lambda: build_import_assets(self, observe=True),
             dependencies_ready=self.dependencies_ready,
             postprocess=build_media_postprocess(self),
+            workers=self.settings.import_workers,
         )
 
     def reconcile_uploads(self) -> dict[str, int]:

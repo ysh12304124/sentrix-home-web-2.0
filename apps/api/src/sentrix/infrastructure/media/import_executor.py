@@ -1,6 +1,9 @@
 """有界导入执行器：每个用户一个线程，数据库是唯一待办来源。
 
-只有一个提交线程：同一相册的事件归属因此天然串行，准备步骤仍按既有上限并行。
+提交仍然只有一个线程：同一相册的事件归属因此天然串行。但**模型准备不再逐张串行**——
+执行器一次认领一个窗口，窗口内的 ``prepare_image`` 在线程池里并行，提交按认领顺序
+回到主线程。单用户因此也能吃满主模型的多个槽位，而不是只用掉一个。
+
 租约由独立心跳续期，长模型调用不会让作业被别人抢走；阶段写入都带 fence。
 """
 
@@ -10,6 +13,9 @@ import logging
 import random
 import threading
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -18,6 +24,7 @@ from sentrix.application.media.import_assets import (
     ImportAssets,
     ImportRequest,
     ImportResult,
+    PreparedImage,
     StagedImport,
 )
 from sentrix.domain.media.import_jobs import ImportJob
@@ -86,6 +93,18 @@ class _Heartbeat:
                 log.warning("导入作业心跳失败 job=%s", self._job_id, exc_info=True)
 
 
+@dataclass
+class _InflightJob:
+    """窗口里的一个作业：落库已完成，推理在池里，提交还在排队等前一个。"""
+
+    job: ImportJob
+    heartbeat: _Heartbeat
+    importer: ImportAssets | None = None
+    staged: StagedImport | ImportResult | None = None
+    prepared: Future[PreparedImage] | None = None
+    error: JobFailure | None = None
+
+
 def _backoff(attempt: int) -> float:
     base = min(5.0 * 2 ** max(0, attempt - 1), 300.0)
     return base + random.uniform(0, min(30.0, base * 0.1))
@@ -102,6 +121,8 @@ class ImportJobExecutor:
         dependencies_ready: Callable[[], tuple[bool, str]],
         # 返回未完成的阶段名；空列表表示整代后处理成功。
         postprocess: Callable[[str], list[str]] | None = None,
+        # 窗口宽度 = 同时在飞的 prepare_image 数。默认读部署配置；显式参数留给测试。
+        workers: int | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._settings = settings
@@ -111,6 +132,8 @@ class ImportJobExecutor:
         self._dependencies_ready = dependencies_ready
         self._postprocess = postprocess
         self._clock = clock
+        configured = workers if workers is not None else getattr(settings, "import_workers", 1)
+        self._workers = max(1, int(configured))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._ready_streak = 0
@@ -141,17 +164,154 @@ class ImportJobExecutor:
 
     def _run_once(self) -> bool:
         now = self._clock()
-        job = self._jobs.claim_due(now=now, lease_s=int(LEASE_S))
-        if job is not None:
-            self._execute(job)
-            return True
         ready, _ = self._dependencies_ready()
+        if not ready:
+            # 依赖不可用时不要认领：认领会把整窗作业都记一次失败。
+            self._ready_streak = 0
+            return False
         # 依赖恢复要稳定两轮才唤醒等待作业，避免一次抖动就把整批放出来。
-        self._ready_streak = self._ready_streak + 1 if ready else 0
+        self._ready_streak += 1
         if self._ready_streak >= 2:
             self._jobs.wake_waiting(now=now)
+
+        claimed: list[ImportJob] = []
+        for _ in range(self._workers):
+            job = self._jobs.claim_due(now=now, lease_s=int(LEASE_S))
+            if job is None:
+                break
+            claimed.append(job)
+        if claimed:
+            self._process_window(claimed)
+            return True
         self._run_postprocess(now)
         return False
+
+    def _process_window(self, claimed: list[ImportJob]) -> None:
+        """窗口内的推理并行，提交严格按认领顺序回到主线程。
+
+        ``stage`` 仍在主线程串行执行：它写资产行，而 ``find_by_hash`` 的去重结果
+        取决于“先到先落库”。``prepare_image`` 只读资产与模型，可以安全地离开主线程。
+        """
+        pool = ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="sentrix-import")
+        pending: deque[_InflightJob] = deque()
+        try:
+            for job in claimed:
+                pending.append(self._start_job(job, pool))
+            while pending and not self._stop.is_set():
+                item = pending.popleft()
+                self._finish_job(item)
+                if self._stop.is_set():
+                    break
+                # 提交完一个再补一个，让窗口始终有推理在飞。
+                job = self._jobs.claim_due(now=self._clock(), lease_s=int(LEASE_S))
+                if job is not None:
+                    pending.append(self._start_job(job, pool))
+        finally:
+            for item in pending:
+                if item.prepared is not None:
+                    item.prepared.cancel()
+                item.heartbeat.stop()
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _start_job(self, job: ImportJob, pool: ThreadPoolExecutor) -> _InflightJob:
+        heartbeat = _Heartbeat(self._jobs, job.id, job.fence, self._clock)
+        heartbeat.start()
+        item = _InflightJob(job=job, heartbeat=heartbeat)
+        try:
+            if self._jobs.is_cancel_requested(job.id):
+                raise JobCancelled("cancelled before start")
+            importer = self._importer_factory()
+            item.importer = importer
+            asset = self._assets.get(job.asset_id)
+            if asset is None:
+                source = Path(job.original_path)
+                if not source.is_file():
+                    raise InputInvalid("original media file is missing")
+                try:
+                    persisted_type = MediaType(job.media_type)
+                except ValueError:
+                    raise InputInvalid(
+                        f"unsupported persisted media type: {job.media_type}"
+                    ) from None
+                self._mark(job, "asset_staged", "running")
+                outcome = importer.stage(
+                    ImportRequest(
+                        scope_id=job.scope_id,
+                        file_name=job.file_name,
+                        content_type=None,
+                        media_type=persisted_type,
+                        source_path=source,
+                        source_move=False,
+                        asset_id=job.asset_id,
+                        content_sha256=job.content_sha256,
+                        defer_processing=True,
+                    )
+                )
+                if isinstance(outcome, ImportResult):
+                    self._mark(job, "asset_staged", "done")
+                    item.staged = outcome
+                    return item
+                staged: StagedImport = outcome
+                self._mark(job, "asset_staged", "done")
+            else:
+                self._mark(job, "asset_staged", "done")
+                staged = importer.resume(asset)
+            item.staged = staged
+            self._mark(job, "prepared", "running")
+            item.prepared = pool.submit(importer.prepare_image, staged.asset)
+        except JobFailure as error:
+            item.error = error
+        except Exception as error:  # noqa: BLE001 - 与旧路径一样分类后决定重试
+            log.exception("导入作业准备失败 job=%s", job.id)
+            item.error = TemporaryFailure(str(error))
+        return item
+
+    def _finish_job(self, item: _InflightJob) -> None:
+        job = item.job
+        try:
+            if item.error is not None:
+                raise item.error
+            if isinstance(item.staged, ImportResult):
+                self._complete_deduplicated(job, item.staged)
+                return
+            if not isinstance(item.staged, StagedImport) or item.importer is None:
+                raise TemporaryFailure("import stage produced no prepared asset")
+            prepared = item.prepared.result() if item.prepared is not None else None
+            if prepared is None:
+                raise TemporaryFailure("image preparation produced no result")
+            self._mark(job, "prepared", "done")
+            if self._jobs.is_cancel_requested(job.id):
+                raise JobCancelled("cancelled before commit")
+
+            result = item.importer.finish(item.staged, prepared)
+            if result.video_scene_error:
+                if "no_duration" in result.video_scene_error:
+                    raise InputInvalid(f"video scenes: {result.video_scene_error}")
+                raise TemporaryFailure(f"video scenes: {result.video_scene_error}")
+
+            self._record_stages(job, result)
+            self._assets.update_status(item.staged.asset.id, AssetStatus.PROCESSED)
+            self._jobs.bump_scope_generation(job.scope_id, now=self._clock())
+            self._jobs.set_job_status(
+                job.id,
+                job.fence,
+                now=self._clock(),
+                status="completed",
+                stage="completed",
+                completed_items=1,
+            )
+        except JobFailure as error:
+            self._handle_failure(job, error)
+        except Exception as error:  # noqa: BLE001 - 分类后决定重试或转人工
+            log.exception("导入作业执行失败 job=%s", job.id)
+            ready, reason = self._dependencies_ready()
+            if not ready:
+                self._handle_failure(job, DependencyUnavailable(reason))
+            else:
+                self._handle_failure(job, TemporaryFailure(str(error)))
+        finally:
+            item.heartbeat.stop()
+
 
     def _run_postprocess(self, now: datetime) -> None:
         if self._postprocess is None:

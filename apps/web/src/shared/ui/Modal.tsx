@@ -75,8 +75,9 @@ export function Modal({ kicker, title, onClose, children }: Props) {
         aria-labelledby={titleId}
         tabIndex={-1}
       >
-        <button type="button" className="modal-close" aria-label="关闭" onClick={onClose}>
-          ×
+        <button type="button" className="modal-close" aria-label="关闭对话框" onClick={onClose}>
+          <span aria-hidden="true">×</span>
+          关闭
         </button>
         {kicker ? <div className="modal-kicker">{kicker}</div> : null}
         <h2 id={titleId}>{title}</h2>

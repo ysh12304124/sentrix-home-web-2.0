@@ -320,6 +320,11 @@ export async function fetchEvent(eventId: string): Promise<TimelineEvent> {
 export function timelinePosterUrl(assetId: string): string {
   return `${BASE}/assets/${assetId}/poster`;
 }
+
+/** 视频封面（已抽关键帧或首帧），用于未播放时的缩略图与播放器 poster。 */
+export function assetPosterUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/poster`;
+}
 // ---- 助手 -------------------------------------------------------------------
 
 export interface ConversationSummary {

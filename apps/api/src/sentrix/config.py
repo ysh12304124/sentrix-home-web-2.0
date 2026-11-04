@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     # **提交永远串行**，与这个数无关——事件的归属顺序是语义的一部分。
     album_workers: int = 4
 
+    # 体验入口逐文件导入的在飞窗口：多个作业的 prepare_image 同时请求主模型，
+    # 单用户也能吃满 8100 的多个槽位。提交仍按认领顺序串行（事件归属是语义的一部分）。
+    # 取 4 是因为生产 8100 是 --parallel 4；调小等于主动让出槽位，调大会在网关排队。
+    import_workers: int = Field(default=4, ge=1, le=16)
+
     # 体验入口的持久上传（任务 4/5）。配额按用户原件计，派生预览与向量另计。
     upload_quota_bytes: int = 20 * 1024**3
     upload_photo_max_bytes: int = 250 * 1024**2

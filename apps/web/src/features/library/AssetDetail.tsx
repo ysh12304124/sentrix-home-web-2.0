@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   assetFileUrl,
   assetInlineUrl,
+  assetPosterUrl,
   type AssetDetailResponse,
   type ObservationPayload,
 } from "../../shared/api/client";
@@ -112,6 +113,7 @@ export function AssetDetail({
           controls
           preload="metadata"
           playsInline
+          poster={assetPosterUrl(asset.id)}
           src={assetInlineUrl(asset)}
           aria-label="视频"
           onLoadedMetadata={(event) => {
@@ -138,7 +140,9 @@ export function AssetDetail({
 
   return (
     <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资料详情">
-      <button type="button" className="close" onClick={onClose}>关闭</button>
+      <button type="button" className="close" aria-label="关闭资料详情" onClick={onClose}>
+        关闭
+      </button>
       <div className="asset-detail-media">{media}</div>
       <dl>
         <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? "资料"}</dd>

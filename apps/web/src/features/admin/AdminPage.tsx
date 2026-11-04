@@ -1139,6 +1139,10 @@ function UserRunDetail({
   const activeTurns = status?.active_turns ?? [];
   const recentJobs = status?.recent_jobs ?? [];
   const recentTurns = status?.recent_turns ?? [];
+  const [showAllJobs, setShowAllJobs] = useState(false);
+  const focusedInJobs = activeJobs.some((job) => job.job_id === focusedRunId);
+  const visibleJobs =
+    showAllJobs || focusedInJobs ? activeJobs : activeJobs.slice(0, 3);
 
   useEffect(() => {
     if (focusedRunId === "") return;
@@ -1189,7 +1193,8 @@ function UserRunDetail({
         {activeJobs.length === 0 ? (
           <div className="empty-panel">没有正在处理的导入。</div>
         ) : (
-          activeJobs.map((job) => {
+          <>
+          {visibleJobs.map((job) => {
             const done = job.progress?.done ?? 0;
             const total = job.progress?.total ?? 11;
             const percent = total > 0 ? Math.min(100, (done / total) * 100) : 0;
@@ -1223,7 +1228,18 @@ function UserRunDetail({
                 ) : null}
               </div>
             );
-          })
+          })}
+          {activeJobs.length > 3 ? (
+            <button
+              type="button"
+              className="text-button"
+              aria-expanded={showAllJobs}
+              onClick={() => setShowAllJobs((value) => !value)}
+            >
+              {showAllJobs ? "收起" : `展开全部 ${activeJobs.length} 条`}
+            </button>
+          ) : null}
+          </>
         )}
       </div>
 
@@ -1332,9 +1348,10 @@ function UserTrajectory({
     setItems((previous) => {
       const byId = new Map(previous.map((item) => [item.id, item]));
       for (const item of incoming) byId.set(item.id, item);
+      // 最新的在最上面；“继续加载”拉回来的是更早的记录，自然接在底部。
       return [...byId.values()]
-        .sort((a, b) => a.id - b.id)
-        .slice(-TRAJECTORY_LIMIT);
+        .sort((a, b) => b.id - a.id)
+        .slice(0, TRAJECTORY_LIMIT);
     });
   }, []);
 

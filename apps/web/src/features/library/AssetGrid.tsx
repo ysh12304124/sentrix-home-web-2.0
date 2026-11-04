@@ -10,6 +10,7 @@ import { useState } from "react";
 
 import {
   assetDisplayUrl,
+  assetPosterUrl,
   getAsset,
   type AssetDetailResponse,
   type AssetSummary,
@@ -20,6 +21,31 @@ const TYPE_MARK: Readonly<Record<string, string>> = { image: "▦", video: "▶"
 
 function mediaLabel(mediaType: string): string {
   return { image: "图片", video: "视频", audio: "音频", text: "文本" }[mediaType] ?? "资料";
+}
+
+/** 视频未播放时也必须看得见画面：后端 poster 路由优先复用关键帧，没有就抽首帧。 */
+function AssetThumb({
+  asset,
+  onMediaError,
+}: {
+  asset: AssetSummary;
+  onMediaError?: (asset: AssetSummary) => void;
+}) {
+  const [posterFailed, setPosterFailed] = useState(false);
+  if (asset.media_type === "image" || (asset.media_type === "video" && !posterFailed)) {
+    return (
+      <img
+        src={asset.media_type === "video" ? assetPosterUrl(asset.id) : assetDisplayUrl(asset)}
+        alt={asset.media_type === "video" ? "视频封面" : "资料图片"}
+        loading="lazy"
+        onError={() => {
+          if (asset.media_type === "video") setPosterFailed(true);
+          onMediaError?.(asset);
+        }}
+      />
+    );
+  }
+  return <span className="asset-type-mark" aria-hidden="true">{TYPE_MARK[asset.media_type] ?? "▦"}</span>;
 }
 
 export function AssetGrid({
@@ -52,16 +78,7 @@ export function AssetGrid({
         {assets.map((asset) => (
           <button key={asset.id} type="button" className="asset-card" onClick={() => void open(asset)}>
             <div className="asset-thumb">
-              {asset.media_type === "image" ? (
-                <img
-                  src={assetDisplayUrl(asset)}
-                  alt="资料图片"
-                  loading="lazy"
-                  onError={() => onMediaError?.(asset)}
-                />
-              ) : (
-                <span className="asset-type-mark" aria-hidden="true">{TYPE_MARK[asset.media_type] ?? "▦"}</span>
-              )}
+              <AssetThumb asset={asset} onMediaError={onMediaError} />
               <b>{mediaLabel(asset.media_type)}</b>
             </div>
             <div className="asset-info">

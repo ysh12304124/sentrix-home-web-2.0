@@ -27,11 +27,28 @@
   position: absolute;
   top: 12px;
   right: 14px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 24px;
+  min-height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
   cursor: pointer;
+}
+
+.modal-close span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.modal-close:hover {
+  background: var(--soft);
 }
 
 .modal-kicker {

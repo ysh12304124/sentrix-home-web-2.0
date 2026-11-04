@@ -16,6 +16,7 @@ import { useState } from "react";
 
 import {
   assetDisplayUrl,
+  assetPosterUrl,
   assetPreviewUrl,
   getAsset,
   type AssetDetailResponse,
@@ -70,6 +71,7 @@ function VideoResult({
       controls
       preload="metadata"
       playsInline
+      poster={assetPosterUrl(assetId)}
       src={assetPreviewUrl(assetId)}
       aria-label="检索命中的视频"
       onLoadedMetadata={(event) => {

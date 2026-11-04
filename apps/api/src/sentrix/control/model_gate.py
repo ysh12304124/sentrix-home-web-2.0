@@ -113,6 +113,7 @@ class ModelGate:
     _seq: int = 0
     _waiters: list[_Waiter] = field(default_factory=list)
     _active_by_user: dict[str, int] = field(default_factory=dict)
+    _active_by_kind: dict[str, int] = field(default_factory=dict)
     _last_admitted: dict[str, float] = field(default_factory=dict)
     _chat_since_import: int = 0
     _last_ok_at: float = 0.0
@@ -145,6 +146,9 @@ class ModelGate:
                 self._active_by_user[waiter.user_id] = (
                     self._active_by_user.get(waiter.user_id, 0) + 1
                 )
+                self._active_by_kind[waiter.kind] = (
+                    self._active_by_kind.get(waiter.kind, 0) + 1
+                )
                 self._note_admitted(waiter)
                 admitted = True
                 # 还有空槽时让下一个等待者立刻重新判定，否则它要等下一次释放才被唤醒。
@@ -164,12 +168,31 @@ class ModelGate:
                     self._active_by_user[waiter.user_id] = remaining
                 else:
                     self._active_by_user.pop(waiter.user_id, None)
+                remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
+                if remaining_kind > 0:
+                    self._active_by_kind[waiter.kind] = remaining_kind
+                else:
+                    self._active_by_kind.pop(waiter.kind, None)
                 self._condition.notify_all()
 
     def _can_admit(self, waiter: _Waiter) -> bool:
         if self._active >= self.target.slots:
             return False
+        # 问答优先不等于把导入饿死：空闲时导入可以吃满所有槽位；只要有问答在跑
+        # 或在等，导入最多占 slots-1，给交互留一个立刻可用的位置。
+        # 正在上游跑的调用无法强杀，所以问答最坏要等一次导入请求结束。
+        if waiter.kind == KIND_IMPORT and self._interactive_demand():
+            if self._active_by_kind.get(KIND_IMPORT, 0) >= self._import_cap():
+                return False
         return self._pick() is waiter
+
+    def _import_cap(self) -> int:
+        return max(1, self.target.slots - 1)
+
+    def _interactive_demand(self) -> bool:
+        return self._active_by_kind.get(KIND_CHAT, 0) > 0 or any(
+            item.kind == KIND_CHAT for item in self._waiters
+        )
 
     def _pick(self) -> _Waiter | None:
         if not self._waiters:
@@ -178,6 +201,11 @@ class ModelGate:
         chats = [item for item in self._waiters if item.kind == KIND_CHAT]
         imports = [item for item in self._waiters if item.kind == KIND_IMPORT]
         benchmarks = [item for item in self._waiters if item.kind == KIND_BENCHMARK]
+        if imports and self._interactive_demand():
+            if self._active_by_kind.get(KIND_IMPORT, 0) >= self._import_cap():
+                # 所有候选都不能越过保留位；否则 _pick 返回一个 _can_admit 会拒绝的
+                # 导入，等待者互相卡住。
+                imports = []
         if chats:
             oldest_import = min(imports, key=lambda item: item.seq) if imports else None
             if (
@@ -233,6 +261,7 @@ class ModelGate:
             "active": self._active,
             "waiting": self.waiting(),
             "waiting_total": len(self._waiters),
+            "active_by_kind": dict(self._active_by_kind),
             "active_by_user": dict(self._active_by_user),
             "waiting_by_user": waiting_by_user,
             "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,

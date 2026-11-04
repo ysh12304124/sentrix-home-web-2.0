@@ -9,6 +9,22 @@
   position: absolute;
   top: 18px;
   right: 22px;
+  z-index: 2;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid #ffffff8c;
+  border-radius: 999px;
+  background: #0f172ad9;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px #00000059;
+}
+
+.asset-detail .close:hover {
+  background: #0f172a;
+  border-color: #fff;
 }
 
 .asset-detail-media {
