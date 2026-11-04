@@ -277,6 +277,22 @@ export function ImportsPage() {
               : postprocess.stage === "event_summary" && postprocess.events_total > 0
                 ? `正在总结事件：${postprocess.events_done} / ${postprocess.events_total}。`
                 : `当前阶段：${postprocessStageLabel(postprocess.stage)}。这一步完成后会自动进入下一段。`;
+  const libraryComplete =
+    batchTotal > 0 &&
+    completedCount >= batchTotal &&
+    waitingUploads === 0 &&
+    processingCount === 0 &&
+    failedUploads === 0 &&
+    problemCount === 0;
+  const postprocessComplete = postprocess?.state === "done";
+  // 完成的阶段不再展示进度条；新的一批上传或新的后处理代际会重新出现。
+  const showLibraryPhase = batchTotal > 0 && !libraryComplete;
+  const showPostprocessPhase =
+    postprocess !== undefined &&
+    (postprocess.state === "pending" ||
+      postprocess.state === "running" ||
+      postprocess.state === "waiting_retry");
+  const showAllCompleteNote = libraryComplete && postprocessComplete && acceptedCount > 0;
 
   return (
     <>
@@ -287,55 +303,69 @@ export function ImportsPage() {
           上传成功后会继续整理，关闭页面也不会中断。
         </p>
       </header>
-      <div className="import-phases">
-        <article className="import-phase">
-          <div className="import-phase-head">
-            <div>
-              <span>1 / 资料建库</span>
-              <small>逐张照片和视频：读取时间地点、理解画面、建立检索索引。</small>
-            </div>
-            <b>
-              {completedCount} / {batchTotal}
-            </b>
-          </div>
-          <div className="import-phase-bar library" aria-hidden="true">
-            <i style={{ width: `${batchPercent}%` }} />
-          </div>
-          <small>
-            完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
-            {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
-          </small>
-        </article>
+      {showLibraryPhase || showPostprocessPhase ? (
+        <div className="import-phases">
+          {showLibraryPhase ? (
+            <article className="import-phase">
+              <div className="import-phase-head">
+                <div>
+                  <span>1 / 资料建库</span>
+                  <small>逐张照片和视频：读取时间地点、理解画面、建立检索索引。</small>
+                </div>
+                <b>
+                  {completedCount} / {batchTotal}
+                </b>
+              </div>
+              <div className="import-phase-bar library" aria-hidden="true">
+                <i style={{ width: `${batchPercent}%` }} />
+              </div>
+              <small>
+                完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
+                {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
+              </small>
+            </article>
+          ) : null}
 
-        <article className="import-phase">
-          <div className="import-phase-head">
-            <div>
-              <span>2 / 整理回忆</span>
-              <small>把资料串成事件、总结标题与描述，并维护人物关系和画像。</small>
-            </div>
-            <b>
-              {postprocessValue !== null
-                ? `${postprocessValue}%`
-                : postprocess?.state === "done"
-                  ? "完成"
-                  : postprocessActive
-                    ? "进行中"
-                    : "等待"}
-            </b>
-          </div>
-          <div
-            className={
-              postprocess?.state === "running" && postprocessValue === null
-                ? "import-phase-bar postprocess indeterminate"
-                : "import-phase-bar postprocess"
-            }
-            aria-hidden="true"
-          >
-            <i style={postprocessValue !== null ? { width: `${postprocessValue}%` } : undefined} />
-          </div>
-          <small>{postprocessText}</small>
-        </article>
-      </div>
+          {showPostprocessPhase ? (
+            <article className="import-phase">
+              <div className="import-phase-head">
+                <div>
+                  <span>2 / 整理回忆</span>
+                  <small>把资料串成事件、总结标题与描述，并维护人物关系和画像。</small>
+                </div>
+                <b>
+                  {postprocessValue !== null
+                    ? `${postprocessValue}%`
+                    : postprocess?.state === "done"
+                      ? "完成"
+                      : postprocessActive
+                        ? "进行中"
+                        : "等待"}
+                </b>
+              </div>
+              <div
+                className={
+                  postprocess?.state === "running" && postprocessValue === null
+                    ? "import-phase-bar postprocess indeterminate"
+                    : "import-phase-bar postprocess"
+                }
+                aria-hidden="true"
+              >
+                <i
+                  style={
+                    postprocessValue !== null ? { width: `${postprocessValue}%` } : undefined
+                  }
+                />
+              </div>
+              <small>{postprocessText}</small>
+            </article>
+          ) : null}
+        </div>
+      ) : showAllCompleteNote ? (
+        <p className="import-complete-note" role="status">
+          这一批资料和回忆都已整理完成。
+        </p>
+      ) : null}
 
       <div className="import-stats">
         <article><span>已接收</span><b>{acceptedCount}</b></article>

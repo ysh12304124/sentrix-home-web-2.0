@@ -2077,6 +2077,17 @@ body {
   line-height: 1.6;
 }
 
+.import-complete-note {
+  margin: 0 0 14px;
+  padding: 12px 16px;
+  border: 1px solid rgba(47, 107, 69, 0.22);
+  border-radius: 14px;
+  background: rgba(204, 245, 110, 0.16);
+  color: var(--ex-green);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .import-overall {
   display: flex;
   flex-direction: column;
