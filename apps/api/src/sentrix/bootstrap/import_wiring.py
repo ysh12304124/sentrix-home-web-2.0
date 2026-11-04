@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
@@ -32,6 +33,7 @@ from sentrix.application.retrieval.index_observation_text import IndexObservatio
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.domain.media.models import Observation
 from sentrix.domain.memories.graph import GraphBuildStats
+from sentrix.runtime.work import import_work
 
 if TYPE_CHECKING:
     from sentrix.bootstrap.container import Container
@@ -83,6 +85,12 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
     """
 
     def run(scope_id: str) -> list[str]:
+        # 整段后处理都是“建库”工作，模型调用必须按 import 准入；否则事件总结会
+        # 被当成问答占满槽位，用户提问反而要排队。
+        with import_work():
+            return _run(scope_id)
+
+    def _run(scope_id: str) -> list[str]:
         failures: list[str] = []
         observations = container.observation_repository.list_scope(scope_id, limit=100000)
         try:
@@ -104,17 +112,35 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
             participants=container.event_participant_repository,
             model=container.chat_model,
         )
-        summary_failed = False
-        for event in container.event_repository.list_by_scope(scope_id, limit=10000):
+        # 事件之间彼此独立，模型调用可以并行；数据库写入由 30s busy_timeout + WAL 串行化。
+        pending = [
+            event
+            for event in container.event_repository.list_by_scope(scope_id, limit=10000)
             # 事件归属会先写一句初步摘要，但标题仍是“待总结事件”；只按 summary
             # 判断会把这些事件永久跳过，时间线就一直是占位标题。
-            if event.summary.strip() and event.title.strip() not in {"", "待总结事件"}:
-                continue
-            try:
-                summarizer.execute(event.id)
-            except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
-                log.warning("事件总结失败（event=%s）: %s", event.id, error)
-                summary_failed = True
+            if not (event.summary.strip() and event.title.strip() not in {"", "待总结事件"})
+        ]
+
+        def summarize(event_id: str) -> None:
+            # ThreadPoolExecutor 不继承 contextvars，必须在这里显式标成导入工作。
+            with import_work():
+                summarizer.execute(event_id)
+
+        summary_failed = False
+        workers = max(1, min(4, int(getattr(container.settings, "import_workers", 4))))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentrix-summary") as pool:
+            futures = {
+                pool.submit(summarize, event.id): event
+                for event in pending
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
+                    log.warning(
+                        "事件总结失败（event=%s）: %s", futures[future].id, error
+                    )
+                    summary_failed = True
         if summary_failed:
             failures.append("event_summary")
         if not _run_family_graph(container, scope_id):
