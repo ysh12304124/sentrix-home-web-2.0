@@ -1991,6 +1991,92 @@ body {
 
 /* ---- 导入页：批量进度与选择区 ---- */
 
+.import-phases {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.import-phase {
+  padding: 16px 18px;
+  border: 1px solid var(--ex-line);
+  border-radius: 16px;
+  background: var(--ex-surface);
+  box-shadow: 0 8px 24px rgba(31, 39, 30, 0.04);
+}
+
+.import-phase-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.import-phase-head span {
+  display: block;
+  color: var(--ex-ink);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.import-phase-head small {
+  display: block;
+  max-width: 620px;
+  margin-top: 4px;
+  color: var(--ex-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.import-phase-head b {
+  flex: none;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.import-phase-bar {
+  height: 8px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: var(--ex-soft);
+  overflow: hidden;
+}
+
+.import-phase-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 300ms ease;
+}
+
+.import-phase-bar.library i {
+  background: linear-gradient(90deg, var(--ex-green), #86b45f);
+}
+
+.import-phase-bar.postprocess i {
+  background: linear-gradient(90deg, #d69a2d, #b87322);
+}
+
+.import-phase-bar.indeterminate i {
+  width: 35%;
+  animation: import-phase-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes import-phase-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(300%); }
+}
+
+.import-phase > small {
+  display: block;
+  margin-top: 8px;
+  color: var(--ex-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
 .import-overall {
   display: flex;
   flex-direction: column;

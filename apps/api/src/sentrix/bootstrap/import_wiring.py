@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
@@ -77,21 +78,41 @@ def build_import_assets(container: Container, *, observe: bool) -> ImportAssets:
     )
 
 
-def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
+def build_media_postprocess(container: Container) -> Callable[[str, int], list[str]]:
     """一个相册代际的批末后处理：参与者 → 记忆图 → 事件总结 → 家族图 → 画像。
 
     返回未完成的阶段名。局部失败不阻断其他阶段，也不回滚已提交的资产；
-    执行器据此把作业标为 ``partial`` 并保留具体阶段。
+    执行器据此把作业标为 ``partial`` 并保留具体阶段。阶段与事件进度写进
+    ``scope_postprocess``，用户页据此展示第二段进度。
     """
 
-    def run(scope_id: str) -> list[str]:
+    def run(scope_id: str, generation: int) -> list[str]:
         # 整段后处理都是“建库”工作，模型调用必须按 import 准入；否则事件总结会
         # 被当成问答占满槽位，用户提问反而要排队。
         with import_work():
-            return _run(scope_id)
+            return _run(scope_id, generation)
 
-    def _run(scope_id: str) -> list[str]:
+    def _stage(scope_id: str, generation: int, stage: str, total: int = 0) -> None:
+        container.import_jobs.begin_postprocess_stage(
+            scope_id,
+            generation,
+            stage,
+            events_total=total,
+            now=datetime.now(UTC),
+        )
+
+    def _progress(scope_id: str, generation: int, done: int, total: int) -> None:
+        container.import_jobs.update_postprocess_progress(
+            scope_id,
+            generation,
+            done=done,
+            total=total,
+            now=datetime.now(UTC),
+        )
+
+    def _run(scope_id: str, generation: int) -> list[str]:
         failures: list[str] = []
+        _stage(scope_id, generation, "participants")
         observations = container.observation_repository.list_scope(scope_id, limit=100000)
         try:
             _confirmed_person_events(container).refresh_participants(
@@ -100,6 +121,7 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
         except Exception as error:  # noqa: BLE001 - 单个后处理阶段失败不阻断其他阶段
             log.warning("参与者刷新失败（scope=%s）: %s", scope_id, error)
             failures.append("participants")
+        _stage(scope_id, generation, "memory_graph")
         try:
             refresh_memory_graph(container, scope_id)
         except Exception as error:  # noqa: BLE001
@@ -120,6 +142,8 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
             # 判断会把这些事件永久跳过，时间线就一直是占位标题。
             if not (event.summary.strip() and event.title.strip() not in {"", "待总结事件"})
         ]
+        total = len(pending)
+        _stage(scope_id, generation, "event_summary", total=total)
 
         def summarize(event_id: str) -> None:
             # ThreadPoolExecutor 不继承 contextvars，必须在这里显式标成导入工作。
@@ -127,6 +151,7 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
                 summarizer.execute(event_id)
 
         summary_failed = False
+        done = 0
         workers = max(1, min(4, int(getattr(container.settings, "import_workers", 4))))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentrix-summary") as pool:
             futures = {
@@ -134,6 +159,7 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
                 for event in pending
             }
             for future in as_completed(futures):
+                done += 1
                 try:
                     future.result()
                 except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
@@ -141,10 +167,14 @@ def build_media_postprocess(container: Container) -> Callable[[str], list[str]]:
                         "事件总结失败（event=%s）: %s", futures[future].id, error
                     )
                     summary_failed = True
+                if done == total or done % 5 == 0:
+                    _progress(scope_id, generation, done, total)
         if summary_failed:
             failures.append("event_summary")
+        _stage(scope_id, generation, "family_graph")
         if not _run_family_graph(container, scope_id):
             failures.append("family_graph")
+        _stage(scope_id, generation, "insights")
         try:
             _run_insights(container)(scope_id)
         except Exception as error:  # noqa: BLE001

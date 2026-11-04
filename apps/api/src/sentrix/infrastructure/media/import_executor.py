@@ -119,8 +119,8 @@ class ImportJobExecutor:
         assets: AssetRepository,
         importer_factory: Callable[[], ImportAssets],
         dependencies_ready: Callable[[], tuple[bool, str]],
-        # 返回未完成的阶段名；空列表表示整代后处理成功。
-        postprocess: Callable[[str], list[str]] | None = None,
+        # 返回未完成的阶段名；空列表表示整代后处理成功。第二个参数是代际围栏。
+        postprocess: Callable[[str, int], list[str]] | None = None,
         # 窗口宽度 = 同时在飞的 prepare_image 数。默认读部署配置；显式参数留给测试。
         workers: int | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -321,7 +321,7 @@ class ImportJobExecutor:
             return
         scope_id, generation = claimed
         try:
-            failures = list(self._postprocess(scope_id))
+            failures = list(self._postprocess(scope_id, generation))
         except Exception:  # noqa: BLE001 - 保留成功资产，整代重试
             log.exception("相册后处理失败 scope=%s generation=%s", scope_id, generation)
             self._jobs.mark_scope_postprocess_partial(

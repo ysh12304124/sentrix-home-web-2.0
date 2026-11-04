@@ -9,11 +9,19 @@ from sentrix.api.schemas.import_jobs import (
     ImportJobListResponse,
     ImportJobStageView,
     ImportJobView,
+    ImportProgressResponse,
+    LibraryProgressView,
+    PostprocessProgressView,
 )
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.import_jobs import ImportJob
 
 router = APIRouter(tags=["import-jobs"])
+
+ACTIVE_STATUSES = frozenset(
+    {"accepted", "queued", "running", "waiting_dependency", "retry_scheduled"}
+)
+FAILED_STATUSES = frozenset({"needs_attention", "partial"})
 
 
 def to_job_view(job: ImportJob, stages: list[ImportJobStageView] | None = None) -> ImportJobView:
@@ -49,6 +57,58 @@ def list_import_jobs(
         scope_id or None, limit=min(max(limit, 1), 5000)
     )
     return ImportJobListResponse(items=[to_job_view(job) for job in jobs])
+
+
+@router.get("/imports/progress")
+def get_import_progress(
+    scope_id: str = "",
+    container: Container = Depends(get_container),
+) -> ImportProgressResponse:
+    """两段式进度：逐文件建库 + 整册后处理。
+
+    逐文件状态来自 import_jobs；后处理阶段/事件计数来自 scope_postprocess。
+    两者必须分开，否则后处理进行时第一段 100% 会被误读成“全部结束”。
+    """
+    requested_scope = scope_id or None
+    counts = container.import_jobs.job_status_counts(requested_scope)
+    total = sum(counts.values())
+    completed = counts.get("completed", 0)
+    processing = sum(count for status, count in counts.items() if status in ACTIVE_STATUSES)
+    failed = sum(count for status, count in counts.items() if status in FAILED_STATUSES)
+    library = LibraryProgressView(
+        total=total,
+        completed=completed,
+        processing=processing,
+        failed=failed,
+        percent=100 if total > 0 and completed >= total else (
+            round(completed / total * 100) if total > 0 else 0
+        ),
+    )
+
+    row = container.import_jobs.postprocess_view(scope_id or "home-default")
+    if row is None:
+        postprocess = PostprocessProgressView()
+    else:
+        dirty = int(row.get("dirty_generation") or 0)
+        processed = int(row.get("processed_generation") or 0)
+        processing_generation = row.get("processing_generation")
+        if processing_generation is not None:
+            state = "running"
+        elif dirty > processed:
+            state = "waiting_retry" if row.get("next_attempt_at") else "pending"
+        elif dirty > 0:
+            state = "done"
+        else:
+            state = "idle"
+        postprocess = PostprocessProgressView(
+            state=state,
+            stage=str(row.get("stage") or ""),
+            events_done=int(row.get("events_done") or 0),
+            events_total=int(row.get("events_total") or 0),
+            updated_at=str(row.get("updated_at") or "") or None,
+            next_attempt_at=str(row.get("next_attempt_at") or "") or None,
+        )
+    return ImportProgressResponse(library=library, postprocess=postprocess)
 
 
 @router.get("/import-jobs/{job_id}")

@@ -1,13 +1,15 @@
-"""共享主模型准入：槽位、优先级与同级用户轮转。
+"""共享主模型准入：槽位、优先级与按活跃用户均分。
 
-槽位数来自主模型实际 ``--parallel`` 的运行值（153 当前 2），不写死为常量。
-等待队列只在内存里；控制服务重启后由用户 API 的持久作业/回合重新发起。
+槽位数来自主模型实际 ``--parallel`` 的运行值（153 当前 4），不写死为常量。
+问答先锁定自己需要的槽位，剩余槽位按当前活跃/等待的导入用户数均分；没有任何用户
+固定占几个槽。等待队列只在内存里；控制服务重启后由用户 API 的持久作业/回合重新发起。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,10 +20,6 @@ KIND_CHAT = "chat"
 KIND_IMPORT = "import"
 KIND_BENCHMARK = "benchmark"
 KINDS = (KIND_CHAT, KIND_IMPORT, KIND_BENCHMARK)
-
-# 导入等满 120 秒后，每放行 4 个新问答就放行 1 个最老导入，避免离线作业饿死。
-IMPORT_STARVATION_S = 120.0
-CHAT_ADMISSIONS_PER_IMPORT = 4
 
 
 @dataclass(frozen=True)
@@ -114,8 +112,9 @@ class ModelGate:
     _waiters: list[_Waiter] = field(default_factory=list)
     _active_by_user: dict[str, int] = field(default_factory=dict)
     _active_by_kind: dict[str, int] = field(default_factory=dict)
-    _last_admitted: dict[str, float] = field(default_factory=dict)
-    _chat_since_import: int = 0
+    # 每个用户、每种工作的活跃数。公平分配看的是这一格，不是跨类型合计。
+    _active_by_user_kind: dict[tuple[str, str], int] = field(default_factory=dict)
+    _last_admitted: dict[tuple[str, str], float] = field(default_factory=dict)
     _last_ok_at: float = 0.0
     _last_error_at: float = 0.0
     _last_error: str = ""
@@ -149,6 +148,10 @@ class ModelGate:
                 self._active_by_kind[waiter.kind] = (
                     self._active_by_kind.get(waiter.kind, 0) + 1
                 )
+                user_kind = (waiter.user_id, waiter.kind)
+                self._active_by_user_kind[user_kind] = (
+                    self._active_by_user_kind.get(user_kind, 0) + 1
+                )
                 self._note_admitted(waiter)
                 admitted = True
                 # 还有空槽时让下一个等待者立刻重新判定，否则它要等下一次释放才被唤醒。
@@ -169,51 +172,84 @@ class ModelGate:
                 else:
                     self._active_by_user.pop(waiter.user_id, None)
                 remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
+                remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
                 if remaining_kind > 0:
                     self._active_by_kind[waiter.kind] = remaining_kind
                 else:
                     self._active_by_kind.pop(waiter.kind, None)
+                user_kind = (waiter.user_id, waiter.kind)
+                remaining_user_kind = self._active_by_user_kind.get(user_kind, 0) - 1
+                if remaining_user_kind > 0:
+                    self._active_by_user_kind[user_kind] = remaining_user_kind
+                else:
+                    self._active_by_user_kind.pop(user_kind, None)
                 self._condition.notify_all()
 
     def _can_admit(self, waiter: _Waiter) -> bool:
         if self._active >= self.target.slots:
             return False
-        # 问答优先不等于把导入饿死：空闲时导入可以吃满所有槽位；只要有问答在跑
-        # 或在等，导入最多占 slots-1，给交互留一个立刻可用的位置。
-        # 正在上游跑的调用无法强杀，所以问答最坏要等一次导入请求结束。
-        if waiter.kind == KIND_IMPORT and self._interactive_demand():
-            if self._active_by_kind.get(KIND_IMPORT, 0) >= self._import_cap():
-                return False
+        budget = self._budget(waiter.kind)
+        if budget <= 0:
+            return False
+        if self._active_by_kind.get(waiter.kind, 0) >= budget:
+            return False
+        if self._active_by_user_kind.get((waiter.user_id, waiter.kind), 0) >= self._fair_cap(
+            waiter.kind, budget
+        ):
+            return False
         return self._pick() is waiter
 
-    def _import_cap(self) -> int:
-        return max(1, self.target.slots - 1)
+    def _chat_demand(self) -> int:
+        """正在占槽的问答 + 正在等槽的问答。导入必须为这些需求让路。"""
+        active = self._active_by_kind.get(KIND_CHAT, 0)
+        waiting = sum(1 for item in self._waiters if item.kind == KIND_CHAT)
+        return active + waiting
 
-    def _interactive_demand(self) -> bool:
-        return self._active_by_kind.get(KIND_CHAT, 0) > 0 or any(
-            item.kind == KIND_CHAT for item in self._waiters
-        )
+    def _budget(self, kind: str) -> int:
+        slots = self.target.slots
+        if kind != KIND_IMPORT:
+            return slots
+        # 问答优先：每个活跃/等待的问答请求先锁定一个槽位，剩下的才分给导入。
+        # 正在上游跑的调用无法强杀，所以新问答最多等一次现有导入请求结束。
+        return max(0, slots - min(slots, self._chat_demand()))
+
+    def _users_for_kind(self, kind: str) -> set[str]:
+        users = {
+            user_id
+            for (user_id, item_kind), count in self._active_by_user_kind.items()
+            if item_kind == kind and count > 0
+        }
+        users.update(item.user_id for item in self._waiters if item.kind == kind)
+        return users
+
+    def _fair_cap(self, kind: str, budget: int) -> int:
+        """按当前活跃/等待该类型工作的用户数均分；一个用户不能固定多占。"""
+        users = self._users_for_kind(kind)
+        if not users:
+            return max(1, budget)
+        return max(1, math.ceil(budget / len(users)))
+
+    def _eligible(self, kind: str, budget: int) -> list[_Waiter]:
+        if budget <= 0:
+            return []
+        if self._active_by_kind.get(kind, 0) >= budget:
+            return []
+        cap = self._fair_cap(kind, budget)
+        return [
+            item
+            for item in self._waiters
+            if item.kind == kind
+            and self._active_by_user_kind.get((item.user_id, kind), 0) < cap
+        ]
 
     def _pick(self) -> _Waiter | None:
         if not self._waiters:
             return None
-        now = time.monotonic()
-        chats = [item for item in self._waiters if item.kind == KIND_CHAT]
-        imports = [item for item in self._waiters if item.kind == KIND_IMPORT]
-        benchmarks = [item for item in self._waiters if item.kind == KIND_BENCHMARK]
-        if imports and self._interactive_demand():
-            if self._active_by_kind.get(KIND_IMPORT, 0) >= self._import_cap():
-                # 所有候选都不能越过保留位；否则 _pick 返回一个 _can_admit 会拒绝的
-                # 导入，等待者互相卡住。
-                imports = []
+        chats = self._eligible(KIND_CHAT, self._budget(KIND_CHAT))
+        imports = self._eligible(KIND_IMPORT, self._budget(KIND_IMPORT))
+        benchmarks = self._eligible(KIND_BENCHMARK, self._budget(KIND_BENCHMARK))
+        # 同级用户轮转；跨类型严格按 问答 > 导入 > 评测。
         if chats:
-            oldest_import = min(imports, key=lambda item: item.seq) if imports else None
-            if (
-                oldest_import is not None
-                and now - oldest_import.enqueued_at >= IMPORT_STARVATION_S
-                and self._chat_since_import >= CHAT_ADMISSIONS_PER_IMPORT
-            ):
-                return oldest_import
             return self._round_robin(chats)
         if imports:
             return self._round_robin(imports)
@@ -224,16 +260,11 @@ class ModelGate:
     def _round_robin(self, waiters: list[_Waiter]) -> _Waiter:
         return min(
             waiters,
-            key=lambda item: (self._last_admitted.get(item.user_id, 0.0), item.seq),
+            key=lambda item: (self._last_admitted.get((item.kind, item.user_id), 0.0), item.seq),
         )
 
     def _note_admitted(self, waiter: _Waiter) -> None:
-        now = time.monotonic()
-        self._last_admitted[waiter.user_id] = now
-        if waiter.kind == KIND_CHAT:
-            self._chat_since_import += 1
-        elif waiter.kind == KIND_IMPORT:
-            self._chat_since_import = 0
+        self._last_admitted[(waiter.kind, waiter.user_id)] = time.monotonic()
 
     def mark_ok(self) -> None:
         self._last_ok_at = time.time()
@@ -263,6 +294,14 @@ class ModelGate:
             "waiting_total": len(self._waiters),
             "active_by_kind": dict(self._active_by_kind),
             "active_by_user": dict(self._active_by_user),
+            "active_by_user_kind": {
+                f"{user}:{kind}": count
+                for (user, kind), count in self._active_by_user_kind.items()
+            },
+            "budgets": {kind: self._budget(kind) for kind in KINDS},
+            "fair_caps": {
+                kind: self._fair_cap(kind, self._budget(kind)) for kind in KINDS
+            },
             "waiting_by_user": waiting_by_user,
             "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,
             "last_ok_at": self._last_ok_at or None,

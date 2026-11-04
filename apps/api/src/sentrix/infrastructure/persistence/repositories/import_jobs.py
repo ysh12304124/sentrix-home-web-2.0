@@ -486,8 +486,15 @@ class SqliteImportJobRepository:
                     connection.commit()
                     return None
                 connection.execute(
-                    "UPDATE scope_postprocess SET processing_generation = ?, updated_at = ? WHERE scope_id = ?",
-                    (row["dirty_generation"], now.isoformat(), row["scope_id"]),
+                    "UPDATE scope_postprocess SET processing_generation = ?, stage = 'starting',"
+                    " stage_started_at = ?, events_done = 0, events_total = 0, updated_at = ?"
+                    " WHERE scope_id = ?",
+                    (
+                        row["dirty_generation"],
+                        now.isoformat(),
+                        now.isoformat(),
+                        row["scope_id"],
+                    ),
                 )
             except BaseException:
                 connection.rollback()
@@ -502,15 +509,18 @@ class SqliteImportJobRepository:
             if success:
                 connection.execute(
                     "UPDATE scope_postprocess SET processed_generation = MAX(processed_generation, ?), "
-                    "processing_generation = NULL, next_attempt_at = NULL, updated_at = ? "
+                    "processing_generation = NULL, stage = 'done', stage_started_at = ?,"
+                    " events_done = events_total, next_attempt_at = NULL, updated_at = ? "
                     "WHERE scope_id = ?",
-                    (generation, now.isoformat(), scope_id),
+                    (generation, now.isoformat(), now.isoformat(), scope_id),
                 )
             else:
                 connection.execute(
-                    "UPDATE scope_postprocess SET processing_generation = NULL, "
-                    "next_attempt_at = ?, updated_at = ? WHERE scope_id = ?",
+                    "UPDATE scope_postprocess SET processing_generation = NULL,"
+                    " stage = 'retry_wait', stage_started_at = ?,"
+                    " next_attempt_at = ?, updated_at = ? WHERE scope_id = ?",
                     (
+                        now.isoformat(),
                         (now + timedelta(minutes=5)).isoformat(),
                         now.isoformat(),
                         scope_id,
@@ -542,6 +552,63 @@ class SqliteImportJobRepository:
                 (now.isoformat(), scope_id),
             )
         return cursor.rowcount
+
+    def job_status_counts(self, scope_id: str | None) -> dict[str, int]:
+        sql = "SELECT status, COUNT(*) AS n FROM import_jobs"
+        parameters: tuple[object, ...] = ()
+        if scope_id:
+            sql += " WHERE scope_id = ?"
+            parameters = (scope_id,)
+        sql += " GROUP BY status"
+        with self._database.connect() as connection:
+            rows = connection.execute(sql, parameters).fetchall()
+        return {str(row["status"]): int(row["n"]) for row in rows}
+
+    def postprocess_view(self, scope_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT dirty_generation, processed_generation, processing_generation,"
+                " stage, stage_started_at, events_done, events_total, updated_at,"
+                " next_attempt_at FROM scope_postprocess WHERE scope_id = ?",
+                (scope_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def begin_postprocess_stage(
+        self,
+        scope_id: str,
+        generation: int,
+        stage: str,
+        *,
+        events_total: int = 0,
+        now: datetime,
+    ) -> bool:
+        """只有仍持有这一代的执行者才能改阶段，避免旧进程覆盖新一代。"""
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE scope_postprocess SET stage = ?, stage_started_at = ?,"
+                " events_done = 0, events_total = ?, updated_at = ?"
+                " WHERE scope_id = ? AND processing_generation = ?",
+                (stage, now.isoformat(), max(0, events_total), now.isoformat(), scope_id, generation),
+            )
+        return cursor.rowcount > 0
+
+    def update_postprocess_progress(
+        self,
+        scope_id: str,
+        generation: int,
+        *,
+        done: int,
+        total: int,
+        now: datetime,
+    ) -> bool:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE scope_postprocess SET events_done = ?, events_total = ?, updated_at = ?"
+                " WHERE scope_id = ? AND processing_generation = ?",
+                (max(0, done), max(0, total), now.isoformat(), scope_id, generation),
+            )
+        return cursor.rowcount > 0
 
     def scope_backlog(self) -> int:
         with self._database.connect() as connection:

@@ -42,3 +42,29 @@ class ImportJobView(BaseModel):
 
 class ImportJobListResponse(BaseModel):
     items: list[ImportJobView]
+
+
+class LibraryProgressView(BaseModel):
+    """第一段：逐个文件建库。"""
+
+    total: int = 0
+    completed: int = 0
+    processing: int = 0
+    failed: int = 0
+    percent: int = 0
+
+
+class PostprocessProgressView(BaseModel):
+    """第二段：整册后处理。阶段与事件计数用于解释“为什么还没结束”。"""
+
+    state: str = "idle"  # idle | pending | running | waiting_retry | done
+    stage: str = ""
+    events_done: int = 0
+    events_total: int = 0
+    updated_at: str | None = None
+    next_attempt_at: str | None = None
+
+
+class ImportProgressResponse(BaseModel):
+    library: LibraryProgressView
+    postprocess: PostprocessProgressView

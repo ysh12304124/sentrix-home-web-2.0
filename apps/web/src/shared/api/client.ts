@@ -1081,6 +1081,30 @@ export async function listImportJobs(scopeId: string, limit = 1000): Promise<Imp
   return body.items;
 }
 
+export interface ImportProgress {
+  library: {
+    total: number;
+    completed: number;
+    processing: number;
+    failed: number;
+    percent: number;
+  };
+  postprocess: {
+    state: "idle" | "pending" | "running" | "waiting_retry" | "done";
+    stage: string;
+    events_done: number;
+    events_total: number;
+    updated_at: string | null;
+    next_attempt_at: string | null;
+  };
+}
+
+export async function fetchImportProgress(scopeId: string): Promise<ImportProgress> {
+  return request<ImportProgress>(
+    `/imports/progress?scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
 export async function getImportJob(jobId: string): Promise<ImportJobView> {
   return request<ImportJobView>(`/import-jobs/${encodeURIComponent(jobId)}`);
 }

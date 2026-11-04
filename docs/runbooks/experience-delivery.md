@@ -80,10 +80,16 @@ PY
 `execution_state` 表达 `recovering/waiting_dependency/retry_scheduled`。
 认领写 `attempt_no` 与 `fence`，终态与最终消息同事务、条件写；SSE `event_seq` 回合内单调。
 
-模型准入：问答 > 导入 > 评测；槽位取实际 `--parallel`；同级用户轮转；
-有问答活跃或等待时，导入最多占 `slots-1`，给交互留一个槽位；没有问答需求时导入可吃满全部槽位。
-导入等待满 120 秒后每放行 4 个问答放行 1 个最老导入；流结束/取消/异常都释放槽位。
-导入执行器按窗口并行 `prepare_image`（`SENTRIX_IMPORT_WORKERS`，默认 4），提交仍按接收顺序串行。
+模型准入：问答 > 导入 > 评测；槽位取实际 `--parallel`；同级用户轮转。
+问答请求先按活跃/等待的问答需求量锁定槽位（最多占满全部），剩余槽位再分给导入；
+导入与问答各自按当前活跃/等待该类型工作的**用户数**动态均分，不固定某个用户占几个槽。
+正在执行的模型调用不可强杀，所以新问答最坏等待一次已有导入请求结束。
+流结束/取消/异常都释放槽位。导入执行器按窗口并行 `prepare_image`
+（`SENTRIX_IMPORT_WORKERS` 是窗口上限，默认 4），提交仍按接收顺序串行。
+
+导入进度分两段展示：逐文件建库（`import_jobs`）与整册后处理（`scope_postprocess`）。
+后处理阶段与事件总结计数持久化在 `scope_postprocess`，由
+`GET /api/v1/imports/progress` 返回；不要把第一段 100% 误读为整批结束。
 
 ## 5. 静态检查记录（实施代理执行）
 

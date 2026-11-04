@@ -10,9 +10,11 @@ import {
 import {
   ApiError,
   cancelImportJob,
+  fetchImportProgress,
   listImportJobs,
   uploadMedia,
   type ImportJobView,
+  type ImportProgress,
 } from "../../shared/api/client";
 
 type EntryStatus = "waiting" | "uploading" | "accepted" | "failed";
@@ -79,6 +81,30 @@ function formatUploadTime(value: string): string {
   return date.toLocaleString("zh-CN", { hour12: false }).slice(0, 16);
 }
 
+const POSTPROCESS_STAGE_LABELS: Readonly<Record<string, string>> = {
+  starting: "准备整理",
+  participants: "整理人物与参与者",
+  memory_graph: "梳理记忆关系",
+  event_summary: "总结事件",
+  family_graph: "推断家庭关系",
+  insights: "生成人物画像",
+  retry_wait: "等待重试",
+  done: "整理完成",
+};
+
+function postprocessStageLabel(stage: string): string {
+  return POSTPROCESS_STAGE_LABELS[stage] ?? "整理回忆";
+}
+
+function postprocessPercent(progress: ImportProgress["postprocess"] | undefined): number | null {
+  if (progress === undefined) return null;
+  if (progress.state === "done") return 100;
+  if (progress.stage === "event_summary" && progress.events_total > 0) {
+    return Math.min(100, Math.round((progress.events_done / progress.events_total) * 100));
+  }
+  return null;
+}
+
 function jobStatusLabel(job: ImportJobView): string {
   const labels: Record<string, string> = {
     accepted: "已接收",
@@ -100,12 +126,18 @@ export function ImportsPage() {
   const targetScope = "";
   const [entries, setEntries] = useState<Entry[]>([]);
   const [jobs, setJobs] = useState<ImportJobView[]>([]);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
 
   const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await listImportJobs(scopeId));
+      const [nextJobs, nextProgress] = await Promise.all([
+        listImportJobs(scopeId),
+        fetchImportProgress(scopeId),
+      ]);
+      setJobs(nextJobs);
+      setProgress(nextProgress);
       setError("");
     } catch (cause) {
       setError((cause as Error).message);
@@ -117,13 +149,18 @@ export function ImportsPage() {
   }, [refreshJobs]);
 
   useEffect(() => {
+    const postprocessActive =
+      progress?.postprocess.state === "running" ||
+      progress?.postprocess.state === "pending" ||
+      progress?.postprocess.state === "waiting_retry";
     const hasActive =
       jobs.some((job) => ACTIVE_JOB_STATUSES.has(job.status)) ||
-      entries.some((entry) => entry.status === "waiting" || entry.status === "uploading");
+      entries.some((entry) => entry.status === "waiting" || entry.status === "uploading") ||
+      postprocessActive;
     if (!hasActive) return;
     const timer = window.setTimeout(() => void refreshJobs(), 2000);
     return () => window.clearTimeout(timer);
-  }, [jobs, entries, refreshJobs]);
+  }, [jobs, entries, progress, refreshJobs]);
 
   const updateEntry = useCallback((key: string, patch: Partial<Entry>) => {
     setEntries((previous) =>
@@ -202,18 +239,44 @@ export function ImportsPage() {
     [refreshJobs, uploadOne],
   );
 
-  const completedCount = jobs.filter((job) => job.status === "completed").length;
-  const processingCount = jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)).length;
-  const problemCount = jobs.filter(
-    (job) => job.status === "needs_attention" || job.status === "partial",
-  ).length;
+  const acceptedCount = progress?.library.total ?? jobs.length;
+  const completedCount =
+    progress?.library.completed ?? jobs.filter((job) => job.status === "completed").length;
+  const processingCount =
+    progress?.library.processing ??
+    jobs.filter((job) => ACTIVE_JOB_STATUSES.has(job.status)).length;
+  const problemCount =
+    progress?.library.failed ??
+    jobs.filter((job) => job.status === "needs_attention" || job.status === "partial").length;
   const waitingUploads = entries.filter(
     (entry) => entry.status === "waiting" || entry.status === "uploading",
   ).length;
   const failedUploads = entries.filter((entry) => entry.status === "failed").length;
-  const batchTotal = jobs.length + waitingUploads;
+  const batchTotal = acceptedCount + waitingUploads;
   const batchPercent =
-    batchTotal > 0 ? Math.round((completedCount / batchTotal) * 100) : 0;
+    batchTotal > 0 ? Math.min(100, Math.round((completedCount / batchTotal) * 100)) : 0;
+  const postprocess = progress?.postprocess;
+  const postprocessValue = postprocessPercent(postprocess);
+  const postprocessActive =
+    postprocess?.state === "running" ||
+    postprocess?.state === "pending" ||
+    postprocess?.state === "waiting_retry";
+  const postprocessText =
+    postprocess === undefined
+      ? "正在读取后处理进度…"
+      : postprocess.state === "idle"
+        ? "还没有需要整理的回忆。"
+        : postprocess.state === "pending"
+          ? "资料建库完成后会自动开始。"
+          : postprocess.state === "waiting_retry"
+            ? postprocess.next_attempt_at
+              ? `这一步暂时没完成，将在 ${formatUploadTime(postprocess.next_attempt_at)} 后自动重试。`
+              : "这一步暂时没完成，稍后会自动重试。"
+            : postprocess.state === "done"
+              ? "事件、人物关系与画像已经整理完成。"
+              : postprocess.stage === "event_summary" && postprocess.events_total > 0
+                ? `正在总结事件：${postprocess.events_done} / ${postprocess.events_total}。`
+                : `当前阶段：${postprocessStageLabel(postprocess.stage)}。这一步完成后会自动进入下一段。`;
 
   return (
     <>
@@ -224,24 +287,58 @@ export function ImportsPage() {
           上传成功后会继续整理，关闭页面也不会中断。
         </p>
       </header>
-      <div className="import-overall">
-        <div className="import-overall-copy">
-          <span>资料整理进度</span>
-          <b>
-            {completedCount} / {batchTotal}
-          </b>
-        </div>
-        <div className="import-overall-bar" aria-hidden="true">
-          <i style={{ width: `${batchPercent}%` }} />
-        </div>
-        <small>
-          完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
-          {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
-        </small>
+      <div className="import-phases">
+        <article className="import-phase">
+          <div className="import-phase-head">
+            <div>
+              <span>1 / 资料建库</span>
+              <small>逐张照片和视频：读取时间地点、理解画面、建立检索索引。</small>
+            </div>
+            <b>
+              {completedCount} / {batchTotal}
+            </b>
+          </div>
+          <div className="import-phase-bar library" aria-hidden="true">
+            <i style={{ width: `${batchPercent}%` }} />
+          </div>
+          <small>
+            完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
+            {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
+          </small>
+        </article>
+
+        <article className="import-phase">
+          <div className="import-phase-head">
+            <div>
+              <span>2 / 整理回忆</span>
+              <small>把资料串成事件、总结标题与描述，并维护人物关系和画像。</small>
+            </div>
+            <b>
+              {postprocessValue !== null
+                ? `${postprocessValue}%`
+                : postprocess?.state === "done"
+                  ? "完成"
+                  : postprocessActive
+                    ? "进行中"
+                    : "等待"}
+            </b>
+          </div>
+          <div
+            className={
+              postprocess?.state === "running" && postprocessValue === null
+                ? "import-phase-bar postprocess indeterminate"
+                : "import-phase-bar postprocess"
+            }
+            aria-hidden="true"
+          >
+            <i style={postprocessValue !== null ? { width: `${postprocessValue}%` } : undefined} />
+          </div>
+          <small>{postprocessText}</small>
+        </article>
       </div>
 
       <div className="import-stats">
-        <article><span>已接收</span><b>{jobs.length}</b></article>
+        <article><span>已接收</span><b>{acceptedCount}</b></article>
         <article><span>处理中</span><b>{processingCount}</b></article>
         <article><span>已完成</span><b>{completedCount}</b></article>
         <article><span>需要处理</span><b>{problemCount}</b></article>

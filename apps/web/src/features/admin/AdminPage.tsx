@@ -119,7 +119,10 @@ interface Overview {
     waiting?: Record<string, number>;
     waiting_total?: number;
     active_by_user?: Record<string, number>;
+    active_by_user_kind?: Record<string, number>;
     waiting_by_user?: Record<string, Record<string, number>>;
+    budgets?: Record<string, number>;
+    fair_caps?: Record<string, number>;
     oldest_wait_s?: number;
     last_ok_at?: number | null;
   };
@@ -775,7 +778,16 @@ export function AdminPage() {
             <span className="queue-chip">
               最久等待 <b>{Math.round(overview?.model_queue?.oldest_wait_s ?? 0)}</b> 秒
             </span>
+            <span className="queue-chip">
+              问答每用户上限 <b>{overview?.model_queue?.fair_caps?.chat ?? "—"}</b>
+            </span>
+            <span className="queue-chip">
+              导入每用户上限 <b>{overview?.model_queue?.fair_caps?.import ?? "—"}</b>
+            </span>
           </div>
+          <p style={{ margin: "8px 0 0", color: "var(--ex-muted)", fontSize: 11 }}>
+            按当前活跃/等待用户数动态均分；问答先占槽，剩余槽位再分给导入。
+          </p>
           <p style={{ margin: "14px 0 0", color: "var(--ex-muted)", fontSize: 11.5 }}>
             上游 {overview?.model_queue?.upstream ?? "—"} · 槽位 {overview?.model_queue?.slots ?? "—"}
             {overview?.model_queue?.last_ok_at
