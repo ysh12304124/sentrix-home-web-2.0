@@ -12,6 +12,10 @@ from sentrix.domain.retrieval.models import CandidateHit
 GRAPH_CHANNEL = "graph"
 GRAPH_MAX_HOPS = 4
 GRAPH_MIN_PROMOTION_SCORE = 0.72
+# 图路径分数只证明「沿图能走到」，不能单独证明它比主检索尾部更适合作为
+# 模型的首屏证据。晋升时还要和 primary 的综合 RRF 分数比较；这个极小 margin
+# 只用来避免同分时把主结果无意义地换掉。
+GRAPH_MIN_PROMOTION_MARGIN = 0.001
 
 
 def graph_intent(question: str) -> str:

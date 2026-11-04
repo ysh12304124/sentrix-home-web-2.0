@@ -335,6 +335,8 @@ class AssistantToolbox:
                 "graph_candidate_asset_ids": list(result.graph_asset_ids),
                 "graph_primary_asset_ids": list(result.primary_asset_ids),
                 "graph_fused_asset_ids": list(result.fused_asset_ids),
+                "graph_promoted_asset_ids": list(result.graph_promoted_asset_ids),
+                "graph_suppressed_asset_ids": list(result.graph_suppressed_asset_ids),
                 "graph_policy": {
                     "intent": graph_intent(query),
                     "direction": graph_direction(query),

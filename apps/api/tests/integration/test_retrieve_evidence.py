@@ -201,6 +201,22 @@ def channels_of(hit) -> dict[str, int]:
     return dict(hit.channels)
 
 
+class PathOnlyGraph:
+    """返回一条只有图路径分数、没有查询通道支持的候选。"""
+
+    def execute(self, *, seed_asset_ids, scope_id, limit, question, max_hops):
+        return GraphSearchResult(
+            hits=(
+                CandidateHit(
+                    asset_id="asset_graph_only",
+                    channel="graph",
+                    rank=1,
+                    raw_score=1.0,
+                ),
+            )
+        )
+
+
 # ---- 三条通道确实进了同一个 fuse ------------------------------------------------
 
 
@@ -246,6 +262,17 @@ def test_a_candidate_outside_every_channels_head_is_still_ranked_by_the_fusion(l
 
     assert [hit.asset_id for hit in result.hits] == ["asset_b"]
     assert channels_of(result.hits[0]) == {"visual_ann": 2, "lexical": 2}
+
+
+def test_graph_path_only_candidate_does_not_replace_primary_tail(library):
+    """图路径命中不能仅凭 path score 挤掉查询相关的 primary 尾部。"""
+    result = build(library, graph=PathOnlyGraph()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
+    )
+
+    assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
+    assert result.graph_promoted_asset_ids == ()
+    assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------
@@ -362,7 +389,7 @@ class _RecordingGraph:
         )
 
 
-def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(library):
+def test_graph_expansion_uses_primary_head_and_preserves_query_relevant_results(library):
     graph = _RecordingGraph()
     use_case = build(library, graph=graph)
 
@@ -370,10 +397,12 @@ def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(l
 
     assert graph.seeds == ("asset_b", "asset_c")
     assert graph.max_hops == 2
-    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_c"]
     assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
-    assert result.fused_asset_ids == ("asset_b", "asset_graph")
+    assert result.fused_asset_ids == ("asset_b", "asset_c")
+    assert result.graph_promoted_asset_ids == ()
+    assert result.graph_suppressed_asset_ids == ("asset_graph",)
 
 
 def test_a_weak_graph_path_does_not_displace_primary_head(library):

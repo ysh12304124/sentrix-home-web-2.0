@@ -43,6 +43,7 @@ from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
 from sentrix.application.retrieval.retrieve_graph import (
     GRAPH_CHANNEL,
+    GRAPH_MIN_PROMOTION_MARGIN,
     GRAPH_MIN_PROMOTION_SCORE,
     RetrieveGraph,
     graph_search_policy,
@@ -156,6 +157,10 @@ class EvidenceResult:
     primary_asset_ids: Sequence[str] = field(default_factory=tuple)
     graph_asset_ids: Sequence[str] = field(default_factory=tuple)
     fused_asset_ids: Sequence[str] = field(default_factory=tuple)
+    # 图候选是否真正获得了首屏交付槽位。图遥测不能只记录「走过图」，否则候选
+    # 召回变好、最终媒体交付变差时无法定位是融合还是模型选图出了问题。
+    graph_promoted_asset_ids: Sequence[str] = field(default_factory=tuple)
+    graph_suppressed_asset_ids: Sequence[str] = field(default_factory=tuple)
 
 
 def _visual_candidates_health(
@@ -416,6 +421,8 @@ class RetrieveEvidence:
         # graph 是 expander，不能像第六条 primary 通道一样只凭 RRF 分数挤掉主结果。
         # 允许图把「primary 过取尾部里已有、但还没进入交付头部」的候选晋升，
         # 也允许它补一条高置信的新候选；低于路径分数门槛的图结果只留在遥测里。
+        graph_promoted_asset_ids: tuple[str, ...] = ()
+        graph_suppressed_asset_ids: tuple[str, ...] = ()
         if channel_hits.get(GRAPH_CHANNEL):
             primary_head_ids = {candidate.asset_id for candidate in primary_fused[:limit]}
             graph_candidates = [
@@ -429,24 +436,38 @@ class RetrieveEvidence:
             ]
             graph_candidates.sort(
                 key=lambda candidate: (
+                    -candidate.score,
                     -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
                     candidate.channels.get(GRAPH_CHANNEL, 10**9),
-                    -candidate.score,
                     candidate.asset_id,
                 )
             )
             graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
-            selected: list[FusedCandidate] = [
-                *primary_fused[: max(0, limit - graph_slots)],
-                *graph_candidates[:graph_slots],
-            ]
-            selected_ids = {candidate.asset_id for candidate in selected}
-            if len(selected) < limit:
-                selected.extend(
-                    candidate for candidate in primary_fused if candidate.asset_id not in selected_ids
-                )
-                selected = selected[:limit]
+            selected = list(primary_fused[:limit])
+            promoted: list[FusedCandidate] = []
+            suppressed: list[FusedCandidate] = []
+            # 图候选只有在自己的综合检索分数至少超过将被替换的 primary 尾部时
+            # 才能进入首屏。之前只看 graph path score，会把「图上相连但与查询
+            # 相关性很弱」的媒体放到 photo_6，导致候选集合的 GT 召回上升，模型
+            # 实际选图/交付反而下降。
+            for candidate in graph_candidates:
+                if len(promoted) >= graph_slots:
+                    suppressed.append(candidate)
+                    continue
+                replace_index = len(selected) - 1 - len(promoted)
+                if replace_index < 0:
+                    suppressed.append(candidate)
+                    continue
+                primary_tail = selected[replace_index]
+                if candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN:
+                    suppressed.append(candidate)
+                    continue
+                selected[replace_index] = candidate
+                promoted.append(candidate)
+            selected.sort(key=lambda candidate: (-candidate.score, candidate.asset_id))
             fused = selected
+            graph_promoted_asset_ids = tuple(candidate.asset_id for candidate in promoted)
+            graph_suppressed_asset_ids = tuple(candidate.asset_id for candidate in suppressed)
         else:
             fused = primary_fused[:limit]
 
@@ -474,4 +495,6 @@ class RetrieveEvidence:
             primary_asset_ids=primary_asset_ids,
             graph_asset_ids=graph_asset_ids,
             fused_asset_ids=fused_asset_ids,
+            graph_promoted_asset_ids=graph_promoted_asset_ids,
+            graph_suppressed_asset_ids=graph_suppressed_asset_ids,
         )
