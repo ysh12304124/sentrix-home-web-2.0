@@ -299,14 +299,15 @@ def test_graph_path_only_candidate_does_not_replace_primary_tail(library):
     assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
 
 
-def test_direct_media_lineage_can_promote_and_preserves_provenance(library):
-    """关键帧 -> 原视频不能被不可比的 RRF 分数误拦。"""
+def test_direct_media_lineage_without_query_relevance_does_not_promote(library):
+    """即使是一跳媒体血缘，也不能只凭图关系替换更相关的 primary 候选。"""
     result = build(library, graph=DirectLineageGraph()).execute(
         EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
     )
 
-    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
-    assert result.graph_promoted_asset_ids == ("asset_graph_only",)
+    assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
+    assert result.graph_promoted_asset_ids == ()
+    assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
     assert result.graph_provenance["asset_graph_only"]["relations"] == [
         "asset_derived_from_asset"
     ]

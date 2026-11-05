@@ -84,23 +84,6 @@ TEXT_CHANNEL = "text_ann"
 RECALL_OVERSAMPLE_FACTOR = 4
 GRAPH_CHANNEL_WEIGHT = 0.5
 
-# 一跳媒体到媒体的结构证据：关键帧血缘、时序、共享对象和视觉相似。
-# 多跳 hub / 事件扩展仍须通过综合分数门控，避免把相册关联误当作问题证据。
-GRAPH_DIRECT_PROMOTION_RELATIONS = frozenset(
-    {
-        "asset_derived_from_asset",
-        "frame_temporal_next",
-        "frame_shares_object",
-        "frame_shares_relation",
-        "frame_visual_similar",
-        "image_temporal_next",
-        "image_shares_object",
-        "image_visual_similar",
-    }
-)
-GRAPH_LINEAGE_RELATIONS = frozenset({"asset_derived_from_asset"})
-
-
 @dataclass(frozen=True, slots=True)
 class EvidenceRequest:
     """一次多路召回的输入。
@@ -454,25 +437,17 @@ class RetrieveEvidence:
                     and candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
                 )
             ]
-            def promotion_priority(candidate: FusedCandidate) -> tuple[int, int, float, float, int, str]:
-                provenance = graph_provenance.get(candidate.asset_id, {})
-                try:
-                    hops = int(provenance.get("hops", 0))
-                except (TypeError, ValueError):
-                    hops = 0
-                relations = {str(item) for item in provenance.get("relations", ())}
-                direct = hops == 1 and bool(relations & GRAPH_DIRECT_PROMOTION_RELATIONS)
-                lineage = direct and bool(relations & GRAPH_LINEAGE_RELATIONS)
-                return (
-                    2 if lineage else 1 if direct else 0,
-                    -hops if hops else -10**9,
-                    -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
+            # 图路径分数用于过滤弱路径；综合 RRF 分数用于验证查询相关性。路径关系
+            # （哪怕是一跳时间/视觉/对象/血缘边）不能替代查询相关性，否则会把有关联但
+            # 不回答当前问题的媒体顶掉 primary 头部中的正确候选。
+            graph_candidates.sort(
+                key=lambda candidate: (
                     -candidate.score,
+                    -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
                     candidate.channels.get(GRAPH_CHANNEL, 10**9),
                     candidate.asset_id,
                 )
-
-            graph_candidates.sort(key=promotion_priority)
+            )
             graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
             selected = list(primary_fused[:limit])
             promoted: list[FusedCandidate] = []
@@ -490,25 +465,7 @@ class RetrieveEvidence:
                     suppressed.append(candidate)
                     continue
                 primary_tail = selected[replace_index]
-                provenance = graph_provenance.get(candidate.asset_id, {})
-                try:
-                    hops = int(provenance.get("hops", 0))
-                except (TypeError, ValueError):
-                    hops = 0
-                relations = {str(item) for item in provenance.get("relations", ())}
-                direct_relations = relations & GRAPH_DIRECT_PROMOTION_RELATIONS
-                direct = hops == 1 and bool(direct_relations)
-                lineage = bool(direct_relations & GRAPH_LINEAGE_RELATIONS)
-                # 旧版只按 graph path score 晋升，造成多跳噪声替换主结果；当前版只按
-                # RRF 比较，又把“关键帧 -> 原视频”和普通图片直接边全部挡掉。这里把
-                # 两类证据分开：一跳结构边可晋升，多跳候选仍须超过 primary 尾部。
-                structurally_supported = direct and (
-                    lineage or candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
-                )
-                if (
-                    not structurally_supported
-                    and candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN
-                ):
+                if candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN:
                     suppressed.append(candidate)
                     continue
                 selected[replace_index] = candidate
