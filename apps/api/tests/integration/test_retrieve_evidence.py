@@ -217,6 +217,30 @@ class PathOnlyGraph:
         )
 
 
+class DirectLineageGraph:
+    """一跳关键帧到原视频的血缘边，图路径本身就是可解释的媒体证据。"""
+
+    def execute(self, *, seed_asset_ids, scope_id, limit, question, max_hops):
+        return GraphSearchResult(
+            hits=(
+                CandidateHit(
+                    asset_id="asset_graph_only",
+                    channel="graph",
+                    rank=1,
+                    raw_score=1.0,
+                ),
+            ),
+            provenance={
+                "asset_graph_only": {
+                    "hops": 1,
+                    "relations": ["asset_derived_from_asset"],
+                    "path": ["asset:asset_seed", "asset:asset_graph_only"],
+                    "score": 1.0,
+                }
+            },
+        )
+
+
 # ---- 三条通道确实进了同一个 fuse ------------------------------------------------
 
 
@@ -273,6 +297,19 @@ def test_graph_path_only_candidate_does_not_replace_primary_tail(library):
     assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
     assert result.graph_promoted_asset_ids == ()
     assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
+
+
+def test_direct_media_lineage_can_promote_and_preserves_provenance(library):
+    """关键帧 -> 原视频不能被不可比的 RRF 分数误拦。"""
+    result = build(library, graph=DirectLineageGraph()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
+    )
+
+    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
+    assert result.graph_promoted_asset_ids == ("asset_graph_only",)
+    assert result.graph_provenance["asset_graph_only"]["relations"] == [
+        "asset_derived_from_asset"
+    ]
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------

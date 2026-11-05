@@ -101,6 +101,8 @@ SEARCH_MEMORIES = ToolSpec(
         "如「户外水泥地面」——**它是看到的画面，不是地点，别拿它当地名回答**）/"
         "evidence_summary（画面内容、物品、衣着与图内文字）——**单张照片的地点、时间、"
         "人物、画面内容直接在 preview 里读，不要为此再调用其他工具**。"
+        "图扩展候选还会带 graph_support（跳数与关系）；它表示这张媒体由另一条高相关候选"
+        "沿图得到，先结合本条 preview 的内容确认相关性，不要只因有图关系就交付。"
         "问「在哪里拍的」就用 place 里的行政区名回答，不要用 scene_hint。"
         "返回值里另有 group_photo_count / group_photo_sizes / group_photo_rows："
         "**这一页里有几张多人照片、各是几人**，已经替你数好了，问「几张合影/各是几人」"

@@ -296,6 +296,32 @@ def test_the_evidence_classes_survive_a_round_trip(result_sets):
     assert loaded.page(1).entries[1].evidence_class == "semantic"
 
 
+def test_graph_provenance_survives_a_round_trip(result_sets):
+    """分页与重启后仍保留图关系解释。"""
+    result_sets.add(
+        ResultSet(
+            id="rs_graph",
+            scope_id="album1",
+            query="海边",
+            asset_ids=("asset_1",),
+            created_at=NOW,
+            graph_provenance={
+                "asset_1": {
+                    "hops": 1,
+                    "relations": ["image_visual_similar"],
+                    "path": ["asset:seed", "asset:asset_1"],
+                }
+            },
+        )
+    )
+
+    loaded = result_sets.get("rs_graph")
+
+    assert loaded is not None
+    assert loaded.graph_provenance["asset_1"]["relations"] == ["image_visual_similar"]
+    assert loaded.page(1).entries[0].graph_provenance["hops"] == 1
+
+
 def test_a_result_set_without_levels_reads_back_as_unknown_not_semantic(result_sets):
     """没带分级的结果集读回来是**「不知道」**（空串），不是 ``semantic``。
 

@@ -84,6 +84,22 @@ TEXT_CHANNEL = "text_ann"
 RECALL_OVERSAMPLE_FACTOR = 4
 GRAPH_CHANNEL_WEIGHT = 0.5
 
+# 一跳媒体到媒体的结构证据：关键帧血缘、时序、共享对象和视觉相似。
+# 多跳 hub / 事件扩展仍须通过综合分数门控，避免把相册关联误当作问题证据。
+GRAPH_DIRECT_PROMOTION_RELATIONS = frozenset(
+    {
+        "asset_derived_from_asset",
+        "frame_temporal_next",
+        "frame_shares_object",
+        "frame_shares_relation",
+        "frame_visual_similar",
+        "image_temporal_next",
+        "image_shares_object",
+        "image_visual_similar",
+    }
+)
+GRAPH_LINEAGE_RELATIONS = frozenset({"asset_derived_from_asset"})
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRequest:
@@ -161,6 +177,8 @@ class EvidenceResult:
     # 召回变好、最终媒体交付变差时无法定位是融合还是模型选图出了问题。
     graph_promoted_asset_ids: Sequence[str] = field(default_factory=tuple)
     graph_suppressed_asset_ids: Sequence[str] = field(default_factory=tuple)
+    # 候选对应的最短图路径，用于结果集预览和关系感知的晋升门控。
+    graph_provenance: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 def _visual_candidates_health(
@@ -366,6 +384,7 @@ class RetrieveEvidence:
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
         graph_policy = graph_search_policy(text, limit=limit)
+        graph_provenance: Mapping[str, Mapping[str, object]] = {}
         if self._graph is not None:
             graph_started = time.monotonic()
             try:
@@ -377,6 +396,7 @@ class RetrieveEvidence:
                     max_hops=graph_policy.max_hops,
                 )
                 channel_hits[GRAPH_CHANNEL] = graph_result.hits
+                graph_provenance = graph_result.provenance
                 traces.append(
                     ChannelTrace(
                         channel=GRAPH_CHANNEL,
@@ -434,14 +454,25 @@ class RetrieveEvidence:
                     and candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
                 )
             ]
-            graph_candidates.sort(
-                key=lambda candidate: (
-                    -candidate.score,
+            def promotion_priority(candidate: FusedCandidate) -> tuple[int, int, float, float, int, str]:
+                provenance = graph_provenance.get(candidate.asset_id, {})
+                try:
+                    hops = int(provenance.get("hops", 0))
+                except (TypeError, ValueError):
+                    hops = 0
+                relations = {str(item) for item in provenance.get("relations", ())}
+                direct = hops == 1 and bool(relations & GRAPH_DIRECT_PROMOTION_RELATIONS)
+                lineage = direct and bool(relations & GRAPH_LINEAGE_RELATIONS)
+                return (
+                    2 if lineage else 1 if direct else 0,
+                    -hops if hops else -10**9,
                     -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
+                    -candidate.score,
                     candidate.channels.get(GRAPH_CHANNEL, 10**9),
                     candidate.asset_id,
                 )
-            )
+
+            graph_candidates.sort(key=promotion_priority)
             graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
             selected = list(primary_fused[:limit])
             promoted: list[FusedCandidate] = []
@@ -459,7 +490,25 @@ class RetrieveEvidence:
                     suppressed.append(candidate)
                     continue
                 primary_tail = selected[replace_index]
-                if candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN:
+                provenance = graph_provenance.get(candidate.asset_id, {})
+                try:
+                    hops = int(provenance.get("hops", 0))
+                except (TypeError, ValueError):
+                    hops = 0
+                relations = {str(item) for item in provenance.get("relations", ())}
+                direct_relations = relations & GRAPH_DIRECT_PROMOTION_RELATIONS
+                direct = hops == 1 and bool(direct_relations)
+                lineage = bool(direct_relations & GRAPH_LINEAGE_RELATIONS)
+                # 旧版只按 graph path score 晋升，造成多跳噪声替换主结果；当前版只按
+                # RRF 比较，又把“关键帧 -> 原视频”和普通图片直接边全部挡掉。这里把
+                # 两类证据分开：一跳结构边可晋升，多跳候选仍须超过 primary 尾部。
+                structurally_supported = direct and (
+                    lineage or candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
+                )
+                if (
+                    not structurally_supported
+                    and candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN
+                ):
                     suppressed.append(candidate)
                     continue
                 selected[replace_index] = candidate
@@ -497,4 +546,5 @@ class RetrieveEvidence:
             fused_asset_ids=fused_asset_ids,
             graph_promoted_asset_ids=graph_promoted_asset_ids,
             graph_suppressed_asset_ids=graph_suppressed_asset_ids,
+            graph_provenance=graph_provenance,
         )

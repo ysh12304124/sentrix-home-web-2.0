@@ -83,6 +83,35 @@ _LEVEL_BY_EVIDENCE_CLASS: Mapping[str, str] = {
     "expander": "approximate",
 }
 
+_GRAPH_RELATION_LABELS: Mapping[str, str] = {
+    "asset_derived_from_asset": "视频与关键帧的媒体血缘",
+    "frame_temporal_next": "视频关键帧时间相邻",
+    "frame_shares_object": "关键帧共享对象",
+    "frame_shares_relation": "关键帧共享关系",
+    "frame_visual_similar": "关键帧视觉相似",
+    "image_temporal_next": "普通图片拍摄时间相邻",
+    "image_shares_object": "普通图片共享对象",
+    "image_visual_similar": "普通图片视觉相似",
+}
+
+
+def _graph_support_preview(provenance: Mapping[str, object]) -> Mapping[str, object]:
+    """把图路径压成模型能理解的解释，不暴露内部 asset/node id。"""
+    try:
+        hops = max(1, int(provenance.get("hops", 0)))
+    except (TypeError, ValueError):
+        hops = 1
+    relations = tuple(str(value) for value in provenance.get("relations", ()) if str(value))
+    labels = tuple(dict.fromkeys(_GRAPH_RELATION_LABELS.get(value, value) for value in relations))
+    return {
+        "hops": hops,
+        "relations": list(labels),
+        "note": (
+            "这条候选由图结构从另一条高相关媒体扩展得到；优先结合本条 preview 的内容"
+            "判断是否回答当前问题。"
+        ),
+    }
+
 
 #: 「合影」的判据：**这张照片上有两个人以上**。1.0 判的是「caption/activity 里出现了
 #: 「合影」两个字」——一条硬编码的题型关键词，而它服务的是 487 道评测题里的 **1 道**
@@ -303,6 +332,7 @@ class AssistantToolbox:
             asset_ids=tuple(hit.asset_id for hit in result.hits),
             created_at=now,
             evidence_classes={hit.asset_id: hit.evidence_class for hit in result.hits},
+            graph_provenance=dict(result.graph_provenance),
         )
         self._result_sets.add(result_set)
         channel_trace = [
@@ -481,7 +511,7 @@ class AssistantToolbox:
         asset = self._assets.get(entry.asset_id)
         observations = self._observations.list_by_asset(entry.asset_id)
         latest = observations[0] if observations else None
-        return {
+        preview: dict[str, Any] = {
             "handle": entry.handle,
             "file_name": asset.file_name if asset else "",
             "media_kind": asset.media_type.value if asset else "",
@@ -517,6 +547,9 @@ class AssistantToolbox:
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
         }
+        if entry.graph_provenance:
+            preview["graph_support"] = _graph_support_preview(entry.graph_provenance)
+        return preview
 
     def _people_count(self, asset_id: str) -> int:
         """这张照片上有几个**人**（已确认的 + 未确认身份的同行者）。

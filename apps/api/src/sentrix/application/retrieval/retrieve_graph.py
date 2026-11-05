@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from sentrix.domain.memories.ports import MemoryGraphRepository
 from sentrix.domain.retrieval.models import CandidateHit
@@ -118,6 +118,10 @@ def graph_search_policy(question: str, *, limit: int = 20) -> GraphSearchPolicy:
 @dataclass(frozen=True, slots=True)
 class GraphSearchResult:
     hits: Sequence[CandidateHit] = ()
+    # 图路径是候选能否被信任、以及模型能否理解“为什么命中”的必要信息。
+    # 只把 CandidateHit 向上交会丢掉 hops / relations，导致旧版只能用裸 path score
+    # 强行晋升，当前版又只能用不可比的 RRF 分数硬拦。
+    provenance: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     backend: str = "sqlite_graph"
     degraded: bool = False
     reason: str = ""
@@ -164,5 +168,14 @@ class RetrieveGraph:
                     higher_is_better=True,
                 )
                 for rank, item in enumerate(expanded, 1)
-            )
+            ),
+            provenance={
+                item.asset_id: {
+                    "hops": item.hops,
+                    "path": list(item.path),
+                    "relations": list(item.relations),
+                    "score": item.score,
+                }
+                for item in expanded
+            },
         )
