@@ -1,0 +1,57 @@
+{
+  "candidate": "v15",
+  "status": "local_contract_and_ci_passed_real_model_validation_pending",
+  "source_baseline": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+  "observed_v14_failure": {
+    "run_id": "20261105-075230-album3-max-video10-current-5aeb80",
+    "ongoing_at_inspection": true,
+    "tool": "inspect_photo",
+    "error_category": "model_output_format",
+    "http_status": 200,
+    "finish_reason": "stop",
+    "prompt_tokens": 2884,
+    "completion_tokens": 75,
+    "exact_output_budget_tokens": 29884,
+    "context_window_tokens": 32768,
+    "original_http_response_retained": false,
+    "limitation": "The original 75-token content was not retained. The missing response_format request contract is confirmed by source; an exact replay of that original output is not claimed."
+  },
+  "change": {
+    "profile": "qwen35_nonthinking",
+    "response_format": {
+      "type": "json_object"
+    },
+    "set_before_exact_token_counting": true,
+    "same_contract_counted_and_generated": true,
+    "legacy_wire_unchanged": true,
+    "strict_failure_and_parser_unchanged": true,
+    "no_retry_added": true,
+    "no_kernel_or_server_change": true,
+    "model_sampling_values_and_deadlines_unchanged": true
+  },
+  "contract_regression": {
+    "test_environment": "Local HTTP server with deterministic responses, no real model",
+    "red_original_code": "HTTP 200 reaches ModelOutputFormatError with missing response_format",
+    "green_candidate": "JSON requested on both tokenizer and generation POSTs; multimodal blocks and exact remaining-window budget preserved",
+    "related_tests_passed": 69,
+    "malformed_reply_still_fails_in_both_profiles": true,
+    "first_test_setup_failure": "Missing explicit context_tokens made initial harness fail at tokenization; fixed setup then confirmed intended format-error red. Both logs retained.",
+    "red_log_sha256": "7f8735d65b6c91a7f9ac556181dbf1475b38fce52fb5b3250a103c92a8320d8e",
+    "green_log_sha256": "61d36c314d670e82b730c42f408d3bebe859a41c5ea0bc4e588534389b3070c0"
+  },
+  "ci": {
+    "command": "make ci",
+    "passed": true,
+    "python_passed": 3428,
+    "real_environment_deselected": 49,
+    "warnings": 10,
+    "web_passed": 143,
+    "photobench_web_passed": 613,
+    "mypy_files": 367,
+    "log_sha256": "bf9b5f6e400786f3c580cd8222b3e9196fb334e389e21f625122eb6a7e482fa4"
+  },
+  "not_formal_qa_throughput": true,
+  "real_model_qualification_passed": false,
+  "candidate_deployed": false,
+  "existing_v14_inference_unchanged": true
+}

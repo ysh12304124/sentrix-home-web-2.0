@@ -21,6 +21,7 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 
 from photobench.api.deps import get_container, json_body
+from photobench.api.metrics_schema import WorkStatusResponse
 
 router = APIRouter(tags=["suites"])
 
@@ -41,7 +42,12 @@ def cancel_run(request: Request, run_id: str) -> dict[str, Any]:
 @router.post("/cancel-active")
 def cancel_active(request: Request) -> dict[str, Any]:
     """``POST /api/cancel-active``（1.0 ``:7767``）。"""
-    return get_container(request).run_suites.cancel_active_suite()
+    container = get_container(request)
+    result = container.run_suites.cancel_active_suite()
+    result["analyses"] = [
+        container.analysis_backend.cancel(work["id"]) for work in container.analysis_backend.work()
+    ]
+    return result
 
 
 @router.post("/runs/{run_id}/rejudge", status_code=202)
@@ -88,3 +94,27 @@ def resume_run(request: Request, run_id: str) -> dict[str, Any]:
     一起消失了——续跑与复用本就是同一件事的两种题目集。
     """
     return get_container(request).run_suites.resume_run(run_id)
+
+
+@router.get("/active-work", response_model=WorkStatusResponse, response_model_exclude_none=True)
+def active_work(request: Request) -> dict[str, Any]:
+    """Live run/auxiliary ownership; cancellation acknowledgement is not worker exit."""
+    container = get_container(request)
+    result = container.run_suites.work_status()
+    extra = container.analysis_backend.work()
+    result["work"].extend(extra)
+    if extra:
+        result["cleanup_status"] = "pending"
+    return result
+
+
+@router.post("/active-work/cleanup", response_model=WorkStatusResponse, response_model_exclude_none=True)
+def refresh_cleanup(request: Request) -> dict[str, Any]:
+    """Bounded recheck of previously requested cancellation, preserving failed evidence."""
+    container = get_container(request)
+    result = container.run_suites.refresh_cleanup()
+    extra = container.analysis_backend.work()
+    result["work"].extend(extra)
+    if extra:
+        result["cleanup_status"] = "pending"
+    return result

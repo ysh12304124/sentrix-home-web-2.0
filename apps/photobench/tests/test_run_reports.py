@@ -618,6 +618,23 @@ def test_export_sft_retrieval_block_carries_every_documented_field():
     assert retrieval["gt_media"] is None
 
 
+def test_refusal_export_nulls_legacy_metrics_without_mutating_the_source():
+    locator = [{"media_type": "image", "media_id": "locator.jpg"}]
+    item = _trace_item(
+        answerability="insufficient_evidence",
+        diagnostic_locator_media_refs=locator,
+        retrieval_recall=0.0,
+        retrieval_media_refs=[{"media_type": "image", "media_id": "a.jpg"}],
+    )
+    retrieval = exports.export_sft(_state(items=[item]))["items"][0]["retrieval"]
+    assert retrieval["retrieval_metrics_applicable"] is False
+    assert retrieval["retrieval_metrics_reason"] == "unanswerable"
+    assert retrieval["retrieval_recall"] is None
+    assert retrieval["diagnostic_locator_media_refs"] == locator
+    assert retrieval["retrieval_media_refs"] == item["retrieval_media_refs"]
+    assert item["retrieval_recall"] == 0.0
+
+
 def _debug_calls_item() -> dict:
     """2.0 的完整轨迹：``trace_bundle.debug_calls``，一条模型调用一条。"""
     return {

@@ -1,0 +1,89 @@
+{
+  "passed": true,
+  "bridge": true,
+  "captured_helper": "_qwen3_5_left_padded_attention",
+  "cases": [
+    {
+      "batch": 4,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 4,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 8,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 8,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 12,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 12,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 16,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 16,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 1,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 4,
+      "context": 64,
+      "left_padded": false,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    }
+  ],
+  "note": "Real vllm-mlx patched Qwen attention versus native mlx-vlm attention, fixed random synthetic single-layer weights. Not QA or full model throughput."
+}

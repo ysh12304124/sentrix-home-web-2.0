@@ -44,9 +44,9 @@ export function Agent2SummaryPanel({ detail }: Agent2SummaryPanelProps) {
     <details className="agent2-summary-panel">
       <summary className="agent2-summary-toggle">
         <span className="agent2-toggle-copy">
-          <small>首轮规划调用 · Agent 2.0 Shadow</small>
+          <small>本轮规划与证据</small>
           <strong>目标分解与证据账本详情</strong>
-          <span>回答前先把用户目标拆成可验证的证据需求，再记录工具带回的证据</span>
+          <span>查看本轮需求、证据与完成状态</span>
         </span>
         <span className="agent2-counters">
           <span>{agent2RequirementSummary(detail)}</span>

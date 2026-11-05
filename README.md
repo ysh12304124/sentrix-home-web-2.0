@@ -79,7 +79,7 @@ PHOTOBENCH_QA_CONCURRENCY=4 ...
 
 - 数据/结果/配置/前端产物根：`SENTRIX_DATA_DIR`、`PHOTOBENCH_{DATA,RESULTS,CONFIG,WEB_DIST}_ROOT`
 - 模型与侧车地址：`SENTRIX_VLM_BASE_URL`、`SENTRIX_WEMM_URL`、
-  `SENTRIX_TEXT_EMBEDDER_URL`、`SENTRIX_LEGACY_CLIP_URL`
+  `SENTRIX_TEXT_EMBEDDER_URL`、`SENTRIX_LEGACY_CLIP_URL`、`SENTRIX_RERANKER_URL`
 - llama-server 的 `--ctx-size/--parallel`（决定每个槽的上下文窗口）
 - judge 端点/模型/密钥（`judge_providers.json` 或 run payload）
 - 数据集根（158 的 `PHOTOBENCH_DATA_ROOT` 指向 1.0 的 `services/photobench/data`）
@@ -100,6 +100,8 @@ docs/refactor/     重构计划、裁决、能力登记、偏离记录
 docs/runbooks/     部署与运维手册
 scripts/           开发、部署、维护脚本
 ```
+
+PhotoBench资源采集工具的固定版本、平台来源及安装核对见[资源采集工具](docs/runbooks/telemetry-tools.md)；Python精确依赖声明在`apps/photobench/pyproject.toml`，原生工具基线在`apps/photobench/telemetry-tools.lock.json`。
 
 记忆构建沿用 2.0 原有资产/观察/事件/实体/事实/向量流水线，不引入旧版记忆生成器。可插拔的 `BuildMemoryGraph` 从这些标准端口构建事件、上下文、同视频关键帧时序、对象/关系枢纽、互选视觉近邻和 `rules_vlm` 因果边；`RetrieveGraph` 按问题类型有界拓展，原回答提示词和生成器不变。图效果的参考边从节点来源字段重建，不能把构图边自身当真值；详见 `docs/refactor/hpq-causal-deviations.md`。当前观察没有 bbox，因果规则仍使用 hpq 的 label-only 回退。
 

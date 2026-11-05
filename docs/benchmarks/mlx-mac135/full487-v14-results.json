@@ -1,0 +1,63 @@
+{
+  "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+  "label": "C16-FULL487-v14",
+  "run_id": "20261105-075230-album3-max-video10-current-5aeb80",
+  "concurrency": 16,
+  "questions": 487,
+  "completed": 487,
+  "returned": 487,
+  "judge_completed": 487,
+  "judge_failed": 0,
+  "status": "completed",
+  "passed": false,
+  "qa_per_min": 3.2380214372533285,
+  "qa_seconds": 9024.029199999999,
+  "judge_seconds": 8917.514,
+  "actual_batch_peak": 16,
+  "run_json_sha256": "75e68d968e7716e3ea38cf36aed9629ccd8db9bbb0eba1e239f5bef4955db541",
+  "model_call_evidence": {
+    "expected_calls": 2130,
+    "recorded_calls": 2130,
+    "token_multiset_matches": true,
+    "all_api_calls_complete": false,
+    "unique_terminal_ids": true,
+    "conflicting_observations": 0,
+    "output_counters_consistent": true,
+    "verified": false
+  },
+  "prefix_cache_evidence": {
+    "verified": true,
+    "observed_requests": 2130,
+    "expected_requests": 2130,
+    "errors": [],
+    "requests_with_reuse": 1859,
+    "cached_tokens": 1903616,
+    "uncached_tokens": 2462865,
+    "request_hit_rate": 0.8727699530516432,
+    "token_hit_rate": 0.43596113208783
+  },
+  "acceptance_scope": "487 QA and 487 valid Judge completed; strict zero-internal-error gate failed. This is not invalidation of all 487 results.",
+  "internal_format_errors": 1,
+  "application_model_observations": {
+    "complete": 2129,
+    "error": 1
+  },
+  "tool_status_counts": {
+    "ok": 1403,
+    "partial": 1,
+    "denied": 51
+  },
+  "engine_terminal_reasons": {
+    "stop": 2130
+  },
+  "native_oom": 0,
+  "native_tracebacks": 0,
+  "resource_metrics_missing": 1,
+  "resource_samples_qa_window": 1123,
+  "actual_vm_stat_swap_in_bytes_qa_window": 2265120768,
+  "actual_vm_stat_swap_out_bytes_qa_window": 4414373888,
+  "raw_sha256": "75e68d968e7716e3ea38cf36aed9629ccd8db9bbb0eba1e239f5bef4955db541",
+  "archive_manifest_sha256": "f3e01564a40a53f0e6c0f824e5de5f9b0c125137a4c137567a517cc0f05bc80a",
+  "original_response_content_missing": true,
+  "diagnostic_retries_separate_from_formal_run": true
+}

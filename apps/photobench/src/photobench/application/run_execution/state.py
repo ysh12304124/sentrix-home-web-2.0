@@ -249,6 +249,9 @@ class RunState:
                     raise TimeoutError("benchmark state persistence deadline exceeded")
                 self._persist_condition.wait(timeout=remaining)
 
+    def writer_pending(self) -> bool:
+        return bool(self._persist_thread and self._persist_thread.is_alive())
+
     def stop_persist_writer(self) -> None:
         """Signal stop even on persistence failure; report any writer still holding resources."""
         deadline = time.monotonic() + self.persist_timeout

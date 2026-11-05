@@ -35,6 +35,7 @@ import {
   noToolLabel,
   normalizedToolCallIndex,
   qaLatencySegments,
+  itemTimingBreakdown,
   runtimeDebugTurns,
   showAgentLoopGroupHeaders,
   showToolBranch,
@@ -201,7 +202,7 @@ describe("normalizedToolCallIndex (:1524-1538)", () => {
     expect(normalizedToolCallIndex(item, trace, 0)).toBe(0);
   });
 
-  it("第 2 级：同轮 trace 序号 localTraceIndex 选中 execution 工具步（而非 traceIndex）", () => {
+  it("显式父步骤不匹配时保持未绑定，不根据工具顺序猜测", () => {
     const item = {
       model_call_metrics: [
         { step_id: "s0", conversation_turn: 0 },
@@ -219,12 +220,10 @@ describe("normalizedToolCallIndex (:1524-1538)", () => {
       ],
     };
     const trace = item.tool_trace[2];
-    // localTraceIndex 在「同轮」里是 1 → 选中 execution_trace[1] → parent s0 → 0。
-    // 若误用 traceIndex=2 → 越界 → 只能落到 model_call_index=2。
-    expect(normalizedToolCallIndex(item, trace, 2)).toBe(0);
+    expect(normalizedToolCallIndex(item, trace, 2)).toBeNull();
   });
 
-  it("第 3 级：execution_trace 工具步的 parent_step_id 反查调用（trace 自身无 parent）", () => {
+  it("无父步骤时保留已有同轮绑定，不按无标识的执行序列覆盖", () => {
     const item = {
       model_call_metrics: [
         { step_id: "s0", conversation_turn: 0 },
@@ -234,8 +233,7 @@ describe("normalizedToolCallIndex (:1524-1538)", () => {
       execution_trace: [{ stage: "tool", conversation_turn: 0, parent_step_id: "s9" }],
     };
     const trace = item.tool_trace[0];
-    // execution parent s9 → 1；model_call_index 是 0，必须靠 execution parent 才能得 1。
-    expect(normalizedToolCallIndex(item, trace, 0)).toBe(1);
+    expect(normalizedToolCallIndex(item, trace, 0)).toBe(0);
   });
 
   it("第 4 级：model_call_index（整数才认）", () => {
@@ -259,10 +257,10 @@ describe("normalizedToolCallIndex (:1524-1538)", () => {
 });
 
 describe("callIndexForStep (:1514-1523)", () => {
-  it("先按 step_id + 轮精确，找不到再退化为只按 step_id", () => {
+  it("只匹配同轮 step_id，不跨用户轮次绑定", () => {
     const item = { model_call_metrics: [{ step_id: "s", conversation_turn: 2 }] };
     expect(callIndexForStep(item, "s", 2)).toBe(0);
-    expect(callIndexForStep(item, "s", 0)).toBe(0); // 精确失败 → fallback
+    expect(callIndexForStep(item, "s", 0)).toBeNull();
     expect(callIndexForStep(item, "missing", 0)).toBeNull();
     expect(callIndexForStep(item, "", 0)).toBeNull();
     expect(callIndexForStep(item, null, 0)).toBeNull();
@@ -692,5 +690,55 @@ describe("itemToolTrace / toolExecutionSteps (:1503-1512)", () => {
     expect(
       toolExecutionSteps({ execution_trace: [{ stage: "tool" }, { type: "tool" }, { type: "model" }] }),
     ).toHaveLength(2);
+  });
+});
+
+describe("2.0 已存事实与缺失时延", () => {
+  it("请求墙钟不会冒充生成耗时，缺失 TTFT 不会变成0", () => {
+    const call = { call_type: "agent", duration_ms: 250, ttft_ms: null };
+    const timing = callAgentLoopTiming({}, call);
+    expect(timing.modelMs).toBe(250);
+    expect(timing.ttftMs).toBeNull();
+    expect(timing.generationMs).toBeNull();
+    expect(callLatencySegments({}, call)).toEqual([{ kind: "model-request", label: "模型请求墙钟（未拆 TTFT）", ms: 250 }]);
+    expect(callAgentLoopTiming({}, { duration_ms: null }).totalMs).toBeNull();
+  });
+  it("展示带版本的确定性派生来源", () => {
+    expect(callObservation({ call_observation: { source: "saved_call_facts_v1", trigger: "步骤: s1" } }).source).toBe("已存调用事实（规则 v1）");
+  });
+  it("空工具索引不绑定到首轮调用", () => {
+    expect(normalizedToolCallIndex({ model_call_metrics: [{}] }, { model_call_index: null }, 0)).toBeNull();
+  });
+});
+
+
+describe("2.0 调用对齐与时延", () => {
+  it("重试工具绑定成功尝试，不绑定失败调用", () => {
+    const item = {model_call_metrics: [
+      {step_id:"s", conversation_turn:0, status:"error"},
+      {step_id:"s", conversation_turn:0, status:"complete"},
+    ]};
+    expect(callIndexForStep(item,"s",0)).toBe(1);
+    expect(normalizedToolCallIndex(item,{parent_step_id:"s",conversation_turn:1,model_call_index:1},0)).toBeNull();
+  });
+  it("只依据相同工具ID从执行轨迹补父步骤", () => {
+    const item = {model_call_metrics:[{step_id:"s",conversation_turn:0}],
+      execution_trace:[{stage:"tool",step_id:"tool-1",parent_step_id:"s",conversation_turn:0}]};
+    expect(normalizedToolCallIndex(item,{step_id:"tool-1",conversation_turn:0},0)).toBe(0);
+    expect(normalizedToolCallIndex(item,{step_id:"other",conversation_turn:0},0)).toBeNull();
+  });
+  it("规则拒答的631ms不包含7.4秒Judge", () => {
+    const item = {metrics_contract_version:2,wall_clock_ms:631.2,judge_ms:7432,
+      termination_reason:"policy_refusal",model_call_metrics:[],tool_trace:[]};
+    expect(itemTimingBreakdown(item)).toMatchObject({agent_wall_ms:631.2,model_ms:0,tool_ms:0,judge_ms:7432,other_ms:631.2});
+    expect(qaLatencySegments(item)).toEqual([{kind:"other",label:"其他未归因时延",shortLabel:"其他",ms:631.2}]);
+  });
+  it("工具缺失耗时保留未知，不能把null当0", () => {
+    expect(toolDurationMs({duration_ms:null,latency_s:null})).toBeNull();
+    expect(toolDurationMs({duration_ms:0})).toBe(0);
+  });
+  it("重叠累计时间不伪造为墙钟组成", () => {
+    const item={metrics_contract_version:2,wall_clock_ms:100,model_call_metrics:[{step_id:"s",duration_ms:150}],tool_trace:[]};
+    expect(qaLatencySegments(item)).toEqual([]);
   });
 });

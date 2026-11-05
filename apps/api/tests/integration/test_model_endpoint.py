@@ -167,7 +167,9 @@ def test_an_unreachable_endpoint_is_a_loud_error():
     with pytest.raises(ModelServiceError) as error:
         ServedModel("http://127.0.0.1:1/v1", timeout_s=1.0).current()
 
-    assert "不可达" in str(error.value)
+    assert "元数据查询失败" in str(error.value)
+    assert error.value.diagnostics["request_sent"] is False
+    assert error.value.diagnostics["error_category"] == "model_metadata_unavailable"
 
 
 def test_a_non_200_models_response_is_a_loud_error(endpoint: str):

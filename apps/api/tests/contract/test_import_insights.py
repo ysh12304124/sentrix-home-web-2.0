@@ -76,6 +76,7 @@ def _stub_import(monkeypatch: pytest.MonkeyPatch, result: AlbumImportResult) -> 
             summarize_event: object = None,
             workers: int = 1,
             progress: object = None,
+            cancel_check: object = None,
         ) -> None:
             self._importer = importer
             self._summarize_event = summarize_event
@@ -222,3 +223,28 @@ def test_the_six_counts_are_passed_through_verbatim(
     for key in SIX_KEYS:
         assert insights[key] == PASSTHROUGH[key], f"{key} 透传错了"
     assert calls == [SCOPE]
+
+
+def test_cancelled_import_retains_progress_and_skips_batch_insights(client, monkeypatch):
+    from sentrix.domain.media.progress import OperationCancelled
+
+    calls = _stub_insights(monkeypatch, counts=COUNTS)
+
+    class CancelledAlbum:
+        def __init__(self, **kwargs):
+            self.progress = kwargs["progress"]
+
+        def execute(self, request):
+            self.progress(completed=1)
+            raise OperationCancelled("test cancellation")
+
+    monkeypatch.setattr(timeline_routes, "ImportAlbum", CancelledAlbum)
+    response = client.post(
+        "/api/v1/imports", json={"directory": DIRECTORY, "scope_id": SCOPE, "operation_id": "cancelled-batch"}
+    )
+    assert response.status_code == 409
+    progress = client.get("/api/v1/imports/cancelled-batch/progress").json()
+    assert progress["status"] == "cancelled"
+    assert progress["completed"] == 1
+    assert calls == []
+    assert client.post("/api/v1/imports/cancelled-batch/cancel").json()["cleanup_status"] == "stopped"

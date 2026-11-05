@@ -1,0 +1,64 @@
+{
+  "diagnostic_only": true,
+  "single_change": "Restore UID arrival order at idle media admission; no model/kernel/input/sampling/deadline change",
+  "control_limitations": "Independent live runs, warm cache history differs; not a QA throughput comparison",
+  "cases": {
+    "media-fifo-baseline-v12b": {
+      "diagnostic_only": true,
+      "label": "media-fifo-baseline-v12b",
+      "passed": false,
+      "image_elapsed_s": 106.1943576335907,
+      "image_finished_before_pump_end": false,
+      "text_refill_requests": 46,
+      "requests": 62,
+      "actual_batch_peak": 4,
+      "errors": [],
+      "note": "15 sustained text lanes plus one synthetic image; 90-second submission window, full token budget. This is scheduling evidence, not QA throughput.",
+      "terminal_count": 62,
+      "return_count": 62,
+      "unique_terminals_and_usage_matched": true,
+      "raw_sha256": "00ab555fe625f02745fe79f16db1015e0c190fed2910b5408dd305b93a19efad",
+      "request_bodies_sha256": "6a0fb8d6c13f8cd38354f01b3974eff5396b6a08e5614419ba4c2fab1aafcc8c"
+    },
+    "media-fifo-candidate-v13": {
+      "diagnostic_only": true,
+      "label": "media-fifo-candidate-v13",
+      "passed": true,
+      "image_elapsed_s": 35.96556806564331,
+      "image_finished_before_pump_end": true,
+      "text_refill_requests": 43,
+      "requests": 59,
+      "actual_batch_peak": 15,
+      "errors": [],
+      "note": "15 sustained text lanes plus one synthetic image; 90-second submission window, full token budget. This is scheduling evidence, not QA throughput.",
+      "terminal_count": 59,
+      "return_count": 59,
+      "unique_terminals_and_usage_matched": true,
+      "raw_sha256": "115050f1db251eae3e58aef12b887fdd95c9cc53676b1b9c2a5df5c0a52fdcbc",
+      "request_bodies_sha256": "6a0fb8d6c13f8cd38354f01b3974eff5396b6a08e5614419ba4c2fab1aafcc8c"
+    }
+  },
+  "candidate_native_oom_matches": 0,
+  "candidate_native_tracebacks": 0,
+  "candidate_engine_stopped": true,
+  "candidate_adapter_sha256": "054aeff0ae4f8a3180982dc2d202b154a2b4736751beee16cddc2c37d8838db4",
+  "regression": {
+    "new_test_failed_before_fix": true,
+    "related_tests_after_fix": 14,
+    "red_log_sha256": "c61995157da39fae484c7c19e443e0f9ef509eec70051110b7fa13d45c5e43ee",
+    "green_log_sha256": "fe9dca0451129aaabdd76ea13e310b61a52091a146a1f9fe5b72b851eb33547f"
+  },
+  "ci": {
+    "passed": true,
+    "python_passed": 3424,
+    "real_environment_deselected": 49,
+    "warnings": 10,
+    "web_passed": 143,
+    "photobench_web_passed": 613,
+    "mypy_files": 367,
+    "command": "make ci",
+    "log_sha256": "3c0a6332198c71940ffb4e5e4fb22b750c5e670da27e0a1c718356ecfccf1d42",
+    "initial_attempt": "Format check failed; formatted the changed regression file and reran the entire CI."
+  },
+  "formal_acceptance": "Not started for v13; real qualification, all 20 affected complete QA rows plus one control, then original fixed64 C16 two rounds and independent487 remain required."
+}

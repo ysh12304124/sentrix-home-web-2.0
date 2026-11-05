@@ -5,5 +5,10 @@
   "vllm_manager_url": "",
   "model_base_url": "http://127.0.0.1:8100/v1",
   "endpoint_model": "",
-  "judge_provider_id": ""
+  "judge_provider_id": "",
+  "embedding": {
+    "mode": "split_text_image",
+    "image_url": "http://127.0.0.1:8103",
+    "text_url": "http://127.0.0.1:8101"
+  }
 }

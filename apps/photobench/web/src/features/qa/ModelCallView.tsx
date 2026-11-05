@@ -9,13 +9,15 @@
  * 这里不做任何截断或“友好化”：复盘要看到模型真正看到的东西。字段缺失时明确显示
  * 「未记录」，而不是用摘要冒充原文。
  */
+import type { RunItemDetail } from "../../api/types.ts";
+import { callStatus as performanceStatus, fmtMs, fmtTokenRate } from "../../lib/format.ts";
+import { ModelPerformanceDetails } from "./TracePerformance.tsx";
 import type { Dict } from "../../lib/agentTrace.ts";
 import {
   callContent,
   callLabel,
   callMessages,
   callResponse,
-  callStatus,
   callThought,
   callToolCalls,
   callTools,
@@ -128,9 +130,6 @@ function RawResponse({ call }: { call: Dict }) {
       ) : null}
       <div className="model-usage">
         <span>finish_reason · {String(response.finish_reason || "未记录")}</span>
-        <span>
-          token · {String(response.prompt_tokens ?? "?")} / {String(response.completion_tokens ?? "?")}
-        </span>
       </div>
     </div>
   );
@@ -138,33 +137,41 @@ function RawResponse({ call }: { call: Dict }) {
 
 export interface ModelCallViewProps {
   call: Dict;
+  detail?: RunItemDetail;
+  modelLabel?: string;
   /** 覆盖标题（例如「规划器 · 第 2 次尝试」）。 */
   title?: string;
 }
 
-export function ModelCallView({ call, title }: ModelCallViewProps) {
+export function ModelCallView({ call, title, detail, modelLabel }: ModelCallViewProps) {
   const messages = callMessages(call);
   const tools = callTools(call);
+  const response = callResponse(call);
   return (
     <details className={`model-call-node model-call-${String(call.call_type || "unknown")}`}>
       <summary>
         <strong>{title || callLabel(call.call_type)}</strong>
         {call.step_id ? <span>步骤 {String(call.step_id)}</span> : null}
-        {call.attempt != null ? <span>第 {String(call.attempt)} 次</span> : null}
-        <span className={`model-call-status${call.error ? " failed" : ""}`}>{callStatus(call)}</span>
-        {call.duration_ms != null ? <span>{String(call.duration_ms)} ms</span> : null}
+        {call.attempt != null ? <span>请求序号 {String(call.attempt)}</span> : null}
+        <span className={`model-call-status${call.error ? " failed" : ""}`}>{performanceStatus(call)}</span>
+        <span>{String(call.model || modelLabel || "模型未记录")}</span>
+        {call.role ? <span>{String(call.role)}</span> : null}
+        <span>请求耗时 {fmtMs(call.total_ms ?? call.duration_ms)}</span>
+        <span>TTFT {call.ttft_ms != null ? fmtMs(call.ttft_ms) : call.streamed === false ? "不适用（非流式）" : "未记录"}</span>
         <span>
-          {String(call.prompt_tokens ?? "?")} / {String(call.completion_tokens ?? "?")} tokens
+          Token 输入 {String(call.prompt_tokens ?? response.prompt_tokens ?? "未记录")} / 输出 {String(call.completion_tokens ?? response.completion_tokens ?? "未记录")}
         </span>
+        {call.tokens_per_second != null ? <span>{fmtTokenRate(call.tokens_per_second)}</span> : null}
       </summary>
       <div className="model-call-body">
+        <ModelPerformanceDetails detail={detail} call={call} />
         <section>
           <h5>模型输入 · {messages.length} 条消息</h5>
           <RoleMessages messages={messages} />
         </section>
         <section>
           <h5>模型可见工具 · {tools.length}</h5>
-          <ToolSpecs tools={tools} />
+          {Array.isArray(call.tools) ? <ToolSpecs tools={tools} /> : <p className="muted small">可用工具列表未记录。</p>}
         </section>
         <section>
           <h5>模型原始输出</h5>

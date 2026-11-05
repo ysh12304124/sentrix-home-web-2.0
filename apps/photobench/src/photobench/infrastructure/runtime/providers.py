@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import importlib
 import io
 import os
 import re
@@ -40,9 +41,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from photobench.domain.runtime.metrics import component_total, system_used
+from photobench.domain.runtime.metrics import (
+    RESOURCE_TELEMETRY_VERSION,
+    component_total,
+    physical_memory_used,
+)
 from photobench.domain.runtime.ports import LifecycleProvider, RuntimeProviders, TelemetryProvider
-from photobench.infrastructure.runtime.hardware import read_cpu_temperature_c
+from photobench.infrastructure.runtime.hardware import HostCpuSampler, read_cpu_temperature_c
 from photobench.infrastructure.runtime.telemetry_scope import (
     dedupe_rows as _dedupe_rows,
 )
@@ -135,27 +140,35 @@ def _process_rss_mib(pid: int) -> float | None:
 
 
 def _read_linux_system_memory() -> dict[str, Any]:
+    started = time.monotonic()
     values: dict[str, float] = {}
     try:
         for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
             key, _, raw = line.partition(":")
-            if key in {"MemTotal", "MemAvailable"}:
+            if key in {"MemTotal", "MemAvailable", "MemFree"}:
                 # /proc/meminfo 的单位是 kB。在这里一次性换成 MiB，好让每个后缀写着
                 # _mib 的字段真的是 MiB（1.0 的注释，照搬）。
                 values[key] = float(raw.strip().split()[0]) / 1024.0
         total = values.get("MemTotal")
         available = values.get("MemAvailable")
-        used = system_used(total, available)
-        if used is None or total is None or available is None:
-            raise ValueError("MemTotal/MemAvailable missing")
+        used = physical_memory_used(total, values.get("MemFree"))
+        if used is None or total is None:
+            raise ValueError("MemTotal/MemFree missing")
         return {
             "status": "available",
             "source": "proc_meminfo",
             "data": {
                 "system_memory_used_mib": used,
+                "system_observation": {
+                    "source": "proc_meminfo",
+                    "status": "available",
+                    "observed_at_monotonic": started,
+                    "finished_at_monotonic": time.monotonic(),
+                    "ttl_seconds": 3.0,
+                },
                 "system_memory_total_mib": round(total, 2),
-                "system_memory_available_mib": round(available, 2),
-                "system_memory_scope": "host_all_processes",
+                "system_memory_available_mib": round(available, 2) if available is not None else None,
+                "system_memory_scope": "linux_physical_nonfree_including_cache_v2",
             },
         }
     except (OSError, ValueError, IndexError) as exc:
@@ -457,6 +470,10 @@ def _augment_host_process_memory(
         else None,
         sentrix_auxiliary_model_uma_mib=0.0,
         memory_complete=model_ram is not None and product_ram is not None,
+        model_scope_complete=bool(model_rows) and (not scope or service_resolved(rows, main_spec)),
+        product_scope_complete=bool(model_rows)
+        and roles_complete
+        and (not scope or service_resolved(rows, main_spec)),
         model_system_processes=model_rows,
         benchmark_processes=system_rows,
         process_attribution="endpoint_listener" if model_rows else "unavailable",
@@ -818,6 +835,24 @@ class HostNvidiaTelemetryProvider:
         self.telemetry_services = telemetry_services
         self.process_hint = str(process_hint or "").strip().lower()
         self.endpoint_url = normalize_service_url(endpoint_url)
+        self._cpu = HostCpuSampler()
+        self._nvml_library: Any = None
+
+    def _nvml(self) -> Any:
+        if self._nvml_library is None:
+            module = importlib.import_module("pynvml")
+            module.nvmlInit()
+            self._nvml_library = module
+        return self._nvml_library
+
+    def start_sampling(self) -> None:
+        self._cpu = HostCpuSampler()
+
+    def stop_sampling(self) -> None:
+        if self._nvml_library is not None:
+            with contextlib.suppress(Exception):
+                self._nvml_library.nvmlShutdown()
+            self._nvml_library = None
 
     @property
     def endpoint_port(self) -> str:
@@ -836,150 +871,197 @@ class HostNvidiaTelemetryProvider:
         return list(csv.reader(io.StringIO(result.stdout), skipinitialspace=True))
 
     def gpu_stats(self) -> dict[str, Any]:
+        started = time.monotonic()
         try:
-            rows = self._query(
-                "gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,clocks.sm"
-            )
+            nvml = self._nvml()
             gpus = []
-            for row in rows:
-                if len(row) < 7:
-                    continue
-                v = [float(x) for x in row[1:]]
-                gpus.append(
-                    {
-                        "index": int(float(row[0])),
-                        "gpu_utilization_pct": v[0],
-                        "memory_used_mib": v[1],
-                        "memory_total_mib": v[2],
-                        "temperature_c": v[3],
-                        "power_draw_w": v[4],
-                        "sm_clock_mhz": v[5],
-                    }
+            for index in range(nvml.nvmlDeviceGetCount()):
+                handle = nvml.nvmlDeviceGetHandleByIndex(index)
+                memory = nvml.nvmlDeviceGetMemoryInfo(handle)
+                gpu: dict[str, Any] = {
+                    "index": index,
+                    "memory_used_mib": memory.used / 1048576,
+                    "memory_total_mib": memory.total / 1048576,
+                    "device_gpu_memory_mib": memory.used / 1048576,
+                    "gpu_utilization_pct": None,
+                    "temperature_c": None,
+                    "power_draw_w": None,
+                    "power_scope": "gpu_device",
+                    "device_observed_at_monotonic": started,
+                    "device_observation_ttl_seconds": 3.0,
+                }
+                # Unavailable optional sensors do not erase valid memory observations.
+                readers: tuple[tuple[str, Any, tuple[Any, ...]], ...] = (
+                    ("gpu_utilization_pct", nvml.nvmlDeviceGetUtilizationRates, (handle,)),
+                    ("temperature_c", nvml.nvmlDeviceGetTemperature, (handle, nvml.NVML_TEMPERATURE_GPU)),
+                    ("power_draw_w", nvml.nvmlDeviceGetPowerUsage, (handle,)),
                 )
-            data: dict[str, Any] = {"gpus": gpus, "memory_scope": "gpu_device"}
-            cpu_temperature_c = read_cpu_temperature_c()
-            if cpu_temperature_c is not None:
-                data["cpu_temperature_c"] = cpu_temperature_c
-            return {"status": "available", "source": "host_nvidia_smi", "data": data}
+                for key, reader, args in readers:
+                    with contextlib.suppress(nvml.NVMLError):
+                        value = reader(*args)
+                        gpu[key] = float(
+                            value.gpu
+                            if key == "gpu_utilization_pct"
+                            else value / 1000
+                            if key == "power_draw_w"
+                            else value
+                        )
+                gpus.append(gpu)
+            return {
+                "status": "available",
+                "source": "host_nvml",
+                "data": {
+                    "gpus": gpus,
+                    "memory_scope": "gpu_device",
+                    "protocol_version": RESOURCE_TELEMETRY_VERSION,
+                    "memory_accounting": "nvidia_pss_and_vram",
+                    "cpu_temperature_c": read_cpu_temperature_c(),
+                },
+            }
         except Exception as exc:
-            return {"status": "unavailable", "source": "host_nvidia_smi", "error": str(exc)}
+            return {"status": "unavailable", "source": "host_nvml", "error": str(exc)}
 
     @staticmethod
     def _read_system_memory() -> dict[str, Any]:
         return _read_linux_system_memory()
 
     def system_memory(self) -> dict[str, Any]:
-        return self._read_system_memory()
+        result = self._read_system_memory()
+        result.setdefault("data", {}).update(
+            cpu_utilization_pct=self._cpu.sample(),
+            cpu_observed_at_monotonic=time.monotonic(),
+        )
+        return result
+
+    def _gpu_processes(self) -> dict[int, list[dict[str, Any]]]:
+        nvml = self._nvml()
+        result: dict[int, list[dict[str, Any]]] = {}
+        for index in range(nvml.nvmlDeviceGetCount()):
+            handle = nvml.nvmlDeviceGetHandleByIndex(index)
+            by_pid: dict[int, float | None] = {}
+            for reader in (
+                nvml.nvmlDeviceGetComputeRunningProcesses,
+                nvml.nvmlDeviceGetGraphicsRunningProcesses,
+            ):
+                for row in reader(handle):
+                    raw = row.usedGpuMemory
+                    value = float(raw) / 1048576 if isinstance(raw, int) and 0 <= raw < 2**64 - 1 else None
+                    pid = int(row.pid)
+                    if pid not in by_pid:
+                        by_pid[pid] = value
+                    elif value is None or by_pid[pid] is None:
+                        by_pid[pid] = None
+                    else:
+                        previous = by_pid[pid]
+                        assert previous is not None
+                        by_pid[pid] = max(previous, value)
+            result[index] = [{"pid": pid, "used_memory_mib": value} for pid, value in by_pid.items()]
+        return result
 
     def process_memory(self) -> dict[str, Any]:
+        started = time.monotonic()
+        data = _augment_host_process_memory(
+            {},
+            process_hint=self.process_hint,
+            endpoint_port=self.endpoint_port,
+            compute_apps=[],
+            telemetry_services=self.telemetry_services,
+        )
+        model_pids = {row["pid"] for row in data.get("model_system_processes") or []}
+        product_pids = {row["pid"] for row in data.get("benchmark_processes") or []}
+        gpu_error = None
         try:
-            candidates: list[dict[str, Any]] = []
-            for row in self._query("compute-apps=pid,process_name,used_memory"):
-                if len(row) < 3:
-                    continue
-                try:
-                    candidates.append(
-                        {
-                            "pid": int(float(row[0])),
-                            "process_name": row[1],
-                            "used_memory_mib": float(row[2]),
-                        }
-                    )
-                except (ValueError, TypeError):
-                    continue
-            process_rows = _host_process_rows() if self.endpoint_port else []
-            listener_pids = {
-                row["pid"] for row in _service_rows(process_rows, {"ports": [self.endpoint_port]})
-            }
-            hints = [self.process_hint]
-            matches: list[dict[str, Any]] = []
-            for item in candidates:
-                process_name = str(item["process_name"]).lower()
-                identity = process_name
-                try:
-                    raw_cmdline = Path(f"/proc/{item['pid']}/cmdline").read_bytes()
-                    identity = (
-                        f"{identity} "
-                        f"{raw_cmdline.replace(bytes([0]), bytes([32])).decode('utf-8', 'replace').lower()}"
-                    )
-                except (OSError, ValueError):
-                    pass
-                item["identity"] = identity[:500]
-                if self.endpoint_port:
-                    if item["pid"] in listener_pids:
-                        matches.append(item)
-                elif any(hint and hint in identity for hint in hints):
-                    matches.append(item)
-            if not matches:
-                data = _augment_host_process_memory(
-                    {
-                        "processes": [],
-                        "model_processes": [],
-                        "all_processes": candidates,
-                        "all_processes_memory_mib": sum(float(x["used_memory_mib"]) for x in candidates),
-                        "process_attribution": "unavailable",
-                        "process_attribution_reason": "matching_model_process_not_found",
-                    },
-                    process_hint=self.process_hint,
-                    endpoint_port=self.endpoint_port,
-                    compute_apps=candidates,
-                    telemetry_services=self.telemetry_services,
-                )
-                return {
-                    "status": "available"
-                    if data.get("model_process_system_memory_used_mib") is not None
-                    else "unavailable",
-                    "source": "host_nvidia_smi",
-                    "reason": "matching_gpu_process_not_found",
-                    "data": data,
-                }
-            others = [item for item in candidates if item not in matches]
-            model_gpu_memory_mib = sum(float(x["used_memory_mib"]) for x in matches)
-            data = _augment_host_process_memory(
-                {
-                    "process_memory_used_mib": model_gpu_memory_mib,
-                    "processes": matches,
-                    "model_processes": matches,
-                    "model_process_scope": "gpu_compute_processes",
-                    "other_processes_memory_mib": sum(float(x["used_memory_mib"]) for x in others),
-                    "other_processes": others,
-                    "all_processes_memory_mib": sum(float(x["used_memory_mib"]) for x in candidates),
-                    "all_processes": candidates,
-                    "all_processes_scope": "gpu_compute_processes",
-                },
-                process_hint=self.process_hint,
-                endpoint_port=self.endpoint_port,
-                model_pids={int(item["pid"]) for item in matches},
-                compute_apps=candidates,
-                telemetry_services=self.telemetry_services,
-            )
-            # _augment_host_process_memory 可能补上 RAM 归属，但「模型 GPU 内存」这个
-            # 指标**仍然是上面那份 nvidia-smi 的 PID 求和**，不许被增强改写。
-            data["process_memory_used_mib"] = model_gpu_memory_mib
-            return {"status": "available", "source": "host_nvidia_smi", "data": data}
+            inventory = self._gpu_processes()
         except Exception as exc:
-            data = _augment_host_process_memory(
-                {},
-                process_hint=self.process_hint,
-                endpoint_port=self.endpoint_port,
-                compute_apps=[],
-                telemetry_services=self.telemetry_services,
+            inventory = {}
+            gpu_error = str(exc)
+        memory_by_gpu: dict[int, Any] = {}
+        for index, rows in inventory.items():
+            values = {row["pid"]: row["used_memory_mib"] for row in rows}
+            model_gpu = (
+                component_total([values.get(pid, 0.0) for pid in model_pids])
+                if data["model_scope_complete"]
+                else None
             )
-            for key in (
-                "process_memory_used_mib",
-                "benchmark_process_gpu_memory_mib",
-                "all_processes_memory_mib",
-                "other_processes_memory_mib",
-            ):
-                data[key] = None
-            return {
-                "status": "available"
-                if data.get("model_process_system_memory_used_mib") is not None
-                else "unavailable",
-                "source": "host_nvidia_smi",
-                "error": str(exc),
-                "data": data,
+            product_gpu = (
+                component_total([values.get(pid, 0.0) for pid in product_pids])
+                if data["product_scope_complete"]
+                else None
+            )
+            memory_by_gpu[index] = {
+                "model_process_gpu_memory_mib": model_gpu,
+                "product_stack_gpu_memory_mib": product_gpu,
+                "benchmark_process_gpu_memory_mib": product_gpu,
+                "model_process_gpu_memory_source": "nvml_pid_vram",
             }
+        finished = time.monotonic()
+        data.update(
+            {
+                "model_process_gpu_memory_mib": None,
+                "product_stack_gpu_memory_mib": None,
+                "benchmark_process_gpu_memory_mib": None,
+            }
+        )
+        data.update(memory_by_gpu.get(0, {}))
+        data["protocol_version"] = RESOURCE_TELEMETRY_VERSION
+        data["memory_observation_version"] = 1
+        data["memory_observations"] = {
+            "process": {
+                "status": "available",
+                "source": "proc_group_pss",
+                "observed_at_monotonic": started,
+                "finished_at_monotonic": finished,
+                "ttl_seconds": 3.0,
+            },
+            "gpu_process": {
+                "status": "unavailable" if gpu_error else "available",
+                "source": "nvml_pid_vram",
+                "observed_at_monotonic": started,
+                "finished_at_monotonic": finished,
+                "ttl_seconds": 3.0,
+            },
+        }
+        data["memory_dependencies"] = {
+            key: [
+                "gpu_process"
+                if key
+                in {
+                    "model_process_memory_used_mib",
+                    "model_process_gpu_memory_mib",
+                    "product_stack_gpu_memory_mib",
+                    "benchmark_process_gpu_memory_mib",
+                }
+                else "process"
+            ]
+            for key in (
+                "model_process_memory_used_mib",
+                "model_process_gpu_memory_mib",
+                "product_stack_gpu_memory_mib",
+                "benchmark_process_gpu_memory_mib",
+                "model_process_system_memory_used_mib",
+                "model_process_host_memory_mib",
+                "product_stack_memory_mib",
+                "benchmark_process_memory_used_mib",
+                "sentrix_stack_pss_mib",
+                "sentrix_product_pss_mib",
+                "sentrix_auxiliary_model_pss_mib",
+                "sentrix_auxiliary_model_uma_mib",
+            )
+        }
+        data.update(
+            gpu_process_memory_by_index=memory_by_gpu,
+            process_memory_used_mib=data.get("model_process_gpu_memory_mib"),
+            process_observed_at_monotonic=started,
+            pss_sampled_at_monotonic=started,
+            root_pid=next(iter(model_pids), None),
+            all_processes=[{"gpu_index": i, **row} for i, rows in inventory.items() for row in rows],
+            model_processes=data.get("model_system_processes") or [],
+            resource_missing_reasons={
+                "model_process_gpu_memory_mib": gpu_error or "model_scope_unresolved",
+                "product_stack_gpu_memory_mib": gpu_error or "product_scope_unresolved",
+            },
+        )
+        return {"status": "available", "source": "host_nvml", "data": data}
 
     def kv_cache(self) -> dict[str, Any]:
         return {

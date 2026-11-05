@@ -346,6 +346,7 @@ INSPECT_PHOTO = ToolSpec(
     brief="复核单张照片的视觉细节（物体/衣着/颜色/场景）。昂贵。",
     description=(
         "复核已检索照片的视觉细节（物体/衣着/颜色/场景）。"
+        "只接受 media_kind=image 的照片或 source_kind=video_keyframe 的图片，不接受视频或音频原件。"
         "asset_handle 使用 search_memories preview 里的 handle（photo_1…），可省略（默认用预览第一张）。"
         "当前 handle 不含目标时换下一张（photo_2、photo_3…）复核，同一张图最多复核一次，不要反复检查同一张。"
         # **这里刻意不写具体次数。** 1.0（与本文件此前）写的是「默认每轮最多 1 次」，

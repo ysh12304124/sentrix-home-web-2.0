@@ -57,6 +57,34 @@ def test_migrate_fails_when_no_migrations_are_found(tmp_path):
         db.migrate()
 
 
+def test_text_vectors_migration_is_applied(migrations_ready_db):
+    """``0015`` 建出文本向量表；``CHECK`` 与唯一键都写在建表语句里。
+
+    迁移只建表不搬数据——存量复制必须走维护脚本（可 dry-run、可审计）。
+    """
+    with migrations_ready_db.connect() as connection:
+        versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations")]
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'text_vectors'"
+        ).fetchone()
+        indexes = {
+            item[0]
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'text_vectors'"
+            )
+        }
+
+    assert "0015" in versions
+    assert row is not None
+    assert "CHECK (space IN ('semantic', 'episodic'))" in row[0]
+    assert "UNIQUE(space, source_type, source_id, model_name)" in row[0]
+    assert {
+        "idx_text_vectors_space_model",
+        "idx_text_vectors_source",
+        "idx_text_vectors_scope",
+    } <= indexes
+
+
 def test_write_connection_uses_wal_and_busy_timeout(tmp_path):
     db = Database(tmp_path / "t.db", migrations_dir=tmp_path / "migrations")
     (tmp_path / "migrations").mkdir()

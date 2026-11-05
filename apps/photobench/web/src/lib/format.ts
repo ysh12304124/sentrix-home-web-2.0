@@ -1,3 +1,4 @@
+import { taxonomyLabels } from "./qaTaxonomy.ts";
 // 移植自 1.0 `services/photobench/frontend/src/App.vue`（只读，唯一权威）的纯格式化 / 标签函数。
 //
 // 口径纪律：`-` / `""` / `"unknown"` / `"未记录"` / `"未分类"` 在 1.0 里各不相同，
@@ -97,9 +98,16 @@ export function duration(run: unknown): string {
 }
 
 /** 1.0 `:334` —— `null`/`undefined` 回 `-`（0 走 `0ms`）。 */
+export function finiteMetric(value: unknown): number | null {
+  if (value == null || typeof value === "boolean" || (typeof value === "string" && !value.trim())) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export function fmtMs(value: unknown): string {
   if (value == null) return "-";
-  const ms = Number(value);
+  const ms = finiteMetric(value);
+  if (ms == null) return "-";
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`;
 }
 
@@ -146,6 +154,7 @@ export function statusLabel(status: unknown): string {
 /** 1.0 `:556-558` —— 映射未命中时回 `未记录`（**不**回原值；与 `statusLabel` 不同）。 */
 export function actionLabel(value: unknown): string {
   const labels: Record<string, string> = { answer: "回答", refuse: "拒答", clarify: "澄清", none: "无有效行为" };
+  if (value === "answer_and_refuse") return taxonomyLabels.answer_and_refuse!;
   return labels[str(value)] || "未记录";
 }
 
@@ -164,7 +173,8 @@ export function executionState(item: unknown): ExecutionState {
   const i = dict(item);
   const stability = dict(i.agent_stability);
   const guard = dict(i.guard_debug);
-  const status = String(i.agent_status || guard.status || "").toLowerCase();
+  const runtime = Array.isArray(i.runtime_turns) ? dict(i.runtime_turns.at(-1)) : {};
+  const status = String(i.agent_status || i.turn_status || guard.status || runtime.agent_status || runtime.turn_status || "").toLowerCase();
   const termination = String(i.termination_reason || guard.termination_reason || "").toLowerCase();
   const turns = Array.isArray(i.runtime_turns) ? i.runtime_turns : [];
   const outcome = String(i.turn_outcome || dict(turns[turns.length - 1]).turn_outcome || "").toLowerCase();
@@ -305,15 +315,21 @@ export function fmtTokenRate(value: unknown): string {
 export function callStatus(call: unknown): string {
   const c = dict(call);
   if (c.status === "context_budget_exceeded") return "调用前拦截";
-  if (c.status === "error") return "调用失败";
-  if (c.status && c.status !== "complete") return String(c.status);
-  return c.streamed === true ? "成功 · 流式" : c.streamed === false ? "成功 · 非流式" : "未记录";
+  if (["error", "failed"].includes(String(c.status))) return "调用失败";
+  if (c.status && !["complete", "completed", "success"].includes(String(c.status))) return String(c.status);
+  return c.streamed === true ? "成功 · 流式" : c.streamed === false ? "成功 · 非流式" : c.status ? "调用成功 · 流式属性未采集" : "未记录";
 }
 
 /** 1.0 `:1430-1439` */
 export function callOutcome(call: unknown): string {
   const c = dict(call);
   const outcome = c.turn_outcome;
+  if (!outcome) {
+    if (["error", "failed"].includes(String(c.status))) return "本轮结果：模型请求失败";
+    if (Array.isArray(c.tool_calls) && c.tool_calls.length) return "本轮结果：请求工具 " + c.tool_calls.join("、");
+    if (c.finish_reason === "length") return "本轮结果：输出达到长度上限";
+    if (c.finish_reason === "stop") return "本轮结果：模型文本输出结束";
+  }
   if (outcome === "tool_call") {
     // 1.0 走 `callObservation(call).relatedTool`，那个值由 `observation.related_tool || "-"` 构成，永不为空
     const relatedTool = str(dict(c.call_observation).related_tool) || "-";
@@ -356,6 +372,7 @@ export function callTypeLabel(call: unknown): string {
     recovery: "Agent 恢复调用",
     writer: "最终回答重写",
     faithfulness_judge: "L2 事实一致性检查",
+    claim_verifier: "L3 答案事实核验",
     tool_internal: "工具内部模型调用",
     legacy: "历史模型调用",
   };
@@ -387,6 +404,9 @@ export function turnTerminationLabel(turn: unknown): string {
   if (/token budget preflight failed|tokenize-current|502 Bad Gateway|tokenize.*502/i.test(reason)) return "上下文 token 预检失败（tokenize 接口 502）";
   const labels: Record<string, string> = {
     complete: "正常完成",
+    answered: "已回答",
+    answered_with_gap: "已回答，仍有证据缺口",
+    policy_refusal: "安全规则拒答",
     parse_failure: "JSON 解析失败",
     model_error: "模型请求失败",
     context_blocked: "上下文或 token 预检拦截",

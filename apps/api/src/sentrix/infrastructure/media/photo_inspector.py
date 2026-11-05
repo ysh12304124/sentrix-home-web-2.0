@@ -30,12 +30,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from sentrix.domain.media.inspection import build_inspect_prompt
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel
 from sentrix.infrastructure.media.vlm_observer import IMAGE_MAX_SIDE, _encode_image, chat_json
+
+_INSPECTION_FACTS: ContextVar[list[dict[str, Any]] | None] = ContextVar("inspection_facts", default=None)
 
 
 class OpenAIPhotoInspector:
@@ -73,9 +76,28 @@ class OpenAIPhotoInspector:
         prompt = build_inspect_prompt(question, target_person=target_person, faces=faces)
         return self._chat(prompt, images)
 
+    def inspect_recorded(
+        self,
+        path: str | Path,
+        question: str,
+        *,
+        faces: Sequence[Mapping[str, object]] = (),
+        target_person: str = "",
+        crop: str | Path | None = None,
+    ) -> tuple[dict[str, object] | None, list[dict[str, Any]]]:
+        facts: list[dict[str, Any]] = []
+        token = _INSPECTION_FACTS.set(facts)
+        try:
+            parsed = self.inspect(path, question, faces=faces, target_person=target_person, crop=crop)
+            return parsed, facts
+        finally:
+            _INSPECTION_FACTS.reset(token)
+
     def _chat(self, prompt: str, images: Sequence[str]) -> dict[str, Any] | None:
         """一次往返。**单独一个方法是为了能被换成脚本**——与 ``OpenAIVlmObserver._chat``
         和 ``OpenAIPersonVision._chat`` 同一个手法，用例据此断言发出去的提示词与图的次序，
         而不必起 HTTP 服务。
         """
-        return chat_json(self._endpoint, self._model, prompt, images, self._timeout)
+        return chat_json(
+            self._endpoint, self._model, prompt, images, self._timeout, observations=_INSPECTION_FACTS.get()
+        )

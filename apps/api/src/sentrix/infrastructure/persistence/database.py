@@ -9,6 +9,7 @@ inside a transaction, and recorded in ``schema_migrations``.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -35,17 +36,24 @@ class Database:
     def __init__(self, path: Path, migrations_dir: Path) -> None:
         self.path = Path(path)
         self.migrations_dir = Path(migrations_dir)
+        # 串行化所有连接：``sqlite3.connect`` 每次新建连接、用完即关，高并发下几十个
+        # 线程同时 open/close 同一个 WAL 数据库会在 SQLite 的 ``findReusableFd``
+        # （unix 层全局 mutex）上互相死锁（qa_eval 阶段实测 41 线程全卡在这里）。
+        # 一把进程级锁让同一时刻只有一个连接存活，代价是 DB 访问串行——但
+        # ``qa_concurrency=1`` 的并发需求本来就很低，串行几乎无感知。
+        self._connect_lock = threading.Lock()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        try:
-            yield connection
-        finally:
-            connection.close()
+        with self._connect_lock:
+            connection = sqlite3.connect(self.path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            try:
+                yield connection
+            finally:
+                connection.close()
 
     def migrations(self) -> list[tuple[str, Path]]:
         """磁盘上的 ``(版本号, 脚本路径)``，按版本号排序。

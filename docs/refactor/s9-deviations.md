@@ -180,3 +180,15 @@ PhotoBench 是**第二个发行包**，另起 `scripts/export_photobench_openapi
 | 5 | 前端 | **一行没动**（S10 的范围）。 |
 | 6 | `POST /api/v1/imports` 的「先种过身份必然 500」缺陷 | ~~未修~~ → **2026-10-07 修了**（commit `f10cfb5`）。当时判「不在 S9 范围」，真机验收用「先预热 scope 让导入全程去重」绕过；2026-10-07 跑 PhotoBench 评测时同一个缺陷（`person_moments` 外键）变成硬失败——`photo_import` 阶段 500、整轮评测失败，绕不过去了。修法：`extract_moments._store` 里四个必填引用列任一为空就跳过那一条瞬间。 |
 | 7 | method-reachability 的五方法盲区 | **未修**（修它要换判据，不在本切片）；`restart` / `running_endpoint` 两个新端口方法**不在盲区里**（实现类在 `infrastructure/`，按位置被排除，端口名唯一且被 `application/deploy` 属性访问）。 |
+
+
+## 2026-10-29｜流水线首尾跨度与 JSON 解析事实
+显式流水线新增 timings 的 *_wall、*_start_seconds、*_end_seconds；后两者相对 pipeline 开始，同一单调时钟，跨 worker/媒体/关键帧取 min(start)/max(end)。旧无后缀任务累计保留，只作辅助。跨度包含间隔等待、可重叠，占比统一除后端 total，不可相加。历史没有首尾的阶段不推算墙钟。视频没有执行的细分保持缺失。
+步数内完成判定按真实终态、回答和每轮 model_steps/max_steps；answered_with_gap 的 partial 是证据缺口，预算内已回答计流程完成；失败/超步数/无预算各保留 false/unknown，质量分独立。
+模型调用可选 json_output={required,attempted,json_object_valid}，只对明确要求 JSON 对象的调用采集；语法要求整个输出是对象，业务校验或宽容提取成功不能冒充严格解析成功。每次模型重试分别计数；传输无响应记 required，attempted=false，不算解析失败。QA 汇总 structured_json_* 包含规划、核验、工具内部和 Judge，按 call_id/步骤身份去重；旧 action JSON、native tool arguments 继续单列。旧结果无事实不补造。
+
+汇总读取已存null时重新使用逐调用事实计算TTFT、token速率及token分布；合法非空历史值保留。非流式模型诊断明确streamed=false，只算端到端token/s；所有调用均明确非流式时TTFT显示不适用，不虚构首token或纯解码速度。
+
+
+## 2026-10-29｜安全题二级能力统一
+能力字典新增 ability-2026.10.29-v3：抗幻觉H的二级为H1（抗幻觉），抗注入攻击I的二级为I1（抗注入攻击）。普通10类保持。v3安全题仅允许本组主标签、无支撑标签；澄清轮保留不适用。导入验证、分析分母、筛选、下钻、CSV/HTML和前端字典使用保存版本。v1/v2及历史run、报告不改写；v2安全题仍无二级。仅标签更新不改变题干、GT、证据和媒体；新数据包与兼容制品须一并使用，活动测评固定原输入。

@@ -11,6 +11,7 @@ from sentrix.domain.media.progress import ImportProgress, ImportProgressStore
 
 class TrackImport:
     def __init__(self, store: ImportProgressStore, operation_id: str, scope_id: str) -> None:
+        self.operation_id = operation_id
         self._store = store
         self._progress = ImportProgress(
             operation_id=operation_id, scope_id=scope_id, updated_at=datetime.now(UTC).isoformat()

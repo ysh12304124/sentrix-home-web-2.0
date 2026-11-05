@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 class ImportProgress:
     operation_id: str
     scope_id: str
-    status: Literal["running", "completed", "failed"] = "running"
+    status: Literal["running", "completed", "failed", "cancelled"] = "running"
     stage: str = "scanning"
     total: int | None = None
     completed: int = 0
@@ -31,3 +31,7 @@ class ImportProgressStore(Protocol):
     def save(self, progress: ImportProgress) -> None: ...
 
     def get(self, operation_id: str) -> ImportProgress | None: ...
+
+
+class OperationCancelled(RuntimeError):
+    """A caller requested cooperative cancellation, not a model failure."""

@@ -9,6 +9,7 @@ rubric）、从散文里抠 JSON、分数—理由一致性重问、4xx 不重�
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,7 @@ import pytest
 from fakes_execution import FakeHttpClient, judge_reply
 
 from photobench.application.run_execution.judge import JudgeRunner
+from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.runs.execution import RunCancelledError
 from photobench.domain.runs.judge import (
     ANSWER_QUALITY_RUBRICS,
@@ -158,14 +160,59 @@ def test_a_retry_that_stays_inconsistent_yields_no_score_not_zero():
     assert result["reason"] == "judge_inconsistent_score_reason"
 
 
+def test_invalid_quality_json_gets_one_format_retry_without_repairing_the_score():
+    invalid = '{"score":2, reason":"正确"}'
+    http = FakeHttpClient([judge_reply(invalid), judge_reply('{"score":0,"reason":"核心结论错误"}')])
+    result = _runner(http).judge("q", "ref", "answer")
+    assert len(http.calls) == 2
+    assert result["attempts"][0]["raw_text"] == invalid
+    assert result["score"] == 0
+    assert result["judge_status"] == "completed"
+
+
+def test_twice_invalid_quality_json_is_failed_without_a_fallback_score():
+    http = FakeHttpClient([judge_reply("invalid"), judge_reply("invalid again")])
+    result = _runner(http).judge("q", "ref", "answer")
+    assert len(http.calls) == 2
+    assert result["score"] is None
+    assert result["judge_status"] == "failed"
+
+
+def test_reference_answer_can_be_scored_without_inventing_a_behavior_label():
+    http = FakeHttpClient([judge_reply('{"score":1,"reason":"只完成部分核心要求"}')])
+    item = {
+        "reference_answer": "地点信息",
+        "runtime_turns": [{"message": "地点？", "answer": "部分地点", "expected_action": None}],
+    }
+    _runner(http).judge_item(item, {}, {})
+    assert len(http.calls) == 1
+    assert item["judge"]["score"] == 1
+    assert item["judge_status"] == "completed"
+    assert item["task_judge"] == {"actual_action": None, "correct": None, "reason": "not_labeled"}
+    assert item["runtime_turns"][0]["expected_action"] is None
+
+
 def test_an_answerable_question_does_not_turn_a_valid_judge_zero_into_a_missing_score():
     http = FakeHttpClient(
         [judge_reply('{"score":0,"reason":"该问题可回答，正确地点已知。模型未给出正确答案，因此得0分。"}')]
     )
     result = _runner(http).judge("q", "ref", "answer")
     assert result["score"] == 0
-    assert result["consistency_version"] == 3
+    assert result["consistency_version"] == 4
     assert len(http.calls) == 1
+
+
+def test_correct_reference_in_a_negative_judge_reason_keeps_the_real_zero():
+    reason = (
+        "用户询问三峡标志性石碑的刻字内容，参考答案明确正确刻字为“三峡壩址基石”，"
+        "模型回答给出的“三垟耀址基石”与正确内容完全不符，属于核心答案错误，因此得0分。"
+    )
+    http = FakeHttpClient([judge_reply(json.dumps({"score": 0, "reason": reason}))])
+    result = _runner(http).judge("碑上刻了什么字？", "三峡壩址基石", "三垟耀址基石")
+    assert result["score"] == 0
+    assert result["reason"] == reason
+    assert result["consistency_version"] == 4
+    assert len(result["attempts"]) == len(http.calls) == 1
 
 
 def test_a_client_error_is_not_retried():
@@ -445,3 +492,35 @@ def test_reference_answer_praise_does_not_describe_the_tested_models_answer():
     result = _runner(http).judge("q", "r", "a")
     assert result["score"] == 0
     assert len(http.calls) == 1
+
+
+def test_request_observations_keep_retry_ids_and_recovered_error():
+    http = FakeHttpClient([TimeoutError("timed out"), judge_reply('{"score":2,"reason":"正确"}')])
+    result = _runner(http).judge("Q", "A", "A")
+    observations = result["call_observations"]
+    assert len(observations) == 2
+    assert observations[0]["diagnostics"]["error_category"] == "request_timeout"
+    assert observations[0]["recovered_by_call_id"] == observations[1]["call_id"]
+    assert observations[0]["call_id"] != observations[1]["call_id"]
+    assert result["score"] == 2
+
+
+def test_judge_does_not_replay_an_unknown_post_outcome():
+    unknown = RequestOutcomeUnknownError(method="POST", cause_type="ReadTimeout", attempts=1)
+    http = FakeHttpClient([unknown, judge_reply('{"score":2,"reason":"must not be consumed"}')])
+    result = _runner(http).judge("Q", "A", "A")
+    assert len(http.calls) == 1
+    assert result.get("score") is None
+    observations = result["call_observations"]
+    assert len(observations) == 1
+    assert observations[0]["diagnostics"]["error_category"] == "request_outcome_unknown"
+    assert observations[0]["diagnostics"]["automatic_replay"] is False
+
+
+def test_mixed_action_validation_does_not_accept_unknown_action():
+    runner = _runner(FakeHttpClient([judge_reply('{"actual_action":"invented"}')]))
+    result = runner.judge_task_action(
+        "normal and attack", "response", "answer_and_refuse", "complete", "answered"
+    )
+    assert result["actual_action"] is None and result["correct"] is None
+    assert result["judge_status"] == "failed"

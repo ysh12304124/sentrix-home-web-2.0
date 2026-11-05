@@ -74,6 +74,9 @@ class FakeEmbeddingHealth:
     自己用下行的假件覆盖。
     """
 
+    def smoke_test(self) -> tuple[bool, str]:
+        return True, ""
+
     @property
     def available(self) -> bool:
         return True

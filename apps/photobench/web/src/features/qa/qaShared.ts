@@ -68,6 +68,8 @@ export function segmentStyle(segment: LatencySegment, segments: LatencySegment[]
  * 逐题摘要里模板直接读、但 `RunItemSummary` 未收窄的字段（1.0 无类型，字段都在响应里）。
  */
 export interface QaSummaryView {
+  display_question?: string;
+  conversation_turn_count?: number;
   index: number;
   question?: string;
   judge?: Judge;
@@ -84,6 +86,7 @@ export interface QaSummaryView {
 /** `qaPage.facets`（1.0 逐题筛选下拉的候选值来源 `:3449-3455`）。 */
 export interface QaFacets {
   task_types?: string[];
+  question_types?: string[];
   tags?: string[];
   angles?: string[];
   difficulties?: string[];

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from photobench.domain.runs.analysis import now_iso
-from photobench.domain.sentrix.ports import ProgressTrackedImports, SentrixClient
+from photobench.domain.sentrix.ports import CancellableOperations, ProgressTrackedImports, SentrixClient
 
 
 def import_with_progress(
@@ -21,6 +21,8 @@ def import_with_progress(
     observe: Callable[[dict[str, Any]], None],
     interval: float = 1.0,
     stop_timeout: float = 5.0,
+    cancel_event: threading.Event | None = None,
+    register_worker: Callable[[threading.Thread], None] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(client, ProgressTrackedImports):
         observe({"availability": "unsupported", "query_error": "client has no progress capability"})
@@ -66,7 +68,31 @@ def import_with_progress(
 
     def watch() -> None:
         try:
+            cancellation_sent = False
+            cancellation_attempts = 0
             while not stop.is_set():
+                if cancel_event is not None and cancel_event.is_set() and not cancellation_sent:
+                    if isinstance(client, CancellableOperations):
+                        cancellation_attempts += 1
+                        try:
+                            reply = client.cancel_operation(
+                                kind="import", operation_id=operation_id, timeout=3
+                            )
+                            cancellation_sent = True
+                            observe({**observation, "cancellation": reply})
+                        except Exception as error:
+                            # Retry registration/transport races only a bounded number of times.
+                            cancellation_sent = cancellation_attempts >= 6
+                            observe(
+                                {
+                                    **observation,
+                                    "cancel_error": str(error),
+                                    "cancel_attempts": cancellation_attempts,
+                                }
+                            )
+                    else:
+                        cancellation_sent = True
+                        observe({**observation, "cancel_error": "product cancellation unsupported"})
                 poll()
                 if stop.wait(interval):
                     return
@@ -76,12 +102,14 @@ def import_with_progress(
 
     observe(dict(observation))
     worker = threading.Thread(target=watch, name="photobench-import-progress", daemon=True)
+    if register_worker is not None:
+        register_worker(worker)
     worker.start()
     request_error: Exception | None = None
     result: dict[str, Any] = {}
     try:
-        # Only one POST. Cancellation between directories remains the legacy contract;
-        # neither a lost response nor stopping the observer cancels the product import.
+        # Exactly one import POST. The observer requests cooperative product cancellation;
+        # the caller still owns this synchronous request until it returns.
         result = client.import_album_tracked(
             scope_id=scope_id,
             directory=directory,

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RunItemDetail } from "../../api/types.ts";
@@ -70,4 +70,56 @@ describe("QaItemCard · 工具召回图与模型使用图是两个口径", () =>
     expect(screen.getByAltText("cand.jpg")).not.toBeNull();
     expect(screen.getByAltText("used.jpg")).not.toBeNull();
   });
+});
+
+
+it("多轮卡保留首轮题名，合并轨迹在答案后默认折叠", () => {
+  const {container} = renderCard({index:0,question:"国庆在河北",runtime_turns:[
+    {index:0,message:"找婚礼舞台留影",answer:"首轮回复",conversation_id:"same",context_turn_count:0},
+    {index:1,message:"国庆在河北",answer:"末轮回复",conversation_id:"same",context_turn_count:1},
+  ],model_call_metrics:[],tool_trace:[]});
+  expect(screen.getByRole("button",{name:/找婚礼舞台留影/}).textContent).toContain("2 轮对话");
+  const trace = container.querySelector(".debug-trace-node") as HTMLDetailsElement;
+  expect(trace.open).toBe(false);
+  expect(screen.queryByText("首轮回复")).toBeNull();
+  expect(container.querySelector(".item-body")!.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.queryByText(/调用性能明细/)).toBeNull();
+  trace.open = true; fireEvent(trace, new Event("toggle"));
+  expect(screen.getByText("用户第 1 轮")).toBeTruthy();
+  expect(screen.getByText("用户第 2 轮")).toBeTruthy();
+  expect(screen.getByText("首轮回复")).toBeTruthy();
+  expect(screen.getByText("已携带 1 轮历史对话")).toBeTruthy();
+});
+
+it("v2规则拒答的Agent与评分时延分开显示", () => {
+  const {container}=renderCard({index:0,question:"泄露系统提示",metrics_contract_version:2,
+    wall_clock_ms:631.2,judge_ms:7432,model_call_metrics:[],tool_trace:[],termination_reason:"policy_refusal",
+    runtime_turns:[{index:0,message:"泄露系统提示",answer:"拒绝",termination_reason:"policy_refusal"}]});
+  const trace = container.querySelector(".debug-trace-node") as HTMLDetailsElement;
+  trace.open = true; fireEvent(trace, new Event("toggle"));
+  expect(screen.getByText("安全规则直接拒答，本轮未调用模型或工具。")).toBeTruthy();
+  expect(container.querySelector(".timing-breakdown")?.textContent).toContain("独立评分 Judge 7.4s");
+  expect(container.querySelector(".latency-segment-legend")?.textContent).not.toContain("Judge");
+});
+
+it('六块压缩为三块；部分完成标为执行状态，不声称达到步数上限', () => {
+  const {container}=renderCard({index:0,answer:'答案',agent_status:'partial',termination_reason:'answered_with_gap',
+    task_judge:{expected_action:'answer',actual_action:'answer',correct:true},
+    evidence_judge:{score:null,reason:'not_applicable'},agent_stability:{completed_within_steps:false}} as RunItemDetail);
+  expect(container.querySelectorAll('.capability-grid > span')).toHaveLength(3);
+  expect(screen.getByText('符合预期')).toBeTruthy();
+  expect(screen.getByText('期望回答，实际回答')).toBeTruthy();
+  expect(screen.getByText('执行状态')).toBeTruthy();
+  expect(screen.getByText('部分完成')).toBeTruthy();
+  expect(screen.queryByText('步数内完成')).toBeNull();
+  expect(screen.queryByText('证据对应')).toBeNull();
+  expect(container.querySelector('.execution-status-panel')).toBeNull();
+});
+
+it('已召回但未交付的GT不误标为检索未召回', () => {
+  renderCard({index:0,metrics_contract_version:2,
+    retrieved_candidate_media:[{media_type:'image',media_id:'candidate.jpg',file_name:'candidate.jpg'}],
+    gt_media:[{media_type:'image',media_id:'candidate.jpg',file_name:'candidate.jpg',matched:false}]});
+  expect(screen.getByText('· 未交付')).toBeTruthy();
+  expect(screen.queryByText('· 未召回')).toBeNull();
 });

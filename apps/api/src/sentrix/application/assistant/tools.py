@@ -49,8 +49,13 @@ from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet, ResultSetE
 from sentrix.domain.assistant.tools import MAX_DELIVERED_PHOTOS
 from sentrix.domain.identity.ports import FaceRepository, PersonCropRenderer
 from sentrix.domain.media.inspection import CERTAINTY_SUPPORTED
-from sentrix.domain.media.models import Observation
-from sentrix.domain.media.ports import AssetRepository, ObservationRepository, PhotoInspector
+from sentrix.domain.media.models import MediaType, Observation
+from sentrix.domain.media.ports import (
+    AssetRepository,
+    ObservationRepository,
+    PhotoInspector,
+    RecordedPhotoInspector,
+)
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.fact_query import FactRejection
 
@@ -818,6 +823,25 @@ class AssistantToolbox:
             )
 
         asked = str(arguments.get("question") or "").strip() or DEFAULT_INSPECT_QUESTION
+        # Parent video/audio assets can appear beside image keyframes in a result set.
+        # They are not image payloads; never send their bytes to the photo inspector.
+        if asset.media_type is not MediaType.IMAGE:
+            return ToolOutcome(
+                observation={
+                    "failure_reason": "unsupported_media_type",
+                    "asset_id": asset_id,
+                    "media_kind": asset.media_type.value,
+                },
+                model_visible={
+                    "error": "unsupported_media_type",
+                    "message": (
+                        "inspect_photo 只接受图片，当前 handle 是视频或音频原件。"
+                        "请从检索结果选择 media_kind=image、source_kind=video_keyframe 的视频关键帧"
+                        "或普通照片复核；没有相关关键帧时请重新检索，不要把未查看的原片当作视觉证据。"
+                    ),
+                },
+                failure_reason="unsupported_media_type",
+            )
         identities = self._faces.list_photo_identities(asset_id)
         manifest = self._faces.list_face_manifest(asset_id)
         described = sum(
@@ -856,14 +880,24 @@ class AssistantToolbox:
                     crop_path = None
                     target_bbox = None
 
+        model_observations: list[dict[str, Any]] = []
         try:
-            parsed = self._photo_inspector.inspect(
+            inspect = (
+                self._photo_inspector.inspect_recorded
+                if isinstance(self._photo_inspector, RecordedPhotoInspector)
+                else self._photo_inspector.inspect
+            )
+            inspected = inspect(
                 asset.path,
                 asked,
                 faces=[dataclasses.asdict(row) for row in manifest],
                 target_person=target_person,
                 crop=crop_path,
             )
+            if isinstance(inspected, tuple):
+                parsed, model_observations = inspected
+            else:
+                parsed = inspected
         finally:
             # 临时件由调用方删（``render_person_crop`` 的契约）。
             if crop_path:
@@ -871,7 +905,11 @@ class AssistantToolbox:
 
         if parsed is None:
             return ToolOutcome(
-                observation={"failure_reason": "model_unavailable", "asset_id": asset_id},
+                observation={
+                    "failure_reason": "model_unavailable",
+                    "asset_id": asset_id,
+                    "model_call_observations": model_observations,
+                },
                 model_visible={"error": "model_unavailable", "message": "模型不可用，这次没能复核这张照片。"},
                 failure_reason="model_unavailable",
                 blocks=EvidenceType.VISUAL_OBSERVATION,
@@ -912,6 +950,7 @@ class AssistantToolbox:
                 "target_face_id": target_face.face_id if target_face else "",
                 "target_face_status": target_status,
                 "target_bbox": target_bbox,
+                "model_call_observations": model_observations,
                 "confirms_visual_only": not identities,
                 "unconfirmed_people_count": unconfirmed,
             },

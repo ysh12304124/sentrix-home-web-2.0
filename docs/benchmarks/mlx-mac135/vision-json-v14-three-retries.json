@@ -1,0 +1,136 @@
+{
+  "recorded_at": "2026-11-05T10:45:38.610434+08:00",
+  "diagnostic_identity": "v14-json-user-retry3-20261105",
+  "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+  "requested_retries": 3,
+  "generation_posts": 3,
+  "attempts": [
+    {
+      "attempt": 1,
+      "normal_transport_and_usage": true,
+      "original_v14_contract": true,
+      "generation_posts": 1,
+      "json_valid": true,
+      "inspection_schema_valid": true,
+      "facts_status": [
+        "complete"
+      ],
+      "error_category": [
+        null
+      ],
+      "http_status": [
+        200
+      ],
+      "finish_reasons": [
+        "stop"
+      ],
+      "prompt_tokens": 2884,
+      "completion_tokens": 71,
+      "duration_s": 12.76239800453186,
+      "content_characters": 144,
+      "content_type": "str",
+      "reasoning_characters": 0,
+      "message_keys": [
+        "role",
+        "content"
+      ],
+      "generation_body_sha256": "01a03ec70fb5c47c11b49a6d5386778ef5127c26ad9d9554f14559afb71263bd",
+      "exception": null,
+      "json_valid_scope": "existing production parser extracted a valid JSON object",
+      "raw_content_strict_json_valid": false,
+      "markdown_json_fence": true
+    },
+    {
+      "attempt": 2,
+      "normal_transport_and_usage": true,
+      "original_v14_contract": true,
+      "generation_posts": 1,
+      "json_valid": true,
+      "inspection_schema_valid": true,
+      "facts_status": [
+        "complete"
+      ],
+      "error_category": [
+        null
+      ],
+      "http_status": [
+        200
+      ],
+      "finish_reasons": [
+        "stop"
+      ],
+      "prompt_tokens": 2884,
+      "completion_tokens": 71,
+      "duration_s": 12.70701789855957,
+      "content_characters": 144,
+      "content_type": "str",
+      "reasoning_characters": 0,
+      "message_keys": [
+        "role",
+        "content"
+      ],
+      "generation_body_sha256": "01a03ec70fb5c47c11b49a6d5386778ef5127c26ad9d9554f14559afb71263bd",
+      "exception": null,
+      "json_valid_scope": "existing production parser extracted a valid JSON object",
+      "raw_content_strict_json_valid": false,
+      "markdown_json_fence": true
+    },
+    {
+      "attempt": 3,
+      "normal_transport_and_usage": true,
+      "original_v14_contract": true,
+      "generation_posts": 1,
+      "json_valid": true,
+      "inspection_schema_valid": true,
+      "facts_status": [
+        "complete"
+      ],
+      "error_category": [
+        null
+      ],
+      "http_status": [
+        200
+      ],
+      "finish_reasons": [
+        "stop"
+      ],
+      "prompt_tokens": 2884,
+      "completion_tokens": 71,
+      "duration_s": 12.711101055145264,
+      "content_characters": 144,
+      "content_type": "str",
+      "reasoning_characters": 0,
+      "message_keys": [
+        "role",
+        "content"
+      ],
+      "generation_body_sha256": "01a03ec70fb5c47c11b49a6d5386778ef5127c26ad9d9554f14559afb71263bd",
+      "exception": null,
+      "json_valid_scope": "existing production parser extracted a valid JSON object",
+      "raw_content_strict_json_valid": false,
+      "markdown_json_fence": true
+    }
+  ],
+  "same_request_bodies": true,
+  "same_content_outputs": true,
+  "seed": 42,
+  "response_format_sent": false,
+  "input_reconstructed_not_original_wire_capture": true,
+  "original_output_tokens": 75,
+  "original_raw_response_available": false,
+  "original_failure_not_reproduced_in_three_isolated_retries": true,
+  "original_failure_root_cause_established": false,
+  "fenced_json_supported_by_existing_parser": true,
+  "limitations": [
+    "Fixed seed 42 and identical outputs; not three independent random samples.",
+    "Single isolated requests after the formal run, not the original concurrency-16 context.",
+    "Original 75-token content missing; cannot identify exact syntax or field-extraction cause.",
+    "Cache history uncontrolled; durations are not a QA speed comparison.",
+    "Only the tool was retried; full Agent/Judge was not rerun and original score remains 0."
+  ],
+  "production_changed": false,
+  "formal_results_changed": false,
+  "v15_deployed": false,
+  "formal_run_id": "20261105-075230-album3-max-video10-current-5aeb80",
+  "conclusion": "Original v14 parser/schema succeeded 3/3 under isolated requests. The original format failure was not reproduced; lack of response_format is a robustness gap, not an established cause of the missing original response."
+}

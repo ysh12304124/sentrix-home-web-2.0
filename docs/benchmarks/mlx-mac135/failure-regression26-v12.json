@@ -1,0 +1,62 @@
+{
+  "execution_revision": "def406bc4ada6a6b504390ea14695eff464cb5c1",
+  "label": "failure-regression26-v12",
+  "run_id": "20261104-231405-album3-max-video10-current-aac61a",
+  "concurrency": 16,
+  "questions": 26,
+  "completed": 26,
+  "returned": 26,
+  "judge_completed": 26,
+  "judge_failed": 0,
+  "status": "completed",
+  "passed": true,
+  "qa_per_min": 2.185204484711973,
+  "qa_seconds": 713.892,
+  "judge_seconds": 630.3004,
+  "actual_batch_peak": 16,
+  "model_request_count": 141,
+  "model_call_evidence": {
+    "expected_calls": 141,
+    "recorded_calls": 141,
+    "token_multiset_matches": true,
+    "all_api_calls_complete": true,
+    "unique_terminal_ids": true,
+    "conflicting_observations": 0,
+    "output_counters_consistent": true,
+    "verified": true
+  },
+  "prefix_cache_evidence": {
+    "verified": true,
+    "observed_requests": 141,
+    "expected_requests": 141,
+    "errors": [],
+    "requests_with_reuse": 113,
+    "cached_tokens": 115712,
+    "uncached_tokens": 172252,
+    "request_hit_rate": 0.8014184397163121,
+    "token_hit_rate": 0.4018280062785626
+  },
+  "run_json_sha256": "04bfac5eaa3bd40dbc432548c25aa84d8a7006cdeb16de340e6bd1713b1e1fe7",
+  "run_valid": true,
+  "scope": "Independent regression of all 25 prior failed QA rows plus one control. All original conversation turns retained. This is execution reliability validation, not a guarantee of answer correctness or the fixed64 speed gate.",
+  "source_summary_sha256": "d55f24c049442b7cacf5d546cb45733eb65a30cbce1bf3b34bd721371ec41f70",
+  "selection": {
+    "source_sha256": "73fa4512dde072fb0df9cf45ff3ebd192192db606f9764054bde002dcbf0be47",
+    "selected_sha256": "c2016c042393535c18818d2919e22d1b75ecf58d2e8197f88dae81d20a136d1e",
+    "full_original_rows": true
+  },
+  "native_log": {
+    "segment_start_process": 26578,
+    "segment_ends_before_next_process": 33099,
+    "ansi_stripped_segment_sha256": "0508e7fdfa7a871aa55e01a46d323af4903a8e0ae6c604f8076c0028b856084c",
+    "oom_occurrences": 0,
+    "tracebacks": 0
+  },
+  "resources": {
+    "samples": 79,
+    "actual_swap_in_bytes_delta": 153075712.0,
+    "actual_swap_out_bytes_delta": 45023232.0,
+    "engine_metrics_missing_samples": 0
+  },
+  "formal_acceptance": "Fixed64 C16 trial1 now running; original per-trial and weighted speed gates remain unchanged before independent487."
+}

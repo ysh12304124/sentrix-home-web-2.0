@@ -318,7 +318,7 @@ def candidate_client(isolated_app) -> TestClient:
     return TestClient(app)
 
 
-TERMINAL_STATUSES = {"complete", "partial", "failed"}
+TERMINAL_STATUSES = {"complete", "partial", "failed", "cancelled", "blocked"}
 
 
 def poll_until_terminal(client: TestClient, turn_id: str, *, timeout_s: float = 20.0) -> dict:
@@ -380,6 +380,89 @@ def test_a_turn_without_retrieval_exposes_no_candidates(candidate_client: TestCl
     body = poll_until_terminal(candidate_client, turn["turn_id"])
 
     assert body["result"]["retrieved_candidates"] == []
+
+
+@pytest.mark.parametrize("kind", ["turn", "import"])
+def test_cancel_contract_distinguishes_request_from_worker_exit(client, kind):
+    control = client.app.state.container.operation_control
+    path = "/api/v1/assistant/turns/example/cancel" if kind == "turn" else "/api/v1/imports/example/cancel"
+    assert client.post(path).status_code == 404
+    control.start(kind + ":example")
+    try:
+        for _ in range(2):
+            response = client.post(path)
+            assert response.status_code == 202
+            assert response.json() == {
+                "operation_id": "example",
+                "cancel_requested": True,
+                "cleanup_status": "pending",
+            }
+    finally:
+        control.finish(kind + ":example")
+    assert client.post(path).json()["cleanup_status"] == "stopped"
+
+
+def test_cancelling_a_blocked_model_call_waits_for_exit_and_allows_next_turn(client):
+    import threading
+
+    from sentrix.domain.media.progress import OperationCancelled
+
+    entered, release = threading.Event(), threading.Event()
+    delegate = client.app.state.container.chat_model
+
+    class BlockedModel:
+        def complete(self, messages, tools):
+            entered.set()
+            assert release.wait(5)
+            return delegate.complete(messages, tools)
+
+    client.app.state.container = dataclasses.replace(client.app.state.container, chat_model=BlockedModel())
+    conversation = make_conversation(client)
+    turn = start_turn(client, conversation["id"])
+    path = f"/api/v1/assistant/turns/{turn['turn_id']}/cancel"
+    try:
+        assert entered.wait(3)
+        assert client.post(path).json()["cleanup_status"] == "pending"
+        with pytest.raises(OperationCancelled):
+            client.app.state.container.operation_control.check("turn:" + turn["turn_id"])
+    finally:
+        release.set()
+    result = poll_until_terminal(client, turn["turn_id"])
+    assert result["status"] == "cancelled"
+    for _ in range(100):
+        if client.post(path).json()["cleanup_status"] == "stopped":
+            break
+        time.sleep(0.01)
+    assert client.post(path).json()["cleanup_status"] == "stopped"
+    client.app.state.container = dataclasses.replace(client.app.state.container, chat_model=delegate)
+    next_turn = start_turn(client, conversation["id"])
+    assert poll_until_terminal(client, next_turn["turn_id"])["status"] != "cancelled"
+
+
+def test_worker_start_failure_records_terminal_failure_and_releases_capacity(client, monkeypatch):
+    import threading
+
+    original = threading.Thread.start
+
+    def start(thread):
+        if thread.name.startswith("turn-"):
+            raise RuntimeError("synthetic worker startup failure")
+        return original(thread)
+
+    conversation = make_conversation(client)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    loud = TestClient(client.app, raise_server_exceptions=False)
+    response = loud.post(
+        f"/api/v1/assistant/conversations/{conversation['id']}/turns", json={"message": "test"}
+    )
+    assert response.status_code == 500
+    detail = client.get(f"/api/v1/assistant/conversations/{conversation['id']}").json()
+    assert len(detail["turns"]) == 1
+    record = detail["turns"][0]
+    assert record["status"] == "failed"
+    assert record["termination_reason"] == "worker_start_failed"
+    cleanup = client.post(f"/api/v1/assistant/turns/{record['id']}/cancel").json()
+    assert cleanup["cleanup_status"] == "stopped"
 
 
 def test_include_debug_puts_the_exact_model_calls_in_the_turn_trace(client: TestClient):

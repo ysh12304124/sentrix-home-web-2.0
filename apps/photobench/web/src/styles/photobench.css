@@ -80,6 +80,8 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 .actions { display:flex; gap:8px; margin-top:14px; } .btn { border:0; border-radius:6px; padding:8px 14px; background:var(--accent); color:#fff; cursor:pointer; font-weight:600; font-size:13px; } .btn:hover { opacity:.86; } .btn:disabled { opacity:.45; cursor:not-allowed; } .btn.ghost { color:var(--text); background:var(--surface2); border:1px solid var(--border); } .btn.warn { background:var(--warn); } .btn.danger { background:var(--danger); } .btn.compact { padding:3px 8px; font-size:11px; }
 .live-badge { color:var(--accent); background:#e7f5ff; border-radius:4px; padding:2px 8px; font-size:11px; }
 .runs-list { max-height:430px; overflow:auto; } table { width:100%; border-collapse:collapse; } th,td { padding:8px 9px; border-bottom:1px solid var(--border); text-align:left; white-space:nowrap; } th { color:var(--muted); font-size:12px; } .run-row { cursor:pointer; } .run-row:hover td,.run-row.selected td { background:var(--surface2); }
+/* Keep the history list Judge count compact and aligned. */
+.run-progress-count { font-size:12px; font-variant-numeric:tabular-nums; line-height:1.3; }
 .small { font-size:11px; } .muted { color:var(--muted); } .error { color:var(--danger); margin:10px 0 0; }
 .phase-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .phase-card { padding:11px 13px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface2); } .phase-name { display:flex; align-items:center; gap:8px; } .phase-step { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; color:#fff; background:var(--accent); font-size:11px; font-weight:700; } .phase-summary { margin:5px 0 0 30px; color:var(--muted); font-size:12px; } .phase-status { display:inline-block; padding:2px 8px; border-radius:4px; background:#e9ecef; color:var(--muted); font-size:11px; font-weight:600; } .phase-status.done,.phase-status.completed { color:var(--accent2); background:#e6fcf5; } .phase-status.running { color:var(--accent); background:#e7f5ff; } .phase-status.failed,.phase-status.interrupted,.phase-status.stalled { color:var(--danger); background:#fff5f5; } .phase-status.partial,.phase-status.completed_with_errors { color:#b26a00; background:#fff4d6; } .result-heading { margin-top:18px; } .result-phase-list { display:grid; grid-template-columns:1fr; gap:8px; } .result-phase-card { background:var(--surface); } .metric-calc-time { margin:4px 0 10px; color:var(--muted); font-size:10px; } .phase-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; } .gpu-result-card .phase-metrics { grid-template-columns:repeat(6,minmax(0,1fr)); } .phase-metric { min-width:0; padding:8px 9px; border:1px solid var(--border); border-radius:6px; background:var(--surface2); } .phase-metric span,.phase-metric small { display:block; color:var(--muted); font-size:10px; } .phase-metric strong { display:block; margin:2px 0; font-size:15px; overflow-wrap:anywhere; }
 .import-progress-panel { margin:10px 0 0 30px; padding:10px 11px; border:1px solid #d6ddf1; border-radius:9px; background:#f8faff; }
@@ -576,6 +578,7 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 .latency-segment-other { background:#d1d5db; }
 .latency-segment-ttft { background:#93c5fd; }
 .latency-segment-generation { background:#86efac; }
+.latency-segment-model-request { background:#a5b4fc; }
 .latency-segment-tool { background:#fcd34d; }
 .latency-segment[data-tooltip]:hover { z-index:6; }
 .qa-item:has(.latency-segment[data-tooltip]:hover), .call-node:has(.latency-segment[data-tooltip]:hover), .tool-node:has(.latency-segment[data-tooltip]:hover) { z-index:10; }
@@ -589,6 +592,7 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 .latency-dot-other { background:#9ca3af; }
 .latency-dot-ttft { background:#60a5fa; }
 .latency-dot-generation { background:#4ade80; }
+.latency-dot-model-request { background:#818cf8; }
 .latency-dot-tool { background:#f59e0b; }
 .latency-segment-nested-tool { background:#c4b5fd; }
 .latency-dot-nested-tool { background:#8b5cf6; }
@@ -701,16 +705,16 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 .debug-step > summary { background:#f8fafc; color:#475269; font-size:9px; }
 .debug-step > summary strong { min-width:0; flex:1; color:#273248; font-size:10px; }
 .debug-step > summary::before { width:6px; height:6px; border:0; border-radius:50%; background:#aab3c4; }
-.debug-step-model { border-left-color:#5b7cfa; }
-.debug-step-model > summary::before { background:#5b7cfa; }
-.debug-step-tool { border-left-color:#16a06b; }
-.debug-step-tool > summary::before { background:#16a06b; }
-.debug-step-judge { border-left-color:#d98b16; }
-.debug-step-judge > summary::before { background:#d98b16; }
-.debug-step-planner { border-left-color:#8b5cf6; }
-.debug-step-planner > summary::before { background:#8b5cf6; }
-.debug-step-guard { border-left-color:#64748b; }
-.debug-step-guard > summary::before { background:#64748b; }
+.debug-kind-model { border-left-color:#5b7cfa; }
+.debug-kind-model > summary::before { background:#5b7cfa; }
+.debug-kind-tool { border-left-color:#16a06b; }
+.debug-kind-tool > summary::before { background:#16a06b; }
+.debug-kind-judge { border-left-color:#d98b16; }
+.debug-kind-judge > summary::before { background:#d98b16; }
+.debug-kind-planner { border-left-color:#8b5cf6; }
+.debug-kind-planner > summary::before { background:#8b5cf6; }
+.debug-kind-guard { border-left-color:#64748b; }
+.debug-kind-guard > summary::before { background:#64748b; }
 .debug-step-index { flex:none; min-width:16px; color:#69738a; text-align:center; font-size:9px; font-weight:700; }
 .debug-step-status { flex:none; padding:2px 6px; border-radius:999px; color:#667085; background:#eef0f5; font-size:8px; }
 .debug-step > div { padding:7px 8px 8px; border-top:1px solid #edf0f5; }
@@ -865,6 +869,8 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
   overflow-x: auto;
 }
 .telemetry-chart { margin-top:12px; padding:10px 12px 8px; border:1px solid #dfe4f0; border-radius:8px; background:#fff; }
+.telemetry-chart-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
+.telemetry-chart-header label { display:flex; align-items:center; gap:5px; color:#526176; font-size:12px; cursor:pointer; }
 .telemetry-chart-canvas { width:100%; height:430px; min-height:320px; }
 .telemetry-processes { margin-top:10px; padding-top:8px; border-top:1px solid #e6e9f1; }
 .telemetry-processes summary { cursor:pointer; color:#5267c6; font-size:10px; font-weight:700; }
@@ -878,12 +884,14 @@ label,.field-label { display:block; min-width:0; color:var(--muted); font-size:1
 }
 
 /* 关键指标：首屏只放能直接判读的结论值，明细留在各自折叠卡里 */
-.key-metric-list { grid-template-columns:repeat(5,minmax(0,1fr)); }
+.key-metric-list { grid-template-columns:repeat(6,minmax(0,1fr)); }
 .key-metric-card { background:var(--surface); border-color:#c7d2fe; }
 .key-metric-value { margin:6px 0 2px; font-size:22px; font-weight:700; color:#1f2d6b; overflow-wrap:anywhere; }
 .key-metric-card .metric-calc-time { margin:0 0 6px; }
 .key-metric-card .phase-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:8px; }
+@media (max-width:1500px) { .key-metric-list { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media (max-width:1100px) { .key-metric-list { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:640px) { .key-metric-list { grid-template-columns:minmax(0,1fr); } }
 
 /* 结果卡片折叠：标题本身就是开关，收起时每张卡只占一行 */
 details.result-phase-card > summary.phase-title { justify-content:flex-start; cursor:pointer; list-style:none; }
@@ -966,6 +974,22 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .config-group-model-advanced .model-manager-empty { grid-column:auto; grid-row:auto; }
 .config-group-model-advanced .config-model-manager { margin-top:2px; }
 
+/* Runtime trace shares compact neutral cards; status badges never style a whole row. */
+.debug-kind-status { border-left-color:#94a3b8; }
+.debug-kind-plan { border-left-color:#8b5cf6; }
+.debug-kind-model_action { border-left-color:#5b7cfa; }
+.debug-kind-tool_result { border-left-color:#16a06b; }
+.debug-step-content { display:grid; gap:8px; }
+.debug-field { min-width:0; }
+.debug-field h5 { margin:0 0 5px; color:#69738a; font-size:11px; font-weight:600; }
+.debug-field pre { max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.debug-event-text { margin:0; color:#475269; font-size:12px; line-height:1.6; }
+.debug-trace-node > summary strong, .debug-step > summary strong, .debug-turn > summary strong { font-size:12px; }
+.debug-trace-node > summary span, .debug-turn-meta, .debug-step-status { font-size:11px; }
+.debug-step > summary { min-height:36px; }
+.operation-status { margin:8px 0; padding:10px 12px; border:1px solid #dce3ef; border-radius:8px; background:#f7f9fc; color:#475269; font-size:12px; }
+
+
 /* -------------------------------------------------------------------------
    全流程完整轨迹（模型实际输入 / 原始输出）
    ------------------------------------------------------------------------- */
@@ -1028,3 +1052,93 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .model-tool-node[open] > summary::before { content:"▾"; }
 .model-tool-node > summary span { color:var(--muted); }
 .model-tool-node-body { padding:6px 8px 8px; border-top:1px solid #eef1f6; }
+
+.gpu-result-card .resource-status-metrics { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); margin:7px 0 10px; }
+
+/* 用户轮次是主层级，模型和工具只在该轮下展开。 */
+.qa-dialogue-badge { flex:none; padding:3px 8px; border-radius:5px; background:#edf1ff; color:#4059a7; font-size:12px; }
+.debug-turn-full > summary { flex-wrap:wrap; align-items:baseline; gap:6px 12px; padding:10px; background:#edf2fb; border-radius:6px; }
+.debug-turn-full > summary strong { flex:none; font-size:13px; }
+.debug-turn-full > summary > span:first-of-type { flex:1; min-width:220px; color:#243552; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.debug-turn-full > summary > span:last-of-type { color:#68748b; font-size:11px; }
+.trace-context-note { display:flex; flex-wrap:wrap; gap:8px 16px; margin:8px 10px; color:#68748b; font-size:11px; }
+.trace-context-note code { overflow-wrap:anywhere; }
+.trace-timeline { display:flex; flex-direction:column; gap:5px; padding:2px 10px 10px; }
+.trace-timeline .debug-step > summary strong { flex:none; }
+.trace-timeline .debug-step > summary { flex-wrap:wrap; }
+.trace-timeline .model-call-node > summary, .trace-timeline .model-tool-node > summary { min-height:36px; font-size:12px; }
+.trace-policy-refusal { padding:10px; margin:8px 10px; color:#395279; background:#edf3fa; border-radius:6px; }
+.trace-progress-events { padding:10px; }
+.trace-progress-events pre { max-height:420px; overflow:auto; }
+.trace-execution > summary { margin:8px 0; padding:8px 10px; color:#40547a; cursor:pointer; font-size:12px; }
+
+/* QA统一轨迹：首屏只保留结果摘要，性能随对应调用展开。 */
+.trace-performance-summary { display:flex; flex-wrap:wrap; gap:6px 18px; margin-bottom:12px; color:var(--muted); font-size:11px; }
+.trace-call-performance { margin-bottom:12px; }
+.model-call-node > summary { flex-wrap:wrap; gap:4px 12px; }
+.model-call-body .call-purpose-grid { margin:8px 0; }
+
+/* 阶段卡按内容确定高度，展开详情仅延展所在行。 */
+.execution-phase-list { align-items:start; align-content:start; grid-auto-rows:auto; gap:10px; }
+.execution-phase-list > .phase-card { min-width:0; }
+.execution-phase-list .phase-title { min-height:22px; }
+.execution-phase-list .phase-summary { line-height:1.55; }
+.pipeline-phase-card { min-width:0; }
+.pipeline-details { margin-top:8px; }
+.pipeline-details > summary { cursor:pointer; font-size:12px; color:var(--accent); padding:5px 0; }
+.pipeline-details > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.pipeline-details > .muted,.pipeline-timing > .muted { font-size:11px; margin:6px 0; }
+.phase-scope-note { margin:5px 0 0 30px; color:var(--muted); font-size:11px; }
+.pipeline-timing-overview { display:flex; flex-wrap:wrap; gap:4px 16px; margin:6px 0 0 30px; color:var(--muted); font-size:12px; }
+.pipeline-timing-overview strong { color:var(--text); font-weight:600; }
+.pipeline-timing-group { margin-top:14px; }
+.pipeline-timing-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.pipeline-timing-heading h4 { margin:0; font-size:13px; }
+.pipeline-timing-heading > strong { font-size:13px; }
+.pipeline-timing-group > summary { cursor:pointer; font-size:12px; font-weight:600; }
+.pipeline-timing-group > .muted { margin:5px 0 8px; font-size:11px; }
+.pipeline-timing-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:7px; }
+.pipeline-timing-table { width:100%; min-width:400px; table-layout:fixed; border-collapse:collapse; background:var(--surface); }
+.pipeline-timing-table th,.pipeline-timing-table td { padding:7px 8px; text-align:left; vertical-align:top; font-size:12px; white-space:normal; overflow-wrap:anywhere; }
+.pipeline-timing-table thead th:first-child { width:45%; }
+.pipeline-timing-table thead th:nth-child(2) { width:25%; }
+.pipeline-timing-table thead th { color:var(--muted); background:var(--surface2); font-size:11px; }
+.pipeline-timing-table tbody th { width:45%; font-weight:500; }
+.pipeline-timing-table .timing-value { width:25%; white-space:nowrap; }
+.pipeline-timing-table td:nth-child(3) { width:30%; }
+.pipeline-timing-table th small { display:block; color:var(--muted); font-size:11px; font-weight:400; margin-top:3px; }
+.timing-value small { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
+.timing-basis { display:inline-block; padding:2px 5px; border-radius:4px; background:var(--surface2); color:var(--muted); font-size:10px; white-space:nowrap; }
+.pipeline-timing-table .timing-included th { padding-left:26px; color:var(--muted); }
+
+/* 三段表示流水线步骤，只有阶段成功终态才全部填满。 */
+.pipeline-overall { margin:6px 0 0 30px; }
+.pipeline-overall-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:3px 10px; font-size:12px; }
+.pipeline-overall-heading > b { font-weight:500; }
+.pipeline-overall-heading > span { color:var(--muted); font-size:11px; }
+.pipeline-step-track { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin:7px 0 4px; }
+.pipeline-step-bar { height:4px; border-radius:2px; background:var(--border); overflow:hidden; }
+.pipeline-step-bar i { display:block; height:100%; background:var(--accent); }
+.pipeline-step.done i { background:var(--accent2); }
+.pipeline-step.stopped i { background:var(--danger); }
+.pipeline-step.running .pipeline-step-bar { outline:1px solid var(--accent); outline-offset:1px; }
+.pipeline-step > span { display:block; margin-top:4px; font-size:10px; color:var(--muted); }
+.pipeline-step.running > span { color:var(--accent); font-weight:600; }
+.pipeline-step.stopped > span { color:var(--danger); }
+.pipeline-step-bar i.indeterminate { width:40% !important; animation:pipeline-working 1.5s linear infinite; }
+.pipeline-counts { margin:5px 0 0; color:var(--muted); font-size:11px; }
+@keyframes pipeline-working { from { transform:translateX(-110%); } to { transform:translateX(260%); } }
+@media (prefers-reduced-motion:reduce) { .pipeline-step-bar i.indeterminate { animation:none; } }
+
+/* 登记首屏与身份卡共用摘要基线，补充说明按需展开。 */
+.phase-import-details { margin:5px 0 0 30px; color:var(--muted); font-size:12px; line-height:1.55; }
+.phase-import-details > summary { display:flex; align-items:baseline; flex-wrap:wrap; gap:2px 12px; cursor:pointer; list-style:none; }
+.phase-import-details > summary::-webkit-details-marker { display:none; }
+.phase-import-toggle { color:var(--accent); font-size:11px; white-space:nowrap; }
+.phase-import-toggle::after { content:" ▸"; }
+.phase-import-details[open] .phase-import-toggle::after { content:" ▾"; }
+.phase-import-details > p { margin:7px 0 0; font-size:11px; }
+.phase-import-details > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.execution-phase-list .phase-name { min-width:0; }
+.execution-phase-list .phase-step,.execution-phase-list .phase-status { flex-shrink:0; }
+.execution-phase-list .phase-summary { overflow-wrap:anywhere; }

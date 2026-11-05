@@ -25,7 +25,8 @@
  */
 import { albumLocalUrl, decorateMedia, inferMediaType, mediaKey, mediaRefs } from "../api/media.ts";
 import type { MediaLike } from "../api/media.ts";
-import { fmtPct } from "./format.ts";
+import { finiteMetric, fmtPct } from "./format.ts";
+import { retrievalMetricEligible } from "./retrieval.ts";
 import type { ConversationTurn } from "../api/types.ts";
 
 type Dict = Record<string, unknown>;
@@ -43,6 +44,7 @@ function list<T>(value: unknown): T[] {
 
 /** 1.0 `:566-574`。无标准媒体直接给说明；是否带 `retrieval_media_refs` 决定「历史图片口径」。 */
 export function itemRetrievalMetrics(item: MediaLike | null | undefined): string {
+  if (!retrievalMetricEligible(item)) return "不适用：不可回答题不计入检索指标";
   if (!mediaRefs(item).length) return "本题无标准媒体，不计入检索指标";
   const total = `总媒体 P ${fmtPct(item?.media_retrieval_precision ?? item?.retrieval_precision)} · R ${fmtPct(item?.media_retrieval_recall ?? item?.retrieval_recall)} · F1 ${fmtPct(item?.media_retrieval_f1 ?? item?.retrieval_f1)}`;
   if (!Object.prototype.hasOwnProperty.call(item || {}, "retrieval_media_refs")) return `${total} · 历史图片口径`;
@@ -52,18 +54,30 @@ export function itemRetrievalMetrics(item: MediaLike | null | undefined): string
   return parts.join(" · ");
 }
 
-/** 1.0 `:575-579`。`json_parse_total == null` 回 `未记录`（`0` 是有效值，照常展示）。 */
+/** 原生工具参数和旧版模型动作分开计数；成功数缺失时不补零。 */
 export function itemParseRate(item: MediaLike | null | undefined): string {
   const stability = dict(item?.agent_stability);
-  if (stability.json_parse_total == null) return "未记录";
-  return `${stability.json_parse_success ?? 0}/${stability.json_parse_total} 次模型输出解析为合法动作 (${fmtPct(stability.json_parse_rate)})`;
+  const parts: string[] = [];
+  for (const [prefix, label] of [["tool_argument_json", "工具参数 JSON"], ["json_parse", "模型动作 JSON"]]) {
+    const total = finiteMetric(stability[`${prefix}_total`]);
+    if (total == null || total < 0) continue;
+    if (total === 0) { parts.push(`${label}：无解析调用`); continue; }
+    const success = finiteMetric(stability[`${prefix}_success`]);
+    if (success == null || success < 0 || success > total) { parts.push(`${label}：共 ${total} 次，成功数未记录`); continue; }
+    parts.push(`${label}：${success}/${total} 成功（${fmtPct(success / total)}）`);
+  }
+  return parts.join("；") || "未记录";
 }
 
 // ── 1.0 :611-621 多轮对话 ──────────────────────────────────────────────
 
 /** 1.0 `:611-613`。 */
 export function conversationTurns(item: MediaLike | null | undefined): ConversationTurn[] {
-  return Array.isArray(item?.conversation) ? (item?.conversation as ConversationTurn[]) : [];
+  const declared = Array.isArray(item?.conversation) ? (item.conversation as ConversationTurn[]) : [];
+  const runtime = Array.isArray(item?.runtime_turns) ? (item.runtime_turns as ConversationTurn[]) : [];
+  return Array.from({ length: Math.max(declared.length, runtime.length) }, (_, index) => ({
+    ...(declared[index] || {}), ...(runtime[index] || {}),
+  }));
 }
 
 /** 1.0 `:614-616`。优先 item 的 `conversation_id`，再找轮次里的，最后给历史文案。 */
@@ -78,7 +92,7 @@ export function conversationIdLabel(item: MediaLike | null | undefined): string 
 /** 1.0 `:617-620`。取不到 `context_turn_count` 时**用下标**当轮数。 */
 export function conversationContextLabel(turn: MediaLike | null | undefined, index: number): string {
   const raw = dict(turn).context_turn_count;
-  const count = Number.isFinite(Number(raw)) ? Number(raw) : index;
+  const count = finiteMetric(raw) ?? index;
   return count > 0 ? `本轮携带前 ${count} 轮对话上下文` : "首轮，无历史上下文";
 }
 

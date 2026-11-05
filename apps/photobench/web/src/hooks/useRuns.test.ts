@@ -210,3 +210,19 @@ describe("hasRunning（1.0 :352）", () => {
     expect(result.current.hasRunning).toBe(true);
   });
 });
+
+
+it("评分不足满额但已完成且有错误时停止轮询", async () => {
+  const payload = pagePayload(0, "completed_with_errors");
+  payload.runs[0] = { ...payload.runs[0]!, qa_count: 10, summary: { judge_valid_count: 9 } };
+  apiMock.mockResolvedValue(payload);
+  const { result } = renderHook(() => useRuns());
+  await act(async () => {
+    result.current.startPolling();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(result.current.hasRunning).toBe(false);
+  expect(result.current.runs[0]?.summary?.judge_valid_count).toBe(9);
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+  expect(apiMock).toHaveBeenCalledTimes(1);
+});

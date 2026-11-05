@@ -278,6 +278,7 @@ describe("useQaPage · 筛选与分页", () => {
       search: "",
       score: "",
       task_type: "",
+      question_type: "",
       tag: "",
       angle: "",
       difficulty: "",

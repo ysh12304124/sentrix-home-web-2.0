@@ -25,6 +25,7 @@ from photobench.application.config.service import ConfigService
 from photobench.application.run_execution.service import RunRequest
 from photobench.application.runs.index import RunIndex
 from photobench.application.runs.suites import RunSuites
+from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
 from photobench.domain.errors import InvalidRequestError
 from photobench.infrastructure.config.env import DotenvSecretStore
 from photobench.infrastructure.config.files import JsonConfigStore
@@ -293,6 +294,40 @@ def test_start_suite_registers_the_run_and_returns_its_id(tmp_path: Path):
 # ---- 取消 -----------------------------------------------------------------
 
 
+def test_suite_worker_ownership_prevents_cleanup_while_execution_is_live(tmp_path):
+    from photobench.application.run_execution.service import RunExecution
+
+    gate, entered = threading.Event(), threading.Event()
+    refreshed = []
+
+    class ControlledExecution(RunExecution):
+        def __init__(self, request):
+            self._state = _State({"run_id": request.run_id, "status": "running"})
+
+        def execute(self, request):
+            entered.set()
+            assert gate.wait(5)
+            self._state.set("status", "completed")
+            return self._state.data
+
+        def refresh_cleanup(self):
+            refreshed.append(1)
+            return False
+
+    suites = _suites(tmp_path, new_execution=ControlledExecution)
+    try:
+        ids = suites.start_suite(_payload(models=["a", "b"]))["run_ids"]
+        assert entered.wait(3)
+        work = suites.work_status()["work"]
+        assert {w["id"] for w in work} == set(ids)
+        assert all(w["worker_alive"] for w in work)
+        assert suites.refresh_cleanup()["errors"] == {}
+        assert refreshed == []
+    finally:
+        gate.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+
+
 def test_cancel_run_cancels_a_running_run_and_the_chain_sees_it(tmp_path: Path):
     """取消是**两个动作**：置信号（主链下一次检查就抛 ``RunCancelledError``）+ 回收模型。
 
@@ -470,6 +505,38 @@ def test_rejudge_archives_the_old_score_and_writes_a_new_one(tmp_path: Path, mon
     assert item["runtime_turns"][0]["task_judge"]["actual_action"] == "answer"
 
 
+@pytest.mark.parametrize("with_turns", [True, False])
+def test_rejudge_replaces_failed_status_without_reusing_old_evidence(tmp_path, with_turns):
+    from copy import deepcopy
+
+    from photobench.domain.error_analysis.rules import case_from_item
+
+    state = _judged_state()
+    state["status"] = "completed_with_errors"
+    item = state["items"][0]
+    if not with_turns:
+        item.pop("runtime_turns")
+    failed = {"score": None, "judge_status": "failed", "reason": "judge_error: HTTP 401"}
+    for record in [item, *(item.get("runtime_turns") or [])]:
+        record.update(judge=deepcopy(failed), evidence_judge=deepcopy(failed), judge_status="failed")
+    http = FakeHttpClient(
+        [
+            judge_reply('{"score":2,"reason":"正确"}'),
+            judge_reply('{"actual_action":"answer","reason":"直接回答"}'),
+        ]
+    )
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    suites.start_rejudge("run-1", {"system_prompt": "评分"})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert item["judge_status"] == "completed"
+    assert item["evidence_judge_history"][0]["evidence_judge"] == failed
+    for record in [item, *(item.get("runtime_turns") or [])]:
+        assert record["evidence_judge"]["reason"] == "not_applicable"
+    assert not any(event["component"] == "judge" for event in case_from_item(item, 0)["events"])
+    assert state["status"] == "completed_with_errors"
+    assert item["judge_history"][0]["judge"] == failed
+
+
 def test_rejudge_refuses_while_the_run_is_active(tmp_path: Path):
     store = FakeRunStore({"run-1": {**_judged_state(), "status": "running"}})
     suites = _suites(tmp_path, store=store)
@@ -545,6 +612,16 @@ def _cancelled_state(**over: Any) -> dict[str, Any]:
             {"qa_id": "q2", "execution_status": "scheduled"},
             {"qa_id": "q3", "execution_status": "running"},
         ],
+    }
+    rows = [
+        {"qa_id": f"q{i}", "question": f"original question {i}", "answer": "original reference"}
+        for i in range(1, 4)
+    ]
+    state["qa_snapshot"] = {
+        "album_id": "album-x",
+        "qa_set": "qa-1",
+        "rows": rows,
+        "definition_sha256": qa_fingerprint(rows),
     }
     state.update(over)
     return state
@@ -681,3 +758,145 @@ def test_unknown_qa_set_is_rejected_before_scheduling(tmp_path):
     suites = _suites(tmp_path)
     with pytest.raises(InvalidRequestError, match="unknown qa_set"):
         suites.start_suite(_payload(qa_set="missing"))
+
+
+def test_cancel_all_broadcast_survives_one_run_failure(tmp_path):
+    from types import SimpleNamespace
+
+    seen = []
+
+    def broken(**_kwargs):
+        seen.append("first")
+        raise OSError("disk full")
+
+    suites = _suites(tmp_path)
+    suites._active = {
+        "first": SimpleNamespace(state={"status": "running"}, cancel=broken),
+        "second": SimpleNamespace(
+            state={"status": "running"}, cancel=lambda **_kwargs: seen.append("second")
+        ),
+    }
+    result = suites.cancel_active_suite()
+    assert seen == ["first", "second"]
+    assert result["cancelled"] == ["second"]
+    assert "disk full" in result["errors"]["first"]
+
+
+def test_cancel_all_includes_rejudge_and_blocks_admission_until_exit(tmp_path, monkeypatch):
+    from photobench.application.run_execution.judge import JudgeRunner
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def judge(*_args, **_kwargs):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return {"score": 1, "reason": "test"}
+
+    monkeypatch.setattr(JudgeRunner, "judge", judge)
+    monkeypatch.setattr(JudgeRunner, "judge_task_action", lambda *_a, **_kw: {})
+    state = _judged_state()
+    state["qa_concurrency"] = 1
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    try:
+        task = suites.start_rejudge("run-1", {"system_prompt": "test"})
+        assert entered.wait(3)
+        assert task["rejudge_id"] in suites.cancel_active_suite()["auxiliary"]
+        assert suites.work_status()["cleanup_status"] == "pending"
+        with pytest.raises(InvalidRequestError):
+            suites.start_suite(_payload())
+    finally:
+        release.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+    assert state["rejudge"]["status"] == "cancelled"
+    assert calls == [1]
+    assert state["items"][0]["judge"]["score"] is None
+    assert state["items"][0]["judge_history"][0]["judge"]["score"] == 0
+
+
+def test_cancel_all_includes_memory_profile_without_replaying_new_questions(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    def pause(seconds):
+        if seconds == 5:
+            entered.set()
+            assert release.wait(5)
+
+    state = _judged_state()
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), sleep=pause)
+    try:
+        task = suites.start_memory_profile({"run_ids": ["run-1"], "vllm_manager_url": "http://manager"})
+        assert entered.wait(3)
+        assert task["task_id"] in suites.cancel_active_suite()["auxiliary"]
+    finally:
+        release.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+    assert state["memory_profile"]["status"] == "cancelled"
+    assert state["memory_profile"].get("requests_total_so_far", 0) == 0
+    assert state["memory_profile"]["items_integrity_ok"] is True
+
+
+@pytest.mark.parametrize("method", ["rejudge", "memory"])
+def test_auxiliary_thread_start_failure_is_terminal_and_releases_reservation(tmp_path, monkeypatch, method):
+    state = _judged_state()
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+
+    def failure(_thread):
+        raise RuntimeError("cannot start worker")
+
+    monkeypatch.setattr(threading.Thread, "start", failure)
+    with pytest.raises(RuntimeError, match="cannot start worker"):
+        if method == "rejudge":
+            suites.start_rejudge("run-1", {"system_prompt": "test"})
+        else:
+            suites.start_memory_profile({"run_ids": ["run-1"], "vllm_manager_url": "http://manager"})
+    assert suites.work_status()["cleanup_status"] == "stopped"
+    assert state["rejudge" if method == "rejudge" else "memory_profile"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "poll", "cancel"])
+def test_memory_wait_failure_retains_product_cleanup_ownership(failure):
+    from photobench.application.runs.suites import _await_turn
+    from photobench.domain.runs.execution import RunCancelledError
+
+    event = threading.Event()
+    if failure == "cancel":
+        event.set()
+    calls = []
+
+    class Client:
+        def get_turn(self, *, turn_id):
+            if failure == "poll":
+                raise ConnectionError("disconnected")
+            return {"status": "running"}
+
+        def cancel_operation(self, *, kind, operation_id, timeout):
+            calls.append((kind, operation_id))
+            return {"cleanup_status": "pending"}
+
+    cleanup = {}
+    expected = {"timeout": TimeoutError, "poll": ConnectionError, "cancel": RunCancelledError}[failure]
+    with pytest.raises(expected):
+        _await_turn(Client(), "turn-1", 0, lambda _: None, event, cleanup)
+    assert calls == [("turn", "turn-1")]
+    assert event.is_set()
+    assert cleanup["cancelled_operations"][0]["cleanup_status"] == "pending"
+    assert "wait_error" in cleanup["cancelled_operations"][0]
+
+
+def test_automatic_analysis_is_enqueued_only_after_execution_released(tmp_path: Path):
+    seen = []
+    service = _suites(tmp_path)
+
+    def finished(run_id):
+        assert not service._active
+        assert run_id not in service._threads
+        seen.append(run_id)
+
+    service._on_finished = finished
+    response = service.start_suite(_payload())
+    deadline = time.monotonic() + 2
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen == response["run_ids"]

@@ -96,11 +96,8 @@ def _gps_point(latitude: float | None, longitude: float | None) -> GpsPoint | No
         return None
 
 
-def _captured_datetime(text: str | None) -> datetime | None:
-    """适配器已把拍摄时间规整成 ISO-8601（含 ``+08:00`` 这类偏移），这里只负责解析。
-
-    **带偏移的一律转成本地时间、再去掉 tzinfo**——这不是随手归一化，是与 1.0 对齐，
-    而且不这么做会让视频整条链路挂掉（2026-10-07 实测）：
+def normalize_captured_datetime(value: datetime | None) -> datetime | None:
+    """把拍摄时间统一成**本地时间、无 tzinfo**——数据库里 ``captured_at`` 的不变式。
 
     观测的 ``captured_at`` 会被拿去减 ``events.time_start``（``domain/memories/events.py``
     的 ``within_candidate_window`` / ``_time_score``）。照片那条路的时间来自 EXIF，
@@ -111,6 +108,20 @@ def _captured_datetime(text: str | None) -> datetime | None:
 
     1.0 存的是 ``2017-09-27 11:36:15``（同一个 UTC 03:36 的视频）——本地时间、无时区。
     这里照做：``astimezone()`` 转本机时区，再 ``replace(tzinfo=None)``。
+
+    **导入时刻的兜底也要过这一层**：``clock`` 默认返回 ``datetime.now(UTC)``，直接当
+    ``captured_at`` 落库会写进 ``+00:00``，与上面同一处 TypeError 同归于尽（2026-10-28
+    实测 ffprobe 缺失时 10/10 视频全挂）。
+    """
+    if value is None:
+        return None
+    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
+
+
+def _captured_datetime(text: str | None) -> datetime | None:
+    """适配器已把拍摄时间规整成 ISO-8601（含 ``+08:00`` 这类偏移），这里只负责解析。
+
+    归一化规则见 :func:`normalize_captured_datetime`。
     """
     if not text:
         return None
@@ -118,7 +129,7 @@ def _captured_datetime(text: str | None) -> datetime | None:
         value = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
+    return normalize_captured_datetime(value)
 
 
 # 视频拍摄时间/GPS 的抽取结果。字段逐个照抄 1.0 ``backend/video/contracts.py`` 的

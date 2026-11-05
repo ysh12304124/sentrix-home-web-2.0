@@ -34,6 +34,7 @@ from photobench.api import errors
 from photobench.api.routes import assets as assets_routes
 from photobench.api.routes import config as config_routes
 from photobench.api.routes import datasets as datasets_routes
+from photobench.api.routes import error_analysis as analysis_routes
 from photobench.api.routes import model_profiles as model_profiles_routes
 from photobench.api.routes import reports as reports_routes
 from photobench.api.routes import runs as runs_routes
@@ -128,10 +129,14 @@ def create_app(
                 name="photobench-result-scan",
                 daemon=True,
             ).start()
+        container.analysis_backend.start(lambda: bool(container.run_suites.work_status()["work"]))
         try:
             yield
         finally:
-            container.startup_recovery.close()
+            try:
+                container.analysis_backend.close()
+            finally:
+                container.startup_recovery.close()
 
     app = FastAPI(title="PhotoBench", version=__version__, docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.container = container
@@ -145,6 +150,7 @@ def create_app(
     # 报告三条与 ``/runs/{id}`` 不同形（多一段路径），挂载顺序不影响匹配；
     # 与写侧同批挂在只读侧之后即可。
     api.include_router(reports_routes.router)
+    api.include_router(analysis_routes.router)
     api.include_router(config_routes.router)
     api.include_router(model_profiles_routes.router)
     # S10a 的展示层四条（1.0 ``do_GET`` 的 ``/api/manifests*`` / ``/api/qa-dataset`` /

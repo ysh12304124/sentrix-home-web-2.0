@@ -1,0 +1,78 @@
+{
+  "inference_revision": "2f370731b30023d616db39a1912875f660c456bc",
+  "purpose": "Synthetic real-engine qualification, not formal QA throughput or 487 acceptance",
+  "batch16": {
+    "passed": true,
+    "actual_batch_peak": 16,
+    "optimization_totals": {
+      "grammar_batches": 566,
+      "grammar_rows": 5177,
+      "grammar_batch_peak": 16,
+      "strided_kv_calls": 3720,
+      "strided_kv_fallbacks": 0
+    },
+    "terminal_count": 16,
+    "return_count": 16,
+    "usage_matches": true,
+    "elapsed_s": 106.7164900302887
+  },
+  "prefix_cache": {
+    "passed": true,
+    "cold_output_and_usage_identical": true,
+    "prefix_cache_evidence": {
+      "verified": true,
+      "observed_requests": 12,
+      "expected_requests": 12,
+      "errors": [],
+      "requests_with_reuse": 11,
+      "cached_tokens": 11264,
+      "uncached_tokens": 5266,
+      "request_hit_rate": 0.9166666666666666,
+      "token_hit_rate": 0.6814277071990321
+    },
+    "started_at": 1793785623.082088,
+    "finished_at": 1793785639.906858
+  },
+  "window": {
+    "independent_seed_passed": true,
+    "status": 200,
+    "input_tokens": 32665,
+    "output_budget": 103,
+    "duration_s": 98.80443604197353,
+    "window_passed": true
+  },
+  "operator_code_invariance": {
+    "source_series": "v10",
+    "current_series": "v11",
+    "current_revision": "2f370731b30023d616db39a1912875f660c456bc",
+    "unchanged_files": {
+      "scripts/benchmarks/mlx_prefix_cache.py": "a1915419e64eb913fdff6315d03a071fb0fc21d3910bab670a907e63693e7b38",
+      "scripts/benchmarks/apply_mlx_prefix_patch.py": "3dee954207b7b2e22dbeba4119051e0bcdf7418309a2695c4bf1a3ac17740b01",
+      "scripts/benchmarks/mlx_batch_decode.py": "39def285ca51f903d8f8fed438f1206a0311b467d2746a5c77bd617a87e005a6",
+      "scripts/benchmarks/apply_mlx_kv_patch.py": "5828981cddef2174f843c330f459470d11ed4a0830467b01944229d5b0cfc5ed",
+      "scripts/benchmarks/patches/mlx-vlm-0.7.6-qwen35-strided-kv.patch": "7f5baf4cdd0fcf066e66a809e9a809ce74f06a7f66b37bb4fe50742f62ac6763"
+    },
+    "note": "Reuse operator proofs only for unchanged implementations; v11 protocol and actual batch16 are newly qualified.",
+    "unchanged_adapter_functions": {
+      "processor_context": "0b262d6ab9483cdcfadd415ad4b9c57329592f42296f7f64c9bba39b83eab9a6",
+      "install_chunked_context_fix": "4432624a77c29172ac7ab8ce656f0f91cca82b0f2d23fd419417863f982f9eff",
+      "process_queued_prompts": "0c4dd3d79e6661a8ba0041e7229a6c500ade4cda72e44ce1f0f4528096fe9e2d",
+      "install_prefill_admission_fix": "6e964e63012ffdb9094188562da1a3b1cf2cc5569fe84aa6bf545e9e69de3783",
+      "install_media_fairness_fix": "a5322d7ef883c9094e43c7044fe11daa03503b0f58ce3745fecf36918fb2dea9",
+      "pending_requests": "82167c282acb47232c923642989e3403cf132a00ddb826f3fd4dbda45d602ee4",
+      "terminal_output_facts": "678ef48c3d9091f4af8ad7ba5463903040ac965cd0b45572902d653d3abfdaf1",
+      "install_telemetry": "07b548cd8598a06c7e1f16f71678813db4870092ac2d31ef1b4db1fa8ed71dca",
+      "seeded_sampler": "c944c33a3d9acd23b0445c3fb6b5737f9ccf7eb310ed04872f98be8401e28cc7",
+      "exact_count": "897412c3df3bcf5c4cdd31305d5e7b3af8ff0b0e14dbb09115d57a56b34d5bc2",
+      "install_adapter": "616939c517bf9ea780137e4ee754953c79ee7755d1f909e83928acc39890419d"
+    },
+    "changed_adapter_functions": [
+      "fair_generation_step"
+    ]
+  },
+  "raw_evidence_sha256": {
+    "batch16-qualification-v11.json": "1cd60631d05c47896aae30a8ea67c5820ac1e8aaf192a4eaa1537c7727b841b7",
+    "prefix-reuse-cached-v11.json": "b8455e268e88da15819933982afa84a8e57928b99c51d4abbd058dda0abd1d2c",
+    "window-seed-qualification-v11.json": "298a3675d3d5d15090668f69b1be1349d1c8b52355bfcf3378d028a522373d18"
+  }
+}

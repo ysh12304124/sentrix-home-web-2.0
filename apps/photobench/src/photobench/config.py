@@ -92,6 +92,10 @@ def _sentrix_environment() -> tuple[tuple[str, str], ...]:
         "SENTRIX_EMBEDDING_SCHEME",
         "SENTRIX_TEXT_EMBEDDER_URL",
         "SENTRIX_LEGACY_CLIP_URL",
+        # 重排同样在进程启动时读取；不传的话 PhotoBench 触发的 API 重启会把它丢掉，
+        # 同一轮测评前后半段的重排开关就不一致了。
+        "SENTRIX_RERANKER_URL",
+        "SENTRIX_RERANK_TOP_K",
         "FACE_PROVIDERS",
         "RETINAFACE_PROVIDERS",
     )

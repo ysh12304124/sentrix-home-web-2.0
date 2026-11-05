@@ -91,11 +91,18 @@ class PhaseMetricsProjection(BaseModel):
     scanned_count: int | None = None
 
 
+class WorkStatusResponse(BaseModel):
+    work: list[dict[str, Any]]
+    cleanup_status: str
+    errors: dict[str, str] | None = None
+
+
 class RunMetricsResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     read_revision: str | None = None
     history_mode: str | None = None
     persistence: dict[str, Any] | None = None
+    cleanup: dict[str, Any] | None = None
     metrics_contract_version: int | None = None
     build_revision: str | None = None
     runtime_snapshot: dict[str, Any] | None = None
@@ -122,6 +129,26 @@ class JudgeObservation(BaseModel):
 
 class RunItemObservation(BaseModel):
     model_config = ConfigDict(extra="allow")
+    display_question: str | None = None
+    conversation_turn_count: int | None = None
+    conversation_context_mode: str | None = None
+    agent_status: str | None = None
+    task_type: str | list[str] | None = None
+    question_type: str | list[str] | None = None
+    expected_action: str | None = None
+    answerability: str | None = None
+    injection: bool | None = None
+    difficulty: str | None = None
+    qa_schema_version: str | None = None
+    taxonomy_version: str | None = None
+    ability_taxonomy_version: str | None = None
+    ability_family_ids: list[str] | None = None
+    ability_primary_ids: list[str] | None = None
+    ability_supporting_ids: list[str] | None = None
+    benchmark_group: str | None = None
+    dialogue_management: str | None = None
+    classification_content_sha256: str | None = None
+    dataset_version: str | None = None
     judge: JudgeObservation | None = None
 
 

@@ -17,6 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
 from photobench.domain.runs.analysis import effective_summary, run_list_entry
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ def _sync_directory(path: Path) -> None:
 
 def _overview(state: dict[str, Any]) -> dict[str, Any]:
     result = {key: value for key, value in state.items() if key != "items"}
+    if isinstance(result.get("qa_snapshot"), dict):
+        result["qa_snapshot"] = snapshot_metadata(result["qa_snapshot"])
     result["item_count"] = len(state.get("items") or [])
     result["summary"] = effective_summary(state)
     return result

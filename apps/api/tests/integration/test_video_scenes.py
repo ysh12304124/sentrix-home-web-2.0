@@ -301,12 +301,20 @@ def test_cleanup_derivatives_cascades_into_faces_mentions_places_and_vectors(
         )
         for vector_id, space, source_type, source_id in (
             ("vec_asset", "visual", "asset", "asset_kf"),
-            ("vec_obs", "episodic", "observation", "obs_kf"),
-            ("vec_event", "episodic", "event", "evt_1"),
             ("vec_face", "visual", "face_instance", "face_1"),
         ):
             connection.execute(
                 "INSERT INTO memory_vectors (id, scope_id, space, source_type, source_id, model_name,"
+                " dimension, vector_json, metadata_json, created_at, updated_at)"
+                " VALUES (?, 'album1', ?, ?, ?, 'm', 2, '[0.1,0.2]', '{}', ?, ?)",
+                (vector_id, space, source_type, source_id, now, now),
+            )
+        for vector_id, space, source_type, source_id in (
+            ("vec_obs", "episodic", "observation", "obs_kf"),
+            ("vec_event", "episodic", "event", "evt_1"),
+        ):
+            connection.execute(
+                "INSERT INTO text_vectors (id, scope_id, space, source_type, source_id, model_name,"
                 " dimension, vector_json, metadata_json, created_at, updated_at)"
                 " VALUES (?, 'album1', ?, ?, ?, 'm', 2, '[0.1,0.2]', '{}', ?, ?)",
                 (vector_id, space, source_type, source_id, now, now),
@@ -356,10 +364,14 @@ def test_cleanup_derivatives_cascades_into_faces_mentions_places_and_vectors(
                 f"SELECT COUNT(*) AS n FROM {table} WHERE {column} = ?", (value,)
             ).fetchone()
             assert row["n"] == 0, f"{table} 还有 {row['n']} 行没清掉"
-        # 向量按 source_id 判：四个方向的都要没（asset / observation / event / face_instance）。
+        # 向量分表判：视觉两向（asset / face_instance）在 memory_vectors，
+        # 文本两向（observation / event）在 text_vectors。
         row = connection.execute(
-            "SELECT COUNT(*) AS n FROM memory_vectors WHERE source_id IN"
-            " ('asset_kf','obs_kf','evt_1','face_1')"
+            "SELECT COUNT(*) AS n FROM memory_vectors WHERE source_id IN ('asset_kf','face_1')"
+        ).fetchone()
+        assert row["n"] == 0
+        row = connection.execute(
+            "SELECT COUNT(*) AS n FROM text_vectors WHERE source_id IN ('obs_kf','evt_1')"
         ).fetchone()
         assert row["n"] == 0
         # 源片自己必须还在——清场清的是派生物，不是原片。

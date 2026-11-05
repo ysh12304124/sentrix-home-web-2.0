@@ -15,9 +15,11 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from photobench.api.deps import get_container
 from photobench.domain.datasets.catalog import ALBUM_MEDIA_COLLECTIONS, album_media_type
+from photobench.domain.datasets.qa_taxonomy import taxonomy_document
 from photobench.domain.errors import NotFoundError
 
 router = APIRouter(tags=["datasets"])
@@ -75,3 +77,24 @@ def album_media(request: Request, album: str, coll: str, file_name: str) -> File
     # ``FileResponse`` 的 ``mimetypes.guess_type`` 不加 ``charset``，而 1.0 加；
     # 显式传 media_type 让这两个口径一致（见 ``album_media_type``）。
     return FileResponse(path, media_type=album_media_type(Path(path).name))
+
+
+class ContentTask(BaseModel):
+    label: str
+    subtypes: dict[str, str]
+
+
+class QaTaxonomyResponse(BaseModel):
+    version: str
+    schema_version: str
+    tasks: dict[str, ContentTask]
+    actions: dict[str, str]
+    answerability: dict[str, str]
+    difficulty: dict[str, str]
+    special: dict[str, str]
+
+
+@router.get("/qa-taxonomy", response_model=QaTaxonomyResponse)
+def qa_taxonomy() -> dict[str, Any]:
+    """The versioned dictionary used by QA files, filters and analysis."""
+    return taxonomy_document()

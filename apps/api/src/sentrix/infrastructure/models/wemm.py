@@ -60,6 +60,30 @@ FAILURE_THRESHOLD = 5
 CIRCUIT_OPEN_S = 30.0
 
 
+def _write_minimal_bmp(path: Path) -> None:
+    """写一个最小的合法 BMP（2×2 像素，24-bit），供 smoke_test 使用。
+
+    纯 ``struct`` 实现，不依赖 PIL。侧车的 ``embed_image`` 接受文件路径，
+    需要一张真实的图片文件。
+    """
+    import struct
+
+    width, height = 2, 2
+    row_size = (width * 3 + 3) & ~3  # 每行 4 字节对齐
+    pixel_data_size = row_size * height
+    file_size = 54 + pixel_data_size  # 14 (header) + 40 (info) + pixel data
+
+    with open(path, "wb") as f:
+        # BMP file header (14 bytes)
+        f.write(struct.pack("<2sIHHI", b"BM", file_size, 0, 0, 54))
+        # DIB header (BITMAPINFOHEADER, 40 bytes)
+        f.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 2835, 2835, 0, 0))
+        # Pixel data: gray pixels, bottom-up row order
+        gray_row = bytes([128, 128, 128] * width) + b"\x00" * (row_size - width * 3)
+        for _ in range(height):
+            f.write(gray_row)
+
+
 class WeMMSidecarEmbedder:
     """实现 ``domain.retrieval.ports.VisualEmbedder`` 与 ``TextEmbedder``。"""
 
@@ -135,6 +159,45 @@ class WeMMSidecarEmbedder:
         文件不存在时侧车返回 400，这里按普通失败计数。
         """
         return self._embed("/embed_image", {"path": str(path or "")}, "embed_image")
+
+    def smoke_test(self) -> tuple[bool, str]:
+        """启动时端到端推理测试。
+
+        实现 ``EmbeddingHealthProbe.smoke_test`` 端口方法。生成一张临时小图片调用
+        ``embed_image``，再调用 ``embed_query``，确认侧车能真正返回向量。
+
+        失败语义：返回 ``(False, error_message)``，不抛异常。
+        """
+        import tempfile
+        from pathlib import Path
+
+        # WeMM 走文件路径，需要一张真实图片。用纯 Python 生成 BMP 避免依赖 PIL。
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as temp_file:
+                temp_path = Path(temp_file.name)
+            _write_minimal_bmp(temp_path)
+            vector = self.embed_image(temp_path)
+            if not vector:
+                return False, f"visual embed_image returned empty: {self.load_error}"
+            if len(vector) != self.dimension:
+                return False, f"visual embed_image returned {len(vector)} dims, expected {self.dimension}"
+        except Exception as exc:
+            return False, f"visual smoke test failed: {type(exc).__name__}: {exc}"
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
+        try:
+            vector = self.embed_query("test")
+            if not vector:
+                return False, f"text embed_query returned empty: {self.load_error}"
+            if len(vector) != self.dimension:
+                return False, f"text embed_query returned {len(vector)} dims, expected {self.dimension}"
+        except Exception as exc:
+            return False, f"text smoke test failed: {type(exc).__name__}: {exc}"
+
+        return True, ""
 
     # ---- 内部 -----------------------------------------------------------------
 

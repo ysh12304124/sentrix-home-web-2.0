@@ -269,7 +269,7 @@ def _text_indexer(container: Container) -> Callable[[Observation, str | None], i
     **排在事件归并之后**（``ImportAssets.execute`` 的顺序），所以入参带 ``event_id``——
     1.0 那条 ``episodic/event`` 行要的就是它。
     """
-    index = IndexObservationText(embedder=container.text_embedder, vectors=container.vector_repository)
+    index = IndexObservationText(embedder=container.text_embedder, vectors=container.text_vector_repository)
 
     def run(observation: Observation, event_id: str | None) -> int:
         return index.index(observation, event_id).rows

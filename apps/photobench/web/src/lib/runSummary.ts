@@ -18,6 +18,7 @@
 
 import { mediaRefs } from "../api/media.ts";
 import { average as averageMetric } from "./format.ts";
+import { retrievalMetricEligible } from "./retrieval.ts";
 import { itemCallMetrics, itemLlmSummary } from "./trace.ts";
 import type { ItemLlmSummary } from "./trace.ts";
 import type { Run, RunSummary } from "../api/types.ts";
@@ -71,10 +72,26 @@ export function macroMetrics(items: readonly Loose[], prefix: string): Retrieval
 }
 
 /** 1.0 `:426-547`。 */
+/** 流程是否在每轮预算内收敛，证据完整性不影响此指标。 */
+export function nativeCompletion(item: Loose): boolean | null {
+  const turns: Loose[] = item.runtime_turns?.length ? item.runtime_turns : [item];
+  const outcomes = turns.map(turn => {
+    const reason = String(turn.termination_reason || "").toLowerCase();
+    if (!["answered", "answered_with_gap", "policy_refusal"].includes(reason)) return reason ? false : null;
+    const budget = turn.agent2_trace?.budget_outcome || {};
+    if (![budget.model_steps, budget.max_steps].every(value => typeof value === "number" && Number.isInteger(value) && value >= 0)) return null;
+    const status = String(turn.agent_status || turn.status || turn.turn_status || "").toLowerCase();
+    return Boolean(String(turn.answer || "").trim())
+      && !["error", "timeout", "failed", "cancelled", "canceled"].includes(status)
+      && budget.model_steps <= budget.max_steps;
+  });
+  return outcomes.includes(false) ? false : outcomes.includes(null) ? null : true;
+}
+
 export function effectiveRunSummary(run: Run | null | undefined): RunSummary {
   const saved = (run?.summary || {}) as Loose;
   const items = (run?.items || []) as unknown as Loose[];
-  const metricItems = items.filter((item) => String(item?.answerability || "").toLowerCase() !== "unanswerable");
+  const metricItems = items.filter(retrievalMetricEligible);
   const judged = items.filter((item) => typeof item.judge?.score === "number" && [0, 1, 2].includes(item.judge.score) && item.judge?.consistency_status !== "inconsistent");
   const recalls = metricItems.map((item) => item.retrieval_recall).filter((value) => Number.isFinite(Number(value)));
   const scores = judged.map((item) => item.judge.score as number);
@@ -98,7 +115,12 @@ export function effectiveRunSummary(run: Run | null | undefined): RunSummary {
     .filter((judge) => [true, false].includes(judge?.correct));
   const parseTotals = items.map((item) => item.agent_stability?.json_parse_total).filter(Number.isFinite);
   const parseSuccesses = items.map((item) => item.agent_stability?.json_parse_success).filter(Number.isFinite);
-  const completion = items.map((item) => item.agent_stability?.completed_within_steps).filter((value) => typeof value === "boolean");
+  const structured = items.map(item => item.agent_stability || {});
+  const structuredRequested = structured.reduce((sum, row) => sum + (row.structured_json_requested || 0), 0);
+  const structuredTotal = structured.reduce((sum, row) => sum + (row.structured_json_total || 0), 0);
+  const structuredSuccess = structured.reduce((sum, row) => sum + (row.structured_json_success || 0), 0);
+  const native = items.length > 0 && items.length >= Number(run?.item_count ?? items.length) && items.every(item => item.metrics_contract_version === 2 || item.agent2_trace);
+  const completion = items.map((item) => native ? nativeCompletion(item) : item.agent_stability?.completed_within_steps).filter((value) => typeof value === "boolean");
   const agentTaskLatencies = items.map((item) => item.timing_breakdown?.agent_wall_ms ?? (item.metrics_contract_version === 2 ? item.wall_clock_ms : undefined)).filter(Number.isFinite);
   const agentLoopCounts = items.map((item) => {
     const calls: Loose[] = itemCallMetrics(item);
@@ -169,9 +191,13 @@ export function effectiveRunSummary(run: Run | null | undefined): RunSummary {
     task_decision_accuracy: saved.task_decision_accuracy ?? (actionJudges.length ? actionJudges.filter((judge) => judge.correct).length / actionJudges.length : null),
     json_parse_total: saved.json_parse_total ?? (parseTotals.length ? parseTotals.reduce((sum, value) => sum + value, 0) : null),
     json_parse_success: saved.json_parse_success ?? (parseSuccesses.length ? parseSuccesses.reduce((sum, value) => sum + value, 0) : null),
+    structured_json_requested: saved.structured_json_requested ?? (structuredRequested || null),
+    structured_json_total: saved.structured_json_total ?? (structuredTotal || null),
+    structured_json_success: saved.structured_json_success ?? (structuredTotal ? structuredSuccess : null),
+    structured_json_rate: saved.structured_json_rate ?? (structuredTotal ? structuredSuccess / structuredTotal : null),
     json_parse_success_rate: saved.json_parse_success_rate ?? (parseTotals.length ? parseSuccesses.reduce((sum, value) => sum + value, 0) / parseTotals.reduce((sum, value) => sum + value, 0) : null),
-    qa_completion_valid_count: saved.qa_completion_valid_count ?? completion.length,
-    qa_completion_within_steps_rate: saved.qa_completion_within_steps_rate ?? (completion.length ? completion.filter(Boolean).length / completion.length : null),
+    qa_completion_valid_count: native ? completion.length : saved.qa_completion_valid_count ?? completion.length,
+    qa_completion_within_steps_rate: native ? (completion.length ? completion.filter(Boolean).length / completion.length : null) : saved.qa_completion_within_steps_rate ?? (completion.length ? completion.filter(Boolean).length / completion.length : null),
     agent_task_latency_mean_ms: saved.agent_task_latency_mean_ms ?? averageMetric(agentTaskLatencies),
     agent_loop_calls_mean: saved.agent_loop_calls_mean ?? averageMetric(agentLoopCounts),
     llm_ttft_ms_mean: saved.llm_ttft_ms_mean ?? averageMetric(llm.map((item) => item.ttft_ms_avg)),

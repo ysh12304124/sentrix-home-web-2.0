@@ -1,0 +1,31 @@
+{
+  "run_id": "20261104-183352-album3-max-video10-current-291e9b",
+  "execution_revision": "2f370731b30023d616db39a1912875f660c456bc",
+  "status": "completed_with_errors",
+  "passed": false,
+  "run_sha256": "4d88e00a3e36dd786be2c979c2cf2067584e223276671e9708b5521ebd7e2b02",
+  "questions": 487,
+  "returned": 487,
+  "agent_success": 462,
+  "agent_errors": 25,
+  "agent_error_categories": {
+    "model_error": 15,
+    "planner_blocked": 10
+  },
+  "valid_judge": 487,
+  "qa_seconds": 9942.7054,
+  "successful_qa_per_min": 2.7879735831255745,
+  "judge_seconds": 9840.5799,
+  "actual_batch_peak": 16,
+  "native_oom_confirmed": true,
+  "limitations": [
+    "The preserved legacy summary oom=0 counts only a subset of error fields and does not negate the native Metal OOM.",
+    "25 failed questions are distinct from aborted model requests.",
+    "64-question speed gate passed, but independent full487 acceptance failed.",
+    "Failure input/output/photo/token IDs remain private."
+  ],
+  "model_error_observations": {
+    "questions_with_http500": 15,
+    "questions_with_10s_timeout": 10
+  }
+}

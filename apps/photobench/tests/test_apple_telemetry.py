@@ -96,7 +96,7 @@ def test_ps_observer_excludes_only_its_own_pid(monkeypatch):
             pass
 
         def communicate(self, timeout=None):
-            assert timeout == 3
+            assert timeout == 0.6
             return (
                 " 100 1 python photobench\n"
                 " 200 100 ps real-product-worker\n"
@@ -114,12 +114,12 @@ def test_ps_observer_excludes_only_its_own_pid(monkeypatch):
 # ---- 解析层（纯函数）--------------------------------------------------------------
 
 
-def test_vm_stat_used_memory_is_active_wired_and_compressor() -> None:
+def test_vm_stat_includes_resident_caches_and_excludes_only_free() -> None:
     data = apple.parse_vm_stat(VM_STAT, page_size=16384, total_bytes=200 * 16384)
     assert data is not None
-    assert data["system_memory_scope"] == "apple_app_wired_compressed"
-    assert data["system_memory_used_mib"] == round(150 * 16384 / MIB, 2)
-    assert data["system_memory_available_mib"] == round(50 * 16384 / MIB, 2)
+    assert data["system_memory_scope"] == "apple_physical_nonfree_including_cache_v2"
+    assert data["system_memory_used_mib"] == round(190 * 16384 / MIB, 2)
+    assert data["system_memory_available_mib"] == round(10 * 16384 / MIB, 2)
     assert data["system_memory_total_mib"] == round(200 * 16384 / MIB, 2)
 
 
@@ -285,158 +285,170 @@ def _no_telemetry_services_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(apple, "_load_telemetry_services", lambda: None)
 
 
+def resident_observation(rows, mib=128):
+    import time
+
+    pids = {row["pid"] for row in rows}
+    return {
+        "status": "available",
+        "source": "footprint_group",
+        "pids": sorted(pids),
+        "process_identities": {pid: pid * 100 for pid in pids},
+        "observed_at_monotonic": time.monotonic(),
+        "finished_at_monotonic": time.monotonic(),
+        "ttl_seconds": 3,
+        "resident_bytes": mib * MIB,
+        "components_bytes": {"dirty": mib * MIB, "swapped": 0, "clean": 0, "reclaimable": 0},
+    }
+
+
 @pytest.fixture
-def apple_host(monkeypatch: pytest.MonkeyPatch) -> None:
+def apple_host(monkeypatch):
     monkeypatch.setattr(
         apple,
         "_run_text",
         make_dispatcher(
-            ps="  100 1 python benchmark_orchestrator.py\n  200 1 llama-server --port 8100\n",
-            lsof="p100\nf13\nn*:8771\np200\nf8\nn*:8100\n",
+            ps=" 100 1 python benchmark_orchestrator.py\n 200 1 llama-server --port 8100\n",
+            lsof="p100\nn*:8771\np200\nn*:8100\n",
         ),
     )
     monkeypatch.setattr(apple, "_MACMON", _FakeMacmon(MACMON_SAMPLE))
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: {100: 128 * MIB, 200: 512 * MIB}[pid])
-    # 模型进程另有 128 MiB 的 GGUF 映射：footprint 不记这半，占用必须加上。
-    monkeypatch.setattr(apple, "_weight_map_bytes", lambda pid: 128 * MIB if pid == 200 else 0)
-
-
-def test_process_bytes_adds_the_two_non_overlapping_halves() -> None:
-    assert apple._process_bytes(512 * MIB, 128 * MIB) == 640 * MIB
-    assert apple._process_bytes(512 * MIB, 0) == 512 * MIB
-    assert apple._process_bytes(0, 128 * MIB) is None
-    assert apple._process_bytes(-1, 128 * MIB) is None
-
-
-def test_occupancy_is_footprint_plus_weight_map(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: 100 * MIB)
-    monkeypatch.setattr(apple, "_weight_map_bytes", lambda pid: 2573 * MIB)
-    assert apple._occupancy_bytes(42) == 2673 * MIB
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: None)
-    assert apple._occupancy_bytes(42) is None
-
-
-def test_gpu_stats_sums_related_occupancy_and_reports_the_model(apple_host: None) -> None:
-    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").gpu_stats()["data"]
-    assert data["gpus"] == [
-        {
-            "index": 0,
-            "memory_unit": "apple_phys_footprint_plus_mapped_weights_mib",
-            "gpu_utilization_pct": 12.5,
-            "gpu_allocated_unified_memory_mib": 1.0,
-            "gpu_in_use_unified_memory_mib": 0.5,
-            "cpu_temperature_c": 41.2,
-            "power_draw_w": 4.2,
-            "power_scope": "macmon_sys_power",
-        }
-    ]
-
-
-def test_process_memory_attributes_model_and_sentrix_separately(apple_host: None) -> None:
-    provider = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100")
-    data = provider.process_memory()["data"]
-    assert data["root_pid"] == 200
-    assert data["model_process_system_memory_used_mib"] == 640.0
-    assert data["model_process_system_memory_scope"] == "apple_phys_footprint_plus_mapped_weights"
-    assert data["process_memory_used_mib"] == 640.0
-    assert data["sentrix_stack_pss_mib"] == 128.0
-    assert data["sentrix_stack_pss_scope"] == "apple_phys_footprint_plus_mapped_weights_excluding_model"
-    assert data["product_stack_memory_mib"] == 768.0
-    assert data["benchmark_process_memory_used_mib"] == 768.0
-    assert data["memory_unit"] == "apple_phys_footprint_plus_mapped_weights_mib"
-    assert data["memory_profile"] == {"method": "apple_phys_footprint_plus_mapped_weights_v1"}
-    assert data["system_memory_scope"] == "apple_app_wired_compressed"
-    # 基线就是第一次采到的已用量，所以这次 delta 为 0。
-    assert data["system_memory_delta_mib"] == 0.0
-
-
-def test_process_memory_without_a_model_process_writes_no_product_total(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
+    # Group product result is deliberately NOT the sum of independent PIDs.
     monkeypatch.setattr(
         apple,
-        "_run_text",
-        make_dispatcher(
-            ps="  100 1 python benchmark_orchestrator.py\n",
-            lsof="p100\nf13\nn*:8771\n",
-        ),
+        "_resident_group",
+        lambda rows: resident_observation(rows, 640 if len(rows) == 1 and rows[0]["pid"] == 200 else 700),
     )
-    monkeypatch.setattr(apple, "_MACMON", _FakeMacmon({}))
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: 128 * MIB)
+
+
+def footprint_payload(pids=(42,), scale=1):
+    return {
+        "unit": "byte" if scale == 1 else "page",
+        "bytes per unit": scale,
+        "page size": scale,
+        "processes": [{"pid": pid} for pid in pids],
+        "errors": [],
+        "summary": {"total": {"dirty": 100, "swapped": 60, "clean": 20, "reclaimable": 10, "wired": 5}},
+    }
+
+
+def test_footprint_normalizes_and_uses_only_summary():
+    from photobench.domain.runtime.metrics import apple_resident_bytes
+
+    data = footprint_payload(scale=16384)
+    data["processes"][0]["dirty"] = 999999999
+    result = apple.parse_footprint(data, {42})
+    assert apple_resident_bytes(result) == 70 * 16384
+    assert "wired" not in result
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"errors": ["permission denied"]},
+        {"processes": []},
+        {"processes": [{"pid": 42}, {"pid": 42}]},
+        {"bytes per unit": 4096},
+        {"summary": {"total": {"dirty": 1, "swapped": 2, "clean": 0, "reclaimable": 0}}},
+        {"summary": {"total": {"dirty": 1, "clean": 0, "reclaimable": 0}}},
+    ],
+)
+def test_footprint_incomplete_or_invalid_never_becomes_zero(change):
+    data = {**footprint_payload(), **change}
+    assert apple.parse_footprint(data, {42}) is None
+
+
+def test_group_detects_identity_change_and_timeout(monkeypatch):
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    calls = iter([100, 101])
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: next(calls))
+
+    def run(command, **kwargs):
+        Path(command[command.index("-j") + 1]).write_text(json.dumps(footprint_payload()))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(apple.subprocess, "run", run)
+    assert apple._resident_group([{"pid": 42}])["reason"] == "process_identity_changed"
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: 100)
+
+    def timeout(*args, **kwargs):
+        raise apple.subprocess.TimeoutExpired("footprint", 0.8)
+
+    monkeypatch.setattr(apple.subprocess, "run", timeout)
+    assert apple._resident_group([{"pid": 42}])["status"] == "unavailable"
+
+
+def test_process_groups_are_independent_not_added(apple_host):
     data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
-    assert "root_pid" not in data
-    assert "model_process_system_memory_used_mib" not in data
-    assert "product_stack_memory_mib" not in data
-
-
-def test_two_model_candidates_are_not_guessed_into_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """两个候选进程时选谁都是猜——一个都不报，但 sentrix 那一半仍然照报。"""
-    monkeypatch.setattr(
-        apple,
-        "_run_text",
-        make_dispatcher(
-            ps=(
-                "  100 1 python benchmark_orchestrator.py\n"
-                "  200 1 llama-server --port 8100\n"
-                "  201 1 llama-server --port 8100\n"
-            ),
-            lsof="p100\nf13\nn*:8771\np200\nf8\nn*:8100\np201\nf9\nn*:8100\n",
-        ),
-    )
-    monkeypatch.setattr(apple, "_MACMON", _FakeMacmon({}))
-    monkeypatch.setattr(
-        apple, "_phys_footprint_bytes", lambda pid: {100: 128 * MIB, 200: 512 * MIB, 201: 256 * MIB}[pid]
-    )
-    monkeypatch.setattr(apple, "_weight_map_bytes", lambda pid: 0)
-    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
-    assert "root_pid" not in data
-    assert "benchmark_process_memory_used_mib" not in data
-    assert data["sentrix_stack_pss_mib"] == 128.0
-
-
-def test_a_missing_footprint_suppresses_the_sum(monkeypatch: pytest.MonkeyPatch) -> None:
-    """相关进程里有一个 footprint 读不到，和就不能写——缺项的和是一个偏小的假数字。"""
-    monkeypatch.setattr(
-        apple,
-        "_run_text",
-        make_dispatcher(
-            ps="  100 1 python benchmark_orchestrator.py\n  200 1 llama-server --port 8100\n",
-            lsof="p100\nf13\nn*:8771\np200\nf8\nn*:8100\n",
-        ),
-    )
-    monkeypatch.setattr(apple, "_MACMON", _FakeMacmon({}))
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: 512 * MIB if pid == 200 else None)
-    monkeypatch.setattr(apple, "_weight_map_bytes", lambda pid: 0)
-    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
+    assert data["model_process_system_memory_used_mib"] == 640
+    assert data["product_stack_memory_mib"] == 700
+    assert data["process_memory_used_mib"] == 640
+    assert data["memory_accounting"] == "apple_footprint_resident_v2"
     assert "sentrix_stack_pss_mib" not in data
-    assert "product_stack_memory_mib" not in data
-    assert data["model_process_system_memory_used_mib"] == 512.0
+    assert "model_process_mapped_weights_mib" not in data
+    assert data["memory_complete"] is True
+    assert data["system_memory_delta_mib"] == 0
+    assert data["model_process_gpu_memory_mib"] is None
+    assert data["product_stack_gpu_memory_mib"] is None
+    assert data["device_gpu_memory_mib"] is not None
+    assert (
+        data["resource_missing_reasons"]["model_process_gpu_memory_mib"]
+        == "runtime_does_not_expose_process_gpu_bytes"
+    )
 
 
-def test_system_memory_reports_unavailable_without_vm_stat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(apple, "_run_text", make_dispatcher(vm_stat=""))
+def test_missing_product_group_does_not_hide_main(apple_host, monkeypatch):
+    def group(rows):
+        if len(rows) > 1:
+            return {"status": "unavailable", "reason": "permission_denied"}
+        return resident_observation(rows, 512)
+
+    monkeypatch.setattr(apple, "_resident_group", group)
+    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
+    assert data["model_process_system_memory_used_mib"] == 512
+    assert data["product_stack_memory_mib"] is None
+    assert data["memory_complete"] is False
+
+
+def test_expired_observation_keeps_timestamp_and_clears_totals(apple_host, monkeypatch):
+    def group(rows):
+        result = resident_observation(rows, 500)
+        result["observed_at_monotonic"] -= 4
+        return result
+
+    monkeypatch.setattr(apple, "_resident_group", group)
+    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
+    assert data["product_stack_memory_mib"] is None
+    assert data["process_memory_used_mib"] is None
+    assert not data["memory_complete"]
+    assert data["memory_observations"]["model"]["age_seconds"] >= 4
+
+
+def test_ambiguous_or_absent_model_has_no_product(apple_host, monkeypatch):
+    monkeypatch.setattr(apple, "_process_rows", lambda: [])
+    data = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").process_memory()["data"]
+    assert data["product_stack_memory_mib"] is None
+    assert data["model_process_system_memory_used_mib"] is None
+
+
+def test_system_unavailable_with_missing_free_counter(monkeypatch):
+    monkeypatch.setattr(apple, "_run_text", make_dispatcher(vm_stat="Pages active: 20."))
     monkeypatch.setattr(apple, "_MACMON", _FakeMacmon({}))
-    provider = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100")
-    assert provider.system_memory() == {
-        "status": "unavailable",
-        "source": "vm_stat",
-        "reason": "vm_stat_unavailable",
-    }
-
-    monkeypatch.setattr(apple, "_run_text", make_dispatcher())
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: 1)
-    available = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").system_memory()
-    assert available["status"] == "available"
-    assert available["source"] == "vm_stat"
-    assert available["data"]["system_memory_scope"] == "apple_app_wired_compressed"
+    assert apple.LocalAppleUnifiedTelemetryProvider().system_memory()["status"] == "unavailable"
 
 
-def test_kv_cache_is_not_applicable_on_unified_memory() -> None:
-    result = apple.LocalAppleUnifiedTelemetryProvider("http://127.0.0.1:8100").kv_cache()
-    assert result == {
-        "status": "not_applicable",
-        "source": "apple_unified",
-        "reason": "unified_memory_has_no_discrete_kv_pool",
-    }
+def test_gpu_stats_retains_device_diagnostics(apple_host):
+    data = apple.LocalAppleUnifiedTelemetryProvider().gpu_stats()["data"]["gpus"][0]
+    assert data["memory_unit"] == "apple_resident_mib"
+    assert data["gpu_in_use_unified_memory_mib"] == 0.5
+    assert data["device_gpu_memory_mib"] is not None
+    assert data["memory_dependencies"]["device_gpu_memory_mib"] == ["device_gpu"]
+    assert data["memory_observations"]["device_gpu"]["source"] == "ioreg_alloc_system_memory"
+
+
+def test_kv_cache_bytes_are_unavailable_without_runtime_reporting():
+    assert apple.LocalAppleUnifiedTelemetryProvider().kv_cache()["status"] == "unavailable"

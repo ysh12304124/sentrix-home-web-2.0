@@ -89,7 +89,13 @@ from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
-from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
+from sentrix.domain.media.models import (
+    Asset,
+    AssetStatus,
+    MediaType,
+    Observation,
+    normalize_captured_datetime,
+)
 from sentrix.domain.media.ports import (
     AssetObserver,
     AssetRepository,
@@ -175,6 +181,7 @@ class ImportResult:
     audio_probed: bool = False
     # 应用层内部的细分耗时；旧响应不读取它，新流水线端点会汇总后显式返回。
     timings: dict[str, float] = field(default_factory=dict)
+    timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +402,9 @@ class ImportAssets:
         )
 
         now = self._clock()
-        captured_at_value = captured_at if captured_at is not None else _local_naive_datetime(now)
+        # ``captured_at`` 始终归一为本地 naive 时间，避免与事件时间比较时
+        # aware/naive datetime 相减失败。
+        captured_at = normalize_captured_datetime(captured_at or now)
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -406,7 +415,7 @@ class ImportAssets:
             size_bytes=len(request.content),
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
-            captured_at=captured_at_value,
+            captured_at=captured_at,
             captured_location=gps,
             created_at=now,
             updated_at=now,
@@ -439,6 +448,7 @@ class ImportAssets:
         commit_started = time.perf_counter()
         processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
+        commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
         video_scenes = self._extract_video_scenes(asset)
@@ -477,6 +487,10 @@ class ImportAssets:
                 "source_memory_commit": round(memory_commit_seconds, 3),
                 **{f"video_{key}": value for key, value in video_scenes.timings.items()},
                 "total": round(time.perf_counter() - total_started, 3),
+            },
+            timing_spans={
+                "source_memory_commit": (commit_started, commit_finished),
+                **{f"video_{key}": value for key, value in video_scenes.timing_spans.items()},
             },
         )
 

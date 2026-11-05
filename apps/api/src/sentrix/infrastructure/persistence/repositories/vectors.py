@@ -1,4 +1,8 @@
-"""memory_vectors 的 SQLite 仓储。SQL 只出现在这一层。
+"""向量权威存储的 SQLite 仓储。SQL 只出现在这一层。
+
+``memory_vectors`` 与 ``text_vectors`` 的列结构完全一致，只有表名不同，所以实现由
+``VectorTableRepository`` 提供、两个子类各钉一张表：视觉/人脸写 ``memory_vectors``，
+文本写 ``text_vectors``。端口 ``VectorRepository`` 不变——分表是存储细节。
 
 精确回退（``search_exact``）是**功能**不是兜底：Qdrant 目录被别的进程锁住、
 collection 还没建、或者维度对不上时，检索必须还能给出正确答案，只是慢。
@@ -47,7 +51,15 @@ def _decode_map(raw: str | None) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-class SqliteVectorRepository:
+class VectorTableRepository:
+    """一张与 ``VectorRecord`` 同构的表的实现；子类只需钉 ``_TABLE``。
+
+    表名是类常量而不是构造参数：两张表的选择在装配点就定了，运行期换表只会制造
+    「同一份数据两个写入目标」的隐患。
+    """
+
+    _TABLE = ""
+
     def __init__(self, database: Database) -> None:
         self._database = database
 
@@ -57,7 +69,7 @@ class SqliteVectorRepository:
         timestamp = _now()
         with self._database.connect() as connection, connection:
             connection.execute(
-                "INSERT INTO memory_vectors ("
+                f"INSERT INTO {self._TABLE} ("
                 f" {_COLUMNS}"
                 ") VALUES (?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(space, source_type, source_id, model_name) DO UPDATE SET"
@@ -91,7 +103,7 @@ class SqliteVectorRepository:
         """
         with self._database.connect() as connection, connection:
             cursor = connection.execute(
-                "UPDATE memory_vectors SET metadata_json = ?, updated_at = ?"
+                f"UPDATE {self._TABLE} SET metadata_json = ?, updated_at = ?"
                 " WHERE space = ? AND source_type = ? AND source_id = ?",
                 (
                     json.dumps(dict(metadata), ensure_ascii=False, sort_keys=True),
@@ -106,7 +118,7 @@ class SqliteVectorRepository:
     def has_vector(self, *, space: str, source_type: str, source_id: str, model_name: str) -> bool:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM memory_vectors WHERE space = ? AND source_type = ?"
+                f"SELECT 1 FROM {self._TABLE} WHERE space = ? AND source_type = ?"
                 " AND source_id = ? AND model_name = ? LIMIT 1",
                 (space, source_type, source_id, model_name),
             ).fetchone()
@@ -120,7 +132,7 @@ class SqliteVectorRepository:
         source_id: str,
         model_name: str | None = None,
     ) -> VectorRecord | None:
-        sql = f"SELECT {_COLUMNS} FROM memory_vectors WHERE space = ? AND source_type = ? AND source_id = ?"
+        sql = f"SELECT {_COLUMNS} FROM {self._TABLE} WHERE space = ? AND source_type = ? AND source_id = ?"
         params: list[Any] = [space, source_type, source_id]
         if model_name:
             sql += " AND model_name = ?"
@@ -148,7 +160,7 @@ class SqliteVectorRepository:
         模型维度必须可选且**默认不过滤**：应用层要用同一个口径去和 Qdrant 的
         collection 计数比对，两边只要有一边多带了过滤条件，比对就恒不成立。
         """
-        sql = "SELECT COUNT(*) FROM memory_vectors WHERE space = ?"
+        sql = f"SELECT COUNT(*) FROM {self._TABLE} WHERE space = ?"
         params: list[Any] = [space]
         if model_name:
             sql += " AND model_name = ?"
@@ -191,7 +203,7 @@ class SqliteVectorRepository:
         return scored[:limit]
 
     def _fetch(self, *, space: str, scope_id: str | None, model_name: str | None) -> list[sqlite3.Row]:
-        sql = f"SELECT {_COLUMNS} FROM memory_vectors WHERE space = ?"
+        sql = f"SELECT {_COLUMNS} FROM {self._TABLE} WHERE space = ?"
         params: list[Any] = [space]
         if scope_id:
             sql += " AND scope_id = ?"
@@ -201,3 +213,9 @@ class SqliteVectorRepository:
             params.append(model_name)
         with self._database.connect() as connection:
             return list(connection.execute(sql, tuple(params)).fetchall())
+
+
+class SqliteVectorRepository(VectorTableRepository):
+    """视觉/人脸向量的权威存储（``memory_vectors``）。"""
+
+    _TABLE = "memory_vectors"

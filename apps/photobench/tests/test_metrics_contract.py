@@ -12,11 +12,7 @@ from photobench.infrastructure.runtime import jetson_telemetry as jetson
 
 def test_unknown_nvmap_does_not_become_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: None)
-    result = jetson.unified_model_memory({12}, rss_mib=100, host_rss_mib=100)
-    assert result["model_process_host_memory_mib"] == 100
-    assert result["model_process_gpu_memory_mib"] is None
-    assert result["model_process_system_memory_used_mib"] is None
-    assert result["memory_complete"] is False
+    assert jetson._process_gpu_memory_mib({12}) == (None, "unavailable")
 
 
 def _component_sample():
@@ -83,13 +79,13 @@ def test_new_version_cannot_claim_a_total_without_dependencies_and_legacy_is_pre
     assert result["product_stack_memory_mib"] is None
 
 
-def test_nx_power_is_board_power_and_keeps_rails() -> None:
+def test_nx_power_is_module_input_and_keeps_rails() -> None:
     sample = jetson._parse_tegrastats_line(
         "RAM 4000/16000MB GR3D_FREQ 75% gpu@55C "
         "VDD_IN 12000mW/11000mW VDD_CPU_GPU_CV 8000mW/7000mW VDD_SOC 2000mW/1900mW"
     )
     assert sample["power_draw_w"] == 12
-    assert sample["power_scope"] == "board"
+    assert sample["power_scope"] == "module_input"
     assert sample["power_rail"] == "VDD_IN"
     assert sample["power_rails_w"]["VDD_CPU_GPU_CV"] == 8
 
@@ -209,7 +205,10 @@ def test_native_completion_does_not_require_legacy_turn_outcome() -> None:
     ("second_reason", "second_answer", "second_status", "second_steps", "expected"),
     [
         ("answered", "answer", "completed", 4, True),
+        ("policy_refusal", "refusal", "complete", 0, True),
         ("answered_with_gap", "answer", "completed", 4, True),
+        ("answered_with_gap", "answer", "partial", 4, True),
+        ("answered_with_gap", "answer", "partial", 5, False),
         ("step_budget_exhausted", "answer", "completed", 4, False),
         ("answered", "", "completed", 4, False),
         ("answered", "answer", "failed", 4, False),
@@ -303,14 +302,9 @@ def test_nvidia_ram_never_uses_nvmap_or_other_instances(monkeypatch: pytest.Monk
     assert aggregate["source"] == "host_nvidia_smi"
 
 
-@pytest.mark.parametrize("residual,expected", [(0, None), (20, 20)])
-def test_nvmap_residual_is_only_a_positive_estimate(
-    monkeypatch: pytest.MonkeyPatch, residual, expected
-) -> None:
+def test_gpu_ledger_unavailable_is_not_derived_from_host_memory(monkeypatch) -> None:
     monkeypatch.setattr(jetson, "_nvmap_clients_mib", lambda: None)
-    result = jetson.unified_model_memory({12}, rss_mib=100 + residual, host_rss_mib=100)
-    assert result["model_process_gpu_memory_mib"] == expected
-    assert result["model_process_gpu_memory_source"] == ("vmrss_residual" if residual else "unavailable")
+    assert jetson._process_gpu_memory_mib({12}) == (None, "unavailable")
 
 
 def test_running_execution_freezes_real_http_and_telemetry(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -515,12 +509,13 @@ def test_apple_scoped_model_workers_deduplicate_shared_roles(monkeypatch):
     monkeypatch.setattr(provider, "_device", lambda: {})
     monkeypatch.setattr(provider, "_ports", lambda: {1: {"8100"}, 2: {"8101"}, 3: {"8106"}})
     monkeypatch.setattr(apple, "_process_rows", lambda: [dict(r) for r in rows])
-    monkeypatch.setattr(apple, "_phys_footprint_bytes", lambda pid: 100 * 1048576)
-    monkeypatch.setattr(apple, "_weight_map_bytes", lambda pid: 10 * 1048576)
+    from test_apple_telemetry import resident_observation
+
+    monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
+    monkeypatch.setattr(apple, "_resident_group", lambda group: resident_observation(group, 200))
     data = provider._augment()
-    assert data["model_process_footprint_mib"] == 200
-    assert data["product_stack_memory_mib"] == 220
-    assert data["sentrix_auxiliary_model_pss_mib"] == 0
+    assert data["product_stack_memory_mib"] == 200
+    assert data["memory_observations"]["model"]["pids"] == [1, 2]
     assert data["memory_complete"] is True
     provider.telemetry_services["embedding"]["profiles"]["split"]["ports"] = [8103]
     assert provider._augment()["memory_complete"] is False
@@ -566,8 +561,9 @@ def test_jetson_no_auxiliary_is_zero_and_disappeared_model_cannot_reuse_total(mo
     good = jetson._augment_local_process_memory(
         {}, model_pid=None, endpoint_port="8100", telemetry_services=scope
     )
-    assert good["product_stack_memory_mib"] == 28
-    assert good["model_process_system_memory_used_mib"] == 30
+    assert good["product_stack_memory_mib"] == 8
+    assert good["product_stack_gpu_memory_mib"] == 20
+    assert good["model_process_system_memory_used_mib"] == 8
     assert good["sentrix_auxiliary_model_uma_mib"] == 0
     rows.clear()
     lost = jetson._augment_local_process_memory(
@@ -612,7 +608,37 @@ def test_linux_memory_never_substitutes_memfree_for_memavailable(monkeypatch):
     assert system_used(100, None) is None
     assert system_used(100, 200) is None
     monkeypatch.setattr(jetson.Path, "read_text", lambda *a, **k: "MemTotal: 102400 kB\nMemFree: 1024 kB\n")
-    assert jetson._meminfo_mib() == {}
+    assert jetson._meminfo_mib()["system_memory_used_mib"] == 99.0
+
+
+def test_jetson_physical_formula_includes_cache_and_does_not_add_swap(monkeypatch):
+    monkeypatch.setattr(
+        jetson.Path,
+        "read_text",
+        lambda *a, **k: (
+            "MemTotal: 102400 kB\nMemFree: 10240 kB\nMemAvailable: 40960 kB\nSwapTotal: 999999 kB\n"
+        ),
+    )
+    value = jetson._meminfo_mib()
+    assert value["system_memory_used_mib"] == 90
+    assert value["system_memory_available_mib"] == 40
+    assert value["system_memory_scope"] == "linux_physical_nonfree_including_cache_v2"
+
+
+def test_apple_resident_aggregate_keeps_formula_and_raw_group_observations():
+    from photobench.domain.runs.analysis import aggregate_gpu_samples
+
+    sample = {
+        "source": "apple_unified",
+        "memory_accounting": "apple_footprint_resident_v2",
+        "memory_unit": "apple_resident_mib",
+        "model_process_system_memory_used_mib": 50,
+        "system_memory_scope": "apple_physical_nonfree_including_cache_v2",
+    }
+    result = aggregate_gpu_samples([sample])
+    assert result["memory_profile"]["method"] == "apple_footprint_resident_v2"
+    assert result["model_process_system_memory_used_mib"]["peak"] == 50
+    assert result["system_memory_scope"] == sample["system_memory_scope"]
 
 
 def test_jetson_pss_and_rss_share_one_kernel_observation(monkeypatch):
@@ -744,3 +770,73 @@ def test_qa_progress_projection_preserves_nested_and_legacy_counters_and_null():
             }
         }
         assert RunMetricsResponse.model_validate(payload).model_dump(exclude_unset=True) == payload
+
+
+def test_structured_json_records_failures_retries_and_deduplicates_calls() -> None:
+    def fact(valid):
+        return {"required": True, "attempted": valid is not None, "json_object_valid": valid}
+
+    planner = {"call_id": "planner", "json_output": fact(False)}
+    item = {
+        "metrics_contract_version": 2,
+        "model_call_metrics": [
+            planner,
+            {"call_id": "retry", "json_output": fact(True)},
+            {"call_type": "agent"},
+        ],
+        "execution_trace": [dict(planner)],
+        "tool_trace": [
+            {"result": {"model_call_observations": [{"call_id": "vision", "json_output": fact(True)}]}}
+        ],
+        "judge": {"call_observations": [{"call_id": "judge", "json_output": fact(None)}]},
+        "task_judge": {"call_observations": [{"call_id": "behavior", "json_output": fact(True)}]},
+        "task_judges": [{"call_observations": [{"call_id": "behavior", "json_output": fact(True)}]}],
+    }
+    metrics = analysis.structured_json_metrics(item)
+    assert metrics == {
+        "structured_json_requested": 5,
+        "structured_json_total": 4,
+        "structured_json_success": 3,
+        "structured_json_rate": 0.75,
+    }
+    summary = analysis.capability_summary([item])
+    for key, value in metrics.items():
+        assert summary[key] == value
+    assert (
+        analysis.structured_json_metrics({"model_call_metrics": [{"status": "complete"}]})[
+            "structured_json_rate"
+        ]
+        is None
+    )
+
+
+def test_null_summary_does_not_hide_recorded_call_metrics():
+    summary = analysis.effective_summary(
+        {
+            "summary": {
+                "llm_tokens_per_second_mean": None,
+                "llm_ttft_ms_mean": None,
+                "llm_prompt_tokens_max": None,
+                "llm_context_tokens_p95": None,
+                "llm_context_samples_count": 0,
+            },
+            "items": [
+                {
+                    "model_call_metrics": [
+                        {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5,
+                            "tokens_per_second": 2.5,
+                            "streamed": False,
+                        }
+                    ]
+                }
+            ],
+        }
+    )
+    assert summary["llm_tokens_per_second_mean"] == 2.5
+    assert summary["llm_ttft_ms_mean"] is None
+    assert summary["llm_prompt_tokens_max"] == 10
+    assert summary["llm_context_tokens_p95"] == 15
+    assert summary["llm_context_samples_count"] == 1
+    assert summary["llm_nonstreamed_count"] == 1

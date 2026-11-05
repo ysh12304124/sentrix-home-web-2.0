@@ -7,26 +7,26 @@
  * `data-testid="runs-view"` 是 2.0 视图外壳的测试锚点（`App.test.tsx`）。挂在
  * `#runs-region` 上而不是另造一层包装节点——1.0 没有那层节点，多一个会偏离 DOM。
  *
- * 一处 1.0 私有函数 2.0 的 lib 尚未收：`runProgressLabel`（1.0 `:2253`）照搬在本文件
- * （同形的 `phasePercent` 放在 `PhaseList.tsx`）。等 lib 收拢后换 import。
  */
 import type { RefObject } from "react";
 
 import type { Run } from "../../api/types.ts";
 import type { RunPageState } from "../../hooks/useRuns.ts";
 import { albumName, duration, fmtDate, fmtPct, modelName, statusLabel } from "../../lib/format.ts";
-import { judgeProgressLabel } from "../../lib/details.ts";
 import { modeBadgeClass, modeLabel } from "../../lib/qaBrowser.ts";
 
-/** 1.0 `App.vue:2253-2262`。 */
-function runProgressLabel(run: Run): string {
-  if (run.mode === "build") return "—";
+/** A sample completes after a valid Judge score; Agent and Judge attempt counts are not substitutes. */
+function RunProgress({ run }: { run: Run }) {
   const phase = run.phases?.qa_eval;
-  if (run.qa_count === null) return "题目数未记录";
-  if (phase?.progress || phase?.judge_total != null) {
-    return judgeProgressLabel(phase);
-  }
-  return `${run.summary?.completed || 0}/${run.summary?.total || run.qa_count || 0}`;
+  const progress = phase?.progress;
+  if (run.mode === "build" || progress?.judge_concurrency === 0) return <span className="muted">—</span>;
+  const count = (value: unknown): number | null =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const completed = count(run.summary?.judge_valid_count);
+  const total = run.qa_count === null ? null :
+    count(run.qa_count) ?? count(run.summary?.total) ?? count(progress?.total) ?? count(progress?.judge_total) ?? count(phase?.judge_total);
+  const label = completed === null && total === null ? "—" : `${completed ?? "—"}/${total ?? "—"}`;
+  return <span className="run-progress-count" aria-label={`评分完成 ${label}`}>{label}</span>;
 }
 
 export interface RunsTableProps {
@@ -112,7 +112,7 @@ export function RunsTable({
                 <td>
                   <span className={"phase-status " + (run.status || "")}>{statusLabel(run.status)}</span>
                 </td>
-                <td>{runProgressLabel(run)}</td>
+                <td><RunProgress run={run} /></td>
                 <td>
                   {fmtPct(
                     run.summary?.media_retrieval_recall_macro ??

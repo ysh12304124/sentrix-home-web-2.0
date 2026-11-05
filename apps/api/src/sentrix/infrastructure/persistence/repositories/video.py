@@ -316,14 +316,18 @@ class SqliteVideoRepository:
                         "DELETE FROM facts WHERE evidence_ids_json LIKE ?",
                         (f"%{observation_id}%",),
                     )
-                # 向量：资产级一行（visual/asset）+ 观察级两行（episodic 与 semantic
-                # 都写 source_type='observation'）。1.0 那一下 ``metadata_json LIKE``
-                # 不搬：2.0 的 source_id 就是权威键，LIKE 会误伤同名后缀的 id。
+                # 向量分两处：资产级一行在 memory_vectors（visual/asset）；观察级两行
+                # （episodic 与 semantic，source_type='observation'）在 text_vectors。
+                # 1.0 那一下 ``metadata_json LIKE`` 不搬：2.0 的 source_id 就是权威键，
+                # LIKE 会误伤同名后缀的 id。
                 connection.execute(
-                    "DELETE FROM memory_vectors WHERE"
-                    " (source_type = 'asset' AND source_id = ?)"
-                    f" OR (source_type = 'observation' AND source_id IN ({obs_slots}))",
-                    (asset_id, *observations),
+                    "DELETE FROM memory_vectors WHERE source_type = 'asset' AND source_id = ?",
+                    (asset_id,),
+                )
+                connection.execute(
+                    "DELETE FROM text_vectors WHERE source_type = 'observation'"
+                    f" AND source_id IN ({obs_slots})",
+                    observations,
                 )
                 connection.execute("DELETE FROM asset_places WHERE asset_id = ?", (asset_id,))
                 connection.execute("DELETE FROM observations WHERE asset_id = ?", (asset_id,))
@@ -338,8 +342,7 @@ class SqliteVideoRepository:
                 ):
                     connection.execute(f"DELETE FROM {table} WHERE event_id IN ({event_slots})", events)
                 connection.execute(
-                    "DELETE FROM memory_vectors WHERE source_type = 'event'"
-                    f" AND source_id IN ({event_slots})",
+                    f"DELETE FROM text_vectors WHERE source_type = 'event' AND source_id IN ({event_slots})",
                     events,
                 )
                 connection.execute(f"DELETE FROM events WHERE id IN ({event_slots})", events)

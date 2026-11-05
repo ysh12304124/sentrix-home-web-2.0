@@ -50,6 +50,7 @@ from sentrix.api.schemas.assistant import (
     TurnPollResponse,
     TurnSummary,
 )
+from sentrix.api.schemas.operations import OperationCancellationResponse
 from sentrix.application.assistant.manage_conversations import ManageConversations
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.run_turn import (
@@ -101,6 +102,7 @@ def _turn_summary(record: TurnRecord) -> TurnSummary:
 def _run_turn(container: Container, *, graph_enabled: bool = True) -> RunTurn:
     return RunTurn(
         model=container.chat_model,
+        operation_control=container.operation_control,
         conversations=container.conversation_repository,
         turns=container.turn_repository,
         # ``search_memories`` 走的是与 ``GET /api/v1/search`` 同一套多路召回：
@@ -131,6 +133,9 @@ def _run_turn(container: Container, *, graph_enabled: bool = True) -> RunTurn:
         profile=replace(
             DEFAULT_PROFILE,
             wall_time_s=container.settings.agent_wall_time_s,
+            max_steps=container.settings.agent_max_steps,
+            max_tool_calls=container.settings.agent_max_tool_calls,
+            strict_model_step_budget=container.settings.vlm_exact_output_budget,
         ),
     )
 
@@ -230,19 +235,21 @@ def start_turn(
     run_turn = _run_turn(container, graph_enabled=payload.graph_enabled)
     # 回合的 scope 由会话决定，请求里没有这个字段可传。会话不存在时 ``start`` 抛
     # ``TurnNotFoundError``（带 404 的码），路由**只放行**——映射在 ``api/errors.py``。
-    record = run_turn.start(
-        TurnRequest(
-            conversation_id=conversation_id,
-            question=payload.message,
-            include_debug=payload.include_debug,
-            graph_enabled=payload.graph_enabled,
+    try:
+        record = run_turn.start(
+            TurnRequest(
+                conversation_id=conversation_id,
+                question=payload.message,
+                include_debug=payload.include_debug,
+                graph_enabled=payload.graph_enabled,
+            )
         )
-    )
-    manage.ensure_title(conversation_id, payload.message)
-
+    except (ValueError, OverflowError) as error:
+        raise HTTPException(
+            status_code=409 if isinstance(error, ValueError) else 429, detail=str(error)
+        ) from error
     broker = container.turn_event_broker
     # 先登记再起飞：SSE 可能比工作线程的第一条事件更早连上来。
-    broker.open(record.id)
 
     def worker() -> None:
         try:
@@ -250,9 +257,21 @@ def start_turn(
         except Exception:
             log.exception("回合执行失败: %s", record.id)
         finally:
-            broker.finish(record.id)
+            try:
+                broker.finish(record.id)
+            finally:
+                container.operation_control.finish("turn:" + record.id)
 
-    threading.Thread(target=worker, name=f"turn-{record.id}", daemon=True).start()
+    try:
+        manage.ensure_title(conversation_id, payload.message)
+        broker.open(record.id)
+        threading.Thread(target=worker, name=f"turn-{record.id}", daemon=True).start()
+    except Exception:
+        try:
+            run_turn.fail_start(record.id)
+        finally:
+            broker.finish(record.id)
+        raise
     return StartTurnResponse(turn_id=record.id, conversation_id=conversation_id, status=record.status.value)
 
 
@@ -439,3 +458,12 @@ def result_set_photo(
             raise HTTPException(status_code=404, detail="empty result set")
 
     return deliver_asset(asset_id, original=original, container=container)
+
+
+@router.post("/assistant/turns/{turn_id}/cancel", status_code=202)
+async def cancel_turn(turn_id: str, request: Request) -> OperationCancellationResponse:
+    try:
+        result = get_container(request).operation_control.request_cancel("turn:" + turn_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="turn not owned by this process") from None
+    return OperationCancellationResponse.model_validate({**result, "operation_id": turn_id})

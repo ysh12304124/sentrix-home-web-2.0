@@ -620,6 +620,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assistant/turns/{turn_id}/cancel:
+    post:
+      tags:
+      - assistant
+      summary: Cancel Turn
+      operationId: cancel_turn_api_v1_assistant_turns__turn_id__cancel_post
+      parameters:
+      - name: turn_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Turn Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationCancellationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/memory-graph/quality:
     get:
       tags:
@@ -851,6 +877,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PipelineProcessResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/imports/{operation_id}/cancel:
+    post:
+      tags:
+      - timeline
+      summary: Cancel Import
+      operationId: cancel_import_api_v1_imports__operation_id__cancel_post
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Operation Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationCancellationResponse'
         '422':
           description: Validation Error
           content:
@@ -2624,8 +2676,10 @@ components:
           type: object
           title: Trace
           description: Execution facts. model_calls optionally includes status, attempt,
-            duration_ms and tool_argument_parse_facts (json_object_valid per native
-            tool envelope); plain-text completion is not a JSON parse attempt.
+            duration_ms and call_observation (kind/purpose/trigger/outcome/source/observation_version),
+            tool_argument_parse_facts (json_object_valid per native tool envelope),
+            json_output (required/attempted/json_object_valid for explicit JSON-object
+            output); plain-text completion is not a JSON parse attempt.
         error:
           type: string
           title: Error
@@ -4985,6 +5039,26 @@ components:
       - turn_id
       - created_at
       title: MessageSummary
+    OperationCancellationResponse:
+      properties:
+        operation_id:
+          type: string
+          title: Operation Id
+        cancel_requested:
+          type: boolean
+          title: Cancel Requested
+        cleanup_status:
+          type: string
+          enum:
+          - pending
+          - stopped
+          title: Cleanup Status
+      type: object
+      required:
+      - operation_id
+      - cancel_requested
+      - cleanup_status
+      title: OperationCancellationResponse
     PersonDetailResponse:
       properties:
         entity:
@@ -5108,7 +5182,10 @@ components:
             type: number
           type: object
           title: Timings
-          default: {}
+          description: 'Stage seconds: *_wall is earliest start to latest end; *_start_seconds
+            and *_end_seconds are relative to pipeline start. Unsuffixed legacy task
+            totals remain cumulative; overlapping spans and their shares must not
+            be added.'
         failures:
           items:
             $ref: '#/components/schemas/ImportFailure'

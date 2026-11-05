@@ -33,8 +33,8 @@ import json
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, cast
+from collections.abc import Callable, Sequence
+from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
@@ -70,56 +70,6 @@ def _quote(value: str) -> str:
     return quote(value, safe="")
 
 
-def _run_is_complete_and_valid(state: dict[str, Any]) -> bool:
-    """Whether a run is safe to use as a final-media comparison baseline.
-
-    ``run_valid`` was historically exposed inside ``summary`` and newer states may also
-    carry it at the top level.  A missing value is tolerated for old completed runs, but an
-    explicit ``False`` or any non-completed status is never allowed into a paired comparison.
-    """
-
-    if str(state.get("status") or "").lower() != "completed":
-        return False
-    summary = state.get("summary")
-    for value in (state.get("run_valid"), summary.get("run_valid") if isinstance(summary, dict) else None):
-        if value is False:
-            return False
-    return True
-
-
-def _paired_run_error(current: dict[str, Any], baseline: dict[str, Any]) -> str | None:
-    """Validate that an explicitly selected no-graph run is a fair paired baseline."""
-
-    if not _run_is_complete_and_valid(current):
-        return "当前有图 run 尚未完整结束，暂不计算最终媒体的无图→有图变化"
-    if not _run_is_complete_and_valid(baseline):
-        return "指定的无图 baseline run 尚未完整结束或 run_valid=false"
-    if baseline.get("graph_enabled") is True:
-        return "指定的 baseline run 不是 graph_enabled=false，不能作为无图对照"
-    for key, label in (("album_id", "相册"), ("qa_set", "QA 题集")):
-        current_value = str(current.get(key) or "").strip()
-        baseline_value = str(baseline.get(key) or "").strip()
-        if current_value and baseline_value and current_value != baseline_value:
-            return f"有图与无图 run 的{label}不一致，不能配对比较"
-    def model_id(state: dict[str, Any]) -> str:
-        identity = state.get("model_identity")
-        if isinstance(identity, Mapping):
-            identity_value = identity.get("raw_id") or identity.get("display_name")
-            if identity_value:
-                return str(identity_value).strip()
-        for key in ("model_name", "endpoint_model"):
-            value = str(state.get(key) or "").strip()
-            if value:
-                return value
-        return ""
-
-    current_model = model_id(current)
-    baseline_model = model_id(baseline)
-    if current_model and baseline_model and current_model != baseline_model:
-        return "有图与无图 run 的模型不一致，不能配对比较"
-    return None
-
-
 class RunReports:
     """三个报告读侧用例。依赖与 ``ReadRuns`` 同一组（装配点注入）。"""
 
@@ -131,7 +81,6 @@ class RunReports:
         albums: AlbumSource | None = None,
     ) -> None:
         self._store = store
-        self._revisions = cast(RunRevisions, store)
         self._http = http
         self._sentrix_url = sentrix_url
         self._albums = albums
@@ -217,8 +166,12 @@ class RunReports:
 
     def keyframe_analysis(self, run_id: str) -> dict[str, Any]:
         # 先取 revision：不存在时与 ``_state`` 同一个出口抛 ``KeyError``（HTTP 404）。
-        cache_key = ("keyframe", run_id, self._revisions.revision(run_id))
-        cached = self._memo_get(cache_key)
+        cache_key = (
+            ("keyframe", run_id, self._store.revision(run_id))
+            if isinstance(self._store, RunRevisions)
+            else None
+        )
+        cached = self._memo_get(cache_key) if cache_key is not None else None
         if cached is not None:
             return cached
 
@@ -231,12 +184,17 @@ class RunReports:
             assets, error = self._assets(scope_id)
             facts = self._video_facts(assets) if assets else {}
             result = keyframe_analysis.keyframe_analysis(state, assets, error=error, video_facts=facts)
-        self._memo_put(cache_key, result)
+        if cache_key is not None:
+            self._memo_put(cache_key, result)
         return result
 
     def memory_effectiveness(self, run_id: str) -> dict[str, Any]:
-        cache_key = ("memory", run_id, self._revisions.revision(run_id))
-        cached = self._memo_get(cache_key)
+        cache_key = (
+            ("memory", run_id, self._store.revision(run_id))
+            if isinstance(self._store, RunRevisions)
+            else None
+        )
+        cached = self._memo_get(cache_key) if cache_key is not None else None
         if cached is not None:
             return cached
 
@@ -249,7 +207,8 @@ class RunReports:
             fetched, _ = self._assets(scope_id)
             assets = fetched or []
         result = memory_effectiveness.memory_effectiveness(state, assets)
-        self._memo_put(cache_key, result)
+        if cache_key is not None:
+            self._memo_put(cache_key, result)
         return result
 
     def _graph_snapshot(self, scope_id: str) -> dict[str, Any]:
@@ -303,25 +262,6 @@ class RunReports:
         state = self._state(run_id)
         scope_id = str(state.get("scope_id") or "").strip()
         items = [item for item in (state.get("items") or []) if isinstance(item, dict)]
-        baseline_run_id = str(state.get("graph_baseline_run_id") or "").strip() or None
-        baseline_items: list[dict[str, Any]] | None = None
-        baseline_state: dict[str, Any] | None = None
-        pairing_error: str | None = None
-        if baseline_run_id:
-            try:
-                baseline_state = self._state(baseline_run_id)
-                baseline_items = [
-                    item for item in (baseline_state.get("items") or []) if isinstance(item, dict)
-                ]
-            except KeyError:
-                baseline_items = None
-                pairing_error = "指定的无图 baseline run 不存在或已被删除"
-            else:
-                pairing_error = _paired_run_error(state, baseline_state)
-        graph_run_valid = _run_is_complete_and_valid(state)
-        baseline_run_valid = (
-            _run_is_complete_and_valid(baseline_state) if baseline_state is not None else False
-        )
         report: dict[str, Any] = {
             "status": "available" if scope_id else "unavailable",
             "run_id": run_id,
@@ -330,54 +270,8 @@ class RunReports:
             if scope_id
             else {"available": False, "reason": "scope_missing"},
             "face_clustering": {"available": False, "reason": "scope_missing"},
-            "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(
-                items,
-                baseline_items,
-                graph_run_valid=graph_run_valid,
-                baseline_run_valid=baseline_run_valid,
-                pairing_error=pairing_error,
-            ),
-            "graph_qa_overall": graph_quality.aggregate_graph_qa_overall(
-                items,
-                baseline_items,
-                baseline_run_id=baseline_run_id,
-                graph_run_id=run_id,
-                graph_run_valid=graph_run_valid,
-                baseline_run_valid=baseline_run_valid,
-                pairing_error=pairing_error,
-            ),
+            "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(items),
         }
-        overall = report["graph_qa_overall"]
-        if baseline_run_id:
-            summary_effect = graph_quality.final_media_effect_from_run_summaries(
-                state.get("summary") if isinstance(state.get("summary"), dict) else None,
-                baseline_state.get("summary")
-                if isinstance(baseline_state, dict) and isinstance(baseline_state.get("summary"), dict)
-                else None,
-                baseline_run_id=baseline_run_id,
-                graph_run_id=run_id,
-                graph_run_valid=graph_run_valid,
-                baseline_run_valid=baseline_run_valid,
-                pairing_error=pairing_error,
-            )
-            overall["final_media_effect"] = summary_effect
-            if summary_effect.get("available"):
-                overall["comparison_basis"] = "final_media_delivery"
-                overall["without_graph"] = {
-                    "retrieval_recall": summary_effect["without_graph"]["media_retrieval_recall"],
-                    "retrieval_precision": summary_effect["without_graph"]["media_retrieval_precision"],
-                    "answer_quality_mean": summary_effect["without_graph"]["answer_quality_mean"],
-                }
-                overall["with_graph"] = {
-                    "retrieval_recall": summary_effect["with_graph"]["media_retrieval_recall"],
-                    "retrieval_precision": summary_effect["with_graph"]["media_retrieval_precision"],
-                    "answer_quality_mean": summary_effect["with_graph"]["answer_quality_mean"],
-                }
-                overall["delta"] = {
-                    "retrieval_recall": summary_effect["delta"]["media_retrieval_recall"],
-                    "retrieval_precision": summary_effect["delta"]["media_retrieval_precision"],
-                    "answer_quality_mean": summary_effect["delta"]["answer_quality_mean"],
-                }
         if scope_id:
             truth = self._identity_truth(str(state.get("album_id") or ""))
             assets, _ = self._assets(scope_id)

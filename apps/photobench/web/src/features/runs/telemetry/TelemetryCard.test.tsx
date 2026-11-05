@@ -53,10 +53,58 @@ function emptyRun(): Run {
 }
 
 describe("TelemetryCard · echarts 生命周期（1.0 :1027-1125 / :2824-2837）", () => {
+  it("检查点窗口不能标成完整测评过程，明确曲线点数和时间起点", () => {
+    const initial = run();
+    const { container } = render(<TelemetryCard run={run({
+      history_mode: "checkpoint",
+      telemetry_live: { ...initial.telemetry_live, samples_count: 1011 },
+    })} />);
+    const caption = container.querySelector(".telemetry-chart small")?.textContent;
+    expect(caption).toContain("最近保存的遥测窗口");
+    expect(caption).toContain("当前绘制 3 个点");
+    expect(caption).toContain("整轮已采集 1011 个采样点");
+    expect(caption).toContain("横轴从该窗口首点开始计时");
+    expect(caption).not.toMatch(/完整测评过程|全时段抽稀/);
+  });
+
+  it("显式加载整轮后才标全时段，分开总采样数与绘图点数", () => {
+    const initial = run();
+    const { container } = render(<TelemetryCard run={run({
+      history_mode: "full",
+      telemetry_live: { ...initial.telemetry_live, samples_count: 1011 },
+    })} />);
+    const caption = container.querySelector(".telemetry-chart small")?.textContent;
+    expect(caption).toContain("完整测评过程，共 1011 个采样点");
+    expect(caption).toContain("曲线按全时段抽稀为 3 个点");
+  });
+
+  it("旧记录未标曲线范围时不推断成全轮", () => {
+    const { container } = render(<TelemetryCard run={run()} />);
+    const caption = container.querySelector(".telemetry-chart small")?.textContent;
+    expect(caption).toContain("曲线范围未记录");
+    expect(caption).not.toMatch(/完整测评过程|全时段抽稀/);
+  });
+
+  it("阶段快照回退不是完整采样曲线，即使读取模式为 full", () => {
+    const { container } = render(<TelemetryCard run={run({
+      history_mode: "full",
+      telemetry_live: { samples_count: 10, history: [], phase_snapshots: {
+        photo_import: { latest: { system_memory_used_mib: 2048 } },
+        qa_eval: { latest: { system_memory_used_mib: 3072 } },
+      } },
+    })} />);
+    const caption = container.querySelector(".telemetry-chart small")?.textContent;
+    expect(caption).toContain("阶段快照示意");
+    expect(caption).not.toMatch(/完整测评过程|全时段抽稀/);
+    expect(echartsMock.instance.setOption.mock.calls[0]?.[0].xAxis.data).toEqual(["#1", "#2"]);
+  });
+
   it("缺失内存保持曲线缺口，不转零或连接缺口", () => {
-    render(<TelemetryCard run={run({ telemetry_live: {
+    const view = render(<TelemetryCard run={run({ telemetry_live: {
       source: "host_nvidia_smi", samples_count: 3,
-      history: [{ t: 0, system_memory_used_mib: 1024 }, { t: 1, system_memory_used_mib: null }, { t: 2, system_memory_used_mib: 2048 }],
+      history: [{ t: 0, system_memory_used_mib: 1024, memory_complete: true },
+        { t: 1, system_memory_used_mib: null, memory_complete: false },
+        { t: 2, system_memory_used_mib: 2048, memory_complete: true }],
     } })} />);
     const option = echartsMock.instance.setOption.mock.calls[0]?.[0] as {
       series: Array<{ name: string; data: Array<number | null>; connectNulls: boolean }>;
@@ -64,6 +112,7 @@ describe("TelemetryCard · echarts 生命周期（1.0 :1027-1125 / :2824-2837）
     const memory = option.series.find((row) => row.name === "整机 RAM");
     expect(memory?.data).toEqual([1, null, 2]);
     expect(memory?.connectNulls).toBe(false);
+    expect(view.container.textContent).toContain("当前绘图点中有 1/3 点核心内存采集不完整");
   });
   it("挂载建一次实例；run 变化只重画，不再 init", () => {
     const view = render(<TelemetryCard run={run()} />);
@@ -194,4 +243,28 @@ describe("TelemetryCard · echarts 生命周期（1.0 :1027-1125 / :2824-2837）
       "主模型进程占用（footprint+权重映射）",
     ]);
   });
+
+  it("Mac resident v2 draws three totals and ignores legacy/diagnostic fields", () => {
+    render(<TelemetryCard run={run({ telemetry_live: {
+      source: "apple_unified", samples_count: 2,
+      latest: { memory_accounting: "apple_footprint_resident_v2" },
+      history: [{ t: 1, system_memory_used_mib: 10000, product_stack_memory_mib: 5000,
+        model_process_system_memory_used_mib: 3000, sentrix_stack_pss_mib: 2000,
+        gpu_in_use_unified_memory_mib: 4000 }, { t: 2, system_memory_used_mib: 10000, product_stack_memory_mib: 5000, model_process_system_memory_used_mib: 3000 }],
+    } })} />);
+    const option = echartsMock.instance.setOption.mock.calls[0]?.[0] as { series: Array<{ name: string }> };
+    expect(option.series.map(series => series.name)).toEqual([
+      "整机已占内存（含缓存）", "整套产品驻留内存（估计）", "主模型驻留内存（估计）",
+    ]);
+  });
+});
+
+it("retains replay-only historical memory values inside the telemetry section", () => {
+  const value = { run_id: "old-replay", status: "completed", memory_profile: {
+    status: "completed", memory_profile: { method: "macos_unified_memory_v1", memory_used_peak_gib: 12.5 },
+  } } as Run;
+  const view = render(<TelemetryCard run={value} />);
+  expect(view.getByText("历史采样汇总")).toBeTruthy();
+  expect(view.getByText("12.50 GiB")).toBeTruthy();
+  expect(echartsMock.init).not.toHaveBeenCalled();
 });

@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from photobench.application.config.service import ConfigService
 from photobench.application.datasets.service import DatasetCatalog
 from photobench.application.deploy.service import SentrixModelSwitch
+from photobench.application.error_analysis.service import ErrorAnalysis
 from photobench.application.model_profiles.service import ModelProfiles
 from photobench.application.run_execution.service import (
     JudgeSettings,
@@ -49,6 +50,7 @@ from photobench.config import Settings
 from photobench.domain.config.ports import ConfigStore, SecretEnvStore
 from photobench.domain.datasets.ports import AlbumSource, QaMetadataSource
 from photobench.domain.deploy.ports import SentrixProcess
+from photobench.domain.error_analysis.ports import AnalysisBackend
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter, RunStartupRecovery, RunStore
 from photobench.domain.runtime.ports import (
@@ -64,6 +66,7 @@ from photobench.infrastructure.datasets.albums import JsonAlbumSource
 from photobench.infrastructure.datasets.qa_metadata import JsonQaMetadataSource
 from photobench.infrastructure.deploy.sentrix_process import ObservedSentrixProcess, SubprocessSentrixProcess
 from photobench.infrastructure.deploy.systemd_process import SystemdSentrixProcess
+from photobench.infrastructure.error_analysis.backend import FileAnalysisBackend
 from photobench.infrastructure.http.client import HttpxJsonClient
 from photobench.infrastructure.http.judge_images import inline_judge_images
 from photobench.infrastructure.results.recovery import FileRunStartupRecovery
@@ -119,6 +122,8 @@ class Container:
     sentrix_process: SentrixProcess
     run_execution: Callable[[RunRequest], RunExecution]
     run_suites: RunSuites
+    error_analysis: ErrorAnalysis
+    analysis_backend: AnalysisBackend
 
     @staticmethod
     def build(settings: Settings) -> Container:
@@ -303,6 +308,8 @@ class Container:
         # **``run_suites`` 先建、``runs`` 后建**：列表页要叠加「还在跑的 run」，
         # 而那些 run 只在 ``RunSuites._active`` 里（索引里没有它们，见
         # ``RunIndex.upsert``）。顺序反过来就拿不到那个回调。
+        analysis_backend: AnalysisBackend = FileAnalysisBackend(settings.results_root)
+        error_analysis = ErrorAnalysis(analysis_backend, config)
         run_suites = RunSuites(
             store=run_store,
             writer=result_writer,
@@ -318,6 +325,7 @@ class Container:
             manager_telemetry_for=manager_telemetry,
             detect_framework=detect_runtime_framework,
             inline_images=judge_images,
+            on_finished=error_analysis.auto,
         )
 
         runs = ReadRuns(
@@ -375,4 +383,6 @@ class Container:
             sentrix_process=sentrix_process,
             run_execution=run_execution,
             run_suites=run_suites,
+            error_analysis=error_analysis,
+            analysis_backend=analysis_backend,
         )

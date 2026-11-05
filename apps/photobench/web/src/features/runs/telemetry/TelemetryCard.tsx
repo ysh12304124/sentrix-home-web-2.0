@@ -15,6 +15,8 @@
  *
  * 数据形状来自 `lib/telemetry.ts:telemetryChart`（只给 `{ history }`），option 由本组件组装。
  */
+import { ResourceTelemetryCard } from "./ResourceTelemetryCard.tsx";
+import { resourceProtocol } from "../../../lib/telemetry.ts";
 import { useEffect, useMemo, useRef } from "react";
 import type { SyntheticEvent } from "react";
 import * as echarts from "echarts";
@@ -25,6 +27,7 @@ import { EXECUTION_PHASES } from "../../../lib/constants.ts";
 import { fmtMemory } from "../../../lib/format.ts";
 import { jetsonUnifiedFromRun, telemetryNumber, telemetryPlatform } from "../../../lib/telemetry.ts";
 import {
+  comparableMemoryProfile, gpuMetricRows, gpuMetricsView, memoryProfileRows,
   liveTelemetryPhaseRows,
   liveTelemetryRows,
   telemetryObservationRows,
@@ -58,9 +61,16 @@ interface TelemetrySeriesDefinition {
 function telemetrySeriesDefinitions(
   source: string,
   unifiedOrin = false,
+  appleResident = false,
+  physicalSystem = false,
 ): TelemetrySeriesDefinition[] {
   const isApple = source === "apple_unified";
   const isOrin = ["orin_ssh_pss", "jetson_local_pss"].includes(source);
+  if (isApple && appleResident) return [
+    { key: "system_memory_used_mib", name: "整机已占内存（含缓存）", color: "#20a36a" },
+    { key: "product_stack_memory_mib", name: "整套产品驻留内存（估计）", color: "#d9488b" },
+    { key: "model_process_system_memory_used_mib", name: "主模型驻留内存（估计）", color: "#f2b84b" },
+  ];
   if (isApple) {
     return [
       { key: "system_memory_used_mib", name: "整机内存（active+wired+compressor，平台特定）", color: "#20a36a" },
@@ -74,7 +84,7 @@ function telemetrySeriesDefinitions(
   }
   if (isOrin) {
     return [
-      { key: "system_memory_used_mib", name: "整机 RAM（Orin UMA）", color: "#20a36a" },
+      { key: "system_memory_used_mib", name: physicalSystem ? "整机已占内存（含缓存）" : "整机 RAM（旧版可用量口径）", color: "#20a36a" },
       { key: "product_stack_memory_mib", name: "整套产品 RAM（相关进程 PSS + GPU/UMA 页）", color: "#d9488b" },
       {
         key: "sentrix_stack_memory_mib",
@@ -121,12 +131,18 @@ function buildTelemetryOption(run: Run | null | undefined, history: Dict[]): ECh
   const r = dict(run);
   const source =
     telemetryPlatform(telemetryLiveState(run)) || r.telemetry_source || telemetryPlatform(dict(dict(r.phases).gpu_metrics));
-  const definitions = telemetrySeriesDefinitions(source, jetsonUnifiedFromRun(run));
+  const latest = dict(telemetryLiveState(run).latest);
+  const phase = dict(dict(r.phases).gpu_metrics);
+  const definitions = telemetrySeriesDefinitions(source, jetsonUnifiedFromRun(run),
+    (latest.memory_accounting || phase.memory_accounting) === "apple_footprint_resident_v2",
+    (latest.system_memory_scope || phase.system_memory_scope) === "linux_physical_nonfree_including_cache_v2");
   const available = definitions.filter((definition) =>
     history.some((item) => seriesValue(item, definition) != null),
   );
   const firstTimestamp = Number(history[0]?.t);
+  const snapshotsOnly = (telemetryLiveState(run).history?.length ?? 0) < 2;
   const labels = history.map((item, index) => {
+    if (snapshotsOnly) return `#${index + 1}`;
     const elapsed = Number(item?.t) - firstTimestamp;
     return Number.isFinite(elapsed) ? `+${(elapsed / 60).toFixed(1)} min` : `#${index + 1}`;
   });
@@ -240,14 +256,25 @@ export interface TelemetryCardProps {
 }
 
 export function TelemetryCard({ run }: TelemetryCardProps) {
+  return resourceProtocol(run) ? <ResourceTelemetryCard run={run} /> : <LegacyTelemetryCard run={run} />;
+}
+
+function LegacyTelemetryCard({ run }: TelemetryCardProps) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<EChartsType | null>(null);
   const sampleCount = telemetrySampleCount(run);
   const live = telemetryLiveState(run);
+  const historicalStats = gpuMetricsView(run);
+  const memory = run?.memory_profile || dict(run?.phases?.gpu_metrics).memory_profile
+    ? comparableMemoryProfile(run) : null;
   const rows = [...liveTelemetryRows(run), ...telemetryObservationRows(run)];
   const phaseRows = liveTelemetryPhaseRows(run);
   const processes = telemetryProcessList(run);
   const chartData = useMemo(() => telemetryChart(run), [run]);
+  // Count only the points actually drawn; a checkpoint or downsampled history
+  // cannot establish whole-run coverage or the longest raw sampling gap.
+  const incompletePoints = chartData?.history.filter((point) => point.memory_complete === false).length ?? 0;
+  const hasSampleHistory = Array.isArray(live.history) && live.history.length >= 2;
   // 轮询会每 2 秒换一个 run 对象，但历史点可能没变。比较实际历史内容，
   // 让相同时间点的null/数值修正同样触发重画。否则 notMerge 会重建图表，鼠标悬浮的 tooltip
   // 会在下一次轮询时被清掉（158 上 active_count 被孤儿 run 占住时尤其明显）。
@@ -301,7 +328,7 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
     chartRef.current?.resize();
   }
 
-  if (!sampleCount && !telemetryObservationRows(run).length) return null;
+  if (!sampleCount && !telemetryObservationRows(run).length && !memory && !Object.keys(dict(run?.phases?.gpu_metrics)).length) return null;
   return (
     <details
       open
@@ -317,10 +344,12 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
       <p className="metric-calc-time">
         测评进行中持续采样；任务失败或取消时保留已采集的最后值与峰值。
         {live.source === "apple_unified"
-          ? " Mac 统一内存。五条曲线是整机内存、整套产品占用（footprint+权重映射）、Sentrix 周边、主模型占用（footprint+权重映射），以及 AGXAccelerator 设备级的 GPU 在用统一内存（含其他进程，不能归因给主模型）。"
+          ? live.latest?.memory_accounting === "apple_footprint_resident_v2"
+            ? " Mac 展示整机、整套产品及主模型三条内存曲线。整机含驻留缓存；产品与模型按整组进程去重估计驻留量，压缩器实际物理页仅在整机统计。"
+            : " Mac 旧版统一内存。五条曲线是整机内存、整套产品占用（footprint+权重映射）、Sentrix 周边、主模型占用（footprint+权重映射），以及 AGXAccelerator 设备级的 GPU 在用统一内存（含其他进程，不能归因给主模型）。"
           : ["jetson_local_pss", "orin_ssh_pss"].includes(String(live.source))
             ? jetsonUnifiedFromRun(run)
-              ? " Orin 无独立显存。主指标看黄线「主模型占用（smaps Rss + GPU/UMA 页）」——主机页与 GPU 页分开算、两半不重叠。"
+              ? " Orin 无独立显存。主指标看黄线「主模型占用（smaps Rss + GPU/UMA 页）」；这是主机驻留与GPU分配的归属估计，共享页及驱动映射的去重仍有边界。"
               : " Orin 无独立显存。主指标看黄线 VmRSS（进程驻留）。"
             : " 153 使用 NVIDIA GPU 显存；整机 RAM 为宿主机全部进程。"}
       </p>
@@ -337,11 +366,36 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
         <div className="telemetry-chart">
           <div ref={canvasRef} className="telemetry-chart-canvas" role="img" aria-label="资源占用趋势"></div>
           <small className="muted">
-            完整测评过程，共 {sampleCount} 个采样点；曲线按全时段抽稀绘制，峰值来自全部采样。悬浮查看时间、阶段和各项
+            {incompletePoints > 0 ? (
+              <>当前绘图点中有 {incompletePoints}/{chartData.history.length} 点核心内存采集不完整，相关曲线会断开。
+                这不表示进程重启；此处计数仅覆盖当前绘图点。</>
+            ) : null}
+            {!hasSampleHistory ? (
+              <>阶段快照示意，共 {chartData.history.length} 个快照；横轴仅为快照序号，不表示真实耗时。</>
+            ) : run?.history_mode === "checkpoint" ? (
+              <>最近保存的遥测窗口，当前绘制 {chartData.history.length} 个点；整轮已采集 {sampleCount} 个采样点。
+                横轴从该窗口首点开始计时；全程曲线将自动加载。</>
+            ) : run?.history_mode === "full" ? (
+              <>完整测评过程，共 {sampleCount} 个采样点；曲线按全时段抽稀为 {chartData.history.length} 个点，峰值来自全部采样。</>
+            ) : (
+              <>当前绘制 {chartData.history.length} 个点，曲线范围未记录；横轴从当前曲线首点开始计时。</>
+            )}
+            悬浮查看时间、阶段和各项
             GiB，图例可隐藏曲线，底部可缩放。曲线只绘制实际采集到的数据，不用 0 填充缺失指标。
           </small>
         </div>
       ) : null}
+      <details className="metric-definition-panel">
+        <summary>历史采样汇总</summary>
+        <p className="muted">历史运行按当时记录的口径展示。</p>
+        <div className="phase-metrics">
+          {[...gpuMetricRows(historicalStats), ...(memory ? memoryProfileRows(memory) : [])].map((row, index) => (
+            <div className="phase-metric" key={`${row[0]}-${index}`}>
+              <span>{row[0]}</span><strong>{row[1]}</strong><small>{row[2]}</small>
+            </div>
+          ))}
+        </div>
+      </details>
       <details className="metric-definition-panel telemetry-definition-panel">
         <summary>资源曲线口径说明</summary>
         <div className="metric-definition-row">
@@ -358,7 +412,7 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
         <div className="metric-definition-row">
           <strong>整机 RAM</strong>
           <span>
-            <b>计算式：</b>主机 MemTotal - MemAvailable，范围是整台运行模型服务主机的全部进程和内核可用内存。
+            <b>计算式：</b>新版 Orin 为 MemTotal − MemFree，含驻留缓存、内核和压缩器物理页；旧版与153保留 MemTotal − MemAvailable（扣除预计可回收量）。Mac新版为总物理内存 − 空闲物理页。
           </span>
           <span>
             <b>判读：</b>它不是主模型或产品栈归因值，不能用来替代主模型 RAM、PSS 或 GPU 显存。
@@ -367,7 +421,7 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
         <div className="metric-definition-row">
           <strong>主模型 RAM</strong>
           <span>
-            <b>计算式：</b>新口径为主机 smaps Rss + GPU/UMA 页（GPU 侧取 max(Σ nvmap 按 PID, VmRSS − smaps Rss)）；旧 Orin run 只有 VmRSS 时按 VmRSS 显示。两部分不重叠，不能把 PSS 当替代值。
+            <b>计算式：</b>Orin 为 smaps RSS + 按 PID 汇总的 nvmap 分配；nvmap不可读时仅正的 VmRSS − smaps RSS 残差作为注明来源的估计。该加法是归属估计，不保证跨驱动及共享缓冲区的物理页去重；旧记录只有 VmRSS 时保留旧口径。
           </span>
           <span>
             <b>含义：</b>包含 Python/vLLM 或 llama.cpp runtime、tokenizer、调度结构、mmap
@@ -378,10 +432,10 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
         <div className="metric-definition-row">
           <strong>整套产品 RAM</strong>
           <span>
-            <b>算法：</b>所有相关进程（周边进程 + 主模型服务）的 PSS 加总，再加主模型 GPU/UMA 页（nvmap 按 PID，账本不可读时才用 VmRSS − smaps Rss 兜底）；任一输入缺失则不记录。
+            <b>算法：</b>所有相关进程（周边进程 + 主模型服务）的 PSS 加总，再加主模型和辅助模型 GPU/UMA 分配（nvmap 按 PID，账本不可读时才用 VmRSS − smaps Rss 兜底）；任一输入缺失则不记录。
           </span>
           <span>
-            <b>判读：</b>PSS 用于避免共享页重复归因；GPU/UMA 页补的是 PSS 看不见的设备侧内存，不是「VmRSS 减 smaps」的记账差额。该值不是整机 RAM，也不能与整卡显存相加。只有记录 scope 为{" "}
+            <b>判读：</b>PSS 用于避免共享页重复归因；nvmap是设备分配账本；与CPU映射的重叠需依驱动核查，不能宣称已精确去重。该值不是整机 RAM，也不能与整卡显存相加。只有记录 scope 为{" "}
             <code>all_related_pss_plus_model_uma_extra</code> 时才按此公式解释；历史 run 缺少该
             scope 时必须重跑。
           </span>
@@ -412,9 +466,8 @@ export function TelemetryCard({ run }: TelemetryCardProps) {
         <div className="metric-definition-row">
           <strong>Mac 统一内存</strong>
           <span>
-            <b>整机：</b>vm_stat 的 active + wired + compressor，不含文件缓存。<b>主模型 / Sentrix 周边 /
-            整套产品：</b>进程占用 = phys_footprint + 已映射的模型权重文件。它是进程提交占用，不是 GPU
-            专属显存；整套产品是周边加主模型，不再加 UMA 补偿。
+            <b>整机：</b>新版为总物理内存减空闲页；压缩器按实际物理大小计入。旧版为 active + wired + compressor。<b>主模型 / Sentrix 周边 /
+            整套产品：</b>新版各自对整组 PID 执行 footprint，取去重汇总的 Dirty − Swapped + Clean + Reclaimable；包含仍驻留且可回收的页，去掉已压缩/换出的逻辑页。整机仍包括压缩器的实际物理存储，该存储不强行分摊给进程。旧版 footprint + 文件映射长度为容量估计，映射不保证驻留。
           </span>
           <span>
             <b>GPU：</b>AGXAccelerator 的在用/已分配统一内存是设备级，不能归因给主模型。温度和功耗来自

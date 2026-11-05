@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,14 @@ from typing import Any
 #: ``_load_qa_metadata`` 只取这些字段——1.0 ``:4886``。多取一个字段就是多一份内存，
 #: 而这张表是「每个 qa_id 一条」的，全库扫描一次。
 _FIELDS = (
+    "ability_taxonomy_version",
+    "ability_family_ids",
+    "ability_primary_ids",
+    "ability_supporting_ids",
+    "benchmark_group",
+    "dialogue_management",
+    "classification_content_sha256",
+    "injection",
     "task_type",
     "question_type",
     "tags",
@@ -86,6 +95,18 @@ class JsonQaMetadataSource:
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 for qa_set, relative in (manifest.get("qa_sets") or {}).items():
+                    qa_path = manifest_path.parent / relative
+                    qa_digest = hashlib.sha256(qa_path.read_bytes()).hexdigest()
+                    namespace = (
+                        "\0".join(
+                            (
+                                str(manifest.get("album_id") or manifest_path.parent.name),
+                                str(qa_set),
+                                qa_digest,
+                            )
+                        )
+                        + "\0"
+                    )
                     rows = apply_task_action_defaults(
                         load_jsonl(manifest_path.parent / relative),
                         str(manifest.get("album_id") or manifest_path.parent.name),
@@ -95,7 +116,7 @@ class JsonQaMetadataSource:
                     for row in rows:
                         qa_id = str(row.get("qa_id") or "")
                         if qa_id:
-                            result[qa_id] = {
+                            result[namespace + qa_id] = {
                                 field: row[field] for field in _FIELDS if row.get(field) is not None
                             }
             except (OSError, TypeError, json.JSONDecodeError):

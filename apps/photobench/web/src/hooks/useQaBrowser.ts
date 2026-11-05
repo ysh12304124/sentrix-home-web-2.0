@@ -19,6 +19,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { taxonomyLabel } from "../lib/qaTaxonomy.ts";
 import { api } from "../api/client.ts";
 import type { ManifestSummary, MediaResolution, QaDatasetResponse, QaRow } from "../api/types.ts";
 
@@ -40,6 +41,9 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
   const [qaBrowserItems, setQaBrowserItems] = useState<QaRow[]>([]);
   const [qaBrowserSearch, setQaBrowserSearch] = useState("");
   const [qaBrowserTag, setQaBrowserTag] = useState("");
+  const [qaTask, setQaTask] = useState("");
+  const [qaSubtype, setQaSubtype] = useState("");
+  const [qaAction, setQaAction] = useState("");
   const [qaBrowserLoading, setQaBrowserLoading] = useState(false);
   const [qaBrowserError, setQaBrowserError] = useState("");
   const [qaBrowserMediaResolution, setQaBrowserMediaResolution] = useState<MediaResolution | null>(null);
@@ -80,6 +84,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
       );
       if (!aliveRef.current) return;
       setQaBrowserItems(data.items || []);
+      setQaTask(""); setQaSubtype(""); setQaAction(""); setQaBrowserTag("");
       setQaBrowserMediaResolution(data.media_resolution || null);
     } catch (e) {
       if (!aliveRef.current) return;
@@ -108,16 +113,20 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
     const query = qaBrowserSearch.trim().toLocaleLowerCase();
     return qaBrowserItems.filter((item) => {
       if (qaBrowserTag && !(item.tags || []).includes(qaBrowserTag)) return false;
+      if (qaTask && item.task_type !== qaTask) return false;
+      if (qaSubtype && item.question_type !== qaSubtype) return false;
+      if (qaAction && item.expected_action !== qaAction) return false;
       if (!query) return true;
-      return [item.qa_id, item.question, item.answer, ...(item.tags || [])].some((value) =>
+      return [item.qa_id, item.question, item.answer, taxonomyLabel(item.task_type), taxonomyLabel(item.question_type), ...(item.tags || [])].some((value) =>
         String(value || "")
           .toLocaleLowerCase()
           .includes(query),
       );
     });
-  }, [qaBrowserItems, qaBrowserSearch, qaBrowserTag]);
+  }, [qaBrowserItems, qaBrowserSearch, qaBrowserTag, qaTask, qaSubtype, qaAction]);
 
   return {
+    qaTask, setQaTask, qaSubtype, setQaSubtype, qaAction, setQaAction,
     qaBrowserAlbum,
     setQaBrowserAlbum,
     qaBrowserSet,

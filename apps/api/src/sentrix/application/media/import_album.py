@@ -48,8 +48,10 @@ from sentrix.application.media.import_assets import (
     PreparedImage,
     StagedImport,
 )
+from sentrix.application.media.stage_spans import StageSpans
 from sentrix.domain.media.models import Asset, AssetStatus
 from sentrix.domain.media.ports import AssetRepository
+from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.media.import_album")
 
@@ -157,7 +159,9 @@ class ImportAlbum:
         summarize_event: Callable[[str], object] | None = None,
         workers: int = DEFAULT_ALBUM_WORKERS,
         progress: Callable[..., None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> None:
+        self._cancel_check = cancel_check
         self._progress = progress
         self._importer = importer
         self._workers = max(1, int(workers))
@@ -191,12 +195,16 @@ class ImportAlbum:
                 # 任务数——去重命中的那些不进池，按任务数算会让整册都是去重时一次把
                 # 全部文件读进内存。
                 while next_submit < len(paths) and next_submit - next_finish < self._workers:
+                    if self._cancel_check is not None:
+                        self._cancel_check()
                     index = next_submit
                     next_submit += 1
                     self._report(stage="media_staging", current_file=paths[index].name)
                     stage_started = time.perf_counter()
                     try:
                         outcome = self._importer.stage(self._request_for(request, paths[index]))
+                    except OperationCancelled:
+                        raise
                     except Exception as error:  # 一张失败不中断整批——整册导入是几小时的事
                         staged[index] = None
                         failures[index] = AlbumFailure(
@@ -246,6 +254,8 @@ class ImportAlbum:
                         assert prepared is not None
                         self._report(stage="event_assignment")
                         result = self._importer.finish(ready, prepared)
+                except OperationCancelled:
+                    raise
                 except Exception as error:
                     failures[index] = AlbumFailure(
                         file_name=paths[index].name, reason=f"{type(error).__name__}: {error}"
@@ -340,6 +350,8 @@ class ImportAlbum:
         )
 
     def _report(self, **changes: Any) -> None:
+        if self._cancel_check is not None:
+            self._cancel_check()
         if self._progress is not None:
             self._progress(**changes)
 
@@ -377,7 +389,11 @@ class ImportAlbum:
         summarized = 0
         for event_id in event_ids:
             try:
+                if self._cancel_check is not None:
+                    self._cancel_check()
                 self._summarize_event(event_id)
+            except OperationCancelled:
+                raise
             except Exception as error:  # noqa: BLE001 - 一个事件总结失败不该让整个相册归零
                 log.warning("事件总结失败，事件保留占位内容: %s: %s", event_id, error)
                 continue
@@ -432,6 +448,12 @@ class ProcessAlbumPipeline:
                 continue
             targets.append(asset)
 
+        spans = StageSpans()
+
+        def prepare(asset: Asset) -> PreparedImage:
+            with spans.measure("source_memory_prepare"):
+                return self._importer.prepare_image(asset)
+
         processed = events = lexical_terms = video_scenes = 0
         event_ids: list[str] = []
         timing_totals: dict[str, float] = {}
@@ -447,7 +469,7 @@ class ProcessAlbumPipeline:
                     if asset is None:
                         continue
                     self._assets.update_status(asset.id, AssetStatus.PROCESSING)
-                    prepared[index] = pool.submit(self._importer.prepare_image, asset)
+                    prepared[index] = pool.submit(prepare, asset)
 
                 index = next_finish
                 next_finish += 1
@@ -471,6 +493,7 @@ class ProcessAlbumPipeline:
                     events += 1
                     if result.event_id not in event_ids:
                         event_ids.append(result.event_id)
+                spans.include(result.timing_spans)
                 for key, value in result.timings.items():
                     if key == "total":
                         continue
@@ -479,6 +502,9 @@ class ProcessAlbumPipeline:
         summarize_started = time.perf_counter()
         summarized = self._summarize_events(event_ids)
         timing_totals["event_summarize"] = time.perf_counter() - summarize_started
+        summarize_finished = time.perf_counter()
+        spans.include({"event_summarize": (summarize_started, summarize_finished)})
+        timing_totals.update(spans.export(total_started))
         total_seconds = time.perf_counter() - total_started
         timing_totals["pipeline_core"] = total_seconds
         return AlbumProcessResult(

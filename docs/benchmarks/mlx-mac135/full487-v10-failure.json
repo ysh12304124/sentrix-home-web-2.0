@@ -1,0 +1,61 @@
+{
+  "status": "failed",
+  "series": "v10",
+  "run_id": "20261104-142834-album3-max-video10-current-6d0569",
+  "source_revision": "76e90a69e3827997b8c3057ed4eed0a282503b46",
+  "raw_run_sha256": "2492fb156057fe1701794e02bbfa62a8e524fbac811f7066c722b55a01e09e40",
+  "original_summary_sha256": "44741f8a75d778404c584aee6b2598b794abd1f13de603ac8d06742ae2f42bd4",
+  "qa_returned": 487,
+  "qa_successful": 474,
+  "qa_failed": 13,
+  "judge_valid_items": 485,
+  "judge_invalid_or_missing_items": 2,
+  "qa_seconds": 9892.3164,
+  "successful_qa_per_min": 2.8749585890722216,
+  "actual_batch_peak": 16,
+  "failure_breakdown": {
+    "metal_memory_affected_model_requests": 14,
+    "model_or_planner_failed_questions": 11,
+    "step_budget_exhausted_questions": 2,
+    "invalid_quality_json": 1,
+    "reference_present_but_behavior_label_missing": 1
+  },
+  "engine_error": "[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).",
+  "prefill_admission": {
+    "requests": 14,
+    "combined_input_tokens": 36044,
+    "configured_prefill_batch_size": 4,
+    "configured_completion_batch_size": 16,
+    "native_selection_used": "completion_batch_size"
+  },
+  "model_call_evidence": {
+    "expected_calls": 2204,
+    "recorded_calls": 2204,
+    "token_multiset_matches": false,
+    "all_api_calls_complete": false,
+    "unique_terminal_ids": true,
+    "conflicting_observations": 0,
+    "output_counters_consistent": false,
+    "verified": false
+  },
+  "prefix_cache_evidence": {
+    "verified": false,
+    "observed_requests": 2201,
+    "expected_requests": 2204,
+    "errors": [
+      "invalid_prefix_token_count"
+    ],
+    "requests_with_reuse": 1938,
+    "cached_tokens": 1984512,
+    "uncached_tokens": 2653875,
+    "request_hit_rate": 0.8805088596092685,
+    "token_hit_rate": 0.42784528328490057
+  },
+  "limitations": [
+    "Original error-field-only OOM count is zero because HTTP500 did not propagate the native error; engine traceback confirms the OOM.",
+    "Original Judge completed=487 describes item state, not valid scores; two items lack valid scores.",
+    "Failures and every original observation are preserved. Retests never replace this run.",
+    "Whole487 and fixed64 have different question mixes; their throughput is not a paired comparison."
+  ],
+  "next_candidate": "Bound ordinary media admission to existing prefill limit; preserve decoding capacity16. Remove already blocked tools from offers. Retry invalid quality JSON once, never repair scores. Score existing references without fabricating optional behavior labels."
+}

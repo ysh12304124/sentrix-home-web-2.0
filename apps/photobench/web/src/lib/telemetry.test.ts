@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
 
+describe("resident accounting v2", () => {
+  it("shows only three memory totals and keeps legacy capacity labels", () => {
+    const latest = { memory_accounting: "apple_footprint_resident_v2", system_memory_used_mib: 15000,
+      product_stack_memory_mib: 9000, model_process_system_memory_used_mib: 7000 };
+    const rows = liveTelemetryRows({ telemetry_live: { source: "apple_unified", latest } });
+    expect(rows.filter(row => /内存/.test(row[0]))).toHaveLength(3);
+    expect(rows.some(row => /footprint\+权重/.test(row[0]))).toBe(false);
+    const phase = gpuMetricRows({ ...latest, system_memory_used_mib: { peak: 15000 } });
+    expect(phase[0][0]).toBe("整机已占内存（含缓存）");
+    const old = liveTelemetryRows({ telemetry_live: { source: "apple_unified",
+      latest: { memory_accounting: "apple_capacity_estimate" } } });
+    expect(old.some(row => /footprint\+权重/.test(row[0]))).toBe(true);
+  });
+  it("labels Orin system formula by recorded scope", () => {
+    const run = { telemetry_live: { source: "jetson_local_pss", latest: {
+      memory_accounting: "jetson_pss_plus_nvmap_estimate",
+      system_memory_scope: "linux_physical_nonfree_including_cache_v2" } } };
+    expect(liveTelemetryRows(run).find(row => row[0] === "整机 RAM")?.[2]).toContain("MemFree");
+  });
+});
+
 import {
   aggregateMetricRows,
   comparableMemoryProfile,
@@ -39,7 +60,7 @@ describe("gpuMetricsView (:857-935)", () => {
     const sparse = gpuMetricsView({ status: "running", telemetry_live: {
       samples_count: 3, history: [{ gpu_utilization_pct: null }, { gpu_utilization_pct: 0 }, { gpu_utilization_pct: 20 }],
     } });
-    expect(sparse.gpu_utilization_pct).toEqual({ peak: 20, mean: 10, p95: 20 });
+    expect(sparse.gpu_utilization_pct).toEqual({ peak: 20, mean: 10, p50: 20, p95: 20 });
   });
   it("有 ≥20 个历史采样时：peak=max、mean=算术平均、p95=floor(n*0.95) 位（不是 max）", () => {
     const history = Array.from({ length: 21 }, (_, i) => ({ gpu_utilization_pct: i + 1 }));
@@ -50,7 +71,7 @@ describe("gpuMetricsView (:857-935)", () => {
     };
     const view = gpuMetricsView(run);
     // 1..21：mean=11，peak=21，sorted[floor(21*0.95)]=sorted[19]=20
-    expect(view.gpu_utilization_pct).toEqual({ peak: 21, mean: 11, p95: 20 });
+    expect(view.gpu_utilization_pct).toEqual({ peak: 21, mean: 11, p50: 11, p95: 20 });
   });
 
   it("采样数 <20 时 p95 退化为 max（与 ≥20 口径不同）", () => {
@@ -62,7 +83,7 @@ describe("gpuMetricsView (:857-935)", () => {
     };
     const view = gpuMetricsView(run);
     // 有历史就用历史，不理会 latest=99：mean=20
-    expect(view.gpu_utilization_pct).toEqual({ peak: 30, mean: 20, p95: 30 });
+    expect(view.gpu_utilization_pct).toEqual({ peak: 30, mean: 20, p50: 20, p95: 30 });
   });
 
   it("缺少完整历史时不伪造均值和 P95", () => {
@@ -388,7 +409,7 @@ describe("aggregateMetricRows (:1212-1253) / keyMetricRows (:1254-1304)", () => 
     const recall = rows.find((row) => row.label === "工具图片召回率");
     expect(recall?.value).toBe("未计算");
     expect(recall?.note).toContain("不补零");
-    const gpuRow = rows.find((row) => row.label === "模型进程显存");
+    const gpuRow = rows.find((row) => row.label === "主模型显存占用");
     expect(gpuRow?.value).toBe("-"); // fmtMemory(undefined)
   });
 });
@@ -529,4 +550,14 @@ it("取消后的partial遥测保持部分采集标记", () => {
   expect(gpuMetricsView({ status: "cancelled", phases: { gpu_metrics: {
     status: "partial", partial: true, samples_count: 10, collection_end_reason: "cancelled",
   } } })).toMatchObject({ status: "partial", partial: true, collection_end_reason: "cancelled" });
+});
+
+
+it("JSON对象与旧动作协议分列，非流式TTFT不冒充未记录或0", () => {
+  const rows = aggregateMetricRows({}, { structured_json_requested: 3, structured_json_total: 2,
+    structured_json_success: 0, structured_json_rate: 0, llm_call_metrics_count: 4, llm_nonstreamed_count: 4 });
+  expect(rows.find(row => row[0] === "JSON 对象解析率")?.[1]).toBe("0.0%");
+  expect(rows.find(row => row[0] === "JSON 对象解析率")?.[2]).toContain("0/2");
+  expect(rows.find(row => row[0] === "LLM TTFT 均值")?.[1]).toBe("不适用（非流式）");
+  expect(aggregateMetricRows({}, {}).find(row => row[0] === "JSON 对象解析率")?.[1]).toBe("未记录");
 });

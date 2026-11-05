@@ -48,8 +48,8 @@ export function telemetryNumber(value: unknown): number | null {
 export function telemetryPlatform(raw: unknown): string {
   const value = dict(raw);
   const accounting = value.memory_accounting || dict(value.latest).memory_accounting;
-  if (accounting === "apple_capacity_estimate") return "apple_unified";
-  if (accounting === "jetson_pss_plus_nvmap_estimate") return "jetson_local_pss";
+  if (["apple_capacity_estimate", "apple_footprint_resident_v2"].includes(accounting)) return "apple_unified";
+  if (["jetson_pss_plus_nvmap_estimate", "jetson_pss_and_nvmap_v3"].includes(accounting)) return "jetson_local_pss";
   if (accounting === "nvidia_pss_and_vram") return "nvidia";
   return value.source || ""; // Compatibility for historical records without a metric definition.
 }
@@ -59,6 +59,7 @@ export function telemetryPlatform(raw: unknown): string {
 /** 1.0 `:785-856`。四套口径：macOS 内存压力 / apple_unified / orin PSS / 默认 NVIDIA。 */
 export function gpuMetricRows(rawPhase: unknown = {}): MetricRow[] {
   const phase = dict(rawPhase);
+  if (resourceProtocol(phase)) return resourceMemoryRows(phase, true);
   if (phase.memory_pressure) {
     const mp = dict(phase.memory_pressure);
     const used = dict(phase.memory_used_gib);
@@ -93,6 +94,16 @@ export function gpuMetricRows(rawPhase: unknown = {}): MetricRow[] {
   const clock = dict(phase.sm_clock_mhz);
   const processLimit = phase.model_process_memory_limit_mib;
   const processLimitLabel = processLimit == null ? "模型进程显存上限" : `${fmtMemory(processLimit)} 上限告警`;
+  if (phase.memory_accounting === "apple_footprint_resident_v2") return [
+    ["整机已占内存（含缓存）", fmtMemory(dict(phase.system_memory_used_mib).peak), "总物理内存 − 空闲物理页；含压缩器实际物理页，已换出页不计"],
+    ["整套产品驻留内存（估计）", fmtMemory(dict(phase.product_stack_memory_mib).peak), "整组产品 PID 去重汇总：Dirty − Swapped + Clean + Reclaimable"],
+    ["主模型驻留内存（估计）", fmtMemory(dict(phase.model_process_system_memory_used_mib).peak), "主模型及工作进程整组去重；不加映射文件大小或设备 GPU 总量", true],
+    ["GPU 利用率", fmtNumber(util.mean, "%"), `峰值 ${fmtNumber(util.peak, "%")}`],
+    ["GPU 温度", fmtNumber(temp.mean, "°C"), `峰值 ${fmtNumber(temp.peak, "°C")}`],
+    ["CPU 温度", fmtNumber(dict(phase.cpu_temperature_c).mean, "°C"), "macmon"],
+    ["系统功耗", fmtNumber(power.mean, "W"), `峰值 ${fmtNumber(power.peak, "W")} · ${phase.power_scope || "范围未记录"}`],
+    ["采样数量", `${phase.samples_count ?? 0} 次`, "压缩器物理存储仅在整机计入；进程共享与驱动归属为工具估计"],
+  ];
   if (telemetryPlatform(phase) === "apple_unified") return [
     ["主模型占用（footprint+权重）", fmtMemory(dict(phase.model_process_system_memory_used_mib).peak), `均值 ${fmtMemory(dict(phase.model_process_system_memory_used_mib).mean)} · 容量估计（footprint+映射权重），映射不保证驻留，非 GPU 专属显存`, true],
     ["主模型 footprint", fmtMemory(dict(phase.model_process_footprint_mib).peak), "phys_footprint 账本，含压缩等分量"],
@@ -145,7 +156,7 @@ export function gpuMetricRows(rawPhase: unknown = {}): MetricRow[] {
 /**
  * 1.0 `:857-935`。把 `phases.gpu_metrics` 与实时采样历史合成为一个可渲染的相位对象。
  *
- * 优先采用后端完整样本统计。仅当历史完整时，以有限样本重算均值、采样峰值和 nearest-rank P95；
+ * 优先采用后端完整样本统计。仅当历史完整时，以有限样本重算均值、采样峰值、P50和 nearest-rank P95；
  * 降采样历史或缺失历史不能恢复均值、分位数。
  */
 export function gpuMetricsView(run: unknown): Dict {
@@ -168,12 +179,14 @@ export function gpuMetricsView(run: unknown): Dict {
     return {
       peak: sorted[count - 1],
       mean: values.reduce((sum, value) => sum + value, 0) / count,
+      p50: sorted[Math.floor(count / 2)],
       p95: sorted[Math.max(0, Math.ceil(count * 0.95) - 1)],
     };
   };
   const fill = (phaseObj: Dict): Dict => {
     const keys = [
       "model_process_footprint_mib", "model_process_mapped_weights_mib", "product_stack_footprint_mib", "product_stack_mapped_weights_mib",
+      "model_process_gpu_memory_mib", "product_stack_gpu_memory_mib", "device_gpu_memory_mib", "cpu_utilization_pct",
       "model_process_memory_used_mib",
       "model_process_system_memory_used_mib",
       "gpu_allocated_unified_memory_mib",
@@ -189,8 +202,9 @@ export function gpuMetricsView(run: unknown): Dict {
       "kv_cache_usage_pct",
       "kv_cache_used_tokens",
     ];
-    const out: Dict = { memory_accounting: live.latest?.memory_accounting, memory_complete: live.latest?.memory_complete,
+    const out: Dict = { protocol_version: live.latest?.protocol_version || live.protocol_version, resource_metrics: live.latest?.resource_metrics, memory_accounting: live.latest?.memory_accounting, memory_complete: live.latest?.memory_complete,
       power_scope: live.latest?.power_scope, power_rail: live.latest?.power_rail,
+      system_memory_scope: live.latest?.system_memory_scope,
       sampling: live.sampling, memory_observation_version: live.latest?.memory_observation_version,
       memory_observations: live.latest?.memory_observations, memory_dependencies: live.latest?.memory_dependencies,
       sampling_diagnostics: live.latest?.sampling_diagnostics, ...phaseObj };
@@ -273,6 +287,7 @@ export function telemetryObservationRows(run: unknown): MetricRow[] {
  * `effectivePeak` 对「老记录只有 latest 没有 peak」做回退 —— 这是本函数最容易漏的回退。
  */
 export function liveTelemetryRows(run: unknown): MetricRow[] {
+  if (resourceProtocol(run)) return resourceMemoryRows(dict(telemetryLiveState(run).latest));
   const r = dict(run);
   const live = dict(r.telemetry_live);
   const latest = dict(live.latest);
@@ -301,6 +316,15 @@ export function liveTelemetryRows(run: unknown): MetricRow[] {
     : scope === "all_related_pss_plus_model_uma_extra"
     ? "所有相关进程 PSS 加总 + 主模型/辅助模型 GPU/UMA 页"
     : "历史记录未标记新公式 scope；该值不能按当前公式解释，需重跑";
+  if (latest.memory_accounting === "apple_footprint_resident_v2") return [
+    ["整机已占内存（含缓存）", fmtGiB(latest.system_memory_used_mib), `峰值 ${fmtGiB(effectivePeak.system_memory_used_mib)} · 总物理内存 − 空闲物理页`],
+    ["整套产品驻留内存（估计）", fmtGiB(latest.product_stack_memory_mib), `峰值 ${fmtGiB(effectivePeak.product_stack_memory_mib)} · 整组 PID 去重：Dirty − Swapped + Clean + Reclaimable`],
+    ["主模型驻留内存（估计）", fmtGiB(latest.model_process_system_memory_used_mib), `峰值 ${fmtGiB(effectivePeak.model_process_system_memory_used_mib)} · 含工具归属的图形内存；不叠加文件映射大小`],
+    ["GPU 利用率", fmtLive(latest.gpu_utilization_pct, "%"), `峰值 ${fmtLive(effectivePeak.gpu_utilization_pct, "%")}`],
+    ["GPU 温度", fmtLive(latest.temperature_c, " °C"), "macmon"],
+    ["CPU 温度", fmtLive(latest.cpu_temperature_c, " °C"), "macmon"],
+    ["系统功耗", fmtLive(latest.power_draw_w, " W"), `峰值 ${fmtLive(effectivePeak.power_draw_w, " W")}`],
+  ];
   if (platform === "apple_unified") {
     const stage = ["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(r.status)
       ? statusLabel(r.status)
@@ -334,7 +358,7 @@ export function liveTelemetryRows(run: unknown): MetricRow[] {
       ["整套产品内存", fmtGiB(latest.product_stack_memory_mib), `采样峰值 ${fmtGiB(effectivePeak.product_stack_memory_mib)} · 相关 PID 的 PSS + 主/辅助模型 nvmap，PID 去重；归属/分配估计`],
       ["Sentrix 周边 PSS", fmtGiB(latest.sentrix_stack_pss_mib), "不含主模型，包含本地辅助模型进程 PSS"],
       ["辅助模型 GPU/UMA 分量", fmtGiB(latest.sentrix_auxiliary_model_uma_mib), "确认无本地辅助服务时为 0；未知保持不可用"],
-      ["整机 RAM", fmtGiB(latest.system_memory_used_mib), "MemTotal − MemAvailable；包括本机其他进程"],
+      ["整机 RAM", fmtGiB(latest.system_memory_used_mib), latest.system_memory_scope === "linux_physical_nonfree_including_cache_v2" ? "MemTotal − MemFree；含驻留缓存与内核，已换出页不计" : "旧版 MemTotal − MemAvailable；包括本机其他进程"],
       ["GPU 利用率", fmtLive(latest.gpu_utilization_pct, "%"), `采样峰值 ${fmtLive(effectivePeak.gpu_utilization_pct, "%")} · tegrastats GR3D`],
       ["GPU 温度", fmtLive(latest.temperature_c, " °C"), "tegrastats gpu@"],
       ["CPU 温度", fmtLive(latest.cpu_temperature_c, " °C"), "tegrastats cpu@"],
@@ -444,6 +468,7 @@ export function telemetryChart(run: unknown): TelemetryChartData | null {
  * 2.0 此前三处标签全部写死成 VmRSS，等于把所有 run 都当成旧口径。
  */
 export function jetsonUnifiedFromRun(run: unknown): boolean {
+  if (resourceProtocol(run)) return false;
   const r = dict(run);
   if (dict(r.memory_profile).scope === "host_smaps_rss_plus_gpu_uma") return true;
   const gpu = dict(dict(r.phases).gpu_metrics);
@@ -459,6 +484,7 @@ export function jetsonUnifiedFromRun(run: unknown): boolean {
 
 /** 1.0 `:1126-1150`。**故意不含 apple_unified**：Orin 判据是 `isOrin = isApple || ...`。 */
 export function liveTelemetryPhaseRows(run: unknown): MetricRow[] {
+  if (resourceProtocol(run)) return [];
   const r = dict(run);
   const live = telemetryLiveState(run);
   const source = telemetryPlatform(live) || r.telemetry_source || telemetryPlatform(dict(dict(r.phases).gpu_metrics));
@@ -466,7 +492,8 @@ export function liveTelemetryPhaseRows(run: unknown): MetricRow[] {
   const isOrin = isApple || ["orin_ssh_pss", "jetson_local_pss"].includes(source);
   const modelKey = isOrin ? "model_process_system_memory_used_mib" : "model_process_memory_used_mib";
   const modelLabel = isApple
-    ? "主模型占用（footprint+权重）"
+    ? (dict(live.latest).memory_accounting || dict(dict(r.phases).gpu_metrics).memory_accounting) === "apple_footprint_resident_v2"
+      ? "主模型驻留内存（估计）" : "主模型占用（footprint+权重）"
     : isOrin
       ? jetsonUnifiedFromRun(run)
         ? "主模型占用（smaps Rss + GPU/UMA 页）"
@@ -536,6 +563,12 @@ export function memoryProfileRows(rawProfile: unknown = {}): MetricRow[] {
   const profile = dict(rawProfile);
   const memory = dict(profile.memory_profile);
   const isBenchmarkGpuProfile = profile.source === "gpu_metrics";
+  if (memory.method === "apple_footprint_resident_v2") return [
+    ["主模型驻留内存峰值（估计）", fmtMemory(dict(profile.model_process_system_memory_used_mib).peak), "整组进程 footprint 汇总；Dirty − Swapped + Clean + Reclaimable", true],
+    ["整套产品驻留内存峰值（估计）", fmtMemory(dict(profile.product_stack_memory_mib).peak), "整组产品PID去重；与主模型独立采集，不逐进程相加"],
+    ["整机已占内存峰值（含缓存）", fmtMemory(dict(profile.system_memory_used_mib).peak), "总物理内存减空闲页；压缩器实际物理存储只在整机计入"],
+    ["采集边界", "驻留归属估计", "共享与驱动分配按系统工具归属；不加模型文件映射长度或设备GPU总量"],
+  ];
   if (memory.method === "macos_unified_memory_v1") {
     return [
       ["内存占用峰值", memory.memory_used_peak_gib == null ? "-" : `${Number(memory.memory_used_peak_gib).toFixed(2)} GiB`, "16GB 统一内存整机峰值", true],
@@ -606,8 +639,9 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
     [typedMediaMetrics ? "媒体检索 Precision" : "历史图片检索 Precision", fmtPct(s.retrieval_precision_macro), `交付准确率：模型拿出来交付的图里有多少属于 GT · 逐 QA 求值后平均 · ${s.retrieval_metric_count ?? 0} 题有 GT · 排除 ${s.retrieval_excluded_unanswerable_count ?? 0} 道不可回答题`, true],
     [typedMediaMetrics ? "媒体检索 Recall" : "历史图片检索 Recall", fmtPct(s.retrieval_recall_macro), typedMediaMetrics ? "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；图/视频按类型与稳定标识匹配" : "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；历史 run 无法补算视频指标", true],
     ["回答质量均分", s.answer_quality_mean == null ? "-" : `${s.answer_quality_mean} / 2`, `Judge 给最终回答打分（2 完全支持 / 1 部分支持 / 0 不支持）的均值，唯一回答「模型能不能用」的端到端结论 · 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} · 无效 ${(s.total ?? 0) - (s.judge_valid_count ?? 0)} · 0:${dist["0"] || 0} · 1:${dist["1"] || 0} · 2:${dist["2"] || 0}`, true],
-    ["步数内 QA 完成率", fmtPct(s.qa_completion_within_steps_rate), `在限定步数内跑完流程的题占比，衡量 Agent 是否收敛而不是反复绕圈 · 有效记录 ${s.qa_completion_valid_count ?? 0} 题`, true],
+    ["步数内 QA 完成率", fmtPct(s.qa_completion_within_steps_rate), `在步骤预算内生成终态回答的题占比；证据缺口计流程完成，答案质量另由 Judge 评分 · 有效记录 ${s.qa_completion_valid_count ?? 0} 题`, true],
     ["工具参数 JSON 解析率", fmtPct(s.tool_argument_json_rate), s.tool_argument_json_total == null ? "未记录或未调用原生工具；普通文本回答不进入分母" : `${s.tool_argument_json_success}/${s.tool_argument_json_total} 次原生工具参数`, true],
+    ["JSON 对象解析率", s.structured_json_rate == null ? "未记录" : fmtPct(s.structured_json_rate), s.structured_json_requested == null ? "未记录：历史调用未采集 JSON 输出契约；自由文本不计入分母" : `明确要求 JSON 对象的规划、核验、工具内部及 Judge 调用；每次重试单独统计 · 解析成功 ${s.structured_json_success ?? 0}/${s.structured_json_total ?? 0} · 要求 JSON ${s.structured_json_requested} 次；无响应不计解析分母`, true],
     ["旧 JSON 动作解析率", fmtPct(s.json_parse_success_rate), s.json_parse_total == null ? "旧 JSON 动作协议；原生工具模式未适用，旧结果缺失事实时未记录" : `需要结构化输出的调用里一次解析成功的比例，衡量格式稳定性 · ${s.json_parse_success ?? 0}/${s.json_parse_total} 个`, true],
     ["Agent 并发吞吐折算时延", fmtMs(s.agent_throughput_latency_ms), throughputNote, true],
     ["平均调用轮数", s.agent_loop_calls_mean == null ? "未记录" : `${Number(s.agent_loop_calls_mean).toFixed(2)} 轮`, `每道题平均经历几轮模型调用，轮数越高越可能在反复试探 · 仅 Agent/Recovery，不含 L2 Judge、Final Writer 和工具内部模型`, true],
@@ -626,8 +660,8 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
     ["端到端测评总时延（不含 Judge）", fmtMs(s.benchmark_e2e_latency_excluding_judge_ms), "身份/关系及图片导入开始至最后一个 Agent 完成；Judge 可并行执行"],
     ["完全准确率", fmtPct(s.exact_accuracy), "Judge 给 2 分（完全支持）的题占比 · 严格口径"],
     ["核心准确率", fmtPct(s.core_accuracy), "Judge 给 1 或 2 分的题占比 · 宽松口径"],
-    ["LLM TTFT 均值", fmtMs(s.llm_ttft_ms_mean), "首 token 响应时间均值，衡量并发排队下的响应灵敏度"],
-    ["LLM 生成速度", s.llm_tokens_per_second_mean == null ? "-" : `${Number(s.llm_tokens_per_second_mean).toFixed(1)} token/s`, "主 Agent 平均生成速度；流式调用是纯解码速率，非流式是端到端速率，两者不可直接横比"],
+    ["LLM TTFT 均值", s.llm_ttft_ms_mean == null && s.llm_call_metrics_count > 0 && s.llm_nonstreamed_count === s.llm_call_metrics_count ? "不适用（非流式）" : fmtMs(s.llm_ttft_ms_mean), "首 token 响应时间均值，衡量并发排队下的响应灵敏度"],
+    ["LLM 生成速度", s.llm_tokens_per_second_mean == null ? "未记录" : `${Number(s.llm_tokens_per_second_mean).toFixed(1)} token/s`, "主 Agent 平均生成速度；流式调用是纯解码速率，非流式是端到端速率，两者不可直接横比"],
   ];
 }
 
@@ -647,18 +681,25 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
   const platform = telemetryPlatform(gpu);
   const isUnified = platform === "apple_unified";
   const isOrin = ["orin_ssh_pss", "jetson_local_pss"].includes(platform);
-  const processMemory = isUnified || isOrin
-    ? dict(gpu.model_process_system_memory_used_mib).peak
-    : dict(gpu.model_process_memory_used_mib).peak;
-  const processMemoryNote = isUnified
-    ? "主模型占用采样峰值（footprint+权重映射）· 容量估计，映射不保证驻留，非 GPU 专属显存"
+  const processMemory = dict(gpu.model_process_system_memory_used_mib).peak;
+  const processMemoryNote = resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
+    ? gpu.memory_accounting === "apple_footprint_resident_v2"
+      ? "主模型驻留内存采样峰值（估计） · 整组PID去重：Dirty − Swapped + Clean + Reclaimable"
+      : "主模型占用采样峰值（footprint+权重映射）· 容量估计，映射不保证驻留，非 GPU 专属显存"
     : isOrin
       ? jetsonUnifiedFromRun(run)
         ? gpu.memory_accounting === "jetson_pss_plus_nvmap_estimate"
           ? "主模型占用采样峰值 · smaps RSS + GPU/UMA 分配估计；优先 nvmap，不可读时仅正残差作为注明来源的估计；未知分量使合计不可用，跨驱动和共享页不保证物理去重"
           : "主模型占用采样峰值 · smaps RSS + GPU/UMA；历史公式见原始记录，不推断物理去重"
         : "主模型 VmRSS 峰值 · Orin 无独立显存，这是进程驻留"
-      : "主模型显存峰值 · NVML 按模型 PID 汇总";
+      : "主模型进程内存的采样峰值；历史缺失时未记录";
+  const gpuMemoryKey = isUnified ? "device_gpu_memory_mib"
+    : resourceProtocol(gpu) || isOrin ? "model_process_gpu_memory_mib" : "model_process_memory_used_mib";
+  const gpuMemoryNote = isUnified
+    ? "IORegistry 整机 GPU 分配采样峰值（参考）；统一内存，与进程内存可能重叠"
+    : isOrin
+      ? "主模型 PID 的 nvmap 分配采样峰值；共享内存，与进程内存不相加"
+      : "主模型进程组 GPU 分配采样峰值 · NVML 按 PID 汇总";
   const throughputNote = s.agent_throughput_latency_mode === "measured_agent_phase"
     ? `Agent 阶段实际墙钟 ÷ ${s.agent_phase_completed_count ?? s.total ?? 0} 题 · 并发 ${r.qa_concurrency ?? "-"} · 不含 Judge（Judge 与 Agent 并行）`
     : "历史记录按时间线回退估算，不是实测值";
@@ -686,9 +727,14 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
       note: `模型显式交付的图片里属于 GT 的比例 · ${s.image_retrieval_metric_count ?? 0} 题含图片 GT · 这是交付口径，与检索口径的 R@K 不可换算`,
     },
     {
-      label: isUnified || isOrin ? "主模型内存占用" : "模型进程显存",
+      label: "主模型内存占用",
       value: fmtMemory(processMemory),
       note: processMemoryNote,
+    },
+    {
+      label: isUnified ? "整机显存占用" : "主模型显存占用",
+      value: fmtMemory(dict(gpu[gpuMemoryKey]).peak),
+      note: gpuMemoryNote,
     },
   ];
 }
@@ -731,4 +777,29 @@ export function tokenDistributionRows(summary: unknown): MetricRow[] {
 /** 1.0 `:1332-1334`。缺字段回 `0`（不是 `-`）。 */
 export function tokenDistributionCount(summary: unknown): number {
   return dict(summary).llm_context_samples_count ?? 0;
+}
+
+
+export const RESOURCE_PROTOCOL = "photobench-resource-telemetry-v1";
+export function resourceProtocol(raw: unknown): boolean {
+  const value = dict(raw);
+  const live = dict(value.telemetry_live);
+  return [value.protocol_version, dict(value.latest).protocol_version, live.protocol_version,
+    dict(live.latest).protocol_version, dict(dict(value.phases).gpu_metrics).protocol_version]
+    .includes(RESOURCE_PROTOCOL);
+}
+export const RESOURCE_MEMORY_FIELDS = [
+  ["主模型内存", "model_process_system_memory_used_mib"],
+  ["产品内存", "product_stack_memory_mib"],
+  ["整机内存", "system_memory_used_mib"],
+  ["主模型显存", "model_process_gpu_memory_mib"],
+  ["产品显存", "product_stack_gpu_memory_mib"],
+  ["整机／整卡显存", "device_gpu_memory_mib"],
+] as const;
+function resourceMemoryRows(raw: Dict, peak = false): MetricRow[] {
+  return RESOURCE_MEMORY_FIELDS.map(([name, key]) => [
+    peak ? `${name}采样峰值` : name,
+    fmtMemory(peak ? dict(raw[key]).peak : raw[key]),
+    peak ? "来自全部有效采样；缺失时未记录" : "GPU 分配与进程内存分开统计；产品包含主模型",
+  ]);
 }
