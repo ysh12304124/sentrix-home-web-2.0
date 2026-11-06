@@ -206,6 +206,8 @@ def download_own_attachment(
         str(attachment["storage_path"]),
         media_type=str(attachment["content_type"]),
         filename=f"feedback-{attachment_id}",
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
     )
 
 
@@ -302,4 +304,6 @@ def admin_download_attachment(
         str(attachment["storage_path"]),
         media_type=str(attachment["content_type"]),
         filename=f"feedback-{attachment_id}",
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
     )

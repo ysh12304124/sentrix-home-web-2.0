@@ -92,6 +92,21 @@ def incidents(
     return {"items": _store(request).list_incidents(limit=min(limit, 500))}
 
 
+@router.get("/admin/client-events/summary")
+def client_event_summary(
+    request: Request,
+    hours: int = 24,
+    auth: AuthContext = Depends(require_admin),
+) -> dict[str, object]:
+    """近 N 小时按账号聚合点击流；管理台用它展示每人的点击统计。"""
+    del auth
+    window = max(1, min(int(hours), 24 * 7))
+    since = (datetime.now(UTC) - timedelta(hours=window)).isoformat()
+    accounts = request.app.state.route_table.ids()
+    items = _store(request).summarize_client_events(since=since, account_ids=accounts)
+    return {"hours": window, "since": since, "items": items}
+
+
 @router.get("/admin/users/{account_id}")
 def user_detail(
     account_id: str, request: Request, _: AuthContext = Depends(require_admin)

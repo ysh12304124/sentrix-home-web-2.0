@@ -2014,6 +2014,30 @@ interface ClientEventPage {
   has_more: boolean;
 }
 
+export interface ClientEventSummaryItem {
+  account_id: string;
+  total: number;
+  last_at: string;
+  events: Record<string, number>;
+}
+
+export async function fetchClientEventSummary(
+  hours = 24,
+): Promise<{ hours: number; since: string; items: ClientEventSummaryItem[] }> {
+  const response = await fetch(`/control/v1/admin/client-events/summary?hours=${hours}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as {
+    hours: number;
+    since: string;
+    items: ClientEventSummaryItem[];
+  };
+}
+
 /** 管理端按账号增量读取轨迹。afterId=0 表示取最近一页。 */
 export async function listClientEvents(
   accountId: string,

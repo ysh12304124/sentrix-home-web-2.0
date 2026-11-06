@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from collections.abc import Sequence
 
 from sentrix.control import security
 from sentrix.infrastructure.persistence.database import Database
@@ -827,6 +828,37 @@ class ControlStore:
             }
             for row in rows
         }
+
+    def summarize_client_events(
+        self, *, since: str, account_ids: Sequence[str] = ()
+    ) -> list[dict[str, object]]:
+        """按账号聚合点击流，避免管理台把不同用户的操作混成一条流。"""
+        params: list[object] = [since]
+        sql = (
+            "SELECT account_id, event_name, COUNT(*) AS n, MAX(received_at) AS last_at"
+            " FROM client_events WHERE received_at >= ?"
+        )
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            sql += f" AND account_id IN ({placeholders})"
+            params.extend(account_ids)
+        sql += " GROUP BY account_id, event_name ORDER BY account_id, n DESC"
+        with self._database.connect() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            account = str(row["account_id"])
+            entry = grouped.setdefault(
+                account,
+                {"account_id": account, "total": 0, "last_at": "", "events": {}},
+            )
+            count = int(row["n"])
+            entry["total"] = int(entry["total"]) + count
+            entry["last_at"] = max(str(entry["last_at"]), str(row["last_at"] or ""))
+            events = entry["events"]
+            assert isinstance(events, dict)
+            events[str(row["event_name"])] = count
+        return [grouped[key] for key in sorted(grouped)]
 
     def purge_client_events(self, *, older_than_days: int = 7) -> int:
         cutoff = _iso(_now() - timedelta(days=older_than_days))

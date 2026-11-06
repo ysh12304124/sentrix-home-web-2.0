@@ -27,11 +27,11 @@ const SCREENS = [
     ),
   },
   {
-    title: "从回忆继续探索",
+    title: "从添加资料开始",
     body: (
       <div className="onboarding-copy">
-        <p>已有事件可以在回忆页慢慢看；想找具体内容时，就去提问页用自己的话问。</p>
-        <p>人物、时间线和资料库用来继续查看；还没有事件时，“看看回忆”会给出真实的空状态。</p>
+        <p>新账号还没有资料，先去添加照片或视频。整理完成后，回忆、时间线和人物会自动出现。</p>
+        <p>以后随时可以从顶部导航回到回忆。</p>
       </div>
     ),
   },
@@ -67,28 +67,16 @@ export function Onboarding({
           </button>
         ) : null}
         {last ? (
-          <>
-            <button
-              type="button"
-              className="button ghost"
-              onClick={() => {
-                onComplete();
-                onNavigate("/imports");
-              }}
-            >
-              去添加资料
-            </button>
-            <button
-              type="button"
-              className="button primary"
-              onClick={() => {
-                onComplete();
-                onNavigate("/");
-              }}
-            >
-              看看回忆
-            </button>
-          </>
+          <button
+            type="button"
+            className="button primary"
+            onClick={() => {
+              onComplete();
+              onNavigate("/imports");
+            }}
+          >
+            去添加资料
+          </button>
         ) : (
           <button type="button" className="button primary" onClick={() => setStep(step + 1)}>
             下一步

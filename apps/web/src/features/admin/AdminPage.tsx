@@ -5,6 +5,7 @@ import { csrfToken } from "../../shared/csrf";
 import { newClientId } from "../../shared/id";
 import {
   listClientEvents,
+  type ClientEventSummaryItem,
   type ClientEventView,
 } from "../../shared/api/client";
 
@@ -333,6 +334,7 @@ export function AdminPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [trends, setTrends] = useState<TrendPoint[]>([]);
+  const [eventSummary, setEventSummary] = useState<ClientEventSummaryItem[]>([]);
   const [problemJobs, setProblemJobs] = useState<AdminJob[]>([]);
   const [filterDraft, setFilterDraft] = useState<FeedbackFilters>(EMPTY_FILTERS);
   const [filters, setFilters] = useState<FeedbackFilters>(EMPTY_FILTERS);
@@ -359,7 +361,7 @@ export function AdminPage() {
 
   const load = useCallback(async () => {
     try {
-      const [overviewResponse, incidentsResponse, feedbackResponse, trendResponse] =
+      const [overviewResponse, incidentsResponse, feedbackResponse, trendResponse, eventSummaryResponse] =
         await Promise.all([
           fetch("/control/v1/admin/overview", { credentials: "same-origin" }),
           fetch("/control/v1/admin/incidents?limit=30", { credentials: "same-origin" }),
@@ -367,6 +369,9 @@ export function AdminPage() {
             credentials: "same-origin",
           }),
           fetch("/control/v1/admin/trends?minutes=60", { credentials: "same-origin" }),
+          fetch("/control/v1/admin/client-events/summary?hours=24", {
+            credentials: "same-origin",
+          }),
         ]);
       if (!overviewResponse.ok) throw new Error(`概览接口返回 ${overviewResponse.status}`);
       const nextOverview = (await overviewResponse.json()) as Overview;
@@ -415,6 +420,11 @@ export function AdminPage() {
       setTrends(
         trendResponse.ok
           ? ((await trendResponse.json()) as { items: TrendPoint[] }).items
+          : [],
+      );
+      setEventSummary(
+        eventSummaryResponse.ok
+          ? ((await eventSummaryResponse.json()) as { items: ClientEventSummaryItem[] }).items
           : [],
       );
       setError("");
@@ -764,6 +774,39 @@ export function AdminPage() {
         )}
       </div>
 
+      <article className="panel">
+        <div className="panel-head">
+          <h2>点击流统计</h2>
+          <small>近 24 小时，按账号分组</small>
+        </div>
+        {eventSummary.length === 0 ? (
+          <div className="empty-panel">近 24 小时还没有可统计的点击记录。</div>
+        ) : (
+          <div className="service-list">
+            {eventSummary.map((item) => {
+              const top = Object.entries(item.events)
+                .sort(([, a], [, b]) => b - a)
+                .slice(0, 3);
+              return (
+                <div key={item.account_id} className="service-row">
+                  <span className="status-dot" />
+                  <div>
+                    <strong>{item.account_id}</strong>
+                    <small>
+                      近 24h 点击 {item.total} 次
+                      {top.length > 0
+                        ? ` · ${top.map(([name, count]) => `${EVENT_LABELS[name] ?? name} ${count}`).join(" · ")}`
+                        : ""}
+                    </small>
+                  </div>
+                  <span className="service-badge">{formatAge(item.last_at)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </article>
+
       <div className="dash-grid">
         <article className="panel">
           <div className="panel-head">
@@ -986,8 +1029,15 @@ export function AdminPage() {
                           href={`/control/v1/admin/feedback/attachments/${attachment.id}`}
                           target="_blank"
                           rel="noreferrer"
+                          className="feedback-attachment"
+                          title="打开原图"
                         >
-                          查看截图（{(attachment.byte_size / 1024).toFixed(0)} KiB）
+                          <img
+                            src={`/control/v1/admin/feedback/attachments/${attachment.id}`}
+                            alt="反馈截图"
+                            loading="lazy"
+                          />
+                          <small>{(attachment.byte_size / 1024).toFixed(0)} KiB</small>
                         </a>
                       ))}
                     </div>
