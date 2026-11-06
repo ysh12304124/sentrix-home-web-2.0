@@ -26,6 +26,8 @@ class ImportResponse(BaseModel):
     # 音频有没有真的走到 ffprobe（S8c T521）。与 ``video_probed`` 同一个可观测面：
     # 「音频收下了但什么都没发生」原先在响应里完全看不出来。音频以外恒为 False。
     audio_probed: bool = False
+    job_id: str | None = None
+    job_status: str | None = None
 
 
 class AssetSummary(BaseModel):

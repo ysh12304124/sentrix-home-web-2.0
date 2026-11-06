@@ -1,0 +1,31 @@
+--- a/vllm_mlx/mllm_batch_generator.py
++++ b/vllm_mlx/mllm_batch_generator.py
+@@ -1598,7 +1598,7 @@
+ 
+         # Short prompts without a required hybrid checkpoint can avoid the
+         # chunk loop while retaining request-local mRoPE inputs.
+-        if total - start <= step and checkpoint_at is None:
++        if total - start == 1 and checkpoint_at is None:
+             self._prefill_progress[request.request_id] = (total, total)
+             output = self.language_model(
+                 input_ids[:, start:],
+@@ -1635,7 +1635,8 @@
+                 )
+                 raise PrefillAbortedError(request.request_id)
+ 
+-            end = min(processed + step, total)
++            # Match native mlx-vlm: sample from a separate final-token step.
++            end = min(processed + step, total - 1) if processed < total - 1 else total
+             if checkpoint_at is not None and processed < checkpoint_at < end:
+                 end = checkpoint_at
+ 
+@@ -3784,7 +3785,8 @@
+             step = batch_gen._chunked_prefill_budget
+             remaining = partial["remaining_ids"]
+             remaining_count = remaining.shape[1]
+-            take = min(step, remaining_count)
++            # Preserve one prompt token for the final logits-producing step.
++            take = min(step, remaining_count - 1) if remaining_count > 1 else 1
+             checkpoint_at = partial.get("checkpoint_at")
+             current_position = partial["cached_count"] + partial["processed"]
+             if (

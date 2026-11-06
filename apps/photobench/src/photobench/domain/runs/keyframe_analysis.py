@@ -156,6 +156,16 @@ def keyframe_analysis(
             if rows
             else "Sentrix 资产清单为空，且 run 未保存关键帧预览"
         )
+    else:
+        # The asset list can lag a run's persisted tool trace. Merge preview-only
+        # keyframes so an already-read frame remains measurable even if its asset
+        # record is missing from the current scope response.
+        known_ids = {str(item.get("id")) for item in rows if item.get("id")}
+        recovered = _recover_from_traces(state)
+        missing = [item for item in recovered if str(item.get("id") or "") not in known_ids]
+        if missing:
+            rows = [*rows, *missing]
+            note = f"Sentrix 资产清单 + {len(missing)} 条工具轨迹补充"
 
     by_id = {str(item.get("id")): item for item in rows if item.get("id")}
     by_name: dict[str, list[Mapping[str, Any]]] = {}
@@ -174,6 +184,11 @@ def keyframe_analysis(
         """
         if isinstance(value, Mapping):
             candidates = [
+                # Video candidate payloads keep ``asset_id`` on the parent video
+                # and carry the actual retrieved frame in this separate field.
+                # Resolve the frame first so keyframe metrics do not silently
+                # treat a valid video-frame candidate as a non-keyframe video.
+                value.get("source_keyframe_asset_id"),
                 value.get("asset_id"),
                 value.get("id"),
                 value.get("media_id"),
@@ -218,6 +233,15 @@ def keyframe_analysis(
     raw_frame_count = 0
     source_duration_sec = 0.0
     processing_seconds: list[float] = []
+    stage_seconds: dict[str, list[float]] = {
+        name: []
+        for name in (
+            "decode_seconds",
+            "svd_dedup_seconds",
+            "katna_seconds",
+            "scene_construction_seconds",
+        )
+    }
     for video in source_videos:
         fact = facts.get(str(video.get("id"))) or {}
         duration = fact.get("duration_sec")
@@ -230,6 +254,12 @@ def keyframe_analysis(
         elapsed = fact.get("processing_seconds")
         if isinstance(elapsed, (int, float)):
             processing_seconds.append(float(elapsed))
+        timings = fact.get("processing_timings")
+        if isinstance(timings, Mapping):
+            for name, values in stage_seconds.items():
+                stage_value = timings.get(name)
+                if isinstance(stage_value, (int, float)):
+                    values.append(float(stage_value))
 
     def refs(item: Mapping[str, Any], field: str) -> list[Any]:
         value = item.get(field) or []
@@ -246,13 +276,53 @@ def keyframe_analysis(
     def keyframes_in(values: Sequence[Any]) -> set[str]:
         return asset_ids(values) & keyframe_ids
 
-    def parents_in(values: Sequence[Any]) -> set[str]:
+    def parents_in(
+        values: Sequence[Any], trace_parent_hints: Mapping[str, str] | None = None
+    ) -> set[str]:
         result = set()
         for asset_id in keyframes_in(values):
-            parent = parent_by_keyframe.get(asset_id)
+            parent = parent_by_keyframe.get(asset_id) or (trace_parent_hints or {}).get(asset_id)
             if parent:
                 result.add(parent)
         return result
+
+    def observed_keyframe_refs(item: Mapping[str, Any]) -> list[dict[str, str]]:
+        """Collect distinct video frames actually inspected during each QA item.
+
+        Video QA records the visual inputs under ``tool_trace[].observation.preview``.
+        Those references are persisted even when ``retrieved_candidate_media`` is empty;
+        the caller unions them with explicit candidates and deduplicates by asset id.
+        """
+        refs_seen: dict[str, dict[str, str]] = {}
+        for trace in item.get("tool_trace") or []:
+            if not isinstance(trace, Mapping):
+                continue
+            # Persisted run traces record search_memories hits as result.asset_ids.
+            # These are the actual retrieved candidates even when no observation
+            # preview was saved. Non-keyframe assets are filtered later by
+            # keyframes_in(), which resolves ids against the current scope.
+            result = trace.get("result")
+            if isinstance(result, Mapping):
+                for value in result.get("asset_ids") or []:
+                    asset_id = str(value or "").strip()
+                    if asset_id:
+                        refs_seen[asset_id] = {
+                            "asset_id": asset_id,
+                            "parent_asset_id": "",
+                        }
+            observation = trace.get("observation")
+            if not isinstance(observation, Mapping):
+                continue
+            for preview in observation.get("preview") or []:
+                if not isinstance(preview, Mapping) or preview.get("media_kind") != KEYFRAME_KIND:
+                    continue
+                asset_id = str(preview.get("asset_id") or preview.get("id") or "").strip()
+                if asset_id:
+                    refs_seen[asset_id] = {
+                        "asset_id": asset_id,
+                        "parent_asset_id": str(preview.get("source_video_asset_id") or ""),
+                    }
+        return list(refs_seen.values())
 
     items = state.get("items") or []
     candidate_total = candidate_relevant = predicted_total = predicted_relevant = 0
@@ -267,11 +337,22 @@ def keyframe_analysis(
             continue
         gt_ids = asset_ids(refs(item, "gt_media"))
         gt_video_ids = {asset_id for asset_id in gt_ids if asset_id in source_video_ids}
-        candidate_values = refs(item, "retrieved_candidate_media")
-        predicted_values = refs(item, "predicted_media")
+        candidate_values = refs(item, "retrieved_candidate_media") or refs(
+            item, "retrieved_candidate_images"
+        )
+        # A video QA can expose the frames actually read only in tool previews. Union
+        # these with the explicit candidate list and let keyframes_in() dedupe by id.
+        trace_keyframes = observed_keyframe_refs(item)
+        trace_parent_hints = {
+            str(preview["asset_id"]): str(preview["parent_asset_id"])
+            for preview in trace_keyframes
+            if preview.get("parent_asset_id")
+        }
+        candidate_values = [*candidate_values, *trace_keyframes]
+        predicted_values = refs(item, "predicted_media") or refs(item, "predicted_images")
         candidate_kf = keyframes_in(candidate_values)
         predicted_kf = keyframes_in(predicted_values)
-        candidate_parents = parents_in(candidate_values)
+        candidate_parents = parents_in(candidate_values, trace_parent_hints)
         candidate_total += len(candidate_kf)
         candidate_relevant += sum(
             1 for asset_id in candidate_kf if parent_by_keyframe.get(asset_id) in gt_video_ids
@@ -368,6 +449,14 @@ def keyframe_analysis(
                 round(1 - len(keyframe_assets) / raw_frame_count, 4) if raw_frame_count else None
             ),
             "timing_source": TIMING_SOURCE,
+            "stage_timings": {
+                name: {
+                    "total_seconds": round(sum(values), 3),
+                    "mean_seconds": _mean(values),
+                    "videos_measured": len(values),
+                }
+                for name, values in stage_seconds.items()
+            },
         },
         "retrieval": {
             "candidate_keyframes": candidate_total,
@@ -405,8 +494,8 @@ def keyframe_analysis(
             "event_context_count": len(observed_event_ids),
         },
         "definitions": {
-            "candidate_precision": "检索候选中的关键帧，其 parent video 与本题 GT 视频一致的比例",
-            "video_parent_recall": "GT 视频被其任一关键帧覆盖的比例，允许返回关键帧而非源视频",
+            "candidate_precision": "检索候选与工具轨迹实际读取的去重关键帧中，其 parent video 与本题 GT 视频一致的比例",
+            "video_parent_recall": "GT 源视频中，被检索候选或工具轨迹实际读取关键帧指向的比例",
             "answer_quality_delta": "带关键帧候选题与不带关键帧候选题的 Judge 均分差；不是因果结论",
             "temporal": "根据关键帧 source_timestamp_sec 统计采样间隔和覆盖跨度",
         },

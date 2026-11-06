@@ -195,11 +195,14 @@ class ReadRuns:
         try:
             sentrix_url = str(state.get("sentrix_url") or self._sentrix_url()).rstrip("/")
             data = self._http.request_json(
-                f"{sentrix_url}/api/assets?scope_id={quote(str(scope_id))}&limit=2000",
+                # 2.0 的资产列表是 ``/api/v1/assets``，信封键为 ``items``（1.0 是
+                # ``/api/assets`` + ``assets``）。写错会 404，而下面整段 ``except``
+                # 会把 404 吞掉——GT 图永远补不上，还不报错。
+                f"{sentrix_url}/api/v1/assets?scope_id={quote(str(scope_id))}&limit=2000",
                 timeout=15,
             )
             assets_by_name: dict[str, list[dict[str, Any]]] = {}
-            for asset in (data or {}).get("assets", []):
+            for asset in (data or {}).get("items", []):
                 assets_by_name.setdefault(Path(str(asset.get("file_name") or "")).name, []).append(asset)
         except Exception:  # noqa: BLE001 —— 1.0 如此：GT 图片只是展示增强，补不上不影响读 run
             return

@@ -474,15 +474,31 @@ def _validated_product_settings(value: Any) -> dict[str, Any]:
         "deployment_profile",
         "agent_wall_time_s",
         "chat_timeout_s",
+        "vlm_timeout_s",
         "face_providers",
         "retinaface_providers",
+        "agent_max_steps",
+        "agent_max_tool_calls",
+        "vlm_generation_profile",
+        "vlm_exact_output_budget",
+        "vlm_context_tokens",
     }
     if set(value) - allowed:
         raise InvalidRequestError("unknown product_settings keys")
     result = dict(value)
+    for key, minimum in (("agent_max_steps", 3), ("agent_max_tool_calls", 0), ("vlm_context_tokens", 1)):
+        if key in result and (type(result[key]) is not int or result[key] < minimum):
+            raise InvalidRequestError(f"{key} must be an integer >= {minimum}")
+    if "vlm_exact_output_budget" in result and type(result["vlm_exact_output_budget"]) is not bool:
+        raise InvalidRequestError("vlm_exact_output_budget must be a boolean")
+    if "vlm_generation_profile" in result and result["vlm_generation_profile"] not in {
+        "legacy",
+        "qwen35_nonthinking",
+    }:
+        raise InvalidRequestError("unknown vlm_generation_profile")
     if "deployment_profile" in result and result["deployment_profile"] not in {"server", "mac"}:
         raise InvalidRequestError("deployment_profile must be server or mac")
-    for key in ("agent_wall_time_s", "chat_timeout_s"):
+    for key in ("agent_wall_time_s", "chat_timeout_s", "vlm_timeout_s"):
         if key in result:
             raw = result[key]
             if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 < raw <= 86400:

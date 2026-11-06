@@ -50,6 +50,7 @@ class TurnProfile:
     max_inspections: int
     wall_time_s: float
     final_reserve_s: float
+    strict_model_step_budget: bool = False
 
 
 # goal_driven_candidate：1.0 的生产默认 profile。

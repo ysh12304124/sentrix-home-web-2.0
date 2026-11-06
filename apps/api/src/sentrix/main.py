@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.types import Scope
@@ -140,6 +141,7 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """启动后台执行器，并完成视频恢复与嵌入方案冒烟。"""
     executors = [
         executor
         for executor in (
@@ -151,11 +153,25 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     for executor in executors:
         executor.start()
     try:
+        container: Container = app.state.container
+        from sentrix.api.routes.media import recover_video_jobs
+
+        recover_video_jobs(container)
+        smoke_ok, smoke_error = await run_in_threadpool(container.embedding_health.smoke_test)
+        if not smoke_ok and not container.settings.experience_mode:
+            raise RuntimeError(
+                f"嵌入方案启动测试失败（embedding_scheme={container.settings.embedding_scheme}）: "
+                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+            )
+        if smoke_ok:
+            log.info("嵌入方案启动测试通过（%s）", container.settings.embedding_scheme)
+        else:
+            # 体验实例沿用 RecoveringEmbeddingHealth：先起服务，侧车恢复后自动重探。
+            log.warning("体验实例嵌入依赖暂不可用，将自动重试: %s", smoke_error)
         yield
     finally:
         for executor in executors:
             executor.stop()
-
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，

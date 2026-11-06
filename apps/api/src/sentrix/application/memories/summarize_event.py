@@ -55,8 +55,10 @@ NOISE_VALUES = frozenset({"待判断", "未识别", "未知"})
 
 OTHER_PLACE = "其他或不确定"
 
-_SUMMARY_PROMPT = """你是家庭事件总结器。下面是一组已经按拍摄时间和地点聚类的图片观察。
-只能使用给定观察，不得把元数据地点以外的信息当作事实。
+_SUMMARY_PROMPT = """你是家庭事件总结器。下面是一组已经按拍摄时间和地点聚类的图片观察，
+可能同时包含与视频场景时间对齐的语音转写。
+视觉事实只能使用给定图片观察；语音转写只能支持其中确实说出的内容，不能据此臆测画面里的人物、物体或动作。
+不得把元数据地点以外的信息当作事实。
 **人物**：`participants` 里列出的是**已经确认身份**的人，可以直接使用他们的姓名
 （例如「王建国和张晓莉在正定古城合影」）；`participants` 之外的人**一律不得猜测姓名**，
 只能按画面描述（「一位穿黑色外套的女士」）。观察文本里的「一名男子」「一个孩子」
@@ -214,6 +216,7 @@ def build_evidence(
                 {"name": item.person_name, "role": item.role} for item in participants if item.person_name
             ],
             "observations": evidence,
+            "speech_transcript": str(event.source_metadata.get("speech_transcript") or ""),
         },
         ensure_ascii=False,
     )

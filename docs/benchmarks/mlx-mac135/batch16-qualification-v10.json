@@ -1,0 +1,17 @@
+{
+  "status": "completed",
+  "passed": true,
+  "actual_batch_peak": 16,
+  "optimization_totals": {
+    "grammar_batches": 492,
+    "grammar_rows": 5177,
+    "grammar_batch_peak": 16,
+    "strided_kv_calls": 3320,
+    "strided_kv_fallbacks": 0
+  },
+  "terminal_count": 16,
+  "return_count": 16,
+  "usage_matches": true,
+  "elapsed_s": 108.25839710235596,
+  "note": "Synthetic 16-way marker/schema isolation and actual batch qualification, not QA throughput"
+}

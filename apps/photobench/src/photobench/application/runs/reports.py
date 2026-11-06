@@ -161,6 +161,7 @@ class RunReports:
                 "duration_sec": metadata.get("duration_sec"),
                 "frame_count": metadata.get("frame_count"),
                 "processing_seconds": video.get("processing_seconds"),
+                "processing_timings": video.get("processing_timings"),
             }
         return facts
 

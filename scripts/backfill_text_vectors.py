@@ -2,7 +2,7 @@
 """把已有观察的文本向量补上（T115d）。**幂等，可反复跑。**
 
 **为什么要回填。** 写入侧（T115b）从那一刻起才存在。此前导入的照片有完整的语义
-（caption / activity / place / …都在 ``observations`` 里），但 ``memory_vectors`` 里
+（caption / activity / place / …都在 ``observations`` 里），但 ``text_vectors`` 里
 **一条文本向量都没有**——文本检索通道接上去只会返回空，而「空」与「没接」在读数上
 分不开。回填把这条通道对存量数据也变成真的。
 
@@ -42,7 +42,7 @@ def main() -> int:
     scope = parser.parse_args().scope
 
     container = Container.build(load_settings())
-    index = IndexObservationText(embedder=container.text_embedder, vectors=container.vector_repository)
+    index = IndexObservationText(embedder=container.text_embedder, vectors=container.text_vector_repository)
 
     observations = container.observation_repository.list_scope(scope, limit=10_000)
     print(f"scope={scope}  观察 {len(observations)} 条")
@@ -76,7 +76,7 @@ def main() -> int:
     covered = sum(
         1
         for observation in observations
-        if container.vector_repository.has_vector(
+        if container.text_vector_repository.has_vector(
             space=scheme.SEMANTIC_SPACE,
             source_type="observation",
             source_id=observation.id,

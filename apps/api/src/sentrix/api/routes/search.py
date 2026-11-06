@@ -29,6 +29,7 @@ log = logging.getLogger("sentrix.api.search")
 router = APIRouter(tags=["search"])
 
 
+
 def _conditions(
     *, time_range: str, person: Sequence[str], place: str, media_type: str
 ) -> tuple[Condition, ...]:

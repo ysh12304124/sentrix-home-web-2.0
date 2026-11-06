@@ -64,6 +64,11 @@ DEFAULT_SRC = REPO_ROOT / "apps" / "api" / "src"
 #     动工前先核依赖、核出缺口再写任务定义，**核查本身就是一个有交付物的任务**。
 #     把它们硬塞进一个编号会更像有归属，实际只是把问题推后。
 PENDING_METHODS: dict[str, str] = {
+    # VideoJob 工作流把旧的「清空派生物后重跑」改为保留产物并续跑。该仓储方法仍保留，
+    # 供未来显式的管理员清理流程复用；普通重处理不得调用它或删除已有产物。
+    "VideoRepository.cleanup_derivatives": (
+        "持久 VideoJob 上线后无生产调用者；待显式管理员清理流程定义后接线"
+    ),
     # —— S7b2 T311：运行表读写 + 模型边清场，T312/T313/T314 接线 ——
     #
     # 与 S7b1 的 T302 同一条路：这几个方法只有 ``FamilyGraphService``（T312）与

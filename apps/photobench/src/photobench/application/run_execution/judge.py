@@ -33,6 +33,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.runs.analysis import (
     JUDGE_CONSISTENCY_VERSION,
@@ -238,6 +239,11 @@ class JudgeRunner:
                         else "service_error",
                     },
                 )
+                if isinstance(exc, RequestOutcomeUnknownError):
+                    record["diagnostics"].update(
+                        error_category="request_outcome_unknown", automatic_replay=False
+                    )
+                    raise
                 if client_code is not None:
                     raise RuntimeError(
                         f"judge request rejected with HTTP {client_code} (client error, not retryable): {exc}"
@@ -337,7 +343,7 @@ class JudgeRunner:
                 normalization = normalize_judge_score(parsed.get("score"))
                 score = normalization["score"]
                 reason = str(parsed.get("reason") or text[:200])
-                consistent = judge_score_consistency(score, reason)
+                consistent = score is not None and judge_score_consistency(score, reason)
                 attempts.append(
                     {
                         "input": payload,
@@ -351,18 +357,23 @@ class JudgeRunner:
                 if consistent:
                     break
                 if consistency_attempt == 1:
-                    score, reason = None, "judge_inconsistent_score_reason"
+                    reason = "judge_invalid_score" if score is None else "judge_inconsistent_score_reason"
+                    score = None
                     break
+                reminder = (
+                    "格式保护：上次响应没有可解析的有效分数。请根据原评分标准重新判断，"
+                    '只输出合法 JSON：{"score":0|1|2,"reason":"简短中文理由"}。'
+                    if score is None
+                    else "一致性保护：你刚才的评分理由与分数矛盾。"
+                    "如果理由确认回答正确、与参考答案一致、符合预期，分数不能是 0；"
+                    "请重新核对后只输出一个分数与理由一致的 JSON。"
+                )
                 payload = {
                     **payload,
                     "messages": [
                         {
                             "role": "system",
-                            "content": (
-                                f"{prompt}\n\n一致性保护：你刚才的评分理由与分数矛盾。"
-                                "如果理由确认回答正确、与参考答案一致、符合预期，分数不能是 0；"
-                                "请重新核对后只输出一个分数与理由一致的 JSON。"
-                            ),
+                            "content": f"{prompt}\n\n{reminder}",
                         },
                         payload["messages"][1],
                     ],
@@ -377,7 +388,7 @@ class JudgeRunner:
                 "reason": reason,
                 "input": payload,
                 "raw_text": text,
-                "judge_status": "completed",
+                "judge_status": "completed" if score is not None else "failed",
                 "judge_retry_attempts": retry_attempts,
             }
         except Exception as exc:  # noqa: BLE001 — preserve received observations even if retry fails
@@ -671,7 +682,7 @@ class JudgeRunner:
                         answerability=turn_definition.get("answerability", row.get("answerability")),
                         conversation=conv_ctx,
                     )
-                    if expected in ANSWER_QUALITY_RUBRICS
+                    if expected in ANSWER_QUALITY_RUBRICS or turn_reference.strip()
                     else None
                 )
                 evidence_future = (

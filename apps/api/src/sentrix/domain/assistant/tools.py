@@ -86,9 +86,9 @@ def _object_schema(properties: Mapping[str, Any], required: Sequence[str]) -> Ma
 
 SEARCH_MEMORIES = ToolSpec(
     name="search_memories",
-    brief="按内容词检索照片，返回带地点/时间/人物/描述的候选预览。",
+    brief="按内容词检索照片或视频，返回画面描述及视频语音转写预览。",
     description=(
-        "按内容词检索家庭照片（人/物/场景/衣着/颜色/地点特征）。"
+        "按内容词检索家庭照片或视频（人/物/场景/衣着/颜色/地点特征/语音内容）。"
         "返回一个结果集摘要，其中 preview 是排在最前的几张。"
         "每条 preview 自带 captured_at（拍摄时间）/ place（**拍摄地的行政区划**，"
         "形如「河北省石家庄市正定县 · 正定北门里村附近」，由照片的 GPS 反解而来；"
@@ -99,7 +99,9 @@ SEARCH_MEMORIES = ToolSpec(
         "level（相关强度：exact 命中确定性条件、"
         "strong 语义相近、approximate 由邻近扩展）/ scene_hint（画面里的场景描述，"
         "如「户外水泥地面」——**它是看到的画面，不是地点，别拿它当地名回答**）/"
-        "evidence_summary（画面内容、物品、衣着与图内文字）——**单张照片的地点、时间、"
+        "evidence_summary（画面内容、物品、衣着与图内文字）/ speech_evidence（视频语音转写；"
+        "视频关键帧只带与该帧时间戳重叠的语音片段）——问说话内容时直接使用 speech_evidence，"
+        "不要调用 read_photo_text 做 OCR，也不要把语音当作画面事实。**单张照片的地点、时间、"
         "人物、画面内容直接在 preview 里读，不要为此再调用其他工具**。"
         "问「在哪里拍的」就用 place 里的行政区名回答，不要用 scene_hint。"
         "返回值里另有 group_photo_count / group_photo_sizes / group_photo_rows："
@@ -126,7 +128,7 @@ SEARCH_MEMORIES = ToolSpec(
         },
         ["query"],
     ),
-    satisfies=(EvidenceType.PHOTO_SET,),
+    satisfies=(EvidenceType.PHOTO_SET, EvidenceType.SPOKEN_CONTENT),
     required=("query",),
 )
 
@@ -344,6 +346,7 @@ INSPECT_PHOTO = ToolSpec(
     brief="复核单张照片的视觉细节（物体/衣着/颜色/场景）。昂贵。",
     description=(
         "复核已检索照片的视觉细节（物体/衣着/颜色/场景）。"
+        "只接受 media_kind=image 的照片或 source_kind=video_keyframe 的图片，不接受视频或音频原件。"
         "asset_handle 使用 search_memories preview 里的 handle（photo_1…），可省略（默认用预览第一张）。"
         "当前 handle 不含目标时换下一张（photo_2、photo_3…）复核，同一张图最多复核一次，不要反复检查同一张。"
         # **这里刻意不写具体次数。** 1.0（与本文件此前）写的是「默认每轮最多 1 次」，

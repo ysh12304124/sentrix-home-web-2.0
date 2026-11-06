@@ -328,6 +328,7 @@ class RunSuites:
                     qa_concurrency=int(
                         payload.get("qa_concurrency", self._budget_defaults.get("qa_concurrency", 0))
                     ),
+                    judge_backpressure=payload.get("judge_backpressure", True) is not False,
                     turn_timeout=int(payload.get("turn_timeout") or 900),
                     # 整册导入在 Mac/CPU 上可能远超默认 2h；允许按 run 放宽客户端超时。
                     import_timeout=int(
@@ -489,6 +490,7 @@ class RunSuites:
                 import_timeout=int(budgets.get("import_timeout") or 7200),
                 turn_timeout=int(budgets.get("turn_timeout") or 900),
                 qa_concurrency=int(budgets.get("qa_concurrency") or 0),
+                judge_backpressure=budgets.get("judge_backpressure", True) is not False,
                 runtime_snapshot=RunRuntimeSnapshot(json.dumps(inherited), self._build_revision),
                 snapshot_source="resumed_run",
             )

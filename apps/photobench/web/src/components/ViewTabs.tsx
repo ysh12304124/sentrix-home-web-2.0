@@ -7,7 +7,7 @@
  */
 
 /** 两个顶层视图。1.0 `activeView` 的取值就是这两个字符串。 */
-export type ActiveView = "runs" | "qa-browser";
+export type ActiveView = "runs" | "qa-browser" | "capacity";
 
 export interface ViewTabsProps {
   activeView: ActiveView;
@@ -30,6 +30,9 @@ export function ViewTabs({ activeView, onSelect }: ViewTabsProps) {
         onClick={() => onSelect("qa-browser")}
       >
         QA 数据集浏览
+      </button>
+      <button type="button" className={`view-tab${activeView === "capacity" ? " active" : ""}`} onClick={() => onSelect("capacity")}>
+        并发实验
       </button>
     </nav>
   );

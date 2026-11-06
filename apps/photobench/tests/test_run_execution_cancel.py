@@ -379,7 +379,8 @@ def test_product_pending_cleanup_blocks_release_until_acknowledged():
     assert writer.last_state()["cleanup"]["status"] == "stopped"
 
 
-def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows():
+@pytest.mark.parametrize("judge_backpressure", [True, False])
+def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(judge_backpressure):
     import threading
 
     execution, _ = _execution()
@@ -393,11 +394,13 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
         }
     )
     execution._state = state
-    entered, release = threading.Event(), threading.Event()
+    entered, release, all_agents_done = threading.Event(), threading.Event(), threading.Event()
     started, errors = [], []
 
     def evaluate(row, *_args):
         started.append(row["qa_id"])
+        if len(started) == 20:
+            all_agents_done.set()
         return {"qa_id": row["qa_id"], "answer": "a", "execution_status": "completed"}
 
     class Judge:
@@ -412,7 +415,7 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
 
     def run():
         try:
-            execution._phase_qa_eval(state, _request(qa_concurrency=1))
+            execution._phase_qa_eval(state, _request(qa_concurrency=1, judge_backpressure=judge_backpressure))
         except Exception as error:
             errors.append(error)
 
@@ -420,7 +423,11 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
     worker.start()
     try:
         assert entered.wait(2)
-        assert len(started) <= 3
+        if judge_backpressure:
+            assert len(started) <= 3
+        else:
+            assert all_agents_done.wait(2), "cloud Judge must not reduce measured Agent concurrency"
+            assert len(started) == 20
     finally:
         release.set()
         worker.join(5)

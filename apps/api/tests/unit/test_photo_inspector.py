@@ -347,8 +347,61 @@ def test_the_wire_body_carries_the_question_and_two_image_blocks(
 def test_the_wire_body_has_a_single_image_block_without_a_crop(inspector_factory: Any, photo: Path) -> None:
     inspector_factory().inspect(str(photo), QUESTION)
 
-    content = _RecordingEndpoint.posts[0]["messages"][0]["content"]
+    body = _RecordingEndpoint.posts[0]
+    assert "response_format" not in body  # Legacy endpoints keep their existing wire contract.
+    content = body["messages"][0]["content"]
     assert [block["type"] for block in content] == ["text", "image_url"]
+
+
+def test_qwen_inspection_requests_json_before_exact_token_counting(photo: Path, crop: Path) -> None:
+    """The visual client must request the JSON contract it requires from the reply."""
+    requests: list[tuple[str, dict[str, Any]]] = []
+
+    class StructuredEndpoint(_RecordingEndpoint):
+        def do_POST(self) -> None:  # noqa: N802
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            if self.path == "/tokenize":
+                response = {"count": 123, "max_model_len": 32768}
+            else:
+                content = (
+                    json.dumps(self.reply, ensure_ascii=False)
+                    if body.get("response_format") == {"type": "json_object"}
+                    else "The person is wearing a hat."
+                )
+                response = {
+                    "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 123, "completion_tokens": 20},
+                }
+            self._send(json.dumps(response).encode("utf-8"), 200)
+
+    httpd = HTTPServer(("127.0.0.1", 0), StructuredEndpoint)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base_url = f"http://127.0.0.1:{httpd.server_port}/v1"
+    try:
+        model = ServedModel(
+            base_url,
+            timeout_s=5.0,
+            generation_profile="qwen35_nonthinking",
+            exact_output_budget=True,
+            context_tokens=32768,
+        )
+        inspector = OpenAIPhotoInspector(base_url, model, timeout_s=5.0)
+        result, facts = inspector.inspect_recorded(str(photo), QUESTION, crop=str(crop))
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    assert [path for path, _ in requests] == ["/tokenize", "/v1/chat/completions"]
+    assert result == {"observation": "戴了", "certainty": "supported"}, facts
+    assert len(facts) == 1 and facts[0]["status"] == "complete"
+    counted, generated = (body for _, body in requests)
+    assert counted["response_format"] == generated["response_format"] == {"type": "json_object"}
+    assert counted["messages"] == generated["messages"]
+    assert len(generated["messages"][0]["content"]) == 3
+    assert generated["max_tokens"] == 32768 - 123
+    assert generated["temperature"] == 0.7
+    assert generated["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 # ---- 对照臂：这个端口做的事，``VlmObserver`` 结构上做不到 ---------------------------
@@ -365,18 +418,21 @@ def test_the_observer_has_no_question_slot_which_is_why_this_port_exists() -> No
     assert "{question}" in INSPECT_PROMPT
 
 
+@pytest.mark.parametrize("profile", ["legacy", "qwen35_nonthinking"])
 def test_inspection_records_timeout_and_json_format_without_changing_fallback(
-    photo: Path, monkeypatch: pytest.MonkeyPatch
+    photo: Path, monkeypatch: pytest.MonkeyPatch, profile: str
 ):
     import httpx
 
     import sentrix.infrastructure.media.vlm_observer as observer
 
-    class KnownModel:
+    class KnownModel(ServedModel):
         def current(self):
             return "vision"
 
-    inspector = OpenAIPhotoInspector("http://vision/v1", KnownModel())
+    inspector = OpenAIPhotoInspector(
+        "http://vision/v1", KnownModel("http://vision/v1", generation_profile=profile)
+    )
 
     def timeout(*args, **kwargs):
         raise httpx.ReadTimeout("timed out")

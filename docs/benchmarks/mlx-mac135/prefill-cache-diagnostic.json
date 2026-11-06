@@ -1,0 +1,53 @@
+{
+  "diagnostic_only": true,
+  "label": "prefill-profile16-cache-candidate",
+  "run_id": "20261104-133307-album3-max-video10-current-a824a9",
+  "questions": 16,
+  "qa_wall_s": 334.7733,
+  "model_calls": 73,
+  "input_tokens": 144771,
+  "output_tokens": 7713,
+  "generator_steps": 1170,
+  "phase_wall_seconds": {
+    "generator_wall_s": 316.27965410705656,
+    "canonical_prefill_wall_s": 40.96808000281453,
+    "interleaved_prefill_wall_s": 181.68323041591793,
+    "decode_wall_s": 91.64229394309223,
+    "generator_other_wall_s": 1.9860497452318668,
+    "preprocess_observed_wall_s": 0.22691965475678444,
+    "preprocess_outside_generator_s": 0.039354413747787476,
+    "outside_generator_wall_s": 18.493645892943448
+  },
+  "prefill_share_of_qa_wall": 0.6650808484987676,
+  "max_accounting_overrun_s": 0,
+  "cache": {
+    "requests_with_accepted_reuse": 60,
+    "requests": 73,
+    "cached_tokens": 61440,
+    "token_hit_rate": 0.42439438837888804,
+    "request_hit_rate": 0.821917808219178,
+    "text_only_requests": 71
+  },
+  "potential_unlimited_boundary_reuse": {
+    "hypothetical_not_actual": true,
+    "requests": 6,
+    "tokens": 9435,
+    "token_fraction": 0.06517189216072279,
+    "four_token_suffix_verified": true
+  },
+  "potential_shared1024_reuse": {
+    "hypothetical_not_actual": true,
+    "requests": 44,
+    "tokens": 45056,
+    "token_fraction": 0.3112225514778512,
+    "distinct_keys": 10
+  },
+  "notes": [
+    "Prefill wall spans include CPU submission, existing device completion barriers and first-token sampling; not pure GPU kernel time.",
+    "Canonical asynchronous decode may charge outstanding work to a later completion barrier; no exclusive GPU claim.",
+    "Preprocess observed time can be inside generator and is not added again.",
+    "Diagnostic instrumentation records input IDs privately; no question text, input IDs or answers in this report.",
+    "Upstream inclusive prompt/generation counters are not summed; canonical duplicate prompt clock is discarded."
+  ],
+  "profile_sha256": "228d99053743560db5a0f63630d012f3bb8a3766d55b7b923993316dbd628243"
+}

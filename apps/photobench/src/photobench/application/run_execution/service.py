@@ -245,6 +245,7 @@ class RunRequest:
     import_timeout: int = 7200
     turn_timeout: int = 900
     qa_concurrency: int = 0
+    judge_backpressure: bool = True
     runtime_framework: str = ""
     judge_url: str = ""
     judge_model: str = ""
@@ -286,6 +287,7 @@ def freeze_runtime_request(
             "import_timeout": request.import_timeout,
             "turn_timeout": request.turn_timeout,
             "qa_concurrency": request.qa_concurrency,
+            "judge_backpressure": request.judge_backpressure,
         },
         required_build_revision=revision if revision != "development" else None,
     )
@@ -1692,6 +1694,10 @@ class RunExecution:
         target_ids = set(asset_ids)
         poll_count = 0
         assets: list[dict[str, Any]] = []
+        # ``pipeline_metrics.image_count`` 是「评测图片数」（不含身份参考图与视频关键帧）：
+        # 只数本次流水线的目标资产里 ``media_type == "image"`` 的那些。没有它，前端那张
+        # 卡的「评测图片墙钟均值」恒显示「未记录」（``details.ts:pipelineMetricRows``）。
+        observed_image_count = 0
         state.record_phase(
             "pipeline_processing",
             "progress",
@@ -1741,6 +1747,12 @@ class RunExecution:
                             else "media_processing"
                         ),
                     },
+                )
+                observed_image_count = sum(
+                    1 for asset in assets if str(asset.get("media_type") or "") == "image"
+                )
+                state.record_phase(
+                    "pipeline_processing", "pipeline_metrics", {"image_count": observed_image_count}
                 )
                 self._persist(str(state.get("run_id")), state)
             except Exception:  # noqa: BLE001 - 进度旁路失败不影响流水线主请求
@@ -1804,6 +1816,11 @@ class RunExecution:
                 }
             )
         final_processed = len([item for item in assets if item.get("status") == "processed"])
+        image_count = (
+            sum(1 for item in assets if str(item.get("media_type") or "") == "image")
+            if assets
+            else observed_image_count
+        )
         phase_result = {
             "total_seconds": round(float(timings.get("total") or time.perf_counter() - started), 3),
             "poll_iterations": poll_count,
@@ -1814,6 +1831,14 @@ class RunExecution:
             "event_count": int(result.get("events") or 0),
             "video_scene_count": int(result.get("video_scenes") or 0),
             "summarized_count": int(result.get("summarized") or 0),
+            # 只记**手上确实有的事实**：评测图片数、事件数/总结调用数与总结墙钟。
+            # 并发与 vLLM 上限 2.0 的流水线接口不返回，留空让前端显示「-」而不是编一个值。
+            "pipeline_metrics": {
+                "image_count": image_count,
+                "event_count": int(result.get("events") or 0),
+                "event_summary_call_count": int(result.get("summarized") or 0),
+                "event_summary_wall_seconds": timings.get("event_summarize"),
+            },
             "timings": timings,
             "keyframe_extraction_seconds": timings.get("video_keyframe_extraction", 0.0),
             "keyframe_memory_seconds": timings.get("video_keyframe_memory", 0.0),
@@ -2060,6 +2085,7 @@ class RunExecution:
         state.set("qa_concurrency_runtime_limit", resolved.runtime_limit)
         state.set("qa_assets", len(assets))
         state.set("judge_concurrency", judge_concurrency if judge is not None else 0)
+        state.set("judge_backpressure", request.judge_backpressure)
         state.record_phase("qa_eval", "agent_total", len(rows))
         state.record_phase("qa_eval", "agent_phase_started_at", now_iso())
         agent_phase_started = time.perf_counter()
@@ -2149,7 +2175,10 @@ class RunExecution:
                     nonlocal queue_exhausted
                     while (
                         len(futures) < concurrency
-                        and len(futures) + len(judge_futures) < concurrency + 2 * judge_concurrency
+                        and (
+                            not request.judge_backpressure
+                            or len(futures) + len(judge_futures) < concurrency + 2 * judge_concurrency
+                        )
                         and not state.cancelled
                     ):
                         next_row = next(queue, None)
@@ -2327,6 +2356,7 @@ class RunExecution:
         for name in PASSTHROUGH_FIELDS:
             if row.get(name) is not None:
                 item[name] = row[name]
+        request_stage = "start_conversation"
         try:
             self._cancel_wait(0)
             item["execution_status"] = "started"
@@ -2338,6 +2368,7 @@ class RunExecution:
             )
             if not conversation_id:
                 raise RuntimeError("2.0 建会话没有返回 id")
+            item["conversation_id"] = conversation_id
             turn_records: list[dict[str, Any]] = []
             last_result: dict[str, Any] = {}
             last_progress: list[Any] = []
@@ -2354,6 +2385,7 @@ class RunExecution:
                 # **评测必须打开完整轨迹。** 8772 的「模型这一步看到什么/回答什么」
                 # 只能由主 API 在回合终态载荷里带出来；不开这个开关，run.json 里
                 # 永远只有工具入参与摘要，和 1.0 的 debug_trace 对不上。
+                request_stage = "start_turn"
                 started_turn = self.client.start_turn(
                     conversation_id=conversation_id,
                     message=message,
@@ -2363,6 +2395,7 @@ class RunExecution:
                 turn_id = str(started_turn.get("turn_id") or "")
                 if not turn_id:
                     raise RuntimeError(f"2.0 发起回合没有返回 turn_id：{started_turn}")
+                request_stage = "await_turn"
                 polled = self._await_turn(turn_id, request)
                 last_result = polled.get("result") or {}
                 last_progress = polled.get("public_progress") or []
@@ -2539,6 +2572,7 @@ class RunExecution:
             item.update(
                 {
                     "error": str(exc),
+                    "error_type": type(exc).__name__,
                     "retrieval_recall": 0,
                     "retrieval_precision": None,
                     "retrieval_f1": None,
@@ -2550,6 +2584,13 @@ class RunExecution:
                     "wall_clock_ms": round((time.perf_counter() - started) * 1000, 1),
                 }
             )
+            if isinstance(exc, RequestOutcomeUnknownError):
+                item["diagnostics"] = {
+                    **exc.facts,
+                    "error_category": "request_outcome_unknown",
+                    "request_sent": None,
+                    "request_stage": request_stage,
+                }
         item.update(retrieval_metric_projection(item))
         if item["execution_status"] == "completed":
             item["attribution"] = derive_attribution(item)

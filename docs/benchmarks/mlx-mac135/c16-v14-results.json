@@ -1,0 +1,282 @@
+{
+  "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+  "speed_gate": {
+    "passed": true,
+    "baseline_qpm": 2.257366200350068,
+    "baseline_trials": 1,
+    "baseline_reference_mode": "single_completed_trial_user_cancel",
+    "candidate_qpm": 3.4623224258004686,
+    "weighted_speedup": 1.5337885475841442,
+    "round_speedups": [
+      1.5612919266835106,
+      1.5072373815976068
+    ],
+    "required_weighted_speedup": 1.15,
+    "required_each_round_speedup": 1.1,
+    "baseline_labels": [
+      "C16-R1-v7"
+    ],
+    "candidate_labels": [
+      "C16-R1-v14",
+      "C16-R2-v14"
+    ]
+  },
+  "rounds": [
+    {
+      "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "reporting_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "metrics_probe_timeout_s": [
+        30
+      ],
+      "label": "C16-R1-v14",
+      "run_id": "20261105-071437-album3-max-video10-current-1a7670",
+      "concurrency": 16,
+      "questions": 64,
+      "trial": 1,
+      "completed": 64,
+      "returned": 64,
+      "failure_categories": {
+        "oom": 0,
+        "lock_conflict": 0,
+        "service_exit": 0,
+        "timeout": 0,
+        "truncation": 0,
+        "unknown": 0
+      },
+      "judge_completed": 64,
+      "judge_failed": 0,
+      "status": "completed",
+      "passed": true,
+      "qa_per_min": 3.524407624174793,
+      "qa_seconds": 1089.5448000000001,
+      "judge_seconds": 1010.5435,
+      "latency_p50_s": 236.6497,
+      "latency_p95_s": 425.9463099999998,
+      "ttft_p95_s": 37.74325866699218,
+      "actual_batch_peak": 16,
+      "queue_peak": 14.0,
+      "memory_peak_gib": 11.4061279296875,
+      "swap_delta_gib": -0.06939697265625,
+      "failures": {},
+      "run_json_sha256": "a638d5d44c77776dcb49787c7120ec996302ea945a95393d665b420266f8c95d",
+      "model_request_count": 263,
+      "model_call_evidence": {
+        "expected_calls": 263,
+        "recorded_calls": 263,
+        "token_multiset_matches": true,
+        "all_api_calls_complete": true,
+        "unique_terminal_ids": true,
+        "conflicting_observations": 0,
+        "output_counters_consistent": true,
+        "verified": true
+      },
+      "prefix_cache_evidence": {
+        "verified": true,
+        "observed_requests": 263,
+        "expected_requests": 263,
+        "errors": [],
+        "requests_with_reuse": 228,
+        "cached_tokens": 233472,
+        "uncached_tokens": 300930,
+        "request_hit_rate": 0.8669201520912547,
+        "token_hit_rate": 0.43688459249778255
+      },
+      "telemetry_status": "complete",
+      "ttft_p50_s": 7.016004323959351,
+      "judge_per_min": 3.799935381307188,
+      "input_tokens_max": 4031,
+      "run_valid": true,
+      "resource_summary": {
+        "samples": 151,
+        "cpu_percent": {
+          "p50": 15.6,
+          "p95": 28.25,
+          "max": 50.2
+        },
+        "gpu_percent": {
+          "p50": 99.0,
+          "p95": 100.0,
+          "max": 100.0
+        },
+        "memory_used_bytes": {
+          "p50": 11045847040.0,
+          "p95": 11781718016.0,
+          "max": 12247236608.0
+        },
+        "memory_available_bytes": {
+          "p50": 3360784384.0,
+          "p95": 5064695808.0,
+          "max": 7074496512.0
+        },
+        "swap_used_bytes": {
+          "p50": 2459041792.0,
+          "p95": 2585853952.0,
+          "max": 2626813952.0
+        },
+        "swap_used_bytes_delta": -74514432.0,
+        "actual_swap_in_bytes_delta": 333512704.0,
+        "actual_swap_out_bytes_delta": 269418496.0,
+        "engine_num_requests_running_peak": 16.0,
+        "engine_num_requests_waiting_peak": 14.0,
+        "engine_metrics_missing_samples": 0,
+        "darwin_pagein_bytes_delta": 8219475968.0,
+        "darwin_pageout_bytes_delta": 47955968.0
+      },
+      "original_summary_sha256": "c2d28358d7be56ffa61d61444d3b8a2894d418495bf0d0e97198ad21d796a18d",
+      "valid_judge_scores_independently_verified": 64,
+      "tool_status": {
+        "ok": 173,
+        "denied": 4
+      },
+      "tool_failure_reasons": {
+        "no_text_detected": 2
+      },
+      "tool_parameter_denial_counts": [
+        "unsupported_group_by",
+        "unsupported_group_by"
+      ],
+      "resource_counter_semantics": "Only actual_swap fields represent vm_stat Swapins/Swapouts; darwin_pagein/pageout are general page traffic. swap_used is a stock."
+    },
+    {
+      "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "reporting_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "metrics_probe_timeout_s": [
+        30
+      ],
+      "label": "C16-R2-v14",
+      "run_id": "20261105-073313-album3-max-video10-current-d6aa47",
+      "concurrency": 16,
+      "questions": 64,
+      "trial": 2,
+      "completed": 64,
+      "returned": 64,
+      "failure_categories": {
+        "oom": 0,
+        "lock_conflict": 0,
+        "service_exit": 0,
+        "timeout": 0,
+        "truncation": 0,
+        "unknown": 0
+      },
+      "judge_completed": 64,
+      "judge_failed": 0,
+      "status": "completed",
+      "passed": true,
+      "qa_per_min": 3.402386721122575,
+      "qa_seconds": 1128.6195,
+      "judge_seconds": 1038.5575999999999,
+      "latency_p50_s": 241.98675,
+      "latency_p95_s": 411.86657999999983,
+      "ttft_p95_s": 47.77264597415924,
+      "actual_batch_peak": 16,
+      "queue_peak": 14.0,
+      "memory_peak_gib": 11.111083984375,
+      "swap_delta_gib": -0.14068603515625,
+      "failures": {},
+      "run_json_sha256": "76b7cd28e9affe278af06c6ed1e16196b6d26e3e46803aa676fc002726c91903",
+      "model_request_count": 267,
+      "model_call_evidence": {
+        "expected_calls": 267,
+        "recorded_calls": 267,
+        "token_multiset_matches": true,
+        "all_api_calls_complete": true,
+        "unique_terminal_ids": true,
+        "conflicting_observations": 0,
+        "output_counters_consistent": true,
+        "verified": true
+      },
+      "prefix_cache_evidence": {
+        "verified": true,
+        "observed_requests": 267,
+        "expected_requests": 267,
+        "errors": [],
+        "requests_with_reuse": 231,
+        "cached_tokens": 236544,
+        "uncached_tokens": 315202,
+        "request_hit_rate": 0.8651685393258427,
+        "token_hit_rate": 0.42871901200914914
+      },
+      "telemetry_status": "complete",
+      "ttft_p50_s": 7.892379999160767,
+      "judge_per_min": 3.6974357512765788,
+      "input_tokens_max": 4628,
+      "run_valid": true,
+      "resource_summary": {
+        "samples": 156,
+        "cpu_percent": {
+          "p50": 15.649999999999999,
+          "p95": 22.15,
+          "max": 51.7
+        },
+        "gpu_percent": {
+          "p50": 99.0,
+          "p95": 100.0,
+          "max": 100.0
+        },
+        "memory_used_bytes": {
+          "p50": 10968858624.0,
+          "p95": 11682787328.0,
+          "max": 11930435584.0
+        },
+        "memory_available_bytes": {
+          "p50": 3361398784.0,
+          "p95": 4739063808.0,
+          "max": 5564727296.0
+        },
+        "swap_used_bytes": {
+          "p50": 2493579264.0,
+          "p95": 2518745088.0,
+          "max": 2535522304.0
+        },
+        "swap_used_bytes_delta": -151060480.0,
+        "actual_swap_in_bytes_delta": 152158208.0,
+        "actual_swap_out_bytes_delta": 0.0,
+        "engine_num_requests_running_peak": 16.0,
+        "engine_num_requests_waiting_peak": 14.0,
+        "engine_metrics_missing_samples": 0,
+        "darwin_pagein_bytes_delta": 4843012096.0,
+        "darwin_pageout_bytes_delta": 53510144.0
+      },
+      "original_summary_sha256": "6c4c44fd24b4d5854abd44d474a221fba30e160d19f23884eb40ae81c247d26e",
+      "valid_judge_scores_independently_verified": 64,
+      "tool_status": {
+        "ok": 179,
+        "denied": 4
+      },
+      "tool_failure_reasons": {
+        "no_text_detected": 2
+      },
+      "tool_parameter_denial_counts": [
+        "unsupported_group_by",
+        "unsupported_group_by"
+      ],
+      "resource_counter_semantics": "Only actual_swap fields represent vm_stat Swapins/Swapouts; darwin_pagein/pageout are general page traffic. swap_used is a stock."
+    }
+  ],
+  "native_log_checks": [
+    {
+      "label": "C16-R1-v14",
+      "pid": 38628,
+      "OOM": 0,
+      "tracebacks": 0,
+      "segment_sha256": "0b3481efeb68f0dc1ff105099325bc656f8bc2a67719d72e96157748e23f1cf8"
+    },
+    {
+      "label": "C16-R2-v14",
+      "pid": 48660,
+      "OOM": 0,
+      "tracebacks": 0,
+      "segment_sha256": "46c636ae93f78cf11285daf611828bd8693a3b25d491a0a9ff9a129259244fd6"
+    }
+  ],
+  "full487": {
+    "status": "running_with_observed_internal_failure",
+    "run_id": "20261105-075230-album3-max-video10-current-5aeb80",
+    "not_accepted": true,
+    "observed_internal_errors": {
+      "model_output_format": 1
+    },
+    "note": "HTTP 200/stop did not produce a parseable JSON object in one inspect_photo call. This recovered internal failure disqualifies full487; the ongoing raw run is retained and has not been rewritten or restarted."
+  },
+  "note": "Completed fixed64 (69 conversation turns) C16 pair only. Original v7 single-round speed reference has a left-padding compatibility defect and is not a numerical correctness oracle. Two trials do not establish statistical significance or pure optimization causality. Prior failures/cancellations remain unchanged; full487 is separate and has not passed."
+}

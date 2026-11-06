@@ -13,14 +13,18 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from sentrix.api.deps import get_container
-from sentrix.api.routes.media import build_video_scenes, refresh_memory_graph
+from sentrix.api.routes.media import _video_config_hash, resume_video_job
 from sentrix.api.schemas.videos import (
     KeyframeAssetPayload,
     SourceVideoPayload,
+    SpeechSegmentPayload,
     VideoDetailResponse,
+    VideoJobResponse,
     VideoMetadataPayload,
     VideoPayload,
     VideoReprocessResponse,
@@ -80,10 +84,30 @@ def _video_payload(asset: Asset, probe: VideoProbe | None) -> VideoPayload:
         browser_preview_error=probe.browser_preview_error if probe else "",
         probe_error=probe.probe_error if probe else "",
         processing_seconds=probe.processing_seconds if probe else None,
+        processing_timings=probe.processing_timings if probe else {},
     )
 
 
-def _scene_payload(event: EventRecord) -> VideoScenePayload:
+def _scene_payload(
+    event: EventRecord, keyframe_timestamps_sec: list[float] | None = None
+) -> VideoScenePayload:
+    raw_segments = event.source_metadata.get("speech_segments", [])
+    speech_segments = (
+        [
+            {
+                "start_sec": segment["start_sec"],
+                "end_sec": segment["end_sec"],
+                "text": segment["text"],
+            }
+            for segment in raw_segments
+            if isinstance(segment, dict)
+            and isinstance(segment.get("start_sec"), (int, float))
+            and isinstance(segment.get("end_sec"), (int, float))
+            and isinstance(segment.get("text"), str)
+        ]
+        if isinstance(raw_segments, list)
+        else []
+    )
     return VideoScenePayload(
         id=event.id,
         scope_id=event.scope_id,
@@ -101,7 +125,28 @@ def _scene_payload(event: EventRecord) -> VideoScenePayload:
         source_scene_index=event.source_scene_index,
         source_start_sec=event.source_start_sec,
         source_end_sec=event.source_end_sec,
+        speech_segments=[SpeechSegmentPayload(**segment) for segment in speech_segments],
+        keyframe_timestamps_sec=sorted(keyframe_timestamps_sec or []),
     )
+
+
+def _video_scenes_payload(asset_id: str, container: Container) -> list[VideoScenePayload]:
+    events = container.event_repository.list_video_scenes(asset_id)
+    frame_times: dict[int, list[float]] = {}
+    for derived in container.video_repository.list_derived(asset_id):
+        if (
+            derived.derived_kind == "video_keyframe"
+            and derived.source_scene_index is not None
+            and derived.source_timestamp_sec is not None
+        ):
+            frame_times.setdefault(derived.source_scene_index, []).append(derived.source_timestamp_sec)
+    return [
+        _scene_payload(
+            event,
+            frame_times.get(event.source_scene_index, []) if event.source_scene_index is not None else [],
+        )
+        for event in events
+    ]
 
 
 def _keyframe_payload(derived: DerivedAsset) -> KeyframeAssetPayload:
@@ -133,7 +178,7 @@ def get_video(asset_id: str, container: Container = Depends(get_container)) -> V
     asset = _require_video(asset_id, container)
     return VideoDetailResponse(
         video=_video_payload(asset, container.video_repository.probe(asset_id)),
-        scenes=[_scene_payload(item) for item in container.event_repository.list_video_scenes(asset_id)],
+        scenes=_video_scenes_payload(asset_id, container),
     )
 
 
@@ -142,7 +187,7 @@ def get_video_scenes(asset_id: str, container: Container = Depends(get_container
     _require_video(asset_id, container)
     return VideoScenesResponse(
         video_asset_id=asset_id,
-        scenes=[_scene_payload(item) for item in container.event_repository.list_video_scenes(asset_id)],
+        scenes=_video_scenes_payload(asset_id, container),
     )
 
 
@@ -160,7 +205,10 @@ def get_video_scene(scene_id: str, container: Container = Depends(get_container)
     source_probe = container.video_repository.probe(event.source_asset_id) if source_video else None
     source_meta = source_probe.metadata if source_probe else None
     return VideoSceneDetailResponse(
-        event=_scene_payload(event),
+        event=_scene_payload(
+            event,
+            [item.source_timestamp_sec for item in keyframes if item.source_timestamp_sec is not None],
+        ),
         keyframe_assets=[_keyframe_payload(item) for item in keyframes],
         source_video=(
             SourceVideoPayload(
@@ -184,24 +232,102 @@ def get_video_scene(scene_id: str, container: Container = Depends(get_container)
 
 @router.post("/videos/{asset_id}/reprocess", status_code=202)
 def reprocess_video(asset_id: str, container: Container = Depends(get_container)) -> VideoReprocessResponse:
-    """清派生数据 + **真重跑一次抽取链**。
-
-    S8a 里它只做两件事（清场 + 状态回到 ``queued``），当时的注释写着「S8a 阶段没有
-    抽取链可跑」——**那句话到 S8b 不成立了**：抽取链就是 ``ExtractVideoScenes``
-    （T511–T513）。顺序与 1.0 ``app.py:1472-1481`` 一致：先 ``cleanup_derivatives``
-    清掉这个源片的派生物与场景事件，再跑一遍抽取。清场是必须的——不清就重跑的话，
-    已有帧会被幂等判重跳过，得到的是一份新旧混合、看不出哪里陈旧的场景表。
-
-    **同步**，不是 1.0 的 ``background_tasks.add_task(process_asset, asset_id)``：
-    2.0 没有任务队列，起一个查无此人的后台任务只会把「跑到哪了」藏起来（与
-    ``routes/timeline.py`` 的整册导入同一条选择）。所以返回时资产行上已经是
-    ``processed``，响应的 ``status`` 也如实回它——回 1.0 那个「排队中」的阶段名
-    （``video-queued``）在同步执行下是一句假话。
-    """
+    """兼容旧重处理端点：复用源视频和成功阶段，异步恢复失败/未完成阶段。"""
     asset = _require_video(asset_id, container)
-    container.video_repository.cleanup_derivatives(asset_id)
-    container.asset_repository.update_status(asset_id, AssetStatus.QUEUED)
-    build_video_scenes(container).execute(asset_id)
-    container.asset_repository.update_status(asset_id, AssetStatus.PROCESSED)
-    refresh_memory_graph(container, asset.scope_id)
-    return VideoReprocessResponse(accepted=True, asset_id=asset_id, status=REPROCESS_STATUS)
+    job = container.video_repository.get_job_for_asset(asset_id)
+    if job is None:
+        job = container.video_repository.create_job(
+            asset_id,
+            asset.content_sha256 or "",
+            f"vjob_{uuid.uuid4().hex[:16]}",
+            _video_config_hash(container),
+        )
+        probe = container.video_repository.probe(asset_id)
+        for stage_name, artifact in (("UPLOAD", asset.path),):
+            container.video_repository.update_stage(
+                str(job["job_id"]),
+                stage_name,
+                status="SUCCEEDED",
+                progress=1.0,
+                input_hash=asset.content_sha256 or "",
+                output_artifact=artifact,
+            )
+        container.video_repository.update_stage(
+            str(job["job_id"]),
+            "VIDEO_PROBE",
+            status="SUCCEEDED" if probe is not None and probe.metadata is not None else "FAILED",
+            progress=1.0 if probe is not None and probe.metadata is not None else 0.0,
+            input_hash=asset.content_sha256 or "",
+            output_artifact="assets.metadata_json.video_metadata"
+            if probe is not None and probe.metadata is not None
+            else "",
+            error_code=None if probe is not None and probe.metadata is not None else "VIDEO-DECODE-001",
+            error_message=(
+                None
+                if probe is not None and probe.metadata is not None
+                else "ffprobe did not return video metadata"
+            ),
+        )
+    job_id = str(job["job_id"])
+    if job.get("status") not in {"PROCESSING", "COMPLETED"}:
+        job = resume_video_job(container, job_id)
+    return VideoReprocessResponse(
+        accepted=True, asset_id=asset_id, status=str(job.get("status", "QUEUED")), job_id=job_id
+    )
+
+
+def _job_response(job_id: str, container: Container) -> VideoJobResponse:
+    job = container.video_repository.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="video job not found")
+    asset = container.asset_repository.get(str(job["asset_id"]))
+    stages = [
+        {
+            **stage,
+            "error_message": (
+                "视频处理暂时中断，已完成步骤不会丢失。" if stage.get("error_message") else None
+            ),
+        }
+        for stage in container.video_repository.list_stages(job_id)
+    ]
+    return VideoJobResponse(
+        job_id=str(job["job_id"]),
+        asset_id=str(job["asset_id"]),
+        file_name=asset.file_name if asset else str(job["asset_id"]),
+        status=str(job["status"]),
+        current_stage=str(job["current_stage"]),
+        overall_progress=float(str(job["overall_progress"])),
+        retry_count=int(str(job["retry_count"])),
+        error_code=str(job["error_code"]) if job.get("error_code") else None,
+        error_message=str(job["error_message"]) if job.get("error_message") else None,
+        stages=stages,
+    )
+
+
+@router.get("/video-jobs/{job_id}")
+def get_video_job(job_id: str, container: Container = Depends(get_container)) -> VideoJobResponse:
+    return _job_response(job_id, container)
+
+
+@router.get("/video-jobs")
+def list_video_jobs(
+    scope_id: str = "", container: Container = Depends(get_container)
+) -> list[VideoJobResponse]:
+    return [
+        _job_response(str(job["job_id"]), container)
+        for job in container.video_repository.list_jobs(scope_id or None)
+    ]
+
+
+@router.post("/video-jobs/{job_id}/resume", status_code=202)
+def resume_video_processing(job_id: str, container: Container = Depends(get_container)) -> VideoJobResponse:
+    try:
+        resume_video_job(container, job_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="video job not found") from error
+    return _job_response(job_id, container)
+
+
+@router.post("/video-jobs/{job_id}/retry", status_code=202)
+def retry_video_processing(job_id: str, container: Container = Depends(get_container)) -> VideoJobResponse:
+    return resume_video_processing(job_id, container)

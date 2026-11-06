@@ -36,7 +36,7 @@ from sentrix.domain.places.models import (
     PlaceSource,
 )
 from sentrix.domain.retrieval import scheme
-from sentrix.domain.retrieval.models import CandidateHit
+from sentrix.domain.retrieval.models import CandidateHit, FusedCandidate
 from sentrix.domain.retrieval.ports import VectorRecord
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.asset_places import SqliteAssetPlaceRepository
@@ -45,6 +45,9 @@ from sentrix.infrastructure.persistence.repositories.assets import (
     SqliteObservationRepository,
 )
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
+from sentrix.infrastructure.persistence.repositories.text_vectors import (
+    SqliteTextVectorRepository,
+)
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 
 SCOPE = "album1"
@@ -93,6 +96,7 @@ def library(migrations_ready_db: Database, tmp_path: Path):
     observations = SqliteObservationRepository(migrations_ready_db)
     places = SqliteAssetPlaceRepository(migrations_ready_db)
     vectors = SqliteVectorRepository(migrations_ready_db)
+    text_vectors = SqliteTextVectorRepository(migrations_ready_db)
     index = SqliteLexicalIndex(migrations_ready_db, observations, assets=assets, places=places)
 
     media = tmp_path / "media"
@@ -155,6 +159,7 @@ def library(migrations_ready_db: Database, tmp_path: Path):
         "observations": observations,
         "index": index,
         "vectors": vectors,
+        "text_vectors": text_vectors,
         "embedder": ScriptedEmbedder(query=QUERY, images=payloads),
     }
 
@@ -176,7 +181,34 @@ class ScriptedTextEmbedder:
         return [1.0, 0.0, 0.0]
 
 
-def build(library, *, graph=None) -> RetrieveEvidence:
+class ScriptedReranker:
+    """按**文档原文**给分；``failure=True`` 时模拟侧车不可用（返回空表）。
+
+    分数表按文档取，不按位置取：重排的输入是 ``compose_text(observation)``，用位置
+    写死会在候选顺序变化时把测试变成「碰巧通过」。
+    """
+
+    model_id = "scripted-reranker"
+
+    def __init__(
+        self,
+        scores: dict[str, float] | None = None,
+        *,
+        failure: bool = False,
+    ) -> None:
+        self._scores = dict(scores or {})
+        self._failure = failure
+        self.calls: list[tuple[str, list[str]]] = []
+        self.load_error = "scripted failure" if failure else ""
+
+    def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
+        self.calls.append((query, list(documents)))
+        if self._failure:
+            return []
+        return [self._scores.get(document, 0.0) for document in documents]
+
+
+def build(library, *, graph=None, reranker=None, rerank_top_k=24) -> RetrieveEvidence:
     def recognize_place(asset_id: str) -> bool:
         """「这张图本来就该有地点」= asset 上有 GPS（与 ``routes/search.py`` 同一判据）。"""
         asset = library["assets"].get(asset_id)
@@ -192,8 +224,11 @@ def build(library, *, graph=None) -> RetrieveEvidence:
             aliases=EMPTY_ALIASES,
             recognize_place=recognize_place,
         ),
-        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["vectors"]),
+        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["text_vectors"]),
         graph=graph,
+        reranker=reranker,
+        observations=library["observations"],
+        rerank_top_k=rerank_top_k,
     )
 
 
@@ -421,3 +456,112 @@ def test_a_real_silent_channel_is_distinguishable_from_a_degraded_one(library):
     assert by_channel["metadata"].candidate_count == 0
     assert by_channel["visual_ann"].status == "degraded"
     assert by_channel["visual_ann"].candidate_count > 0
+
+
+# ---- 重排：只改顺序，不改集合 ------------------------------------------------
+
+
+def test_rerank_reorders_the_head_but_keeps_the_rrf_scores(library):
+    """RRF 顺序是 B → C → A；交叉编码器把 A 顶到第一，但交付的 ``score`` 仍是 RRF 分。"""
+    baseline = build(library).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=3))
+    assert [hit.asset_id for hit in baseline.hits] == ["asset_b", "asset_c", "asset_a"]
+    baseline_scores = {hit.asset_id: hit.score for hit in baseline.hits}
+
+    reranker = ScriptedReranker({"雪山": 0.9, "海边": 0.1, "海边日落": 0.5})
+    result = build(library, reranker=reranker).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=3))
+
+    assert [hit.asset_id for hit in result.hits] == ["asset_a", "asset_b", "asset_c"]
+    # 两个分数分开看：score 是融合分，raw_scores["rerank"] 是交叉编码器的判断。
+    assert {hit.asset_id: hit.score for hit in result.hits} == baseline_scores
+    assert result.hits[0].raw_scores["rerank"] == pytest.approx(0.9)
+    assert reranker.calls == [("海边", ["海边日落", "海边", "雪山"])]
+
+    trace = next(item for item in result.channel_trace if item.channel == "rerank")
+    assert trace.status == "ok"
+    assert trace.candidate_count == 3
+
+
+def test_rerank_failure_keeps_the_rrf_order_and_says_so(library):
+    """侧车不可用时结果集合与顺序都不变，但必须留下 ``degraded`` 轨迹。"""
+    baseline = build(library).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=3))
+    reranker = ScriptedReranker(failure=True)
+    result = build(library, reranker=reranker).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=3))
+
+    assert [hit.asset_id for hit in result.hits] == [hit.asset_id for hit in baseline.hits]
+    assert all("rerank" not in hit.raw_scores for hit in result.hits)
+
+    trace = next(item for item in result.channel_trace if item.channel == "rerank")
+    assert trace.status == "degraded"
+    assert "0/3" in trace.reason
+    assert "scripted failure" in trace.reason
+
+
+def test_rerank_only_touches_the_head(library):
+    """``rerank_top_k=2``：只换前两条，第三条既不动、也不带重排分数。"""
+    reranker = ScriptedReranker({"海边日落": 0.1, "海边": 0.9, "雪山": 0.0})
+    result = build(library, reranker=reranker, rerank_top_k=2).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
+    )
+
+    assert [hit.asset_id for hit in result.hits] == ["asset_c", "asset_b", "asset_a"]
+    assert "rerank" not in result.hits[2].raw_scores
+    assert reranker.calls == [("海边", ["海边日落", "海边"])]
+
+
+def test_rerank_places_candidates_without_observation_text_last(library):
+    """没有观察文本的候选排在所有已评分候选之后，但**不会被丢掉**。
+
+    这里直接调 ``_rerank``：``ghost`` 在库里没有观察，``compose_text`` 拿不到东西。
+    走完整 ``execute`` 需要先让 ghost 被某条通道召回，那会把这条用例变成在测召回。
+    """
+    reranker = ScriptedReranker({"雪山": 0.1, "海边日落": 0.9, "海边": 0.5})
+    engine = build(library, reranker=reranker)
+    candidates = [
+        FusedCandidate(asset_id="asset_a", score=0.9),
+        FusedCandidate(asset_id="ghost", score=0.8),
+        FusedCandidate(asset_id="asset_b", score=0.7),
+        FusedCandidate(asset_id="asset_c", score=0.6),
+    ]
+    traces: list = []
+
+    ordered = engine._rerank(query="海边", candidates=candidates, traces=traces)
+
+    assert [candidate.asset_id for candidate in ordered] == [
+        "asset_b",
+        "asset_c",
+        "asset_a",
+        "ghost",
+    ]
+    assert "rerank" not in ordered[-1].raw_scores
+
+
+def test_rerank_without_any_observation_text_keeps_the_order(library):
+    """头部一条观察文本都没有时，重排不该打侧车，也不该改顺序。"""
+    reranker = ScriptedReranker({"雪山": 0.9})
+    engine = build(library, reranker=reranker)
+    candidates = [
+        FusedCandidate(asset_id="ghost_1", score=0.9),
+        FusedCandidate(asset_id="ghost_2", score=0.8),
+    ]
+    traces: list = []
+
+    ordered = engine._rerank(query="海边", candidates=candidates, traces=traces)
+
+    assert [candidate.asset_id for candidate in ordered] == ["ghost_1", "ghost_2"]
+    assert reranker.calls == []
+    assert traces[0].status == "ok"
+    assert traces[0].candidate_count == 0
+
+
+def test_enabling_rerank_without_observations_is_a_wiring_error(library):
+    """候选文本只能来自观察；缺仓储是装配错误，不是运行时降级。"""
+    engine = build(library)
+    with pytest.raises(ValueError, match="ObservationRepository"):
+        RetrieveEvidence(
+            visual=engine._visual,
+            entity=engine._entity,
+            lexical=engine._lexical,
+            metadata=engine._metadata,
+            text=engine._text,
+            reranker=ScriptedReranker(),
+        )

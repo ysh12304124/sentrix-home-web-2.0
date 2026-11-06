@@ -1,0 +1,302 @@
+{
+  "diagnostic_only": true,
+  "formal_v11_status": "failed",
+  "native_log_sha256": "7f12ed14bb90e8bb64343b1351c9f31e4d9cb028df82b3b6931561ca80ba7d09",
+  "ordinary_text_admission_before_oom": {
+    "active_requests": 2,
+    "new_requests": 13,
+    "input_tokens": 30424,
+    "configured_prefill_limit": 4,
+    "safe_log_excerpt": "WARNING:vllm_mlx.mllm_batch_generator:Large batch prefill: 30424 tokens (step_size=512, requests=13). Processing may be slow."
+  },
+  "candidate_changes": [
+    "Bound ordinary new-request admission to min(prefill limit, remaining decode capacity); preserve decode16 and pending queue.",
+    "Use strict nonthinking JSON instruction consistently with enforced enable_thinking=false."
+  ],
+  "loop_regression_status": "unresolved: strict instruction works in native generation but served candidate still repeats",
+  "controls": [
+    {
+      "name": "native-generate2-v11",
+      "mode": "native mlx-vlm single request, no vllm-mlx batching/adapter install",
+      "prompt_tokens": 4481,
+      "output_tokens": 256,
+      "prefix_limit": 256,
+      "schema_valid_at_stop": false,
+      "ended_eos": false,
+      "same_as_served_prefix": true,
+      "first_difference": null,
+      "unique_output_tokens": 26,
+      "dominant_token_count": 230,
+      "elapsed_s": 18.14107279200107,
+      "memory_samples": [
+        {
+          "tokens": 1,
+          "active_bytes": 3308529675,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 20,
+          "active_bytes": 3308498143,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 26,
+          "active_bytes": 3308498191,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 32,
+          "active_bytes": 3308498239,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 64,
+          "active_bytes": 3308498495,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 128,
+          "active_bytes": 3373824055,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 256,
+          "active_bytes": 3316890679,
+          "peak_bytes": 4047486584,
+          "nan_logprobs": false
+        }
+      ],
+      "private_tokens_sha256": "6d2cc431c82e8a3a68651570371306ae743466f5bd1779880fc695e94cc33998"
+    },
+    {
+      "name": "native-generate3-v11",
+      "mode": "native mlx-vlm strict nonthinking JSON instruction control; prompt changed explicitly, not formal QA",
+      "prompt_tokens": 4534,
+      "output_tokens": 46,
+      "prefix_limit": 256,
+      "schema_valid_at_stop": true,
+      "ended_eos": true,
+      "same_as_served_prefix": false,
+      "first_difference": 11,
+      "unique_output_tokens": 42,
+      "dominant_token_count": 3,
+      "elapsed_s": 12.689249499700963,
+      "memory_samples": [
+        {
+          "tokens": 1,
+          "active_bytes": 3308791819,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 20,
+          "active_bytes": 3308779743,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 26,
+          "active_bytes": 3308779791,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 32,
+          "active_bytes": 3306173491,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        }
+      ],
+      "private_tokens_sha256": "b1fadfefafaa3f6dab50c9b77a74aaa7388004b72bcf7e8bcc95547d03babe33"
+    },
+    {
+      "name": "native-generate4-v12",
+      "mode": "native mlx-vlm strict instruction with output-only penalty history matching server; diagnostic only",
+      "prompt_tokens": 4534,
+      "output_tokens": 46,
+      "prefix_limit": 256,
+      "schema_valid_at_stop": true,
+      "ended_eos": true,
+      "same_as_served_prefix": false,
+      "first_difference": 11,
+      "unique_output_tokens": 42,
+      "dominant_token_count": 3,
+      "elapsed_s": 12.272064332850277,
+      "memory_samples": [
+        {
+          "tokens": 1,
+          "active_bytes": 3308791819,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 20,
+          "active_bytes": 3308779743,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 26,
+          "active_bytes": 3308779791,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 32,
+          "active_bytes": 3308779839,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        }
+      ],
+      "private_tokens_sha256": "46d2779107214e17dc6eee767b655ccaeba05ea6166a14f3f8f09a611484cb39"
+    },
+    {
+      "name": "native-generate5-v12",
+      "mode": "native generation with upstream vllm attention compatibility patch; strict instruction/output-only penalty history; diagnostic only",
+      "prompt_tokens": 4534,
+      "output_tokens": 46,
+      "prefix_limit": 256,
+      "schema_valid_at_stop": true,
+      "ended_eos": true,
+      "same_as_served_prefix": false,
+      "first_difference": 11,
+      "unique_output_tokens": 42,
+      "dominant_token_count": 3,
+      "elapsed_s": 12.259169874712825,
+      "memory_samples": [
+        {
+          "tokens": 1,
+          "active_bytes": 3308791819,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 20,
+          "active_bytes": 3308779743,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 26,
+          "active_bytes": 3308779791,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 32,
+          "active_bytes": 3308779839,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        }
+      ],
+      "private_tokens_sha256": "72a81329a95b96f65c21c2d4b68a127862e28833f2540f8ca715632cc2bd4ce5"
+    },
+    {
+      "name": "native-generate6-v12",
+      "mode": "native generation, identical served input confirmed, single-row cache merge before final input token; diagnostic only",
+      "prompt_tokens": 4534,
+      "output_tokens": 46,
+      "prefix_limit": 256,
+      "schema_valid_at_stop": true,
+      "ended_eos": true,
+      "same_as_served_prefix": false,
+      "first_difference": 11,
+      "unique_output_tokens": 42,
+      "dominant_token_count": 3,
+      "elapsed_s": 12.965827499516308,
+      "memory_samples": [
+        {
+          "tokens": 1,
+          "active_bytes": 3430084459,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 20,
+          "active_bytes": 3430812815,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 26,
+          "active_bytes": 3431447903,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        },
+        {
+          "tokens": 32,
+          "active_bytes": 3431900707,
+          "peak_bytes": 4047748728,
+          "nan_logprobs": false
+        }
+      ],
+      "private_tokens_sha256": "db575b9c28269c639927a9ff095eac7d7ed58a9b06914c25e835bdf0c75cdb20"
+    }
+  ],
+  "identical_input_check": {
+    "identical_input_tokens": true,
+    "identical_prompt": true,
+    "native_tokens": 4534,
+    "served_tokens": 4534,
+    "first_difference": null,
+    "private_input_sha256": "84b621d09e1a0c5a942573a447afc26fc5b7e88868053ea3c2757e4351dbe0f2"
+  },
+  "served_full_budget_diagnostic": {
+    "status": "diagnostic_cancelled",
+    "prompt_tokens": 4534,
+    "output_budget": 28234,
+    "completion_tokens": 3819,
+    "finish_reason": "abort",
+    "stress_requests_sent": 0
+  },
+  "served_prefix_controls": [
+    {
+      "label": "strict_standard",
+      "prompt_tokens": 4534,
+      "max_tokens": 256,
+      "http_status": 422,
+      "elapsed_s": 22.006379208527505,
+      "expected_prefix_truncation": true
+    },
+    {
+      "label": "strict_native_grammar",
+      "prompt_tokens": 4534,
+      "max_tokens": 256,
+      "http_status": 422,
+      "elapsed_s": 22.1085982080549,
+      "expected_prefix_truncation": true
+    },
+    {
+      "label": "strict_no_chunked",
+      "prompt_tokens": 4534,
+      "max_tokens": 256,
+      "http_status": 422,
+      "elapsed_s": 21.964912791736424,
+      "expected_prefix_truncation": true
+    }
+  ],
+  "ci": {
+    "completed_at": "2026-11-04T22:08:17.087646+08:00",
+    "command": "make ci",
+    "passed": true,
+    "exit_code": 0,
+    "python_passed": 3420,
+    "real_environment_deselected": 49,
+    "python_warnings": 10,
+    "web_passed": 143,
+    "photobench_web_passed": 613,
+    "mypy_source_files": 367,
+    "log_sha256": "9caa847d691df1dd23deadde10779320d5cba46bf26e801b9c482d5797710a77",
+    "source_sha256": {
+      "scripts/benchmarks/serve_mlx.py": "9b00819480cce58a8d83838f37eacc4bce610585cfcfeb783b1439e511a8236e",
+      "apps/photobench/tests/test_mlx_processor_context.py": "dcd72638d2251287bcd37d559345c250a95efab7d861689898460c154a8966d7"
+    },
+    "boundary": "Repository CI; real captured-case served regression remains unresolved. No new formal series qualified."
+  }
+}

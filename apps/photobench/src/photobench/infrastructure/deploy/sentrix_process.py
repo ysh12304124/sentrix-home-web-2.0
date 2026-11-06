@@ -287,6 +287,12 @@ class SubprocessSentrixProcess:
                 ("deployment_profile", "SENTRIX_DEPLOYMENT_PROFILE"),
                 ("agent_wall_time_s", "SENTRIX_AGENT_WALL_TIME_S"),
                 ("chat_timeout_s", "SENTRIX_CHAT_TIMEOUT_S"),
+                ("vlm_timeout_s", "SENTRIX_VLM_TIMEOUT_S"),
+                ("agent_max_steps", "SENTRIX_AGENT_MAX_STEPS"),
+                ("agent_max_tool_calls", "SENTRIX_AGENT_MAX_TOOL_CALLS"),
+                ("vlm_generation_profile", "SENTRIX_VLM_GENERATION_PROFILE"),
+                ("vlm_exact_output_budget", "SENTRIX_VLM_EXACT_OUTPUT_BUDGET"),
+                ("vlm_context_tokens", "SENTRIX_VLM_CONTEXT_TOKENS"),
                 ("face_providers", "FACE_PROVIDERS"),
                 ("retinaface_providers", "RETINAFACE_PROVIDERS"),
             ):

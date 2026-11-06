@@ -1,0 +1,53 @@
+{
+  "diagnostic_only": true,
+  "label": "prefill-profile16-baseline-v9",
+  "run_id": "20261104-132150-album3-max-video10-current-a51c1c",
+  "questions": 16,
+  "qa_wall_s": 520.1514,
+  "model_calls": 78,
+  "input_tokens": 159642,
+  "output_tokens": 8087,
+  "generator_steps": 1505,
+  "phase_wall_seconds": {
+    "generator_wall_s": 507.8064682232216,
+    "canonical_prefill_wall_s": 29.158854459412396,
+    "interleaved_prefill_wall_s": 374.11590315401554,
+    "decode_wall_s": 102.85047031007707,
+    "generator_other_wall_s": 1.6812402997165918,
+    "preprocess_observed_wall_s": 0.2476947931572795,
+    "preprocess_outside_generator_s": 0.05477375257760286,
+    "outside_generator_wall_s": 12.344931776778367
+  },
+  "prefill_share_of_qa_wall": 0.7753026476780183,
+  "max_accounting_overrun_s": 0,
+  "cache": {
+    "requests_with_accepted_reuse": 0,
+    "requests": 78,
+    "cached_tokens": 0,
+    "token_hit_rate": 0.0,
+    "request_hit_rate": 0.0,
+    "text_only_requests": 76
+  },
+  "potential_unlimited_boundary_reuse": {
+    "hypothetical_not_actual": true,
+    "requests": 10,
+    "tokens": 21036,
+    "token_fraction": 0.13176983500582554,
+    "four_token_suffix_verified": true
+  },
+  "potential_shared1024_reuse": {
+    "hypothetical_not_actual": true,
+    "requests": 50,
+    "tokens": 51200,
+    "token_fraction": 0.32071760564262536,
+    "distinct_keys": 10
+  },
+  "notes": [
+    "Prefill wall spans include CPU submission, existing device completion barriers and first-token sampling; not pure GPU kernel time.",
+    "Canonical asynchronous decode may charge outstanding work to a later completion barrier; no exclusive GPU claim.",
+    "Preprocess observed time can be inside generator and is not added again.",
+    "Diagnostic instrumentation records input IDs privately; no question text, input IDs or answers in this report.",
+    "Upstream inclusive prompt/generation counters are not summed; canonical duplicate prompt clock is discarded."
+  ],
+  "profile_sha256": "06c4ee28b3225b3f6c619fb6423bb8f7ea91e4b633c1d23241e7dc07951ed801"
+}

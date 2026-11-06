@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "inference_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+  "scope": "Real Mac synthetic protocol and serving qualification; not formal QA throughput or full487 acceptance.",
+  "passed": true,
+  "source_sha256": {
+    "engine-qualification-v13.json": "9bcff11d8941a7c1e06227f108347f5865e6b1f5d35567a3a91606f7fec03d03",
+    "concurrent-images-active-cancel-v13.json": "651b798068d4d6fb6a996d65f3ccbd9c57466a5da9d9f0865010167e418cb020",
+    "mixed-media-fairness-v13.json": "2e6270ba33512e68c233203a3b6500cf9ff084455ec0bb063f91f7bde68eae47",
+    "window-seed-qualification-v13.json": "0cc7e9c35f516be3fc01e8b47e88ec90d682f1b9b74bb5933a00e956c042acbf",
+    "busy-metadata-v13.json": "4238b75dfdbc3eba89103d31a00c6a22a3f2b320b0b6324e9b0d8fcc9666e65e",
+    "output-counter-qualification-v13.json": "7a53fdb9c9648b9a210521200b8a9656198190c03016e26e51d398833707efbd",
+    "concurrent-final-schema-v13.json": "4466e8c966cbd7580fa1f0a8c32d8945d5d3859f351794d1510f351cae129264",
+    "batch16-qualification-v13.json": "05140f5e16691a1e7e61dc321030d6711fc10b7e0074404e84d776ee7de6150f",
+    "prefix-reuse-cold-v13.json": "44918d94dd8719b618145f58e19980e503e0600a3c4280f0d2c43fb03fc5ab69",
+    "prefix-reuse-cached-v13.json": "cb3af06c6c37ef3c6fc8adcd16ff5da6852da43275bc9169d93bf88e7b9d708c"
+  },
+  "protocol_checks": [
+    {
+      "name": "text",
+      "passed": true
+    },
+    {
+      "name": "text_semantics",
+      "passed": true
+    },
+    {
+      "name": "multi_image",
+      "passed": true
+    },
+    {
+      "name": "multi_image_order",
+      "passed": true
+    },
+    {
+      "name": "video_keyframes",
+      "passed": true
+    },
+    {
+      "name": "video_keyframe_order",
+      "passed": true
+    },
+    {
+      "name": "structured",
+      "passed": true
+    },
+    {
+      "name": "structured_schema",
+      "passed": true
+    },
+    {
+      "name": "concurrent_chunked_structured",
+      "passed": true
+    },
+    {
+      "name": "tools",
+      "passed": true
+    },
+    {
+      "name": "tool_arguments",
+      "passed": true
+    },
+    {
+      "name": "tool_continuation",
+      "passed": true
+    },
+    {
+      "name": "continuation_semantics",
+      "passed": true
+    },
+    {
+      "name": "stream_end",
+      "passed": true
+    },
+    {
+      "name": "cancel_connection",
+      "passed": true
+    },
+    {
+      "name": "concurrent_isolation",
+      "passed": true
+    },
+    {
+      "name": "context_overflow_rejected",
+      "passed": true
+    }
+  ],
+  "image_and_cancel_checks": [
+    {
+      "name": "concurrent_images_4",
+      "passed": true
+    },
+    {
+      "name": "concurrent_images_16",
+      "passed": true
+    },
+    {
+      "name": "cancel_after_first_content",
+      "passed": true
+    },
+    {
+      "name": "queue_drained",
+      "passed": true
+    }
+  ],
+  "fairness": {
+    "passed": true,
+    "image_latency_s": 5.711148738861084,
+    "text_completed_when_image_finished": 3,
+    "text_total": 18,
+    "note": "Synthetic sustained text plus image; pump requests deliberately stop at 128 output tokens. Not a formal QA result."
+  },
+  "window": {
+    "window_passed": true,
+    "independent_seed_passed": true,
+    "input_tokens": 32665,
+    "output_budget": 103,
+    "duration_s": 104.02487254235893
+  },
+  "busy_metadata": {
+    "passed": true,
+    "accepted_before_probe": true,
+    "configured_timeout_s": 1800,
+    "actual_elapsed_s": 2.7939965408295393,
+    "purpose": "real busy identity query; local delayed HTTP regressions separately verify greater-than-10s deadline behavior"
+  },
+  "output_counters": {
+    "passed": true,
+    "calls": 8,
+    "terminal_count": 8,
+    "return_count": 8,
+    "marker_isolation_passed": true,
+    "api_engine_usage_matches": true
+  },
+  "final_schema": {
+    "passed": true,
+    "client_concurrency": 16,
+    "terminal_count": 16,
+    "return_count": 16,
+    "usage_matches": true,
+    "actual_batch_peak": 7
+  },
+  "actual_batch16": {
+    "passed": true,
+    "actual_batch_peak": 16,
+    "optimization_totals": {
+      "grammar_batches": 591,
+      "grammar_rows": 5127,
+      "grammar_batch_peak": 16,
+      "strided_kv_calls": 3944,
+      "strided_kv_fallbacks": 0
+    },
+    "terminal_count": 16,
+    "return_count": 16,
+    "usage_matches": true,
+    "elapsed_s": 108.16280007362366
+  },
+  "prefix_cache": {
+    "cold_output_and_usage_identical": true,
+    "verified": true,
+    "observed_requests": 12,
+    "expected_requests": 12,
+    "errors": [],
+    "requests_with_reuse": 11,
+    "cached_tokens": 11264,
+    "uncached_tokens": 5266,
+    "request_hit_rate": 0.9166666666666666,
+    "token_hit_rate": 0.6814277071990321
+  },
+  "sustained_text_media_admission": {
+    "proof": "media-fifo-qualification-v13.json",
+    "note": "Separate identical-body sustained15-text-plus-image comparison completed before these fresh serving checks; not formal QA throughput."
+  },
+  "formal_C16_and_full487": "C16 trial1 running at publication; no completed formal v13 trial or full487 result.",
+  "failure_regression": {
+    "passed": true,
+    "questions": 21,
+    "prior_affected_questions": 20,
+    "control_questions": 1,
+    "full_original_rows": true,
+    "selected_set_sha256": "21c8098db4c2691031302a00a7b4ee838e1d8f8affd5dd00c523b48d6470706c",
+    "run_id": "20261105-031712-album3-max-video10-current-413986",
+    "not_formal_speed_gate": true
+  }
+}

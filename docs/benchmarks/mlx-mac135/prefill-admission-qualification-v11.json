@@ -1,0 +1,238 @@
+{
+  "passed": true,
+  "started_at": 1793784369.233082,
+  "finished_at": 1793784504.8530471,
+  "results": [
+    {
+      "case": 0,
+      "media": false,
+      "seconds": 60.851218938827515,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 1,
+      "media": false,
+      "seconds": 92.43914008140564,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 2,
+      "media": false,
+      "seconds": 60.85147786140442,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 3,
+      "media": false,
+      "seconds": 60.85139608383179,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 4,
+      "media": false,
+      "seconds": 92.43854284286499,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 5,
+      "media": false,
+      "seconds": 34.76764106750488,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 6,
+      "media": false,
+      "seconds": 92.43912386894226,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 7,
+      "media": false,
+      "seconds": 33.32456111907959,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 8,
+      "media": false,
+      "seconds": 34.76734900474548,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 9,
+      "media": false,
+      "seconds": 34.76790499687195,
+      "input_tokens": 2605,
+      "usage": {
+        "prompt_tokens": 2605,
+        "completion_tokens": 24,
+        "total_tokens": 2629
+      },
+      "passed": true
+    },
+    {
+      "case": 10,
+      "media": false,
+      "seconds": 91.11850786209106,
+      "input_tokens": 2608,
+      "usage": {
+        "prompt_tokens": 2608,
+        "completion_tokens": 25,
+        "total_tokens": 2633
+      },
+      "passed": true
+    },
+    {
+      "case": 11,
+      "media": false,
+      "seconds": 59.557929277420044,
+      "input_tokens": 2608,
+      "usage": {
+        "prompt_tokens": 2608,
+        "completion_tokens": 25,
+        "total_tokens": 2633
+      },
+      "passed": true
+    },
+    {
+      "case": 12,
+      "media": true,
+      "seconds": 127.01868081092834,
+      "input_tokens": 3648,
+      "usage": {
+        "prompt_tokens": 3648,
+        "completion_tokens": 25,
+        "total_tokens": 3673
+      },
+      "passed": true
+    },
+    {
+      "case": 13,
+      "media": true,
+      "seconds": 128.08634781837463,
+      "input_tokens": 3648,
+      "usage": {
+        "prompt_tokens": 3648,
+        "completion_tokens": 25,
+        "total_tokens": 3673
+      },
+      "passed": true
+    },
+    {
+      "case": 14,
+      "media": true,
+      "seconds": 128.08612394332886,
+      "input_tokens": 3648,
+      "usage": {
+        "prompt_tokens": 3648,
+        "completion_tokens": 25,
+        "total_tokens": 3673
+      },
+      "passed": true
+    },
+    {
+      "case": 15,
+      "media": true,
+      "seconds": 128.08631825447083,
+      "input_tokens": 3648,
+      "usage": {
+        "prompt_tokens": 3648,
+        "completion_tokens": 25,
+        "total_tokens": 3673
+      },
+      "passed": true
+    }
+  ],
+  "admission_events": [
+    {
+      "at": 1793784385.212702,
+      "event": "prefill_admission",
+      "requests": 4,
+      "media_requests": 0,
+      "prefill_limit": 4,
+      "effective_admission_limit": 4,
+      "memory_before": 3123099096
+    },
+    {
+      "at": 1793784411.531561,
+      "event": "prefill_admission",
+      "requests": 4,
+      "media_requests": 0,
+      "prefill_limit": 4,
+      "effective_admission_limit": 4,
+      "memory_before": 3463639268
+    },
+    {
+      "at": 1793784437.615399,
+      "event": "prefill_admission",
+      "requests": 4,
+      "media_requests": 1,
+      "prefill_limit": 4,
+      "effective_admission_limit": 4,
+      "memory_before": 3804179260
+    },
+    {
+      "at": 1793784469.202941,
+      "event": "prefill_admission",
+      "requests": 3,
+      "media_requests": 3,
+      "prefill_limit": 4,
+      "effective_admission_limit": 4,
+      "memory_before": 4305225195
+    }
+  ],
+  "note": "Synthetic memory qualification; 16 concurrent clients, bounded media prefill, not a formal QA speed result."
+}

@@ -246,13 +246,27 @@ def _run_insights(container: Container) -> RunInsights:
     )
 
 
-def build_video_scenes(container: Container) -> ExtractVideoScenes:
+def build_video_scenes(
+    container: Container,
+    *,
+    checkpoint: Callable[[str, int, int, int], None] | None = None,
+    resume_event_completed: int = 0,
+) -> ExtractVideoScenes:
     """独立的抽取链，给重跑与执行器共用。"""
-    return _build_video_scenes(container, _build_importer(container, observe=True).process_image)
+    return _build_video_scenes(
+        container,
+        _build_importer(container, observe=True).process_image,
+        checkpoint=checkpoint,
+        resume_event_completed=resume_event_completed,
+    )
 
 
 def _build_video_scenes(
-    container: Container, process_image: Callable[..., object]
+    container: Container,
+    process_image: Callable[..., object],
+    *,
+    checkpoint: Callable[[str, int, int, int], None] | None = None,
+    resume_event_completed: int = 0,
 ) -> ExtractVideoScenes:
     return ExtractVideoScenes(
         assets=container.asset_repository,
@@ -263,6 +277,11 @@ def _build_video_scenes(
         observations=container.observation_repository,
         process_image=lambda asset, event_id: process_image(asset, forced_event_id=event_id),
         scene_planner=container.video_scene_planner,
+        transcriber=container.audio_transcriber,
+        cross_modal_embedder=container.cross_modal_embedder,
+        has_memory=lambda asset: bool(container.observation_repository.list_by_asset(asset.id)),
+        checkpoint=checkpoint,
+        resume_event_completed=resume_event_completed,
     )
 
 

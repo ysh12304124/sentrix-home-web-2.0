@@ -77,6 +77,30 @@ describe("阶段卡（1.0 :3099-3129）", () => {
     expect(phase?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBeNull();
     expect(phase?.querySelectorAll(".pipeline-step.done")).toHaveLength(0);
   });
+
+  it("运行中的流水线用实时墙钟算每张图片均值，而不是显示「未记录」", () => {
+    // 阶段还没结束：没有 total_seconds / finished_at，只有 started_at 与 image_count。
+    // 指标必须拿 ``displayPhase`` 的实时墙钟，否则永远「未记录」。
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-29T03:10:00Z"));
+    const { container } = render(
+      <PhaseList
+        activeRun={activeRun({
+          pipeline_processing: {
+            status: "running",
+            started_at: "2026-10-29T03:00:00Z",
+            progress: { total: 300, processed: 10, failed: 0, skipped: 0 },
+            pipeline_metrics: { image_count: 300 },
+          },
+        })}
+      />,
+    );
+
+    const phase = container.querySelectorAll(".phase-card")[4];
+    expect(phase?.textContent).toContain("每张图片折算耗时");
+    expect(phase?.textContent).toContain("2s");
+    expect(phase?.textContent).toContain("记录阶段耗时 ÷ 300 张图片");
+  });
 });
 
 

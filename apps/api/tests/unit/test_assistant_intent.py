@@ -552,3 +552,16 @@ def test_explicit_json_output_fact_is_strict_object(raw, valid):
     from sentrix.domain.assistant.intent import json_output_fact
 
     assert json_output_fact(raw) == {"required": True, "attempted": True, "json_object_valid": valid}
+
+
+def test_structured_planner_constrains_evidence_types_to_parser_registry():
+    model = StructuredPlannerModel(declaration("photo_set"))
+    assert GoalPlanner(model).declare("找记录", scope_id=SCOPE).ok
+    schema = model.calls[0]["response_format"]["json_schema"]["schema"]
+    requirement = schema["properties"]["declaration"]["properties"]["requirements"]["items"]
+    assert set(requirement["properties"]["evidence_type"]["enum"]) == set(planner_evidence_types())
+    assert "media_set" not in requirement["properties"]["evidence_type"]["enum"]
+    assert parse_declaration(declaration("media_set"), scope_id=SCOPE, question="找记录") == (
+        None,
+        "invalid_planner_action",
+    )

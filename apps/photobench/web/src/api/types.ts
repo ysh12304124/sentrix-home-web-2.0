@@ -505,6 +505,11 @@ export interface KeyframeAnalysis {
     retained_frame_ratio?: number | null;
     compression_ratio?: number | null;
     timing_source?: string;
+    stage_timings?: Record<string, {
+      total_seconds?: number | null;
+      mean_seconds?: number | null;
+      videos_measured?: number;
+    }>;
     [key: string]: unknown;
   };
   retrieval?: {

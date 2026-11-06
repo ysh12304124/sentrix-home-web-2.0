@@ -39,6 +39,9 @@ from sentrix.infrastructure.persistence.repositories.assets import (
 )
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
+from sentrix.infrastructure.persistence.repositories.text_vectors import (
+    SqliteTextVectorRepository,
+)
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 
 SCOPE = "album1"
@@ -112,6 +115,7 @@ def library(migrations_ready_db: Database, tmp_path: Path):
         "index": index,
         "entities": entities,
         "vectors": SqliteVectorRepository(migrations_ready_db),
+        "text_vectors": SqliteTextVectorRepository(migrations_ready_db),
         "places": places,
     }
 
@@ -274,7 +278,7 @@ def build_evidence(library) -> RetrieveEvidence:
             aliases=EMPTY_ALIASES,
             recognize_place=lambda _asset_id: False,
         ),
-        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["vectors"]),
+        text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=library["text_vectors"]),
     )
 
 

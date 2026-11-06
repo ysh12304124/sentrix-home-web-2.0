@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class VideoMetadataPayload(BaseModel):
@@ -54,6 +54,16 @@ class VideoPayload(BaseModel):
     # PhotoBench 的关键帧分析读它算 ``realtime_factor``（``benchmark_orchestrator.py:5726``）。
     # 没处理过（老库 / 导入时没接视频链）时为 None。
     processing_seconds: float | None = None
+    # Individual algorithm / scene construction stages, in seconds.
+    processing_timings: dict[str, float] = Field(default_factory=dict)
+
+
+class SpeechSegmentPayload(BaseModel):
+    """带视频时间轴的 ASR 片段。"""
+
+    start_sec: float
+    end_sec: float
+    text: str
 
 
 class VideoScenePayload(BaseModel):
@@ -75,6 +85,8 @@ class VideoScenePayload(BaseModel):
     source_scene_index: int | None = None
     source_start_sec: float | None = None
     source_end_sec: float | None = None
+    speech_segments: list[SpeechSegmentPayload] = Field(default_factory=list)
+    keyframe_timestamps_sec: list[float] = Field(default_factory=list)
 
 
 class KeyframeAssetPayload(BaseModel):
@@ -136,3 +148,17 @@ class VideoReprocessResponse(BaseModel):
     accepted: bool
     asset_id: str
     status: str
+    job_id: str | None = None
+
+
+class VideoJobResponse(BaseModel):
+    job_id: str
+    asset_id: str
+    file_name: str
+    status: str
+    current_stage: str
+    overall_progress: float
+    retry_count: int
+    error_code: str | None = None
+    error_message: str | None = None
+    stages: list[dict[str, object]] = Field(default_factory=list)

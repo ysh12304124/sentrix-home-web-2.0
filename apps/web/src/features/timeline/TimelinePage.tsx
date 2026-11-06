@@ -1,9 +1,7 @@
 /**
  * 事件时间线。对应 1.0 `src/app.js:626` 的 `timelineView()`（pageHeader 在 `:645`）。
  *
- * 右侧 `side-inspector` 是 1.0 的「视频记忆」说明块。2.0 没有视频链路（`videos` /
- * `video-scenes` 端点都不存在），所以**这里是空状态而不是照抄那段文案**——照抄会让
- * 人以为场景图片堆是可用的。
+ * 右侧提示视频场景与语音转写的查看入口；视频详情在资料库资产面板中打开。
  */
 
 import { useSearchParams } from "react-router";
@@ -47,6 +45,7 @@ export function TimelinePage() {
             onOpenEvent={openEvent}
           />
         </div>
+
       </section>
     </>
   );

@@ -992,29 +992,7 @@ paths:
       tags:
       - videos
       summary: Reprocess Video
-      description: '清派生数据 + **真重跑一次抽取链**。
-
-
-        S8a 里它只做两件事（清场 + 状态回到 ``queued``），当时的注释写着「S8a 阶段没有
-
-        抽取链可跑」——**那句话到 S8b 不成立了**：抽取链就是 ``ExtractVideoScenes``
-
-        （T511–T513）。顺序与 1.0 ``app.py:1472-1481`` 一致：先 ``cleanup_derivatives``
-
-        清掉这个源片的派生物与场景事件，再跑一遍抽取。清场是必须的——不清就重跑的话，
-
-        已有帧会被幂等判重跳过，得到的是一份新旧混合、看不出哪里陈旧的场景表。
-
-
-        **同步**，不是 1.0 的 ``background_tasks.add_task(process_asset, asset_id)``：
-
-        2.0 没有任务队列，起一个查无此人的后台任务只会把「跑到哪了」藏起来（与
-
-        ``routes/timeline.py`` 的整册导入同一条选择）。所以返回时资产行上已经是
-
-        ``processed``，响应的 ``status`` 也如实回它——回 1.0 那个「排队中」的阶段名
-
-        （``video-queued``）在同步执行下是一句假话。'
+      description: 兼容旧重处理端点：复用源视频和成功阶段，异步恢复失败/未完成阶段。
       operationId: reprocess_video_api_v1_videos__asset_id__reprocess_post
       parameters:
       - name: asset_id
@@ -1030,6 +1008,114 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VideoReprocessResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/video-jobs/{job_id}:
+    get:
+      tags:
+      - videos
+      summary: Get Video Job
+      operationId: get_video_job_api_v1_video_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoJobResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/video-jobs:
+    get:
+      tags:
+      - videos
+      summary: List Video Jobs
+      operationId: list_video_jobs_api_v1_video_jobs_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VideoJobResponse'
+                title: Response List Video Jobs Api V1 Video Jobs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/video-jobs/{job_id}/resume:
+    post:
+      tags:
+      - videos
+      summary: Resume Video Processing
+      operationId: resume_video_processing_api_v1_video_jobs__job_id__resume_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoJobResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/video-jobs/{job_id}/retry:
+    post:
+      tags:
+      - videos
+      summary: Retry Video Processing
+      operationId: retry_video_processing_api_v1_video_jobs__job_id__retry_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoJobResponse'
         '422':
           description: Validation Error
           content:
@@ -4783,6 +4869,16 @@ components:
           type: boolean
           title: Audio Probed
           default: false
+        job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id
+        job_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Status
       type: object
       required:
       - asset_id
@@ -6043,6 +6139,24 @@ components:
       - size_bytes
       title: SourceVideoPayload
       description: 场景事件指回的源视频。1.0 ``db.py:2364`` 的原样一小份，外加时长。
+    SpeechSegmentPayload:
+      properties:
+        start_sec:
+          type: number
+          title: Start Sec
+        end_sec:
+          type: number
+          title: End Sec
+        text:
+          type: string
+          title: Text
+      type: object
+      required:
+      - start_sec
+      - end_sec
+      - text
+      title: SpeechSegmentPayload
+      description: 带视频时间轴的 ASR 片段。
     SplitClusterRequest:
       properties:
         face_instance_id:
@@ -6334,6 +6448,55 @@ components:
       - video
       - scenes
       title: VideoDetailResponse
+    VideoJobResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        asset_id:
+          type: string
+          title: Asset Id
+        file_name:
+          type: string
+          title: File Name
+        status:
+          type: string
+          title: Status
+        current_stage:
+          type: string
+          title: Current Stage
+        overall_progress:
+          type: number
+          title: Overall Progress
+        retry_count:
+          type: integer
+          title: Retry Count
+        error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Code
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        stages:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Stages
+      type: object
+      required:
+      - job_id
+      - asset_id
+      - file_name
+      - status
+      - current_stage
+      - overall_progress
+      - retry_count
+      title: VideoJobResponse
     VideoMetadataPayload:
       properties:
         captured_at:
@@ -6483,6 +6646,11 @@ components:
         status:
           type: string
           title: Status
+        job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Job Id
       type: object
       required:
       - accepted
@@ -6580,6 +6748,16 @@ components:
           - type: number
           - type: 'null'
           title: Source End Sec
+        speech_segments:
+          items:
+            $ref: '#/components/schemas/SpeechSegmentPayload'
+          type: array
+          title: Speech Segments
+        keyframe_timestamps_sec:
+          items:
+            type: number
+          type: array
+          title: Keyframe Timestamps Sec
       type: object
       required:
       - id

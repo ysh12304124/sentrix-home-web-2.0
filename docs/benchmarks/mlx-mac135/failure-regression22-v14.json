@@ -1,0 +1,83 @@
+{
+  "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+  "label": "failure-regression22-v14",
+  "run_id": "20261105-070324-album3-max-video10-current-43e5bf",
+  "concurrency": 16,
+  "questions": 22,
+  "completed": 22,
+  "returned": 22,
+  "judge_completed": 22,
+  "judge_failed": 0,
+  "status": "completed",
+  "passed": true,
+  "qa_per_min": 2.041626601033527,
+  "qa_seconds": 646.5433,
+  "judge_seconds": 568.5708000000001,
+  "actual_batch_peak": 16,
+  "model_request_count": 130,
+  "model_call_evidence": {
+    "expected_calls": 130,
+    "recorded_calls": 130,
+    "token_multiset_matches": true,
+    "all_api_calls_complete": true,
+    "unique_terminal_ids": true,
+    "conflicting_observations": 0,
+    "output_counters_consistent": true,
+    "verified": true
+  },
+  "prefix_cache_evidence": {
+    "verified": true,
+    "observed_requests": 130,
+    "expected_requests": 130,
+    "errors": [],
+    "requests_with_reuse": 99,
+    "cached_tokens": 101376,
+    "uncached_tokens": 166686,
+    "request_hit_rate": 0.7615384615384615,
+    "token_hit_rate": 0.3781811670434452
+  },
+  "run_json_sha256": "98655107a705ca2fea8bb1878e102e58c2544de774496549997124601c72f527",
+  "run_valid": true,
+  "failures": {},
+  "scope": "Independent regression of all 20 prior timeout rows, 1 prior video-input failure row and 1 control. Full original QA rows and conversation turns retained. Execution validation, not a guarantee of answer correctness or the fixed 64-question speed gate.",
+  "source_summary_sha256": "0f656def2c50ab3593abd85310ccb7bd56bbe5954c03af283b3c5e6d0620fbce",
+  "selection": {
+    "source_sha256": "73fa4512dde072fb0df9cf45ff3ebd192192db606f9764054bde002dcbf0be47",
+    "selected_sha256": "3cfb71f69277e0cd9828b18c6c8439636b3e963200c1f31731192817112871e2",
+    "full_original_rows": true
+  },
+  "valid_judge_count": 22,
+  "tool_observations": {
+    "status_counts": {
+      "ok": 76,
+      "denied": 6
+    },
+    "failure_reason_counts": {
+      "no_text_detected": 1,
+      "bad_handle": 3,
+      "unknown_result_set": 1
+    },
+    "internal_failure_count_including_runtime_turns": 0,
+    "note": "Parameter and policy denials remain in original traces and are not counted as successful tool/model calls.",
+    "invalid_tool_arguments_denied": 1,
+    "execution_trace_tool_error_count": 6
+  },
+  "native_log": {
+    "segment_start_process": 32709,
+    "segment_ends_before_next_process": 38628,
+    "ansi_stripped_segment_sha256": "1103abfd0414815d2f2ffcbb4a488af66fb004efa97b076184ad03b5ca32532a",
+    "oom_occurrences": 0,
+    "tracebacks": 0
+  },
+  "resources": {
+    "samples": 79,
+    "actual_swap_in_bytes_delta": 71352320.0,
+    "actual_swap_out_bytes_delta": 721027072.0,
+    "engine_metrics_missing_samples": 1
+  },
+  "telemetry_status": "partial_scrapes",
+  "formal_acceptance": "C16 trial1 running at publication; no completed formal v14 trial or full487 result.",
+  "model_terminal_counts": {
+    "stop": 130
+  }
+}

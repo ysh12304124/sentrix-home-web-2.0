@@ -47,7 +47,7 @@ export const HELP_CONTENT: Readonly<Record<string, HelpContent>> = {
     title: "添加资料",
     purpose: "把照片和视频加入当前相册。",
     first: "点“选择文件”或“选择文件夹”，也可以直接拖进来。",
-    result: "上传成功后会在“添加资料”里继续整理；关闭页面不会中断，稍后回来能看到进度。",
+    result: "上传后由后台继续整理，进度会保留；刷新或稍后回来都能接着看，已有步骤不会重来。",
   },
 };
 

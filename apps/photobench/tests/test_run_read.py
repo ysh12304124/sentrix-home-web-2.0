@@ -384,7 +384,7 @@ def test_legacy_runs_get_their_ground_truth_images_hydrated_over_http(results: P
             ],
         ),
     )
-    http = FakeJsonHttpClient({"assets": {"assets": [{"id": "asset-1", "file_name": "a.jpg"}]}})
+    http = FakeJsonHttpClient({"assets": {"items": [{"id": "asset-1", "file_name": "a.jpg"}]}})
     item = _read_runs(results, http).get_run_item("run-d", 0)["item"]
     assert item["gt_images"] == [
         {
@@ -395,6 +395,7 @@ def test_legacy_runs_get_their_ground_truth_images_hydrated_over_http(results: P
             "mapping_status": "ok",
         }
     ]
+    assert "/api/v1/assets" in http.calls[0][0]
     assert "scope-1" in http.calls[0][0] and http.calls[0][3] == 15
 
 

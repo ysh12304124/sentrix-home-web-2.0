@@ -594,7 +594,56 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
     assert pipeline["keyframe_memory_seconds"] == 12.0
     assert pipeline["graph_build_seconds"] == 0.4
     assert pipeline["memory_graph"]["edge_count"] == 30
+    # 「评测图片墙钟均值」的分母：只数目标资产里的图片，视频不计入。
+    assert pipeline["pipeline_metrics"]["image_count"] == 2
+    assert pipeline["pipeline_metrics"]["event_count"] == 1
+    assert pipeline["pipeline_metrics"]["event_summary_call_count"] == 1
 
+
+def test_pipeline_metrics_count_images_without_videos_or_derived_assets():
+    """``image_count`` 只数本次流水线目标里的图片：视频与派生帧都不是「评测图片」。"""
+    client = FakeSentrixClient(
+        explicit_pipeline=True,
+        assets=[
+            {"id": "asset_a", "file_name": "a.jpg", "media_type": "image", "status": "processed"},
+            {"id": "asset_b", "file_name": "b.mp4", "media_type": "video", "status": "processed"},
+            # 派生关键帧不在 pipeline_asset_ids 里，即使出现在资产表也不能被数进去。
+            {
+                "id": "asset_kf",
+                "file_name": "b_keyframe_0.jpg",
+                "media_type": "image",
+                "derived_kind": "video_keyframe",
+                "status": "processed",
+            },
+        ],
+        turns={"turn_1": [_completed_turn()]},
+        import_result={
+            "imported": 2,
+            "deduplicated": 0,
+            "asset_ids": ["asset_a", "asset_b"],
+            "timings": {"asset_import": 1.2},
+            "failures": [],
+        },
+        pipeline_result={
+            "processed": 2,
+            "skipped": 0,
+            "events": 0,
+            "video_scenes": 1,
+            "summarized": 0,
+            "timings": {"total": 3.0},
+            "failures": [],
+            "memory_graph": {"scope_id": "s", "node_count": 1, "edge_count": 0},
+        },
+    )
+    execution, _client, _writer, _lifecycle, _albums = _execution(client=client)
+
+    state = execution.execute(_request())
+
+    metrics = state["phases"]["pipeline_processing"]["pipeline_metrics"]
+    assert metrics["image_count"] == 1
+    assert metrics["event_count"] == 0
+
+    pipeline = state["phases"]["pipeline_processing"]
     assert pipeline["progress"]["processed"] + pipeline["progress"]["skipped"] == 2
 
 
@@ -1854,6 +1903,32 @@ def test_refusal_execution_keeps_media_facts_and_marks_metrics_inapplicable(
         for metric in ("precision", "recall", "f1"):
             assert item[f"{prefix}_{metric}"] is None
     assert item["image_ranking"] == {}
+
+
+@pytest.mark.parametrize("stage", ["start_conversation", "start_turn"])
+def test_unknown_qa_submission_preserves_stage_and_known_conversation_without_replay(monkeypatch, stage):
+    from photobench.domain.errors import RequestOutcomeUnknownError
+
+    execution, *_ = _execution()
+    attempts = []
+
+    def fail(**kwargs):
+        attempts.append(kwargs)
+        raise RequestOutcomeUnknownError(method="POST", cause_type="ReadError", attempts=1)
+
+    monkeypatch.setattr(execution.client, stage, fail)
+    item = execution._evaluate_one(_rows()[0], "s", {}, _request())
+    assert len(attempts) == 1
+    assert item["execution_status"] == "failed"
+    assert item["error_type"] == "RequestOutcomeUnknownError"
+    assert item["diagnostics"]["error_category"] == "request_outcome_unknown"
+    assert item["diagnostics"]["request_stage"] == stage
+    assert item["diagnostics"]["request_sent"] is None
+    assert item["diagnostics"]["automatic_replay"] is False
+    if stage == "start_turn":
+        assert item["conversation_id"] == attempts[0]["conversation_id"]
+    else:
+        assert "conversation_id" not in item
 
 
 def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(monkeypatch):

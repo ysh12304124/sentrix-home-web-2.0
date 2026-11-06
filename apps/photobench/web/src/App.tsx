@@ -45,6 +45,7 @@ import { startDisabledReason } from "./features/config/rules.ts";
 import { QaBrowserView } from "./features/qa-browser/QaBrowserView.tsx";
 import { QaResults } from "./features/qa/QaResults.tsx";
 import { RunsView } from "./features/runs/RunsView.tsx";
+import { CapacityReport } from "./features/runs/CapacityReport.tsx";
 import { useConfig } from "./hooks/useConfig.ts";
 import { useModelEndpoint } from "./hooks/useModelEndpoint.ts";
 import { useQaPage } from "./hooks/useQaPage.ts";
@@ -432,7 +433,7 @@ export function App({ initialLoading = false }: AppProps) {
             />
             ) : null}
           </>
-        ) : (
+        ) : activeView === "capacity" ? <CapacityReport /> : (
           <QaBrowserView
             sentrixUrl={configApi.sentrixUrl}
             manifests={configApi.manifests}
