@@ -19,6 +19,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from sentrix.api.deps import get_container
 from sentrix.api.schemas.import_jobs import UploadAcceptedResponse
@@ -234,7 +235,8 @@ async def upload_media(
     except OSError:
         free_bytes = 0
     try:
-        reservation = container.import_jobs.reserve_upload(
+        reservation = await run_in_threadpool(
+            container.import_jobs.reserve_upload,
             expected,
             quota_bytes=settings.upload_quota_bytes,
             max_inflight=settings.upload_max_inflight,
@@ -298,7 +300,8 @@ async def upload_media(
             original_path=str(final_path),
         )
         try:
-            stored, created = container.import_jobs.accept(
+            stored, created = await run_in_threadpool(
+                container.import_jobs.accept,
                 job,
                 reservation_id=reservation,
                 quota_bytes=settings.upload_quota_bytes,
@@ -320,7 +323,7 @@ async def upload_media(
         )
     finally:
         if not accepted:
-            container.import_jobs.release_upload(reservation)
+            await run_in_threadpool(container.import_jobs.release_upload, reservation)
             staging_path.unlink(missing_ok=True)
             if final_path is not None:
                 final_path.unlink(missing_ok=True)

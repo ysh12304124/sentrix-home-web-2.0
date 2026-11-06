@@ -41,7 +41,12 @@ class Database:
         # （unix 层全局 mutex）上互相死锁（qa_eval 阶段实测 41 线程全卡在这里）。
         # 一把进程级锁让同一时刻只有一个连接存活，代价是 DB 访问串行——但
         # ``qa_concurrency=1`` 的并发需求本来就很低，串行几乎无感知。
-        self._connect_lock = threading.Lock()
+        #
+        # **必须是 RLock。** 仓储里存在「外层 connect 内再调另一个仓储方法」的
+        # 组合查询（例如家庭图谱的 people 循环里再读 membership/portrait）；普通
+        # Lock 会让同一线程在嵌套 connect 处永久自锁，整个 API 随后所有 DB 访问
+        # 都排队，最终连事件循环都被 upload 的同步 DB 调用卡死。
+        self._connect_lock = threading.RLock()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
