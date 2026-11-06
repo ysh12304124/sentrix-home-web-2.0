@@ -25,7 +25,7 @@ S3 装配的是 ``NoIdentityDirectory``——那时身份层还没建起来，�
 from __future__ import annotations
 
 from sentrix.domain.assistant.models import PersonProfile, PersonRelationship
-from sentrix.domain.identity.models import ENTITY_STATUS_PENDING, PENDING_CLUSTER_NAME
+from sentrix.domain.identity.models import PENDING_CLUSTER_NAME, entity_display_name
 from sentrix.domain.identity.ports import EntityRepository, FamilyGraphRepository
 
 # 对方实体被删、没名字或还没确认时用它，**不编造**，也不暴露内部 cluster id。
@@ -84,11 +84,7 @@ class EntityPersonDirectory:
                 PersonRelationship(
                     predicate=row.predicate,
                     other_name=(
-                        UNNAMED_MEMBER
-                        if other is None
-                        or other.status == ENTITY_STATUS_PENDING
-                        or not other.canonical_name
-                        else other.canonical_name
+                        UNNAMED_MEMBER if other is None else entity_display_name(other)
                     ),
                     source=row.source,
                 )

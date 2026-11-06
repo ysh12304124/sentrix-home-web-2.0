@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  faceInstanceCropUrl,
   listPersonInsights,
   sendPortraitFeedback,
   type PersonInsightItem,
@@ -107,9 +108,23 @@ export function PersonInsights({ scopeId }: Props) {
                     return (
                       <article className="cluster-card" key={item.person_id}>
                         <header className="cluster-head">
-                          <div>
-                            <p className="section-kicker">{tier.label}</p>
-                            <strong>{publicPersonName(item.display_name)}</strong>
+                          <div className="insight-person">
+                            {item.avatar_face_instance_id === null ? (
+                              <span className="insight-avatar" aria-hidden="true">
+                                {publicPersonName(item.display_name).slice(0, 1)}
+                              </span>
+                            ) : (
+                              <img
+                                className="insight-avatar"
+                                src={faceInstanceCropUrl(item.avatar_face_instance_id)}
+                                alt=""
+                                loading="lazy"
+                              />
+                            )}
+                            <div>
+                              <p className="section-kicker">{tier.label}</p>
+                              <strong>{publicPersonName(item.display_name)}</strong>
+                            </div>
                           </div>
                           {portrait?.status === "user_locked" ? (
                             <span className="membership-badge family">已锁定</span>

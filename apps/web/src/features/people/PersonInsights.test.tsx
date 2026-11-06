@@ -24,6 +24,7 @@ function insights(): PersonInsightsResponse {
           display_name: "妈妈",
           family_role: "母亲",
           status: "confirmed",
+          avatar_face_instance_id: "face_1",
           date_count: 6,
           event_count: 3,
           portrait: {

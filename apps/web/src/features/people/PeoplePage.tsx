@@ -15,14 +15,12 @@ import { useState } from "react";
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
 import { useSearchParams } from "react-router";
 
-import { runFamilyGraph } from "../../shared/api/client";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Section } from "../../shared/ui/Section";
 import { useScope } from "../../app/ScopeProvider";
-import { describeReviewError } from "./reviewErrors";
 import { FamilyGraphView } from "./family/FamilyGraphView";
 import { FamilyRoster } from "./family/FamilyRoster";
-import { dedupeRelationships } from "./family/graphLayout";
+import { confirmedRelationships } from "./family/graphLayout";
 import { PersonDetail } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
 import { useFamilyGraph } from "./family/useFamilyGraph";
@@ -40,19 +38,17 @@ const TABS: readonly { value: View; label: string }[] = [
 
 export function PeoplePage() {
   const { scopeId } = useScope();
-  const { state, people, relationships, error, reload, refresh } = useFamilyGraph(scopeId);
+  const { state, people, relationships, error, refresh } = useFamilyGraph(scopeId);
   const [view, setView] = useState<View>("roster");
   const [searchParams, setSearchParams] = useSearchParams();
   const [relateTo, setRelateTo] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
 
   /**
    * **一条关系在库里是两行**（正向 + 反向）。后端 `set_relationship` 一次写两行，
    * `GET /family-graph` 原样返回，所以直接数 `relationships.length` 会把「1 条」
    * 显示成「2 条」。布局与详情面板都走了 `dedupeRelationships`，这里对齐它们。
    */
-  const edgeCount = dedupeRelationships(relationships).length;
+  const edgeCount = confirmedRelationships(relationships).length;
   const selectedId = searchParams.get("person");
   const selected = people.find((person) => person.id === selectedId) ?? null;
 
@@ -91,20 +87,7 @@ export function PeoplePage() {
     setSearchParams(next);
   }
 
-  async function handleRun() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await runFamilyGraph(scopeId);
-      reload();
-    } catch (cause) {
-      setActionError(describeReviewError(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const banner = actionError ?? (state === "error" ? error : null);
+  const banner = state === "error" ? error : null;
 
   return (
     <>
@@ -112,31 +95,6 @@ export function PeoplePage() {
         kicker="家庭人物"
         title="人物与关系"
         description="系统会先整理照片里的人；你确认或修改的内容会优先保留，不会被后续整理覆盖。"
-        action={
-          // **「全部相册」下不能推断。** 后端 `POST /family-graph/runs` 对空 scope 是硬 400
-          // （`routes/family.py` 的 `_required`），一次 run 也本来就只针对一个 scope。
-          // 不禁用的话，新用户默认正好落在这个范围上，点一下换来一条无从下手的
-          // 「请求不成立：scope_id is required。请改一下填写的内容再试」——没有东西可改。
-          // GET 用同一个空 scope 返回 200，页面看着一切正常，所以这个失败格外迷惑人。
-          <button
-            type="button"
-            className="button primary"
-            disabled={busy || scopeId === ""}
-            title={scopeId === "" ? "先在上方的相册切换器里选一册" : undefined}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  "会重新识别自动整理的人物关系；你手动改过的内容不会被覆盖。继续？",
-                )
-              ) {
-                return;
-              }
-              void handleRun();
-            }}
-          >
-            {busy ? "正在整理…" : "重新整理人物关系"}
-          </button>
-        }
       />
 
       <div className="family-tabs" role="tablist" aria-label="人物视图">
@@ -153,7 +111,7 @@ export function PeoplePage() {
           </button>
         ))}
         <span className="family-tabs-note">
-          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条关系`}
+          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条已确认关系`}
         </span>
       </div>
 

@@ -780,6 +780,21 @@ export async function getPerson(personId: string): Promise<PersonDetailResponse>
   return request<PersonDetailResponse>(`/people/${encodeURIComponent(personId)}`);
 }
 
+/**
+ * 读取当前生效的人物画像。没有生成过时后端回 404——那不是一个错误，是「无」，
+ * 所以这里把它收成 ``null``，其余失败照常抛。
+ */
+export async function getPersonPortrait(personId: string): Promise<PortraitRevision | null> {
+  try {
+    return await request<PortraitRevision>(
+      `/people/${encodeURIComponent(personId)}/portrait`,
+    );
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 404) return null;
+    throw cause;
+  }
+}
+
 /** 改一个人的名字。返回里带 ``aliases``——旧名字会留成别名，前端不自己拼这份历史。 */
 export async function renamePerson(personId: string, name: string): Promise<RenamePersonResponse> {
   return request<RenamePersonResponse>(`/people/${encodeURIComponent(personId)}/name`, {
@@ -910,6 +925,8 @@ export interface PersonInsightItem {
   display_name: string;
   family_role: string | null;
   status: string | null;
+  /** 这个人的代表脸；没有可用人脸时为 null。 */
+  avatar_face_instance_id: string | null;
   portrait: PortraitRevision | null;
   [key: string]: unknown;
 }
@@ -1327,11 +1344,6 @@ interface FamilyRetractResponse {
   retracted: FamilyRelationship[];
 }
 
-/** `POST /family-graph/runs` 同步跑完再回，体是 `{run}`——不是 1.0 的 `{status: 202, run}`。 */
-interface FamilyRunResponse {
-  run: FamilyRun;
-}
-
 export async function getFamilyGraph(scopeId: string): Promise<FamilyGraph> {
   return request<FamilyGraph>(`/family-graph?scope_id=${encodeURIComponent(scopeId)}`);
 }
@@ -1435,16 +1447,6 @@ export async function mergeFamilyScopes(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ scope_ids: scopeIds }),
   });
-}
-
-/** 手工跑一趟家庭图谱推断。同步返回跑完的 run；已有 run 在跑时后端回 409。 */
-export async function runFamilyGraph(scopeId: string): Promise<FamilyRun> {
-  const body = await request<FamilyRunResponse>("/family-graph/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope_id: scopeId }),
-  });
-  return body.run;
 }
 
 // ---- 资产详情 / 音视频交付 ---------------------------------------------------------

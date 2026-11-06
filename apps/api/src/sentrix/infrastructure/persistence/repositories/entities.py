@@ -39,6 +39,7 @@ from sentrix.domain.identity.models import (
     EntityRevisionRecord,
     EntitySpec,
     PersonNameMatch,
+    is_pending_cluster_name,
 )
 from sentrix.infrastructure.persistence.database import Database
 
@@ -896,9 +897,14 @@ class SqliteEntityRepository:
         if row is None:
             return ()
         value = _decode(row["value_json"])
-        if isinstance(value, list):
-            return tuple(str(item) for item in value)
-        return (str(value),) if value else ()
+        raw = value if isinstance(value, list) else ([value] if value else [])
+        # 旧数据里可能存着改名时折进来的内部簇名（「待确认人物簇 · cluster-x」）。
+        # 那是落库标识，不是用户起的名字，读侧统一滤掉。
+        return tuple(
+            str(item)
+            for item in raw
+            if str(item or "").strip() and not is_pending_cluster_name(str(item))
+        )
 
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:
         cleaned = _dedupe([str(item or "").strip() for item in aliases if str(item or "").strip()])
@@ -916,7 +922,8 @@ class SqliteEntityRepository:
             raise ValueError("person name is required")
         old_name = entity.canonical_name
         if old_name != name:
-            if old_name:
+            # pending 实体的旧名是内部簇名，折进别名会把它带到用户面前。
+            if old_name and not is_pending_cluster_name(old_name):
                 aliases = list(self.person_aliases(entity_id))
                 if old_name not in aliases:
                     aliases.append(old_name)

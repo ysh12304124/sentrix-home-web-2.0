@@ -60,6 +60,16 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
     });
   }, [people, query, filter]);
 
+  // 默认视图不主动铺开「只出现一两次」的人；搜索或筛选时全部展开，否则搜到了却藏在
+  // 折叠区里等于没搜到。
+  const collapsedMode = query.trim() === "" && filter === "all";
+  const frequent = collapsedMode
+    ? visible.filter((person) => person.appearance_count > 2)
+    : visible;
+  const rare = collapsedMode
+    ? visible.filter((person) => person.appearance_count <= 2)
+    : [];
+
   return (
     <section className="family-roster">
       <div className="roster-toolbar">
@@ -115,18 +125,39 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
         )
       ) : (
         <>
-          <ul className="person-grid">
-            {visible.map((person) => (
-              <PersonCard
-                key={person.id}
-                person={person}
-                selected={person.id === selectedId}
-                onSelect={onSelect}
-              />
-            ))}
-          </ul>
+          {frequent.length === 0 ? null : (
+            <ul className="person-grid">
+              {frequent.map((person) => (
+                <PersonCard
+                  key={person.id}
+                  person={person}
+                  selected={person.id === selectedId}
+                  onSelect={onSelect}
+                />
+              ))}
+            </ul>
+          )}
+          {rare.length === 0 ? null : (
+            <details className="roster-rare">
+              <summary>
+                出现 2 次及以下的人物 · {rare.length} 人
+                <small>展开查看</small>
+              </summary>
+              <ul className="person-grid">
+                {rare.map((person) => (
+                  <PersonCard
+                    key={person.id}
+                    person={person}
+                    selected={person.id === selectedId}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
           <p className="roster-count">
             共 {people.length} 人
+            {rare.length > 0 ? `，其中 ${rare.length} 人已折叠` : ""}
             {visible.length === people.length ? "" : `，当前显示 ${visible.length} 人`}
           </p>
         </>

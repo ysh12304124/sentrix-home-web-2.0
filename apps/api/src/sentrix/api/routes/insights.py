@@ -35,9 +35,9 @@ from sentrix.bootstrap.container import Container
 from sentrix.domain.identity.insights import CORE_PEOPLE_LIMIT, rank_core_people
 from sentrix.domain.identity.models import (
     DEFAULT_SCOPE_ID,
-    ENTITY_STATUS_PENDING,
     PENDING_CLUSTER_NAME,
     PortraitRevisionRecord,
+    entity_display_name,
 )
 
 router = APIRouter(tags=["insights"])
@@ -129,14 +129,11 @@ def list_person_insights(
                 # pending 实体的 canonical_name 是落库的内部名
                 # （「待确认人物簇 · cluster-x」），不能直接给用户看。
                 "display_name": (
-                    person.canonical_name
-                    if person is not None
-                    and person.status != ENTITY_STATUS_PENDING
-                    and person.canonical_name
-                    else ANONYMOUS_NAME
+                    entity_display_name(person) if person is not None else ANONYMOUS_NAME
                 ),
                 "family_role": person.family_role if person else None,
                 "status": person.status if person else None,
+                "avatar_face_instance_id": item.get("avatar_face_instance_id"),
                 "portrait": _portrait_payload(portrait),
             }
         )
