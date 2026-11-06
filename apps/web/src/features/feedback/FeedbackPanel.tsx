@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
+import { useTheme } from "../../app/theme/ThemeProvider";
+import { AppearanceFeedbackPanel } from "./AppearanceFeedbackPanel";
 import { newClientId } from "../../shared/id";
 
 import { useAuth } from "../../app/AuthProvider";
@@ -29,7 +31,12 @@ const SCREENSHOT_MAX_DIMENSION = 1600;
 const ACCEPTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const ACCEPTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
 
-export function FeedbackPanel({ onClose }: { onClose: () => void }) {
+export function FeedbackPanel(props: { onClose: () => void; appearanceFeedback?: boolean }) {
+  const { enabled } = useTheme();
+  return enabled ? <AppearanceFeedbackPanel {...props} /> : <ExistingFeedbackPanel onClose={props.onClose} />;
+}
+
+function ExistingFeedbackPanel({ onClose }: { onClose: () => void }) {
   const { identity } = useAuth();
   const { scopeId } = useScope();
   const accountId = identity?.account_id ?? null;

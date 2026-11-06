@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { isThemeEntry } from "./theme/themeEntry";
+import { clearAppearanceDraft } from "../features/feedback/appearanceDraft";
 import { clearFeedbackDraft } from "../features/feedback/draft";
 import { csrfToken, setCookieNamespace } from "../shared/csrf";
 
@@ -202,7 +204,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       credentials: "same-origin",
       headers: { "x-csrf-token": csrfToken() },
     }).catch(() => undefined);
-    if (accountId !== undefined && accountId !== "local") clearFeedbackDraft(accountId);
+    if (accountId !== undefined && accountId !== "local") {
+      clearFeedbackDraft(accountId);
+      if (isThemeEntry()) clearAppearanceDraft(accountId);
+    }
     setIdentity(null);
   }, [identity]);
 

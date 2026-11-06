@@ -11,6 +11,7 @@ import "./styles/family.css";
 import "./styles.css";
 // 体验入口的视觉层：只覆盖壳层、登录、导入、管理与反馈；旧页面结构不动。
 import "./styles/experience.css";
+import "./styles/themes.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

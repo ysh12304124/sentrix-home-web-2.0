@@ -1,9 +1,13 @@
 import { useState, type FormEvent } from "react";
 
+import { useTheme } from "../../app/theme/ThemeProvider";
+import { ThemePicker } from "../../app/theme/ThemePicker";
 import { useAuth } from "../../app/AuthProvider";
 
 export function LoginScreen({ adminOnly = false }: { adminOnly?: boolean }) {
   const { login } = useAuth();
+  const { enabled: appearanceEnabled } = useTheme();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [accountId, setAccountId] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,6 +28,8 @@ export function LoginScreen({ adminOnly = false }: { adminOnly?: boolean }) {
 
   return (
     <main className="login-screen">
+      {!adminOnly && appearanceEnabled ? <button type="button" className="login-appearance" onClick={() => setAppearanceOpen(true)}>外观</button> : null}
+      {!adminOnly && appearanceEnabled && appearanceOpen ? <ThemePicker onClose={() => setAppearanceOpen(false)} /> : null}
       <section className="login-story">
         <div className="login-brand">
           <span>S</span>

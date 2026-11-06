@@ -2,6 +2,7 @@
 
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 
+import { ThemeProvider } from "./app/theme/ThemeProvider";
 import { AuthProvider, useAuth } from "./app/AuthProvider";
 import { NotAvailable, ROUTES, SHELL } from "./app/router";
 import { ScopeProvider } from "./app/ScopeProvider";
@@ -89,7 +90,9 @@ export default function App() {
     <BrowserRouter>
       <ToastProvider>
         <AuthProvider>
-          <AppRoutes />
+          <ThemeProvider>
+            <AppRoutes />
+          </ThemeProvider>
         </AuthProvider>
       </ToastProvider>
     </BrowserRouter>

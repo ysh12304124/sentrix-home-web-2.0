@@ -10,6 +10,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 
 import { NAV_ITEMS } from "./nav";
+import { useTheme } from "./theme/ThemeProvider";
+import { ThemePicker } from "./theme/ThemePicker";
 import { GuidedTour } from "./GuidedTour";
 import { TOURS } from "./tours";
 import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
@@ -45,6 +47,7 @@ function NavLinkItem({ path, label, onNavigate }: { path: string; label: string;
 }
 
 export function AppShell() {
+  const { enabled: appearanceEnabled } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
   const { notify } = useToast();
@@ -52,7 +55,7 @@ export function AppShell() {
   const [health, setHealth] = useState<HealthState>("unknown");
   const [lastHealthAt, setLastHealthAt] = useState<number | null>(null);
   const [clock, setClock] = useState(() => Date.now());
-  const [overlay, setOverlay] = useState<"guide" | "feedback" | null>(null);
+  const [overlay, setOverlay] = useState<"guide" | "feedback" | "appearance-feedback" | "theme" | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const autoOpenedOnboarding = useRef(false);
   const moreRef = useRef<HTMLDetailsElement | null>(null);
@@ -192,6 +195,7 @@ export function AppShell() {
                 />
               ))}
               <div className="nav-popover-divider" />
+              {appearanceEnabled ? <button type="button" className="nav-popover-action" onClick={() => { closeDetails(menuRef); setOverlay("theme"); }}>外观</button> : null}
               <button
                 type="button"
                 className="nav-popover-action"
@@ -219,6 +223,7 @@ export function AppShell() {
         </nav>
 
         <div className="topbar-actions">
+          {appearanceEnabled ? <button type="button" className="text-button topbar-action" onClick={() => setOverlay("theme")}>外观</button> : null}
           <span
             className="health-pill"
             data-state={stale ? "unknown" : health}
@@ -290,7 +295,8 @@ export function AppShell() {
           }}
         />
       ) : null}
-      {overlay === "feedback" ? <FeedbackPanel onClose={() => setOverlay(null)} /> : null}
+      {overlay === "theme" ? <ThemePicker onClose={() => setOverlay(null)} onFeedback={() => setOverlay("appearance-feedback")} /> : null}
+      {overlay === "feedback" || overlay === "appearance-feedback" ? <FeedbackPanel appearanceFeedback={overlay === "appearance-feedback"} onClose={() => setOverlay(null)} /> : null}
       {onboardingOpen ? (
         <Onboarding
           onSkip={() => void finishOnboarding("skip")}
