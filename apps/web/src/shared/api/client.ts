@@ -1033,6 +1033,7 @@ export async function uploadMedia(
   file: File,
   scopeId: string,
   idempotencyKey: string,
+  signal?: AbortSignal,
 ): Promise<{ job_id: string; asset_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -1042,6 +1043,7 @@ export async function uploadMedia(
     credentials: "same-origin",
     headers: { "Idempotency-Key": idempotencyKey, "x-csrf-token": csrfToken() },
     body: form,
+    signal,
   });
   if (!response.ok) {
     const raw = await response.text();

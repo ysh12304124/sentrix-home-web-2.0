@@ -2088,6 +2088,17 @@ body {
   font-weight: 700;
 }
 
+.import-resume-note {
+  margin: 0 0 14px;
+  padding: 11px 15px;
+  border: 1px solid #d7e2ef;
+  border-radius: 12px;
+  background: #f7faff;
+  color: #557ba7;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .import-first-run {
   margin: 0 0 14px;
   padding: 16px 18px;
