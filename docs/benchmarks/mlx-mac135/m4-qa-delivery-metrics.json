@@ -1,0 +1,365 @@
+{
+  "hardware": {
+    "cpu": "Apple M4",
+    "memory_bytes": 17179869184,
+    "model": "Qwen3.5-4B-MLX-4bit",
+    "concurrency": 16
+  },
+  "metric_scope": "QA only, excludes cloud Judge; imported/restored album reused. Exact raw traces, no rescore or request replay.",
+  "rounds": [
+    {
+      "label": "C16-R1-v7",
+      "run_id": "20261104-105618-album3-max-video10-current-5c2892",
+      "raw_sha256": "8aa1c73c8418529658ffe7afe7b3dda46faed8116e9c575ade75fa8b631e9486",
+      "execution_revision": "9225d0f9bc3232a537184937a3f155b310d956e1",
+      "questions": 64,
+      "conversation_turns": 69,
+      "qa_wall_s": 1701.0975,
+      "qa_per_minute": 2.257366200350068,
+      "throughput_amortized_seconds_per_qa": 26.5796484375,
+      "mean_actual_qa_latency_s": 389.7828671874999,
+      "p50_actual_qa_latency_s": 358.53665,
+      "main_model_calls": 257,
+      "model_call_types": {
+        "planner": 69,
+        "agent": 180,
+        "claim_verifier": 8
+      },
+      "image_vlm_calls": 6,
+      "all_local_model_calls": 263,
+      "tool_calls": 180,
+      "tool_calls_by_name": {
+        "search_memories": 68,
+        "final_answer": 83,
+        "read_photo_text": 7,
+        "inspect_photo": 6,
+        "query_memory_facts": 2,
+        "query_photo_people": 13,
+        "get_person_profile": 1
+      },
+      "tool_calls_by_status": {
+        "ok": 177,
+        "denied": 3
+      },
+      "all_local_input_tokens": 530768,
+      "all_local_output_tokens": 25426,
+      "all_local_output_tokens_per_qa_wall_second": 14.946821096380424,
+      "frontend_nonstream_call_mean_tokens_per_second": 1.2,
+      "stage_total_s": {
+        "planner": 11015.156200000003,
+        "agent": 12856.640700000004,
+        "search": 57.27129999999998,
+        "other_tools": 0.26599999999999996,
+        "vision_tool": 550.1261000000001,
+        "claim_verifier": 438.97459999999995,
+        "unattributed": 27.66859999999998
+      },
+      "stage_mean_s_per_qa": {
+        "planner": 172.11181562500005,
+        "agent": 200.88501093750006,
+        "search": 0.8948640624999997,
+        "other_tools": 0.004156249999999999,
+        "vision_tool": 8.595720312500001,
+        "claim_verifier": 6.858978124999999,
+        "unattributed": 0.4323218749999997
+      },
+      "stage_fraction_of_actual_qa_time": {
+        "planner": 0.4415581856300727,
+        "agent": 0.5153767080297733,
+        "search": 0.002295801426463255,
+        "other_tools": 1.0662987909113742e-05,
+        "vision_tool": 0.022052586288676315,
+        "claim_verifier": 0.017596920497022713,
+        "unattributed": 0.001109135140083099
+      },
+      "tool_entries_without_duration": 83,
+      "mean_judge_request_s": 3.6995999999999998,
+      "judge_phase_wall_s": 1541.7309,
+      "qa_with_model_calls": 64,
+      "frontend_agent_loop_calls_mean": 2.812,
+      "original_model_status_counts": {
+        "complete": 263
+      }
+    },
+    {
+      "label": "C16-R1-v14",
+      "run_id": "20261105-071437-album3-max-video10-current-1a7670",
+      "raw_sha256": "a638d5d44c77776dcb49787c7120ec996302ea945a95393d665b420266f8c95d",
+      "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "questions": 64,
+      "conversation_turns": 69,
+      "qa_wall_s": 1089.5448000000001,
+      "qa_per_minute": 3.524407624174793,
+      "throughput_amortized_seconds_per_qa": 17.024137500000002,
+      "mean_actual_qa_latency_s": 246.98328750000005,
+      "p50_actual_qa_latency_s": 236.6497,
+      "main_model_calls": 259,
+      "model_call_types": {
+        "planner": 69,
+        "agent": 177,
+        "claim_verifier": 13
+      },
+      "image_vlm_calls": 4,
+      "all_local_model_calls": 263,
+      "tool_calls": 177,
+      "tool_calls_by_name": {
+        "search_memories": 68,
+        "final_answer": 88,
+        "read_photo_text": 5,
+        "query_memory_facts": 6,
+        "query_photo_people": 5,
+        "get_person_profile": 1,
+        "inspect_photo": 4
+      },
+      "tool_calls_by_status": {
+        "ok": 173,
+        "denied": 4
+      },
+      "all_local_input_tokens": 534402,
+      "all_local_output_tokens": 24580,
+      "all_local_output_tokens_per_qa_wall_second": 22.55988005266052,
+      "frontend_nonstream_call_mean_tokens_per_second": 1.8,
+      "stage_total_s": {
+        "planner": 7287.720099999999,
+        "agent": 7785.886,
+        "search": 84.5744,
+        "other_tools": 0.216,
+        "claim_verifier": 357.48339999999996,
+        "vision_tool": 259.5646,
+        "unattributed": 31.485899999999997
+      },
+      "stage_mean_s_per_qa": {
+        "planner": 113.87062656249998,
+        "agent": 121.65446875,
+        "search": 1.321475,
+        "other_tools": 0.003375,
+        "claim_verifier": 5.585678124999999,
+        "vision_tool": 4.055696875,
+        "unattributed": 0.49196718749999996
+      },
+      "stage_fraction_of_actual_qa_time": {
+        "planner": 0.4610458776993158,
+        "agent": 0.49256154123383744,
+        "search": 0.005350463237315196,
+        "other_tools": 1.3664892204497841e-05,
+        "claim_verifier": 0.02261561169396937,
+        "vision_tool": 0.016420936477331484,
+        "unattributed": 0.0019919047660259194
+      },
+      "tool_entries_without_duration": 88,
+      "mean_judge_request_s": 3.455,
+      "judge_phase_wall_s": 1010.5435,
+      "qa_with_model_calls": 64,
+      "frontend_agent_loop_calls_mean": 2.766,
+      "original_model_status_counts": {
+        "complete": 263
+      }
+    },
+    {
+      "label": "C16-R2-v14",
+      "run_id": "20261105-073313-album3-max-video10-current-d6aa47",
+      "raw_sha256": "76b7cd28e9affe278af06c6ed1e16196b6d26e3e46803aa676fc002726c91903",
+      "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "questions": 64,
+      "conversation_turns": 69,
+      "qa_wall_s": 1128.6195,
+      "qa_per_minute": 3.402386721122575,
+      "throughput_amortized_seconds_per_qa": 17.6346796875,
+      "mean_actual_qa_latency_s": 255.6596874999999,
+      "p50_actual_qa_latency_s": 241.98675,
+      "main_model_calls": 261,
+      "model_call_types": {
+        "planner": 69,
+        "agent": 182,
+        "claim_verifier": 10
+      },
+      "image_vlm_calls": 6,
+      "all_local_model_calls": 267,
+      "tool_calls": 183,
+      "tool_calls_by_name": {
+        "search_memories": 68,
+        "final_answer": 85,
+        "read_photo_text": 4,
+        "query_memory_facts": 7,
+        "inspect_photo": 6,
+        "query_photo_people": 11,
+        "get_person_profile": 2
+      },
+      "tool_calls_by_status": {
+        "ok": 179,
+        "denied": 4
+      },
+      "all_local_input_tokens": 551746,
+      "all_local_output_tokens": 25232,
+      "all_local_output_tokens_per_qa_wall_second": 22.35651608004292,
+      "frontend_nonstream_call_mean_tokens_per_second": 1.7,
+      "stage_total_s": {
+        "planner": 7315.7465999999995,
+        "agent": 8250.316699999996,
+        "search": 48.71439999999999,
+        "other_tools": 0.13820000000000002,
+        "claim_verifier": 311.78669999999994,
+        "vision_tool": 404.2297,
+        "unattributed": 31.287699999999614
+      },
+      "stage_mean_s_per_qa": {
+        "planner": 114.30854062499999,
+        "agent": 128.91119843749993,
+        "search": 0.7611624999999999,
+        "other_tools": 0.0021593750000000003,
+        "claim_verifier": 4.871667187499999,
+        "vision_tool": 6.3160890625,
+        "unattributed": 0.48887031249999396
+      },
+      "stage_fraction_of_actual_qa_time": {
+        "planner": 0.44711210336983626,
+        "agent": 0.5042296644342882,
+        "search": 0.0029772488085357614,
+        "other_tools": 8.446286628587078e-06,
+        "claim_verifier": 0.019055281007100508,
+        "vision_tool": 0.0247050644716915,
+        "unattributed": 0.0019121916219192521
+      },
+      "tool_entries_without_duration": 85,
+      "mean_judge_request_s": 3.4686999999999997,
+      "judge_phase_wall_s": 1038.5575999999999,
+      "qa_with_model_calls": 64,
+      "frontend_agent_loop_calls_mean": 2.844,
+      "original_model_status_counts": {
+        "complete": 267
+      }
+    },
+    {
+      "label": "C16-FULL487-v14",
+      "run_id": "20261105-075230-album3-max-video10-current-5aeb80",
+      "raw_sha256": "75e68d968e7716e3ea38cf36aed9629ccd8db9bbb0eba1e239f5bef4955db541",
+      "execution_revision": "f24893aa7ec64048a86fd1f0da4db365beb7402a",
+      "questions": 487,
+      "conversation_turns": 561,
+      "qa_wall_s": 9024.029199999999,
+      "qa_per_minute": 3.2380214372533285,
+      "throughput_amortized_seconds_per_qa": 18.529834086242296,
+      "mean_actual_qa_latency_s": 292.820497741273,
+      "p50_actual_qa_latency_s": 247.4808,
+      "main_model_calls": 2071,
+      "model_call_types": {
+        "planner": 556,
+        "agent": 1444,
+        "claim_verifier": 71
+      },
+      "image_vlm_calls": 59,
+      "all_local_model_calls": 2130,
+      "tool_calls": 1455,
+      "tool_calls_by_name": {
+        "search_memories": 555,
+        "final_answer": 674,
+        "inspect_photo": 78,
+        "read_photo_text": 50,
+        "query_memory_facts": 38,
+        "query_photo_people": 52,
+        "get_person_profile": 8
+      },
+      "tool_calls_by_status": {
+        "ok": 1403,
+        "partial": 1,
+        "denied": 51
+      },
+      "all_local_input_tokens": 4366481,
+      "all_local_output_tokens": 205531,
+      "all_local_output_tokens_per_qa_wall_second": 22.77596796783415,
+      "frontend_nonstream_call_mean_tokens_per_second": 1.6,
+      "stage_total_s": {
+        "planner": 56021.9877,
+        "agent": 77821.50679999996,
+        "search": 1404.7470999999998,
+        "other_tools": 1.6992000000000005,
+        "claim_verifier": 2640.6207000000004,
+        "vision_tool": 4374.8534,
+        "unattributed": 338.16749999999917
+      },
+      "stage_mean_s_per_qa": {
+        "planner": 115.03488234086242,
+        "agent": 159.79775523613955,
+        "search": 2.884490965092402,
+        "other_tools": 0.003489117043121151,
+        "claim_verifier": 5.422219096509241,
+        "vision_tool": 8.983271868583163,
+        "unattributed": 0.6943891170431195
+      },
+      "stage_fraction_of_actual_qa_time": {
+        "planner": 0.3928511945994424,
+        "agent": 0.5457191571927859,
+        "search": 0.009850713960745492,
+        "other_tools": 1.1915549184688652e-05,
+        "claim_verifier": 0.018517211528340967,
+        "vision_tool": 0.030678425649424648,
+        "unattributed": 0.002371381520076029
+      },
+      "tool_entries_without_duration": 688,
+      "mean_judge_request_s": 4.698600000000001,
+      "judge_phase_wall_s": 8917.514,
+      "qa_with_model_calls": 482,
+      "frontend_agent_loop_calls_mean": 2.996,
+      "original_model_status_counts": {
+        "complete": 2129,
+        "error": 1
+      }
+    }
+  ],
+  "same64_v14_weighted": {
+    "questions": 128,
+    "runs": 2,
+    "qa_wall_s": 2218.1643000000004,
+    "qa_per_minute": 3.4623224258004686,
+    "throughput_amortized_seconds_per_qa": 17.329408593750003,
+    "mean_actual_qa_latency_s": 251.3214875,
+    "all_local_model_calls": 530,
+    "image_vlm_calls": 10,
+    "tool_calls": 360,
+    "all_local_output_tokens": 49812,
+    "all_local_output_tokens_per_qa_wall_second": 22.456406858590228,
+    "stage_mean_s_per_qa": {
+      "planner": 114.08958359374998,
+      "agent": 125.28283359374997,
+      "search": 1.0413187499999998,
+      "other_tools": 0.0027671875,
+      "claim_verifier": 5.22867265625,
+      "vision_tool": 5.18589296875,
+      "unattributed": 0.49041874999999696
+    },
+    "throughput_gain_vs_v7_single_percent": 53.37885475841442,
+    "amortized_time_reduction_percent": 34.80196461402123,
+    "actual_mean_latency_reduction_percent": 35.52269515758242
+  },
+  "stage_timing_notes": [
+    "Per-QA request elapsed time includes queue, token counting, prefill, decode and transport; not pure GPU time.",
+    "Image-tool duration includes its nested VLM call; nested model durations are not added again.",
+    "final_answer and rejected/pre-execution tool entries can lack duration; no missing duration is represented as measured zero. Their unmeasured time remains in unattributed residual.",
+    "Unattributed = actual item wall clock minus recorded main-model and tool durations; includes uninstrumented orchestration, final-answer handling and scheduling.",
+    "QA intervals across 16 clients overlap, so sums of per-QA times exceed the run wall clock. Judge is asynchronous and not added to the QA breakdown."
+  ],
+  "comparison_limits": [
+    "v7 is one speed-reference run with a known left-padding defect, not a numerical-correctness baseline.",
+    "v14 C16 values are two runs of the same 64 questions/69 conversation turns each.",
+    "The full487 mix differs from fixed64; no paired speedup is inferred.",
+    "Call counts and generated tokens changed; measured gain is not a pure optimization causal estimate or statistical significance claim."
+  ],
+  "schema_diagnostic": {
+    "internal_parse_failures": 1,
+    "isolated_original_config_retries": 3,
+    "retry_parser_successes": 3,
+    "small_parameter_count_causality_established": false,
+    "strict_raw_json_success": 1674,
+    "strict_raw_json_total": 1733,
+    "strict_raw_json_fail_but_tool_parser_complete": 58,
+    "native_tool_argument_json_success": 1445,
+    "native_tool_argument_json_total": 1455,
+    "first_failed_response_text_missing": true
+  },
+  "screenshot": {
+    "source": "existing PhotoBench production ResultMetrics component loaded from actual stored full487 run via GET",
+    "file": "full487-v14-benchmark-metrics.png",
+    "dom_modified": false,
+    "original_run_modified": false
+  }
+}

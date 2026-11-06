@@ -60,7 +60,7 @@ S8a 追加一条：**视频不再静默空转**。原先只有 ``media_type is I
 并且 ``ImportResult.video_probed`` 把「这次到底有没有探测」变成响应里看得见的一位数。
 **它不建场景、不抽帧**——那是 S8b。
 
-S8c 追加一条：音频沿用同一条资产链，不转码：
+S8c 追加一条：**音频走同一条链，但不转码、不转写**（用户裁决②「音频只做入库与播放」）：
 
 1. 走 ffprobe 读时长/编码/采样率/声道/码率（``AudioMetadataReader``）；
 2. 把拍摄时间与 GPS 接到与 EXIF/视频同一条路上（``captured_at`` / ``captured_location``）；
@@ -68,9 +68,9 @@ S8c 追加一条：音频沿用同一条资产链，不转码：
 4. 交付的 content-type 由后端按后缀定（``audio_mime_type``），不照抄上传方给的
    ``application/octet-stream``——音频没有转码件这条退路，类型错了就没有第二次机会。
 
-后续的音频理解扩展仍保持模块化：``TranscribeAudio`` 负责 ASR 与质量门禁，原始证据落
-独立转写表；只有通过门禁的文本才投影到 ``Observation.transcript_text``，随后复用现有
-词法和文本向量索引。摘要、情绪识别与说话人识别不在第一版范围内。
+**独立音频资产不转写**：1.0 的 ``observations.transcript`` 与 ``compose_text`` 里的那一段都不搬
+（``docs/refactor/s8-deviations.md`` §1.1），2.0 的 ``compose_text`` 保持七字段。视频场景
+的可选 ASR 在 ``ExtractVideoScenes``，按原片时间戳给关键帧场景文本补充语音上下文。
 
 **去重命中时只重跑幂等的那几步**（视觉向量 + 地点）。事件归属不重跑：它不是幂等的，
 对同一条 Observation 再跑一次可能给它开出第二个事件。1.0 有过 223 张图没有任何视觉
@@ -89,11 +89,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
-from sentrix.application.media.transcribe_audio import (
-    PreparedAudioTranscription,
-    TranscribeAudio,
-)
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
+from sentrix.domain.media.capture_time import CaptureTime
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetObserver,
@@ -101,6 +99,7 @@ from sentrix.domain.media.ports import (
     AudioMetadataReader,
     AudioProbe,
     AudioRepository,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -168,10 +167,6 @@ class ImportResult:
     audio_probed: bool = False
     # 应用层内部的细分耗时；旧响应不读取它，新流水线端点会汇总后显式返回。
     timings: dict[str, float] = field(default_factory=dict)
-    # ASR 的最终状态；非音频/视频或未接 ASR 时为 None。视频由 sidecar 用 ffmpeg
-    # 抽取音轨，证据仍归属源视频。转写失败不阻断资产入库，但不能静默。
-    audio_transcription_status: str | None = None
-    # 上游导入流水线的单调时钟区间；与 timings 并存，前者保留并发阶段的真实重叠。
     timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
 
 
@@ -194,7 +189,6 @@ class ProcessedAsset:
     fact_ids: tuple[str, ...] = ()
     text_rows: int = 0
     entity_ids: tuple[str, ...] = ()
-    audio_transcription_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +225,6 @@ class PreparedImage:
     faces: PreparedFaces | None = None
     # 模型准备的 worker 墙钟。批量并发时这些数可重叠，因此汇总键会明确标成 worker 秒。
     inference_seconds: float = 0.0
-    audio_transcription: PreparedAudioTranscription | None = None
 
 
 def _new_id(prefix: str) -> str:
@@ -248,6 +241,7 @@ class ImportAssets:
         observations: ObservationRepository,
         storage: MediaStorage,
         metadata: MetadataReader,
+        resolve_capture_time: CaptureTimeResolver | None = None,
         visual_indexer: AssetVisualIndexer | None = None,
         place_indexer: AssetPlaceIndex | None = None,
         observer: AssetObserver | None = None,
@@ -266,11 +260,11 @@ class ImportAssets:
         video_metadata: VideoMetadataReader | None = None,
         video_transcoder: VideoTranscoder | None = None,
         video_repository: VideoRepository | None = None,
-        # 音频元数据协作者（S8c T521）成组出现，ASR 则是独立的可选模块。
-        # 音频不要转码器：浏览器原生可播放的格式直接交付原文件。
+        # 音频两个协作者（S8c T521）。与视频那三个同形：**成组出现**，缺任一个就整条
+        # 跳过。音频**不要转码器**——浏览器原生放得了 mp3/wav/m4a/aac/flac/ogg
+        # （用户裁决②），照搬视频那套只会多一个恒不生效的协作者。
         audio_metadata: AudioMetadataReader | None = None,
         audio_repository: AudioRepository | None = None,
-        audio_transcriber: TranscribeAudio | None = None,
         # 关键帧挂到场景事件上的那条路（S8b T513）。**没有它就不能强制归属**：
         # 关键帧的观察属于它那一秒的源片场景，按 6 小时窗去折进某张照片的事件是错的。
         event_attacher: Callable[[str, Observation], None] | None = None,
@@ -284,12 +278,12 @@ class ImportAssets:
         self._observations = observations
         self._storage = storage
         self._metadata = metadata
+        self._resolve_capture_time = resolve_capture_time
         self._video_metadata = video_metadata
         self._video_transcoder = video_transcoder
         self._video_repository = video_repository
         self._audio_metadata = audio_metadata
         self._audio_repository = audio_repository
-        self._audio_transcriber = audio_transcriber
         self._event_attacher = event_attacher
         self._video_scene_extractor = video_scene_extractor
         self._visual_indexer = visual_indexer
@@ -395,6 +389,20 @@ class ImportAssets:
             else request.content_type
         )
 
+        source = "exif" if media_type is MediaType.IMAGE else "unknown"
+        if video_probe is not None and video_probe.metadata is not None:
+            source = video_probe.metadata.creation_source or "video_metadata"
+        if audio_probe is not None and audio_probe.metadata is not None:
+            source = audio_probe.metadata.creation_source or "audio_metadata"
+        provenance = CaptureTime(
+            captured_at.isoformat() if captured_at else "",
+            source if captured_at else "unknown",
+            status=("offset_only" if captured_at.utcoffset() is not None else "timezone_unknown")
+            if captured_at
+            else "unknown",
+        )
+        if self._resolve_capture_time is not None:
+            captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
         now = self._clock()
         asset = Asset(
             id=asset_id,
@@ -406,7 +414,8 @@ class ImportAssets:
             size_bytes=len(request.content),
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
-            captured_at=captured_at or now,
+            captured_at=captured_at,
+            capture_time=provenance,
             captured_location=gps,
             created_at=now,
             updated_at=now,
@@ -437,12 +446,23 @@ class ImportAssets:
         total_started = time.perf_counter()
         asset = staged.asset
         commit_started = time.perf_counter()
-        processed = self.commit_image(asset, prepared)
+        with stage_span("source_memory_commit", asset.id):
+            processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
         commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
-        video_scenes = self._extract_video_scenes(asset)
+        if asset.media_type is MediaType.VIDEO:
+            with stage_span("video_total", asset.id):
+                video_scenes = self._extract_video_scenes(asset)
+        else:
+            video_scenes = self._extract_video_scenes(asset)
+        if (
+            staged.media_type is MediaType.VIDEO
+            and video_scenes.timings
+            and self._video_repository is not None
+        ):
+            self._video_repository.save_processing_timings(asset.id, video_scenes.timings)
 
         # 整个视频阶段的秒数落库**排在场景抽取之后**：1.0 的 ``video_processing_seconds``
         # 覆盖的是「探测 → 图片流水线 → 抽帧建场景」整段（``processor.py:205/420``），
@@ -473,7 +493,6 @@ class ImportAssets:
             video_probed=staged.video_probe is not None and staged.video_probe.metadata is not None,
             video_scenes=video_scenes.scene_count,
             audio_probed=staged.audio_probe is not None and staged.audio_probe.metadata is not None,
-            audio_transcription_status=processed.audio_transcription_status,
             timings={
                 "source_memory_prepare": round(prepared.inference_seconds, 3),
                 "source_memory_commit": round(memory_commit_seconds, 3),
@@ -517,15 +536,11 @@ class ImportAssets:
             visual=self._visual_indexer.prepare(asset) if self._visual_indexer is not None else None,
             semantics=self._observer.prepare(asset) if self._observer is not None else None,
             faces=self._face_enroller.prepare(asset.path) if self._face_enroller is not None else None,
-            audio_transcription=(
-                self._audio_transcriber.prepare(asset) if self._audio_transcriber is not None else None
-            ),
         )
         return PreparedImage(
             visual=prepared.visual,
             semantics=prepared.semantics,
             faces=prepared.faces,
-            audio_transcription=prepared.audio_transcription,
             inference_seconds=round(time.perf_counter() - started, 3),
         )
 
@@ -558,11 +573,6 @@ class ImportAssets:
         self._observations.add(observation)
 
         observation = self._observe(asset, observation, prepared) or observation
-        audio_transcription_status: str | None = None
-        if self._audio_transcriber is not None:
-            observation = self._audio_transcriber.commit(observation, prepared.audio_transcription)
-            if prepared.audio_transcription is not None:
-                audio_transcription_status = prepared.audio_transcription.transcription.status.value
         faces = self._enroll_faces(asset, observation, prepared)
         event_id = self._assign_event(observation, forced_event_id)
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
@@ -584,7 +594,6 @@ class ImportAssets:
             fact_ids=fact_ids,
             faces=faces,
             text_rows=text_rows,
-            audio_transcription_status=audio_transcription_status,
         )
 
     def process_image(self, asset: Asset, *, forced_event_id: str | None = None) -> ProcessedAsset:

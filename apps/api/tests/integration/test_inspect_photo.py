@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -203,6 +204,51 @@ def bind_person(bundle, *, name: str, role: str | None = None, status: str = ENT
 
 
 # ---- 五条失败路，五条各自的码 -------------------------------------------------------
+
+
+@pytest.mark.parametrize("media_type", [MediaType.VIDEO, MediaType.AUDIO])
+def test_non_image_handle_is_rejected_before_inspection_and_keyframe_remains_usable(bundle, media_type):
+    original = bundle["assets"].get(ASSET_ID)
+    assert original is not None
+    bundle["assets"].add(replace(original, id="non_image", media_type=media_type))
+    bundle["result_sets"].add(
+        ResultSet(
+            id="rs_media",
+            scope_id=SCOPE,
+            query="视觉细节",
+            asset_ids=("non_image", ASSET_ID),
+            created_at=NOW,
+        )
+    )
+    # A video keyframe has media_type=image, even though its parent is a video.
+    with bundle["db"].connect() as connection, connection:
+        connection.execute(
+            "UPDATE assets SET derived_kind='video_keyframe', parent_asset_id=? WHERE id=?",
+            ("non_image", ASSET_ID),
+        )
+    inspector, crops = RecordingInspector(), RecordingCrops()
+    toolbox = build(bundle, inspector, crops)
+    rejected = toolbox.execute(
+        "inspect_photo",
+        {"result_set_id": "rs_media", "asset_handle": "photo_1", "question": "有帽子吗"},
+        scope_id=SCOPE,
+        now=NOW,
+    )
+    assert rejected.failure_reason == "unsupported_media_type"
+    assert rejected.blocks is None  # The user can still inspect a retrieved keyframe.
+    assert rejected.observation["media_kind"] == media_type.value
+    assert "video_keyframe" in rejected.model_visible["message"]
+    assert inspector.calls == []
+    assert crops.calls == []
+    accepted = toolbox.execute(
+        "inspect_photo",
+        {"result_set_id": "rs_media", "asset_handle": "photo_2", "question": "有帽子吗"},
+        scope_id=SCOPE,
+        now=NOW,
+    )
+    assert accepted.ok
+    assert len(inspector.calls) == 1
+    assert inspector.calls[0]["path"] == str(bundle["photo"])
 
 
 def test_an_unknown_result_set_is_reported_as_such(bundle):

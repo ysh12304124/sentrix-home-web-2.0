@@ -104,7 +104,14 @@ class ImportBatchResponse(BaseModel):
     summarized: int
     #: 分项耗时（秒）：stage 落库/读文件、prepare VLM 观察、finish 归属写入、
     #: summarize 事件总结、total 合计。2.0 的导入是同步的，不拆的话整段都记在导入上。
-    timings: dict[str, float] = {}
+    timings: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Stage seconds: *_wall is earliest start to latest end; *_start_seconds and "
+            "*_end_seconds are relative to pipeline start. Unsuffixed task totals remain "
+            "cumulative; overlapping spans must not be added."
+        ),
+    )
     failures: list[ImportFailure]
     # 批末自动跑的那一趟画像。**没有新照片时是 None**（判据在路由里，理由写在那儿）。
     # 用 ``None`` 而不是全 0 的计数对象：那两件事不一样——「没跑」与「跑了但一个人都
@@ -123,7 +130,14 @@ class AssetImportBatchResponse(BaseModel):
     imported: int
     deduplicated: int
     asset_ids: list[str]
-    timings: dict[str, float] = {}
+    timings: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Stage seconds: *_wall is earliest start to latest end; *_start_seconds and "
+            "*_end_seconds are relative to pipeline start. Unsuffixed task totals remain "
+            "cumulative; overlapping spans must not be added."
+        ),
+    )
     failures: list[ImportFailure]
 
 
@@ -150,6 +164,17 @@ class MemoryGraphBuildResponse(BaseModel):
     keyframe_visual_status: str = "no_frames"
 
 
+class PipelineStageSpan(BaseModel):
+    stage: str
+    asset_id: str | None
+    started_at: str
+    finished_at: str
+    started_offset_seconds: float
+    finished_offset_seconds: float
+    elapsed_seconds: float
+    status: str
+
+
 class PipelineProcessResponse(BaseModel):
     scope_id: str
     processed: int
@@ -160,10 +185,13 @@ class PipelineProcessResponse(BaseModel):
     summarized: int
     timings: dict[str, float] = Field(
         default_factory=dict,
-        description="Stage seconds: *_wall is earliest start to latest end; *_start_seconds and "
-        "*_end_seconds are relative to pipeline start. Unsuffixed legacy task totals remain cumulative; "
-        "overlapping spans and their shares must not be added.",
+        description=(
+            "Stage seconds: *_wall is earliest start to latest end; *_start_seconds and "
+            "*_end_seconds are relative to pipeline start. Unsuffixed task totals remain "
+            "cumulative; overlapping spans must not be added."
+        ),
     )
+    timing_spans: list[PipelineStageSpan] = []
     failures: list[ImportFailure]
     memory_graph: MemoryGraphBuildResponse | None = None
     insights: InsightCounts | None = None

@@ -41,3 +41,30 @@ describe("JudgeInputModal · portal 到 document.body", () => {
     expect(screen.getByText("该历史结果在运行时未保存 Judge 原始请求 JSON，无法恢复。")).not.toBeNull();
   });
 });
+
+
+it("展示 typed 主分和辅分的真实请求及原始返回", () => {
+  render(<JudgeInputModal item={{index: 0, evaluation_result: {scorer: "choice_judge", attempts: [
+    {input: {messages: [{role: "system", content: "逐项匹配原始提示词"}]}, raw_response: {status: "other"}},
+    {input: {messages: [{role: "system", content: "辅分原始提示词"}]}},
+  ]}}} onClose={() => {}} />);
+  expect(screen.getByText(/逐项匹配原始提示词/)).toBeTruthy();
+  expect(screen.getByText(/辅分原始提示词/)).toBeTruthy();
+  expect(screen.getByText(/"other"/)).toBeTruthy();
+  expect(document.querySelectorAll(".judge-request")).toHaveLength(2);
+});
+
+it("逐轮展示请求，避免重复展示顶层末轮评分", () => {
+  const judge = {attempts: [{input: {messages: [{role: "system", content: "末轮提示词"}]}}]};
+  render(<JudgeInputModal item={{index: 0, judge, runtime_turns: [
+    {judge: {input: {messages: [{role: "system", content: "首轮提示词"}]}}}, {judge},
+  ]}} onClose={() => {}} />);
+  expect(document.querySelectorAll(".judge-request")).toHaveLength(2);
+  expect(screen.getByText("第 1 轮 · 回答评分 · 请求 1")).toBeTruthy();
+  expect(screen.getByText("第 2 轮 · 回答评分 · 请求 1")).toBeTruthy();
+});
+
+it("确定性评分无模型调用时说明原因", () => {
+  render(<JudgeInputModal item={{index: 0, evaluation_result: {scorer: "atm_list"}}} onClose={() => {}} />);
+  expect(screen.getByText(/本题主分由程序按确定性规则计算/)).toBeTruthy();
+});

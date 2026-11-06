@@ -45,7 +45,7 @@ from sentrix.domain.media.ports import (
     AudioMetadataReader,
     AudioRepository,
     AudioTranscriber,
-    AudioTranscriptionRepository,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -73,6 +73,7 @@ from sentrix.domain.retrieval.ports import (
     EmbeddingHealthProbe,
     LexicalIndex,
     LexicalSearch,
+    Reranker,
     StructuredQueryRepository,
     TextEmbedder,
     VectorIndex,
@@ -84,8 +85,9 @@ from sentrix.infrastructure.assistant.chat_client import OpenAIChatModel
 from sentrix.infrastructure.assistant.events import InProcessTurnEventBroker
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel, probe_context_tokens
 from sentrix.infrastructure.build import read_build_revision
-from sentrix.infrastructure.media.asr_sidecar import AsrSidecarTranscriber
 from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
+from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
+from sentrix.infrastructure.media.capture_time import ResolveCaptureTime
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
@@ -97,6 +99,7 @@ from sentrix.infrastructure.media.person_vision import (
 from sentrix.infrastructure.media.person_vision_model import OpenAIPersonVision
 from sentrix.infrastructure.media.photo_inspector import OpenAIPhotoInspector
 from sentrix.infrastructure.media.storage import FileSystemMediaStorage
+from sentrix.infrastructure.media.svd_katna_scene_planner import SVDKatnaScenePlanner
 from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanner
 from sentrix.infrastructure.media.video_keyframes import FfmpegVideoKeyframeExtractor
 from sentrix.infrastructure.media.video_metadata import FfprobeVideoMetadataReader
@@ -110,6 +113,7 @@ from sentrix.infrastructure.models.legacy import (
     ChineseClipSidecarEmbedder,
     LegacyEmbeddingHealthProbe,
 )
+from sentrix.infrastructure.models.reranker import BgeSidecarReranker
 from sentrix.infrastructure.models.wemm import WeMMSidecarEmbedder
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.appearance import SqliteAppearanceRepository
@@ -119,9 +123,6 @@ from sentrix.infrastructure.persistence.repositories.assets import (
     SqliteObservationRepository,
 )
 from sentrix.infrastructure.persistence.repositories.audio import SqliteAudioRepository
-from sentrix.infrastructure.persistence.repositories.audio_transcriptions import (
-    SqliteAudioTranscriptionRepository,
-)
 from sentrix.infrastructure.persistence.repositories.conversations import (
     SqliteConversationRepository,
 )
@@ -150,6 +151,7 @@ from sentrix.infrastructure.persistence.repositories.spaces import SqliteSpaceRe
 from sentrix.infrastructure.persistence.repositories.structured import (
     SqliteStructuredQueryRepository,
 )
+from sentrix.infrastructure.persistence.repositories.text_vectors import SqliteTextVectorRepository
 from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepository
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 from sentrix.infrastructure.persistence.repositories.video import SqliteVideoRepository
@@ -180,6 +182,7 @@ class Container:
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
+    capture_time_resolver: CaptureTimeResolver
     preview_encoder: PreviewEncoder
     # 视频三件（S8a）：ffprobe 探测、浏览器预览转码、血缘仓储。三者都是端口声明——
     # 具体实现（子进程 / 子进程 / SQL）全在 infrastructure，见 pyproject 的两条 purity 契约。
@@ -193,13 +196,20 @@ class Container:
     # 音频两件（S8c T521）：ffprobe 探测 + 探测结果落库。**没有转码器**——音频不转码
     # （用户裁决②），浏览器原生放 mp3/wav/m4a/aac/flac/ogg。
     audio_metadata_reader: AudioMetadataReader
+    audio_transcriber: AudioTranscriber | None
     audio_repository: AudioRepository
-    audio_transcriber: AudioTranscriber
-    audio_transcription_repository: AudioTranscriptionRepository
+    # 视觉/人脸向量（memory_vectors）与文本向量（text_vectors）分表，但共用端口。
+    # 调用方按用途注入：视觉通道、导入即向量化用 ``vector_repository``；文本召回与
+    # 观察文本索引用 ``text_vector_repository``。
     vector_repository: VectorRepository
+    text_vector_repository: VectorRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
+    cross_modal_embedder: VisualEmbedder | None
     text_embedder: TextEmbedder
+    # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
+    # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
+    reranker: Reranker | None
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
@@ -277,15 +287,12 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
-        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "window").strip().lower()
-        video_scene_planner = None
-        if video_algorithm == "svd_lowrank":
-            source_root = os.getenv("SENTRIX_SVD_SOURCE_ROOT", "").strip()
-            if not source_root:
-                raise ValueError("SENTRIX_SVD_SOURCE_ROOT is required for svd_lowrank")
-            video_scene_planner = SVDLowRankScenePlanner(
-                Path(source_root), settings.media_dir / "derived" / "svd"
-            )
+        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_katna").strip().lower()
+        video_scene_planner: VideoScenePlanner | None = None
+        if video_algorithm == "svd_katna":
+            video_scene_planner = SVDKatnaScenePlanner(settings.media_dir / "derived" / "svd_katna")
+        elif video_algorithm == "svd_lowrank":
+            video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
         place_aliases = load_place_aliases()
@@ -299,7 +306,16 @@ class Container:
         lexical = SqliteLexicalIndex(database, observations, assets=assets, places=asset_places)
         # 对话与视觉是**同一个端点**（8100），所以共用同一个探测。分两个实例会让同一个
         # 进程里存两份可能不一致的答案，还要多探一轮。
-        served_model = ServedModel(settings.vlm_base_url)
+        served_model = ServedModel(
+            settings.vlm_base_url,
+            # MLX media prefill can delay metadata on the same server. Discovery
+            # must honor the configured wait, while staying within both clients'
+            # deadlines because dialogue and vision share this resolver.
+            timeout_s=min(settings.chat_timeout_s, settings.vlm_timeout_s),
+            generation_profile=settings.vlm_generation_profile,
+            exact_output_budget=settings.vlm_exact_output_budget,
+            context_tokens=settings.vlm_context_tokens,
+        )
         # 单个并发槽的上下文窗口——**问端点**，理由与上面那个模型名同一条：窗口是
         # **部署事实**，配置里那个 6144 是照部署的某一次实测抄的，部署一改它就过期。
         # 读不到才退回配置值（那说明端点没在正常服务，此时保守值不添乱）。
@@ -335,6 +351,17 @@ class Container:
             text_embedder.model_id,
             text_embedder.dimension,
         )
+        # 重排侧车同样只构造 HTTP 客户端。**空 URL 就是没有重排**，不是「默认去连
+        # 某个地址」——没有侧车的部署不该在每次查询里先付一次连接失败。
+        reranker_url = settings.reranker_url.strip()
+        reranker: Reranker | None = (
+            BgeSidecarReranker(reranker_url, timeout_s=settings.rerank_timeout_s) if reranker_url else None
+        )
+        log.info(
+            "重排=%s top_k=%d",
+            f"{reranker.model_id} @ {reranker_url}" if reranker else "关闭",
+            settings.rerank_top_k,
+        )
         # 家庭图谱仓储被两个消费方用：容器自己的字段，以及人物目录——目录要靠它回答
         # 「这个人的归属与关系」（S7c）。拿在手上传两次，而不是就地 new 两个实例。
         family = SqliteFamilyGraphRepository(database, entities)
@@ -349,6 +376,7 @@ class Container:
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
+            capture_time_resolver=ResolveCaptureTime(),
             preview_encoder=PillowPreviewEncoder(),
             video_metadata_reader=FfprobeVideoMetadataReader(),
             # 预览转码件落在 ``media_dir/derived/video`` 下：与其余媒体文件同一个根，
@@ -358,13 +386,35 @@ class Container:
             video_scene_planner=video_scene_planner,
             video_repository=SqliteVideoRepository(database),
             audio_metadata_reader=FfprobeAudioMetadataReader(),
+            audio_transcriber=(
+                QwenAudioTranscriber(
+                    settings.qwen_asr_base_url,
+                    settings.qwen_asr_model,
+                    api_key=settings.qwen_asr_api_key,
+                    timeout_s=settings.qwen_asr_timeout_s,
+                )
+                if settings.qwen_asr_base_url.strip()
+                else None
+            ),
             audio_repository=SqliteAudioRepository(database),
-            audio_transcriber=AsrSidecarTranscriber(settings.asr_url, timeout_s=settings.asr_timeout_s),
-            audio_transcription_repository=SqliteAudioTranscriptionRepository(database),
             vector_repository=SqliteVectorRepository(database),
+            text_vector_repository=SqliteTextVectorRepository(database),
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
+            cross_modal_embedder=(
+                None
+                if not settings.cross_modal_attention_enabled
+                else (
+                    visual_embedder
+                    if settings.embedding_scheme == "legacy"
+                    else ChineseClipSidecarEmbedder(
+                        settings.legacy_clip_url,
+                        timeout_s=settings.legacy_clip_timeout_s,
+                    )
+                )
+            ),
             text_embedder=text_embedder,
+            reranker=reranker,
             embedding_health=embedding_health,
             place_resolver=OfflinePlaceResolver(
                 admin=PyGeoCNAdminResolver(),

@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/JingbiaoMei/ATM-Bench",
+  "commit": "ef4e5dff1a47ec71213a06e359f02753defa8fb1",
+  "adaptation": "Retained deterministic function bodies; local imports; omitted CLI and network clients.",
+  "source_sha256": {
+    "evaluate_qa.py": "c22e6db6d15c5c0f1b31c105fe37fa3a45becbab44a6a724f7fdbff359a2c275",
+    "normalizer.py": "34f454d991be7a392e5d8babae9209a856f4f36f0d2fdc842b6ce08d3f968e47",
+    "config.py": "eac1605db7f7645aee13b26d27d1cd19ff30c7758d70363a55f7490e2bb46871"
+  }
+}

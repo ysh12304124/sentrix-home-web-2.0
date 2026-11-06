@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -257,3 +257,12 @@ def test_breakdown_keeps_1_0_field_names():
     assert "visual_similarity" in breakdown
     assert "split_guard" in breakdown
     assert breakdown["spatio_temporal_bonus"] == score.spatio_temporal_bonus
+
+
+def test_mixed_timezone_events_do_not_claim_a_time_match():
+    aware = NOW.replace(tzinfo=timezone(timedelta(hours=8)))
+    assert not within_candidate_window(NOW, aware)
+    assert not within_candidate_window(aware, NOW)
+    score = score_event_candidate(anchor=anchor(captured_at=aware), event=event(), visual=VisualSignal())
+    assert score.time == 0.25
+    assert within_candidate_window(aware, aware.astimezone(UTC))

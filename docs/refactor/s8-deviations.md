@@ -1,5 +1,15 @@
 # S8 违背 / 偏离审计（音频与视频）
 
+> **2026-10-30 更新：**下文记录的是 2026-10-04 的初始裁决（当时不做转写）。当前实现按后续需求改为可选 Qwen ASR：语音按原片时间戳分配到对应视频场景，写入场景来源元数据，并在事件总结与记忆摘要刷新时保留；未配置 ASR 时维持原行为。以下历史背景保留用于解释设计变更，不再代表当前实现状态。
+
+### 当前语音对齐实现（2026-10-30）
+
+- 配置 `SENTRIX_QWEN_ASR_BASE_URL` 后，API 通过 OpenAI-compatible `/audio/transcriptions` 请求 `verbose_json` 的 segment 时间戳；`SENTRIX_QWEN_ASR_MODEL` 指定模型，`SENTRIX_QWEN_ASR_API_KEY` 可选地发送 Bearer token，`SENTRIX_QWEN_ASR_TIMEOUT_S` 控制请求超时。
+- 转写片段保留原片 `start_sec` / `end_sec`，按与场景区间重叠关系附到对应视频场景。场景摘要刷新时，文字转写保存在 `source_metadata_json`，摘要中也保留 `语音：...`，不会因摘要重建而丢失。
+- 助手检索预览会把视频场景语音作为 `speech_evidence` 一并交给回答模型；视频候选携带场景语音，关键帧候选只携带与帧时间戳重叠的片段。规划器用 `spoken_content` 区分语音与图片 OCR，证据绑定也要求该语音来自视频范围。
+- 摘要提示明确区分视觉观察与语音内容：语音只支持说话内容，不能据此推断画面人物、物品或动作。ASR 未配置时与旧流程一致；无音轨或 ASR 失败不会阻断视频场景处理。
+- 本机端到端验证使用带语音的 `cooking_paella.mp4`：转写得到 0–29.55 秒和 29.55–38.99 秒两段，原秒数与文本均写入场景来源元数据，事件摘要刷新后仍保留语音；对“视频中说了哪些肉类”提问时，检索返回视频及关键帧，回答覆盖鸡肉、香肠、西班牙香肠和 chorizo，回合 `status=complete`、`answer_coverage=1.0`，没有调用图片 OCR。该样例有个别词识别错误，因此结果只证明链路可用，不代表 ASR 对任意视频都准确。
+
 审计对象：`docs/refactor/2026-10-04-s8-implementation-plan.md`。
 基线：设计文档 `docs/architecture/2026-09-21-sentrix-home-web-2-implementation-design.md:513`
 对 S8 的定义，与 1.0 的实现。
@@ -22,10 +32,6 @@ S8 的设计文档定义是「**FunASR 音频、关键帧/场景切分、派生�
 ## 1. 与设计文档的偏离
 
 ### 1.1 去掉 FunASR 音频转写（**唯一一条实质偏离**）
-
-> **状态：已被 2026-10-22 的用户裁决取代。** 下表保留为历史决策记录。当前实现恢复
-> 音频转写，但不恢复 1.0 的进程内模型：改为独立 FunASR sidecar + 分段质量门禁 +
-> 独立权威表，只有 accepted 文本进入 `Observation.transcript_text` 与检索投影。
 
 | 项 | 内容 |
 |---|---|
@@ -167,8 +173,6 @@ S8a 交付「元数据 + 血缘列能用 + 能播 + 路由通」，不建场景�
 S8c 交付「音频能导入、能读元数据、能播」，**不转写**（§1.1）。下面每条都指到具体的一处
 代码或一件 1.0 没有的东西，**没有一条是凭喜好**。
 
-这一节描述 2026-10-04 的 S8c 历史切片；转写能力的现状见 §6。
-
 ### 5.1 音频元数据是 **NEW-2.0**，1.0 没有对应物
 
 | 项 | 内容 |
@@ -229,23 +233,24 @@ audio」。实测：
 `tests/contract/test_audio_routes.py::test_audio_is_reachable_by_file_name_and_media_type`
 里钉住。
 
----
+### 5.6 持久视频 Job 与安全恢复（yxw）
 
-## 6. 音频理解第一版（2026-10-22，取代 §1.1）
+原视频导入把源资产、探测、关键帧场景和 Memory 放在一个同步请求中；旧
+`POST /videos/{id}/reprocess` 先清除所有派生物再重建。这使浏览器断开时没有任务查询，
+而中间异常会丢掉已生成结果。现在视频导入先持久化 queued 源资产，再返回 `job_id`；
+SQLite `video_jobs` / `video_job_stages` 保存状态、进度、尝试次数、worker lease、错误码、
+视频 hash、pipeline/config hash 与 artifact 指针。单 worker 通过条件更新 claim；失败最多自动重试到 3 次，API 启动时恢复
+heartbeat 过期或 worker PID 已不存在的任务。
 
-用户重新裁决为“实现 ASR，但先不做摘要、情绪识别和说话人识别”。与 1.0 的差异如下：
+关键帧图像与场景事件沿用既有数据库唯一血缘键；ASR 的时间戳片段原子写入
+`data/video-jobs/<job_id>/speech.json` 并在恢复时校验。若关键帧资产已写入但该帧尚无
+Observation，恢复时复用帧文件并补跑该帧记忆。旧重处理 API 改为 resume，保留源片与已完成
+派生物。新增 `GET /video-jobs`、`GET /video-jobs/{job_id}`、`POST .../resume` 和
+`POST .../retry`；旧 `POST /media/import` 响应仅增加可选 job 字段。导入页刷新后从
+job API 重载状态，并显示当前 stage 的场景 checkpoint（例如 `62/81`）与阶段状态。
 
-| 项 | 1.0 | 当前第一版 |
-|---|---|---|
-| 模型进程 | 主 API 进程内 import FunASR | 独立 8104 sidecar，API 只走 HTTP |
-| 原始结果 | 直接写 Observation | `audio_transcriptions` + `audio_transcript_segments` 权威表 |
-| 质量控制 | 无 | 分段 accepted / uncertain / rejected；仅 accepted 可检索 |
-| Observation | 原始 `transcript` | `transcript_text` 只保存可信投影 |
-| 检索 | 整段文本向量 | 复用 FTS/text_ann，另写带起止毫秒的 `audio_segment` 向量 |
-| 失败 | 可能让资产 failed | ASR 记 failed，音频资产仍成功入库，`/health` 报 ASR 降级 |
-| 重跑 | 无修订模型 | 模型/配置/门禁版本组成修订指纹；重跑撤掉旧分段向量再建 |
-
-设计要求原本写“导入只排队、worker 后台跑”。当前项目仍没有统一 job/queue 基础设施，
-所以第一版沿用同步 `prepare → commit`，sidecar 内固定单并发。这个偏离是显式的：不会用
-FastAPI 内存 BackgroundTasks 冒充可恢复任务。等项目引入持久化 job 后，再把同一个
-`TranscribeAudio.prepare/commit` 用例挂到 worker，权威表和检索投影不需要改。
+当前明确边界：事件 checkpoint 按场景而非事件窗口内部小项；单个图片 Memory commit 不是
+事务化的，若进程在 commit 中间退出且已留下 Observation，现有仓储无法证明该 Observation
+的所有向量/事实投影都完整。SQLite artifact 指针可观测，但尚未对所有数据库派生物做哈希
+清单与自动修复。FFmpeg 当前采用软件解码，没有 NVDEC 优先路径；CUDA OOM 自适应 batch、
+取消 API、跨进程多 worker leasing 也未实现。逐项限制必须在验收报告中如实列出。

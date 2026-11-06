@@ -69,8 +69,16 @@ class Settings(BaseSettings):
                 "text_embedder_url",
                 "legacy_clip_url",
                 "wemm_url",
+                "reranker_url",
+                "rerank_top_k",
                 "agent_wall_time_s",
                 "chat_timeout_s",
+                "vlm_timeout_s",
+                "agent_max_steps",
+                "agent_max_tool_calls",
+                "vlm_generation_profile",
+                "vlm_exact_output_budget",
+                "vlm_context_tokens",
                 "face_providers",
                 "retinaface_providers",
             )
@@ -89,6 +97,11 @@ class Settings(BaseSettings):
 
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
+    # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
+    qwen_asr_base_url: str = ""
+    qwen_asr_model: str = "Qwen3-ASR"
+    qwen_asr_api_key: str = ""
+    qwen_asr_timeout_s: float = 300.0
     text_embedder_url: str = "http://127.0.0.1:8101"
     # W1：检索用的统一多模态嵌入侧车（WeMM-Embedding-2B，2048 维）。与 8100 的 VLM、
     # 8101 的 bge 同一条口径——2.0 不管理模型进程的生命周期，只连它。
@@ -102,6 +115,9 @@ class Settings(BaseSettings):
     # **整方案切换**，不是两个槽各切各的。默认 wemm，153 不设此变量即行为不变。
     # 可选值与模型/维度见 ``domain/retrieval/scheme.py`` 的 ``SCHEMES``。
     embedding_scheme: str = "wemm"
+    # Controlled ablation for video-memory experiments. False keeps timestamp-overlap
+    # ASR assignment and skips semantic cross-modal attention.
+    cross_modal_attention_enabled: bool = True
     # legacy 方案的视觉侧车（chinese-clip ViT-L-14，768 维）。模型已在 130 上，
     # 由 ``scripts/maintenance/legacy_clip_sidecar.py`` 拉起（默认 8103）。
     legacy_clip_url: str = "http://127.0.0.1:8103"
@@ -110,9 +126,26 @@ class Settings(BaseSettings):
     legacy_clip_timeout_s: float = 30.0
     # bge-m3 侧车（8101）的查询超时，照 1.0 ``bge_text.py`` 的 10 秒。
     text_embedder_timeout_s: float = 10.0
+
+    # ---- 重排（BGE Reranker，可选增强） -------------------------------------------
+    # **空串 = 关闭**。这是重建检索顺序的增强，不是召回能力：侧车没起时检索照常
+    # 返回 RRF 顺序，只是少一次精排。默认关闭，避免「装了 API 却没有侧车」的部署
+    # 每次查询都先吃一次连接失败。本地启动：
+    # ``.venv/bin/python scripts/maintenance/bge_reranker_sidecar.py``（8104）。
+    reranker_url: str = ""
+    # 只重排 RRF 融合结果的前 K 条（2026-10-26 用户裁决：top 24，纯重排分数排序）。
+    # K 之后的候选保持 RRF 顺序跟在后面，用于补齐交付条数。
+    rerank_top_k: int = Field(default=24, ge=1)
+    # 侧车一次要过 K 对「查询 + 文档」；10 秒覆盖 MPS/CPU 冷启动后的单批交叉编码。
+    rerank_timeout_s: float = 10.0
     # 单个 Agent 回合的墙钟上限。180 是 153（GPU）的默认；Mac/CPU 上 4 并发时
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0
+    agent_max_steps: int = Field(default=8, ge=3)
+    agent_max_tool_calls: int = Field(default=6, ge=0)
+    vlm_generation_profile: Literal["legacy", "qwen35_nonthinking"] = "legacy"
+    # Requires the serving engine's /tokenize endpoint, including vision tokens.
+    vlm_exact_output_budget: bool = False
 
     # **模型名不在这里。** 8100 上跑 llama.cpp 还是 vLLM、名字叫什么，由部署方决定，而且
     # 会在 2.0 运行期间被换掉——2026-09-24 实测：8100 从 llama.cpp 换成 vLLM，2.0 配的

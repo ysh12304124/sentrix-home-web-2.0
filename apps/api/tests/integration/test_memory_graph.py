@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import sentrix.api.routes.media as media_routes
@@ -536,3 +536,43 @@ def test_retrieve_graph_maps_expansion_to_graph_candidates():
 
     assert result.degraded is False
     assert [(hit.asset_id, hit.channel, hit.rank) for hit in result.hits] == [("asset-b", "graph", 1)]
+
+
+def test_temporal_edges_keep_unknown_offsets_separate_from_absolute_times():
+    from sentrix.domain.memories.graph_reference import reference_edges_from_sources
+
+    moments = {
+        "a": NOW,
+        "b": NOW + timedelta(hours=1),
+        "c": NOW.replace(tzinfo=None),
+        "d": NOW.replace(tzinfo=None) + timedelta(hours=1),
+    }
+    events = [SimpleNamespace(id=key, time_start=value) for key, value in moments.items()]
+    actual = set()
+    BuildMemoryGraph._add_temporal_edges(
+        events, SCOPE, lambda left, right, relation, **kw: actual.add((left, right, relation, ""))
+    )
+    nodes = {f"event:{key}": ("event", {"time_start": value.isoformat()}) for key, value in moments.items()}
+    expected = {
+        ("event:a", "event:b", "event_temporal_next", ""),
+        ("event:c", "event:d", "event_temporal_next", ""),
+    }
+    assert actual == expected
+    assert reference_edges_from_sources(nodes) == expected
+
+
+def test_temporal_graph_edges_across_repeated_dst_hour_use_elapsed_seconds():
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/New_York")
+    events = [
+        SimpleNamespace(id="a", time_start=datetime(2024, 11, 3, 1, 45, tzinfo=zone, fold=0)),
+        SimpleNamespace(id="b", time_start=datetime(2024, 11, 3, 1, 15, tzinfo=zone, fold=1)),
+    ]
+    actual = []
+    BuildMemoryGraph._add_temporal_edges(
+        reversed(events),
+        SCOPE,
+        lambda left, right, relation, **kw: actual.append((left, right, kw["attributes"]["gap_seconds"])),
+    )
+    assert actual == [("event:a", "event:b", 1800)]

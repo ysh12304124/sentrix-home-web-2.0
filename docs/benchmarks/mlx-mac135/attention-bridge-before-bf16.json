@@ -1,0 +1,89 @@
+{
+  "passed": false,
+  "bridge": false,
+  "captured_helper": "_default_target_verify_left_padded_attention",
+  "cases": [
+    {
+      "batch": 4,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.037841796875,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 4,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.01348876953125,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 8,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.125,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 8,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.0113525390625,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 12,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.1591796875,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 12,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.024169921875,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 16,
+      "context": 64,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.25390625,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 16,
+      "context": 512,
+      "left_padded": true,
+      "bit_equal": false,
+      "max_abs_error": 0.028076171875,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    },
+    {
+      "batch": 4,
+      "context": 64,
+      "left_padded": false,
+      "bit_equal": true,
+      "max_abs_error": 0.0,
+      "actual_kernel_calls": 0,
+      "dtype": "mlx.core.bfloat16"
+    }
+  ],
+  "note": "Real vllm-mlx patched Qwen attention versus native mlx-vlm attention, fixed random synthetic single-layer weights. Not QA or full model throughput."
+}

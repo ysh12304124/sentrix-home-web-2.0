@@ -28,6 +28,15 @@ class SearchHit(BaseModel):
     audio_context: list[AudioEvidenceExcerpt] = []
 
 
+class DirectAudioEvidence(BaseModel):
+    segment_id: str
+    asset_id: str
+    score: float
+    start_ms: int
+    end_ms: int
+    context: list[AudioEvidenceExcerpt] = []
+
+
 class ChannelTrace(BaseModel):
     """一个召回通道这一次的轨迹。
 
@@ -61,3 +70,5 @@ class SearchResponse(BaseModel):
     # 每个通道的轨迹，顺序与融合的通道顺序一致。
     channel_trace: list[ChannelTrace] = []
     items: list[SearchHit]
+    # 独立 Segment 级音频证据；不与图片 Asset 排名混合。
+    direct_audio: list[DirectAudioEvidence] = []

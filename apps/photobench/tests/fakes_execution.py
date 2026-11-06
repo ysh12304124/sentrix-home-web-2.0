@@ -415,6 +415,12 @@ class FakeAlbums:
         self.calls.append(("qa_rows", qa_set))
         return [dict(row) for row in self.rows]
 
+    def gt_metadata_snapshot(self, album_id: str) -> dict[str, Any]:
+        from photobench.domain.evaluation.gt_context import empty_context
+
+        self.calls.append(("gt_metadata_snapshot", album_id))
+        return empty_context(album_id)
+
     def read_file(self, album_id: str, relative: str) -> bytes:
         self.calls.append(("read_file", relative))
         if relative not in self.files:
@@ -442,6 +448,7 @@ class FakeResultWriter:
     """``RunResultWriter`` 的替身：把每次快照留下来，答案是「落盘了吗、落了什么」。"""
 
     def __init__(self) -> None:
+        self.telemetry_views: list[tuple[str, dict[str, Any]]] = []
         self.snapshots: list[tuple[str, dict[str, Any]]] = []
         self.gpu_samples: list[tuple[str, dict[str, Any]]] = []
         self.resets: list[str] = []
@@ -451,6 +458,9 @@ class FakeResultWriter:
 
     def write_snapshot(self, run_id: str, state: dict[str, Any]) -> None:
         self.snapshots.append((run_id, state))
+
+    def write_telemetry_view(self, run_id: str, view: dict[str, Any]) -> None:
+        self.telemetry_views.append((run_id, view))
 
     def reset_gpu_samples(self, run_id: str) -> None:
         self.resets.append(run_id)

@@ -60,6 +60,10 @@ class RunStore(Protocol):
         """
         ...
 
+    def revision(self, run_id: str) -> str:
+        """返回 run 的 opaque 文件标识，用于缓存失效。run 不存在抛 ``KeyError``。"""
+        ...
+
 
 @runtime_checkable
 class RunResultWriter(Protocol):
@@ -81,6 +85,10 @@ class RunResultWriter(Protocol):
         ``results.jsonl`` 是 ``state["items"]`` 的逐行 JSON，**不是**另一份数据——
         它存在的理由是 447 MB 的 ``run.json`` 无法被下游逐行消费。
         """
+        ...
+
+    def write_telemetry_view(self, run_id: str, view: dict[str, Any]) -> None:
+        """Atomically publish the small live view independently of answer checkpoints."""
         ...
 
     def reset_gpu_samples(self, run_id: str) -> None:

@@ -153,6 +153,25 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     confidence=1.0 if row.get("evidence_summary") else 0.6,
                 )
             )
+        speech = row.get("speech_evidence")
+        if isinstance(speech, (list, tuple)):
+            speech_text = "；".join(
+                _text(segment.get("text"))
+                for segment in speech
+                if isinstance(segment, Mapping) and _text(segment.get("text"))
+            )
+            if speech_text:
+                facts.append(
+                    Fact(
+                        fact_type="speech_transcript",
+                        value_type=RequirementValueType.DESCRIPTION,
+                        value=speech_text,
+                        # GoalPlanner treats the whole recording as the video-time
+                        # scope (rather than inventing a wall-clock capture date).
+                        scope={"event": "视频", "time": "视频时间"},
+                        provenance=f"{record.call_id}:{handle}",
+                    )
+                )
     return facts
 
 
@@ -304,6 +323,41 @@ def _profile_facts(record: ToolCallRecord) -> list[Fact]:
     )
 
 
+def _document_facts(record: ToolCallRecord) -> list[Fact]:
+    """文档片段是可解释的原文材料，不冒充已经抽取好的金额、计数或日期。"""
+    rows = record.model_visible.get("documents")
+    if not isinstance(rows, (list, tuple)):
+        return []
+    facts: list[Fact] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        text = _text(row.get("text"))
+        if not text:
+            continue
+        provenance = f"{record.call_id}:{_text(row.get('reference'))}"
+        scope = {"document": _text(row.get("file_name"))} if _text(row.get("file_name")) else {}
+        facts.extend(
+            (
+                Fact(
+                    fact_type="document_text",
+                    value_type=RequirementValueType.DESCRIPTION,
+                    value=text,
+                    scope=scope,
+                    provenance=provenance,
+                ),
+                Fact(
+                    fact_type="document_text",
+                    value_type=RequirementValueType.VALUE,
+                    value=text,
+                    scope=scope,
+                    provenance=provenance,
+                ),
+            )
+        )
+    return facts
+
+
 def facts_from_state(state: TaskState) -> tuple[Fact, ...]:
     """把成功的工具记录投影成 facts。失败/被拒的记录不产事实。
 
@@ -316,6 +370,8 @@ def facts_from_state(state: TaskState) -> tuple[Fact, ...]:
             continue
         if record.tool in {"search_memories", "get_result_page"}:
             facts.extend(_retrieval_facts(record))
+        elif record.tool == "search_documents":
+            facts.extend(_document_facts(record))
         elif record.tool == "query_memory_facts":
             facts.extend(_structured_fact(record))
         elif record.tool == "inspect_photo":

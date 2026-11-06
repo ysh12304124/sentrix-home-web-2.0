@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "cold_output_and_usage_identical": true,
+  "all_12_input_token_sequences_identical": true,
+  "accepted_cache_decisions": 14,
+  "cached_tokens_in_decisions": 14336,
+  "cache_memory_mb": 1024,
+  "checkpoint_tokens": 1024,
+  "cache_disk_io": false
+}

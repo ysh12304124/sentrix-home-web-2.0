@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from sentrix.domain.media.capture_time import CaptureTime
+
 
 class MediaType(StrEnum):
     IMAGE = "image"
@@ -97,28 +99,14 @@ def _gps_point(latitude: float | None, longitude: float | None) -> GpsPoint | No
 
 
 def _captured_datetime(text: str | None) -> datetime | None:
-    """适配器已把拍摄时间规整成 ISO-8601（含 ``+08:00`` 这类偏移），这里只负责解析。
-
-    **带偏移的一律转成本地时间、再去掉 tzinfo**——这不是随手归一化，是与 1.0 对齐，
-    而且不这么做会让视频整条链路挂掉（2026-10-07 实测）：
-
-    观测的 ``captured_at`` 会被拿去减 ``events.time_start``（``domain/memories/events.py``
-    的 ``within_candidate_window`` / ``_time_score``）。照片那条路的时间来自 EXIF，
-    是 naive；视频这条来自 ffprobe 的 ``creation_time``，带 ``Z`` → 被
-    ``normalized_datetime`` 转成 ``+00:00`` → **aware**。aware 减 naive 直接抛
-    ``TypeError: can't subtract offset-naive and offset-aware datetimes``，
-    于是 10 个视频**全部**导入失败，而 ``photo_import`` 只记 ``partial``。
-
-    1.0 存的是 ``2017-09-27 11:36:15``（同一个 UTC 03:36 的视频）——本地时间、无时区。
-    这里照做：``astimezone()`` 转本机时区，再 ``replace(tzinfo=None)``。
-    """
+    """解析原始偏移；不读取服务器时区。"""
     if not text:
         return None
     try:
         value = datetime.fromisoformat(text)
     except ValueError:
         return None
-    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
+    return value
 
 
 # 视频拍摄时间/GPS 的抽取结果。字段逐个照抄 1.0 ``backend/video/contracts.py`` 的
@@ -236,6 +224,7 @@ class Asset:
     derived_kind: str | None = None
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
+    capture_time: CaptureTime = CaptureTime()
 
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):

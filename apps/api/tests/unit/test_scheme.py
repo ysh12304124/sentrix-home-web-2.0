@@ -53,6 +53,7 @@ def test_settings_expose_only_the_atomic_scheme_switch(tmp_path, monkeypatch):
     它们是**服务地址**，不是模型选择。禁的是「选哪套嵌入」，不是「那套嵌入在哪台机器上」。
     """
     monkeypatch.setenv("SENTRIX_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("SENTRIX_EMBEDDING_SCHEME", raising=False)
     forbidden = {
         "vector_backend",
         "image_embedder",

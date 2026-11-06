@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import GpsPoint
 from sentrix.domain.media.ports import ObservationSemantics
 from sentrix.domain.places.models import AdminArea, Place, PlacePrecision, PlaceSource
+
+pytestmark = pytest.mark.usefixtures("fake_embedding_startup")
 
 NOW = datetime(2017, 10, 5, 12, 0, 0, tzinfo=UTC)
 PACIFIC = GpsPoint(0.0, -160.0)
@@ -134,7 +138,7 @@ def test_place_display_is_the_contract_for_the_web_card():
         source=PlaceSource.PYGEOCN,
     )
 
-    assert place.display() == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert place.display() == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
 
 
 def _nearest():

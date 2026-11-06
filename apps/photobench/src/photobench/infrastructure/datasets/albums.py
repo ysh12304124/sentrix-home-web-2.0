@@ -21,6 +21,8 @@ from typing import Any
 
 from photobench.domain.datasets.catalog import ALBUM_MEDIA_COLLECTIONS
 from photobench.domain.datasets.qa_taxonomy import validate_qa_annotations
+from photobench.domain.evaluation.contract import validate_evaluation
+from photobench.domain.evaluation.gt_context import context_index, empty_context
 from photobench.infrastructure.datasets.qa_metadata import (
     apply_task_action_defaults,
     load_jsonl,
@@ -65,7 +67,8 @@ def sha256_file(path: Path) -> str:
 class JsonAlbumSource:
     """数据根下每个 album 一个目录，目录里是 ``manifest.json`` 与它指向的 qa ``.jsonl``。"""
 
-    def __init__(self, data_root: Path, task_action_policy: Path) -> None:
+    def __init__(self, data_root: Path, task_action_policy: Path, metadata_root: Path | None = None) -> None:
+        self._metadata_root = metadata_root
         self._data_root = data_root
         self._policy_path = task_action_policy
         # 策略文件一次读一次即可（1.0 在模块导入时读进 TASK_ACTION_DEFAULTS ``:1634``）。
@@ -83,6 +86,24 @@ class JsonAlbumSource:
         if not album_id or "/" in album_id or "\\" in album_id or album_id in {".", ".."}:
             raise KeyError(album_id)
         return self._data_root / album_id
+
+    def gt_metadata_snapshot(self, album_id: str) -> dict[str, Any]:
+        self._album_dir(album_id)
+        if self._metadata_root is None:
+            return empty_context(album_id)
+        path = self._metadata_root / (album_id + ".json")
+        if not path.exists():
+            return empty_context(album_id)
+        try:
+            raw = path.read_bytes()
+            snapshot = json.loads(raw)
+            if not isinstance(snapshot, dict) or snapshot.get("album_id") != album_id:
+                raise ValueError("GT capture-context album mismatch")
+            context_index(snapshot)
+        except (OSError, ValueError, TypeError) as exc:
+            raise ValueError("GT拍摄资料映射读取失败: " + str(exc)) from exc
+        snapshot["sha256"] = hashlib.sha256(raw).hexdigest()
+        return snapshot
 
     def list_album_ids(self) -> list[str]:
         """1.0 ``:5146-5147``：数据根下的条目名，**按名字排序**。
@@ -117,9 +138,20 @@ class JsonAlbumSource:
         except KeyError:
             return None
         media_root = (album_dir / collection).resolve()
-        media_path = (media_root / file_name).resolve()
-        if not media_path.is_relative_to(media_root) or not media_path.is_file():
+        relative = Path(file_name)
+        if relative.is_absolute() or ".." in relative.parts or "\\" in file_name:
             return None
+        media_path = (media_root / file_name).resolve()
+        if not media_path.is_file():
+            return None
+        if not media_path.is_relative_to(media_root):
+            # 跨机数据包通过 manifest 显式登记已校验原件的软链接。
+            try:
+                declared = self.manifest(album_id).get(collection) or []
+            except KeyError:
+                return None
+            if f"{collection}/{relative.as_posix()}" not in declared:
+                return None
         return str(media_path)
 
     def manifest(self, album_id: str) -> dict[str, Any]:
@@ -143,6 +175,12 @@ class JsonAlbumSource:
         except (OSError, json.JSONDecodeError) as exc:
             raise KeyError(f"{album_id}/{qa_set}") from exc
         definition = (manifest.get("qa_set_versions") or {}).get(qa_set) or {}
+        if definition.get("evaluation_version"):
+            if definition.get("qa_sha256") != sha256_file(path):
+                raise ValueError("Evaluation QA file fingerprint mismatch")
+            ids = [row.get("qa_id") for row in rows]
+            if not all(ids) or len(set(ids)) != len(rows):
+                raise ValueError("Evaluation QA IDs must be present and unique")
         if definition.get("schema_version") in {"2.0", "3.0"}:
             ids = [row.get("qa_id") for row in rows]
             if not all(ids) or len(set(ids)) != len(rows):
@@ -160,6 +198,7 @@ class JsonAlbumSource:
             rows, str(manifest.get("album_id") or album_id), qa_set, self._policy
         )
         for row in rows:
+            validate_evaluation(row)
             for source, target in (
                 ("dataset_version", "dataset_version"),
                 ("schema_version", "qa_schema_version"),

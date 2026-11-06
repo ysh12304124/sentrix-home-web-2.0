@@ -34,9 +34,17 @@ logs/
 
 # Local audio evaluation workspace and private architecture notes.
 /audio_eval/
+/document_eval/
 /docs/architecture/audio-pipeline-current.md
 /docs/architecture/audio-asr-model-comparison-and-storage-pipeline.md
 /docs/architecture/audio-understanding-quality-gate.md
 /docs/architecture/multimodal-memory-pipeline.md
 /docs/architecture/upstream-sync-impact-2026-10-23.md
 /docs/architecture/project-architecture-overview.md
+
+# Local experiment artifacts and private source material; never publish these.
+/docs/reports/
+/tmp/
+/test_funasr.py
+/未命名文件夹/
+/统计建模论文.pdf

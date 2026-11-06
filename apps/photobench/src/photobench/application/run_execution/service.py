@@ -59,11 +59,14 @@ from photobench.application.deploy.service import SentrixModelSwitch
 from photobench.application.run_execution.gpu_sampler import PHASE_LABELS, GpuSampler
 from photobench.application.run_execution.import_progress import import_with_progress
 from photobench.application.run_execution.judge import InlineImages, JudgeRunner
+from photobench.application.run_execution.profile_scoring import ProfileScoring, prepare_batches
 from photobench.application.run_execution.state import RunState
 from photobench.config import default_qa_concurrency
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
 from photobench.domain.errors import RequestOutcomeUnknownError
+from photobench.domain.evaluation.profiles import uses_readable_metadata
+from photobench.domain.evaluation.prompts import evaluation_prompts
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter
 from photobench.domain.runs.analysis import (
@@ -164,6 +167,9 @@ _DEFAULT_SLEEP = time.sleep
 
 #: 顺带搬过来的 item 字段（1.0 ``:3379``）。这些是题库侧的标签，主链只负责带过去。
 PASSTHROUGH_FIELDS = (
+    "evaluation",
+    "benchmark_id",
+    "source_qa_id",
     "ability_taxonomy_version",
     "ability_family_ids",
     "ability_primary_ids",
@@ -236,16 +242,25 @@ class RunRequest:
     #: 1.0 的 ``resume_state``（``:7560-7564`` 把整份旧 state 塞进新 run），
     #: 2.0 只带 items 那一格——其余字段（相位、硬件快照）属于那一次运行，不该被覆盖。
     prior_items: tuple[Mapping[str, Any], ...] = ()
+    repair_missing_judges: bool = False
+    resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
     import_timeout: int = 7200
     turn_timeout: int = 900
     qa_concurrency: int = 0
+    judge_backpressure: bool = True
     runtime_framework: str = ""
     judge_url: str = ""
     judge_model: str = ""
     judge_api_key: str = ""
+    judge_provider_id: str = ""
+    scoring_configs: Mapping[str, Any] = field(default_factory=dict)
+    prior_scoring: Mapping[str, Any] = field(default_factory=dict)
+    evaluation_options: Mapping[str, Any] = field(default_factory=dict)
+    evaluation_prompts: Mapping[str, str] = field(default_factory=evaluation_prompts)
     judge_prompts: Mapping[str, str | None] = field(default_factory=dict)
     evidence_judge_enabled: bool = False
+    judge_use_gt_images: bool = False
     runtime_snapshot: RunRuntimeSnapshot | None = None
     snapshot_source: str = "creation_config"
 
@@ -266,6 +281,7 @@ def freeze_runtime_request(
             "embedding",
             "product",
             "product_settings",
+            "product_build_revision",
         )
     }
     if request.model_base_url and request.model_base_url.rstrip("/") != str(
@@ -281,8 +297,10 @@ def freeze_runtime_request(
             "import_timeout": request.import_timeout,
             "turn_timeout": request.turn_timeout,
             "qa_concurrency": request.qa_concurrency,
+            "judge_backpressure": request.judge_backpressure,
         },
-        required_build_revision=revision if revision != "development" else None,
+        required_build_revision=connection.get("product_build_revision")
+        or (revision if revision != "development" else None),
     )
     return replace(request, runtime_snapshot=RunRuntimeSnapshot(json.dumps(frozen), revision))
 
@@ -298,10 +316,12 @@ class JudgeSettings:
     judge_url: str = ""
     judge_model: str = ""
     judge_api_key: str = ""
+    judge_provider_id: str = ""
     answer_quality_prompt: str | None = None
     task_judge_prompt: str | None = None
     evidence_judge_prompt: str | None = None
     evidence_enabled: bool = False
+    judge_use_gt_images: bool = False
 
 
 #: 端点探活的重试次数与间隔。一次瞬断（4/4 slot 饱和时服务端可能直接断开新连接）
@@ -462,7 +482,6 @@ class RunExecution:
         if self._cancel_signal.is_set():
             state.request_cancel(self._cancel_source)
         self._judge = None if request.mode == "build" else self._build_judge(request, state)
-        state.start_persist_writer()
         state.persist()
         return state
 
@@ -474,6 +493,7 @@ class RunExecution:
         # make a failed run appear completed).
         if state.get("finished_at") and state.get("status") in {"failed", "cancelled"}:
             return state.data
+        state.start_persist_writer()
         run_id = str(state.get("run_id") or request.run_id)
         sampler = GpuSampler(
             self.telemetry,
@@ -607,6 +627,9 @@ class RunExecution:
                     state.set("current_phase", None)
                     state.set("finished_at", now_iso())
                     state.set("status", terminal_status)
+                    summary = effective_summary(state.data)
+                    state.set("summary", summary)
+                    state.set("run_valid", summary["run_valid"])
             finally:
                 state.stop_persist_writer()
         return state.data
@@ -649,8 +672,15 @@ class RunExecution:
                 "definition_sha256": qa_fingerprint(rows),
                 "rows": copy.deepcopy(rows),
             }
+        metadata = {}
+        if request.frozen_qa_snapshot is None and any(
+            uses_readable_metadata(c) for c in request.scoring_configs.values()
+        ):
+            metadata["gt_metadata_snapshot"] = self.albums.gt_metadata_snapshot(album_id)
         return {
+            **metadata,
             "qa_snapshot": snapshot,
+            "resume_context": copy.deepcopy(request.resume_context),
             "metrics_contract_version": 2,
             "build_revision": self.runtime_snapshot.build_revision
             if self.runtime_snapshot
@@ -692,12 +722,28 @@ class RunExecution:
             "judge_model": request.judge_model
             or (self.judge_settings.judge_model if self.judge_settings else "")
             or None,
+            "judge_provider_id": request.judge_provider_id
+            or (self.judge_settings.judge_provider_id if self.judge_settings else ""),
+            "judge_prompts": dict(request.judge_prompts),
+            "judge_use_gt_images": request.judge_use_gt_images,
+            "scoring_configs": copy.deepcopy(dict(request.scoring_configs)),
+            "scoring_profiles": list(request.scoring_configs),
+            **copy.deepcopy(dict(request.prior_scoring)),
+            "evaluation_options": dict(request.evaluation_options),
+            "evaluation_prompts": dict(request.evaluation_prompts),
+            "evidence_judge_enabled": request.evidence_judge_enabled,
             "rejudge": None,
             "memory_profile": None,
-            "input_integrity": self.albums.integrity(
-                album_id,
-                manifest,
-                "" if request.mode == "build" or request.frozen_qa_snapshot is not None else request.qa_set,
+            "input_integrity": (
+                copy.deepcopy(request.resume_context["source_input_integrity"])
+                if request.resume_context and request.resume_context.get("source_input_integrity")
+                else self.albums.integrity(
+                    album_id,
+                    manifest,
+                    ""
+                    if request.mode == "build" or request.frozen_qa_snapshot is not None
+                    else request.qa_set,
+                )
             ),
             "hardware_snapshots": {"start": None, "end": None},
             "status": "pending",
@@ -705,7 +751,7 @@ class RunExecution:
             "started_at": None,
             "finished_at": None,
             "phases": {},
-            "items": [],
+            "items": [dict(item) for item in request.prior_items],
             "summary": {},
             "run_valid": None if request.mode == "build" else False,
             "fatal_error": None,
@@ -744,13 +790,16 @@ class RunExecution:
             evidence_enabled=bool(
                 request.evidence_judge_enabled or (defaults.evidence_enabled if defaults else False)
             ),
+            judge_use_gt_images=request.judge_use_gt_images,
+            evaluation_options=request.evaluation_options,
+            evaluation_prompts=request.evaluation_prompts,
             sentrix_url=request.sentrix_url,
             cancel=state.cancel_event,
             inline_images=self.inline_images,
         )
 
     def _sample_writer(self, state: RunState) -> Callable[[dict[str, Any]], None]:
-        """采样回调：打相位标签、追加 JSONL、并维护 run.json 的实时视图。
+        """采样回调：打相位标签、追加 JSONL、更新内存实时视图。
 
         1.0 ``_persist_gpu_sample``（``:2110``）的三段在这里逐段对应：
 
@@ -777,7 +826,6 @@ class RunExecution:
                 apply_live_sample(live, sample, phase, label, tail=LIVE_TELEMETRY_TAIL_POINTS)
                 if sample.get("llama_server_args") and not state.data.get("llama_server_args"):
                     state.data["llama_server_args"] = sample.get("llama_server_args")
-            state.persist()
 
         return on_sample
 
@@ -805,7 +853,18 @@ class RunExecution:
             current = state.data.setdefault("phases", {}).get("gpu_metrics") or {}
             if current.get("status") not in {"done", "skipped"} and not state.data.get("finished_at"):
                 state.data["phases"]["gpu_metrics"] = partial
-        state.persist()
+            else:
+                return
+            view = copy.deepcopy(
+                {
+                    "run_id": state.run_id,
+                    "started_at": state.data.get("started_at"),
+                    "telemetry_live": state.data.get("telemetry_live", {}),
+                    "gpu_metrics": partial,
+                    "llama_server_args": state.data.get("llama_server_args"),
+                }
+            )
+        self.writer.write_telemetry_view(state.run_id, view)
 
     def _sampling_enabled(self) -> bool:
         return os.environ.get("PHOTOBENCH_DISABLE_GPU_SAMPLING", "0") != "1"
@@ -857,7 +916,7 @@ class RunExecution:
         占位——**两个分支都要做**：没有 Manager 的「外部端点」正是 153 上的形态，
         而 2.0 的助手用哪个模型只由它自己的 ``vlm_base_url`` 决定，与有没有 Manager 无关。
         """
-        if request.mode == "reuse" or not request.manager_url:
+        if request.mode == "reuse" or request.model_profile == "__current__" or not request.manager_url:
             state.phase_done(
                 "model_deploy",
                 {
@@ -1677,6 +1736,8 @@ class RunExecution:
             state.phase_partial("pipeline_processing", phase_result)
         else:
             state.phase_done("pipeline_processing", phase_result)
+        if not assets:
+            raise RuntimeError("导入后相册为空，已停止测评；请修复导入错误后重新构建相册")
 
     def _phase_processing_explicit(self, state: RunState, request: RunRequest) -> None:
         """调用主产品的真实流水线，同时旁路轮询源资产状态用于实时进度。"""
@@ -1687,6 +1748,10 @@ class RunExecution:
         target_ids = set(asset_ids)
         poll_count = 0
         assets: list[dict[str, Any]] = []
+        # ``pipeline_metrics.image_count`` 是「评测图片数」（不含身份参考图与视频关键帧）：
+        # 只数本次流水线的目标资产里 ``media_type == "image"`` 的那些。没有它，前端那张
+        # 卡的「评测图片墙钟均值」恒显示「未记录」（``details.ts:pipelineMetricRows``）。
+        observed_image_count = 0
         state.record_phase(
             "pipeline_processing",
             "progress",
@@ -1736,6 +1801,12 @@ class RunExecution:
                             else "media_processing"
                         ),
                     },
+                )
+                observed_image_count = sum(
+                    1 for asset in assets if str(asset.get("media_type") or "") == "image"
+                )
+                state.record_phase(
+                    "pipeline_processing", "pipeline_metrics", {"image_count": observed_image_count}
                 )
                 self._persist(str(state.get("run_id")), state)
             except Exception:  # noqa: BLE001 - 进度旁路失败不影响流水线主请求
@@ -1799,6 +1870,11 @@ class RunExecution:
                 }
             )
         final_processed = len([item for item in assets if item.get("status") == "processed"])
+        image_count = (
+            sum(1 for item in assets if str(item.get("media_type") or "") == "image")
+            if assets
+            else observed_image_count
+        )
         phase_result = {
             "total_seconds": round(float(timings.get("total") or time.perf_counter() - started), 3),
             "poll_iterations": poll_count,
@@ -1809,7 +1885,16 @@ class RunExecution:
             "event_count": int(result.get("events") or 0),
             "video_scene_count": int(result.get("video_scenes") or 0),
             "summarized_count": int(result.get("summarized") or 0),
+            # 只记**手上确实有的事实**：评测图片数、事件数/总结调用数与总结墙钟。
+            # 并发与 vLLM 上限 2.0 的流水线接口不返回，留空让前端显示「-」而不是编一个值。
+            "pipeline_metrics": {
+                "image_count": image_count,
+                "event_count": int(result.get("events") or 0),
+                "event_summary_call_count": int(result.get("summarized") or 0),
+                "event_summary_wall_seconds": timings.get("event_summarize"),
+            },
             "timings": timings,
+            "timing_spans": result.get("timing_spans") or [],
             "keyframe_extraction_seconds": timings.get("video_keyframe_extraction", 0.0),
             "keyframe_memory_seconds": timings.get("video_keyframe_memory", 0.0),
             "source_memory_prepare_worker_seconds": timings.get("source_memory_prepare", 0.0),
@@ -1851,6 +1936,8 @@ class RunExecution:
             state.phase_partial("pipeline_processing", phase_result)
         else:
             state.phase_done("pipeline_processing", phase_result)
+        if not asset_ids:
+            raise RuntimeError("导入后没有可处理的源资产，已停止测评；请修复导入错误后重新构建相册")
 
     @staticmethod
     def _stall_timeout() -> int:
@@ -2055,6 +2142,7 @@ class RunExecution:
         state.set("qa_concurrency_runtime_limit", resolved.runtime_limit)
         state.set("qa_assets", len(assets))
         state.set("judge_concurrency", judge_concurrency if judge is not None else 0)
+        state.set("judge_backpressure", request.judge_backpressure)
         state.record_phase("qa_eval", "agent_total", len(rows))
         state.record_phase("qa_eval", "agent_phase_started_at", now_iso())
         agent_phase_started = time.perf_counter()
@@ -2078,7 +2166,16 @@ class RunExecution:
         }
         pending_rows = [(index, row) for index, row in enumerate(rows) if index not in items]
         judge_futures: dict[concurrent.futures.Future[dict[str, Any]], int] = {}
-        judge_done = sum(item.get("judge_status") in {"completed", "failed"} for item in items.values())
+        recovery_indices = {
+            index
+            for index, item in items.items()
+            if request.repair_missing_judges and judge is not None and judge.needs_judge_recovery(item)
+        }
+        recovery_queue = iter(sorted(recovery_indices))
+        judge_done = sum(
+            item.get("judge_status") in {"completed", "failed"} and index not in recovery_indices
+            for index, item in items.items()
+        )
 
         def record_progress() -> None:
             # One locked checkpoint for items and both counter locations. Legacy readers
@@ -2116,10 +2213,44 @@ class RunExecution:
         judge_bounds: list[tuple[float, float, str, str]] = []
         judge_bounds_lock = threading.Lock()
 
+        profile_service = None
+        scoring_batches: list[dict[str, Any]] = []
+        if request.scoring_configs and judge is not None:
+            with state.lock:
+                inherited_ids = state.data.get("primary_scoring_batch_ids") or []
+                scoring_batches = [
+                    b for b in state.data.get("scoring_batches") or [] if b["batch_id"] in inherited_ids
+                ]
+                scoring_batches = scoring_batches or prepare_batches(
+                    state.data,
+                    request.scoring_configs,
+                    {
+                        "url": judge.judge_url,
+                        "model": judge.judge_model,
+                        "provider_id": state.data.get("judge_provider_id"),
+                        "diagnostics": {
+                            "task_decision": judge.task_judge_prompt,
+                            "evidence": judge.evidence_judge_prompt,
+                            "evidence_enabled": judge.evidence_enabled,
+                        },
+                    },
+                )
+                state.data["primary_scoring_batch_ids"] = [b["batch_id"] for b in scoring_batches]
+                if inherited_ids:
+                    judge.judge_url = scoring_batches[0]["judge"]["url"]
+                    judge.judge_model = scoring_batches[0]["judge"]["model"]
+            profile_service = ProfileScoring(
+                judge, state.data, state.lock, lambda: state.persist(wait=True), assets_by_name
+            )
+
         def run_judge(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
             begin, begin_iso = time.perf_counter(), now_iso()
             try:
                 assert judge is not None
+                if profile_service is not None:
+                    return profile_service.score_item(scoring_batches, copy.deepcopy(item), row)
+                if request.repair_missing_judges and str(item.get("qa_id")) in prior_by_qa:
+                    return judge.judge_item(copy.deepcopy(item), row, assets_by_name, only_missing=True)
                 return judge.judge_item(copy.deepcopy(item), row, assets_by_name)
             finally:
                 with judge_bounds_lock:
@@ -2132,7 +2263,22 @@ class RunExecution:
             if judge is not None
             else None
         )
+
+        def fill_recovery_slots() -> None:
+            nonlocal judge_phase_started
+            if judge_pool is None or state.cancelled:
+                return
+            while len(judge_futures) < judge_concurrency:
+                index = next(recovery_queue, None)
+                if index is None:
+                    break
+                if judge_phase_started is None:
+                    judge_phase_started = time.perf_counter()
+                    state.record_phase("qa_eval", "judge_phase_started_at", now_iso())
+                judge_futures[judge_pool.submit(run_judge, items[index], rows[index])] = index
+
         try:
+            fill_recovery_slots()
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=concurrency, thread_name_prefix="qa-agent"
             ) as executor:
@@ -2144,7 +2290,10 @@ class RunExecution:
                     nonlocal queue_exhausted
                     while (
                         len(futures) < concurrency
-                        and len(futures) + len(judge_futures) < concurrency + 2 * judge_concurrency
+                        and (
+                            not request.judge_backpressure
+                            or len(futures) + len(judge_futures) < concurrency + 2 * judge_concurrency
+                        )
                         and not state.cancelled
                     ):
                         next_row = next(queue, None)
@@ -2184,10 +2333,17 @@ class RunExecution:
                             except Exception as exc:  # noqa: BLE001
                                 with state.lock:
                                     items[index]["judge_status"] = "failed"
-                                    items[index]["judge"] = {"score": None, "reason": f"judge_error: {exc}"}
+                                    if index in recovery_indices:
+                                        items[index].setdefault("judge_recovery_errors", []).append(str(exc))
+                                    else:
+                                        items[index]["judge"] = {
+                                            "score": None,
+                                            "reason": f"judge_error: {exc}",
+                                        }
                             judge_done += 1
                             record_progress()
                             state.persist()
+                            fill_recovery_slots()
                             fill_agent_slots()
                             continue
                         future = completed_future
@@ -2224,6 +2380,11 @@ class RunExecution:
                                 if judge_phase_started is None:
                                     judge_phase_started = time.perf_counter()
                                     state.record_phase("qa_eval", "judge_phase_started_at", now_iso())
+                                if profile_service is not None:
+                                    with state.lock:
+                                        items[index] = item
+                                        state.data["items"] = [items[i] for i in sorted(items)]
+                                    state.persist(wait=True)
                                 judge_futures[judge_pool.submit(run_judge, item, rows[index])] = index
                         items[index] = item
                         fill_agent_slots()
@@ -2261,12 +2422,27 @@ class RunExecution:
             for item in ordered:
                 item.pop("_index", None)
             state.data["items"] = ordered
+            if scoring_batches:
+                from photobench.domain.evaluation.profiles import summarize_batches
+
+                state.data["scoring_summaries"] = summarize_batches(state.data)
+                for batch in scoring_batches:
+                    batch["status"] = (
+                        "interrupted"
+                        if state.cancelled
+                        else state.data["scoring_summaries"][batch["batch_id"]]["status"]
+                    )
             executed = sum(1 for item in ordered if item.get("execution_status") == "completed")
             state.data["run_valid"] = False
             record_progress()
         if state.cancelled:
             raise RunCancelledError("cancelled during qa_eval")
-        errors = qa_completion_errors(rows, ordered, judge_required=judge is not None)
+        errors = qa_completion_errors(
+            rows,
+            ordered,
+            judge_required=judge is not None,
+            scoring_state=state.data if scoring_batches else None,
+        )
         state.set("run_valid", bool(not errors and len(ordered) == len(rows) and executed == len(rows)))
         phase_result = {
             "total_seconds": round(time.perf_counter() - started, 1),
@@ -2322,6 +2498,7 @@ class RunExecution:
         for name in PASSTHROUGH_FIELDS:
             if row.get(name) is not None:
                 item[name] = row[name]
+        request_stage = "start_conversation"
         try:
             self._cancel_wait(0)
             item["execution_status"] = "started"
@@ -2333,6 +2510,7 @@ class RunExecution:
             )
             if not conversation_id:
                 raise RuntimeError("2.0 建会话没有返回 id")
+            item["conversation_id"] = conversation_id
             turn_records: list[dict[str, Any]] = []
             last_result: dict[str, Any] = {}
             last_progress: list[Any] = []
@@ -2349,6 +2527,7 @@ class RunExecution:
                 # **评测必须打开完整轨迹。** 8772 的「模型这一步看到什么/回答什么」
                 # 只能由主 API 在回合终态载荷里带出来；不开这个开关，run.json 里
                 # 永远只有工具入参与摘要，和 1.0 的 debug_trace 对不上。
+                request_stage = "start_turn"
                 started_turn = self.client.start_turn(
                     conversation_id=conversation_id,
                     message=message,
@@ -2358,6 +2537,7 @@ class RunExecution:
                 turn_id = str(started_turn.get("turn_id") or "")
                 if not turn_id:
                     raise RuntimeError(f"2.0 发起回合没有返回 turn_id：{started_turn}")
+                request_stage = "await_turn"
                 polled = self._await_turn(turn_id, request)
                 last_result = polled.get("result") or {}
                 last_progress = polled.get("public_progress") or []
@@ -2394,6 +2574,16 @@ class RunExecution:
                         # 2.0 此前**从不写这一格**，于是证据判分一次都没跑过（实测那一轮
                         # 487/487 全是 ``{"score": null, "reason": "not_applicable"}``，
                         # 而实现早就从 1.0 逐段移植齐了）。
+                        "predicted_media": resolve_predicted_media(
+                            selected_asset_ids(last_result), assets_by_name
+                        ),
+                        "media_mapping_complete": all(
+                            i in {str(a.get("id")) for group in assets_by_name.values() for a in group}
+                            for i in selected_asset_ids(last_result)
+                        ),
+                        "retrieval_observations": (last_result.get("trace") or {}).get(
+                            "retrieval_observations", {}
+                        ),
                         "predicted_images": [
                             entry
                             for entry in resolve_predicted_media(
@@ -2534,6 +2724,7 @@ class RunExecution:
             item.update(
                 {
                     "error": str(exc),
+                    "error_type": type(exc).__name__,
                     "retrieval_recall": 0,
                     "retrieval_precision": None,
                     "retrieval_f1": None,
@@ -2545,6 +2736,13 @@ class RunExecution:
                     "wall_clock_ms": round((time.perf_counter() - started) * 1000, 1),
                 }
             )
+            if isinstance(exc, RequestOutcomeUnknownError):
+                item["diagnostics"] = {
+                    **exc.facts,
+                    "error_category": "request_outcome_unknown",
+                    "request_sent": None,
+                    "request_stage": request_stage,
+                }
         item.update(retrieval_metric_projection(item))
         if item["execution_status"] == "completed":
             item["attribution"] = derive_attribution(item)

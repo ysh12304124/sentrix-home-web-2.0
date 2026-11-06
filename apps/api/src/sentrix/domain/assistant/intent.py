@@ -101,10 +101,13 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 - goal 用简体中文并保留完整语义（英文 goal 会让检索与中文描述失配）。
 - 关于相册的真问题就声明 photo_set + delivered_photo（成对、不计额度）；
   只有与相册无关的闲聊或写作请求才不声明。
+- 问已导入的 PDF、DOCX、TXT、论文、报告或其他文档内容时声明 document_text；
+  纯文档问题不要声明 photo_set / delivered_photo，只有问题同时要求查看相册媒体时才声明它们。
 - 问已确认人物是谁、家庭角色、人物档案，或问人与人的关系时声明 person_profile——照片本身没有关系信息。
 - 只有全相册级统计（共几张、多少次、哪些媒体类型）才声明 structured_fact；单张的时间、地点在 preview 里。
 - 只有 preview 摘要不足、且问画面可见属性（颜色、服饰、动作、物体、建筑）时才声明 visual_observation。
 - 只有问图内文字、数字、价格、招牌时声明 visible_text；地点、颜色、服饰、场景不算。
+- 问视频或录音里的人说了什么、提到什么内容时声明 spoken_content；不要把语音转写归为图内 OCR。
 - 只有问照片里的人是谁、身份归属时声明 photo_identity。
 - 一条 requirement 只对应一种 evidence_type；「先找照片」与「看清细节」要分成两条。
 - photo_set + delivered_photo 之外最多再声明 2 条证据需求；同一 evidence_type 可按
@@ -118,6 +121,12 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 # 照片类别名都收进 ``memory_asset``）。认不出来的别名保持原样，交给校验去报
 # ``invalid_planner_action``——静默改写成某个类型等于替模型编需求。
 _TYPE_ALIASES: Mapping[str, str] = {
+    "document": EvidenceType.DOCUMENT_TEXT.value,
+    "document_text": EvidenceType.DOCUMENT_TEXT.value,
+    "pdf": EvidenceType.DOCUMENT_TEXT.value,
+    "docx": EvidenceType.DOCUMENT_TEXT.value,
+    "paper": EvidenceType.DOCUMENT_TEXT.value,
+    "report": EvidenceType.DOCUMENT_TEXT.value,
     "photo": EvidenceType.PHOTO_SET.value,
     "image": EvidenceType.PHOTO_SET.value,
     "video": EvidenceType.PHOTO_SET.value,
@@ -146,6 +155,11 @@ _TYPE_ALIASES: Mapping[str, str] = {
     "ocr": EvidenceType.VISIBLE_TEXT.value,
     "price": EvidenceType.VISIBLE_TEXT.value,
     "visible_text": EvidenceType.VISIBLE_TEXT.value,
+    "speech": EvidenceType.SPOKEN_CONTENT.value,
+    "spoken": EvidenceType.SPOKEN_CONTENT.value,
+    "transcript": EvidenceType.SPOKEN_CONTENT.value,
+    "audio_transcript": EvidenceType.SPOKEN_CONTENT.value,
+    "spoken_content": EvidenceType.SPOKEN_CONTENT.value,
 }
 
 _HEX_DIGITS = re.compile(r"^[0-9a-f]+$")
@@ -189,7 +203,7 @@ def planner_response_format() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "id": string,
-            "evidence_type": string,
+            "evidence_type": {"type": "string", "enum": list(planner_evidence_types())},
             "description": string,
             "predicate": string,
             "value_type": {"type": "string", "enum": [item.value for item in RequirementValueType]},
@@ -505,6 +519,7 @@ def requirements_of(goal_type: EvidenceType) -> EvidenceRequirement:
         EvidenceType.PHOTO_SET: "从相册里取到与问题相关的照片。",
         EvidenceType.DELIVERED_PHOTO: "把要展示的照片交接给用户，让它们真的能打开。",
         EvidenceType.PERSON_PROFILE: "读取这位已确认人物的家庭角色。",
+        EvidenceType.DOCUMENT_TEXT: "从已导入文档中取到可溯源的原文片段。",
     }
     return EvidenceRequirement(
         id=f"req_{goal_type.value}",

@@ -105,6 +105,44 @@ def test_result_pair_failure_leaves_previous_committed_state(tmp_path, monkeypat
     assert json.loads((tmp_path / "r/results.jsonl").read_text()) == {"answer": "before"}
 
 
+def test_parsing_a_detached_generation_does_not_block_new_commits(tmp_path, monkeypatch):
+    from photobench.infrastructure.results import store as storage
+
+    writer = FileResultWriter(tmp_path)
+    writer.write_snapshot("r", {"run_id": "r", "items": [{"answer": "before"}]})
+    entered, release, committed = threading.Event(), threading.Event(), threading.Event()
+    loads = json.loads
+    loaded = []
+
+    def slow_loads(text, *args, **kwargs):
+        if threading.current_thread().name == "slow-reader" and '"items"' in text:
+            entered.set()
+            assert release.wait(3)
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(storage.json, "loads", slow_loads)
+    reader = threading.Thread(
+        target=lambda: loaded.append(FileRunStore(tmp_path).load_state("r")), name="slow-reader"
+    )
+
+    def write():
+        writer.write_snapshot("r", {"run_id": "r", "items": [{"answer": "after"}]})
+        committed.set()
+
+    reader.start()
+    assert entered.wait(1)
+    new_write = threading.Thread(target=write)
+    new_write.start()
+    try:
+        assert committed.wait(1), "A reader parsing detached text held the commit lock"
+    finally:
+        release.set()
+        reader.join(3)
+        new_write.join(3)
+    assert loaded[0]["items"] == [{"answer": "before"}]
+    assert FileRunStore(tmp_path).load_state("r")["items"] == [{"answer": "after"}]
+
+
 def test_async_write_route_does_not_block_event_loop():
     async def check():
         entered, release = threading.Event(), threading.Event()
@@ -352,7 +390,7 @@ def test_failed_legacy_export_does_not_accumulate_obsolete_checkpoints(tmp_path,
     def fail_copy(*args, **kwargs):
         raise OSError("legacy export unwritable")
 
-    monkeypatch.setattr(store.shutil, "copyfile", fail_copy)
+    monkeypatch.setattr(store, "copy_export", fail_copy)
     for index in range(5):
         writer.write_snapshot("r", {"run_id": "r", "status": "completed", "items": [], "counter": index})
     assert store.FileRunStore(tmp_path).load_state("r")["counter"] == 4

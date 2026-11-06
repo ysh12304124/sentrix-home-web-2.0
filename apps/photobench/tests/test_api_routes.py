@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -109,6 +110,87 @@ def test_an_unknown_run_is_a_404_in_the_1_0_shape(client: TestClient):
     assert response.json() == {"error": "'nope'"}
 
 
+@pytest.mark.parametrize("resume", [False, True])
+def test_accepted_runs_are_readable_before_the_worker_starts(client, tmp_path, monkeypatch, resume):
+    from photobench.application.run_execution.service import RunExecution
+    from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
+
+    album = tmp_path / "datasets" / "queued"
+    album.mkdir()
+    (album / "manifest.json").write_text(
+        json.dumps({"album_id": "queued", "photos": [], "qa_sets": {"q": "qa.jsonl"}})
+    )
+    rows = [{"qa_id": "q1", "question": "一加一", "answer": "2"}]
+    (album / "qa.jsonl").write_text(json.dumps(rows[0]))
+    gate = threading.Event()
+
+    def held_execute(execution, request):
+        assert gate.wait(5)
+        state = execution.state
+        assert state is not None
+        state.set("status", "cancelled")
+        state.persist()
+        return state.data
+
+    monkeypatch.setattr(RunExecution, "execute", held_execute)
+    try:
+        if resume:
+            original = tmp_path / "results" / "interrupted"
+            original.mkdir()
+            (original / "run.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "interrupted",
+                        "status": "interrupted",
+                        "album_id": "queued",
+                        "qa_set": "q",
+                        "scope_id": "saved-scope",
+                        "model_profile": "m",
+                        "items": [],
+                        "qa_snapshot": {
+                            "album_id": "queued",
+                            "qa_set": "q",
+                            "rows": rows,
+                            "definition_sha256": qa_fingerprint(rows),
+                        },
+                    }
+                )
+            )
+            accepted = client.post("/api/v1/runs/interrupted/resume")
+            assert accepted.status_code == 202, accepted.text
+            ids = [accepted.json()["run_id"]]
+        else:
+            accepted = client.post(
+                "/api/v1/runs",
+                json={
+                    "album_id": "queued",
+                    "qa_set": "q",
+                    "models": ["a", "b"],
+                    "runtime_framework": "generic",
+                },
+            )
+            assert accepted.status_code == 202, accepted.text
+            ids = accepted.json()["run_ids"]
+            assert len(ids) == 2
+        for run_id in ids:
+            detail = client.get(f"/api/v1/runs/{run_id}?include_history=false")
+            assert detail.status_code == 200, detail.text
+            assert detail.json()["status"] == "pending"
+            assert detail.json()["qa_count"] == 1
+            saved = json.loads((tmp_path / "results" / run_id / "run.json").read_text())
+            assert saved["qa_snapshot"]["rows"][0]["qa_id"] == "q1"
+        listed = client.get("/api/v1/runs?page_size=100").json()["runs"]
+        assert set(ids) <= {r["run_id"] for r in listed}
+    finally:
+        suites = client.app.state.container.run_suites
+        with suites._lock:
+            workers = set(suites._threads.values())
+        gate.set()
+        for worker in workers:
+            worker.join(5)
+            assert not worker.is_alive()
+
+
 def test_get_run_items_paginates(client: TestClient):
     body = client.get("/api/v1/runs/run-a/items").json()
     assert body["total"] == 1
@@ -186,7 +268,15 @@ def test_get_config_exposes_the_effective_values(client: TestClient):
     assert body["custom_judge_prompt"] is None
     assert body["evidence_judge_enabled"] is False
     kinds = {entry["kind"] for entry in client.get("/api/v1/judge-prompts").json()["kinds"]}
-    assert kinds == {"answer_quality", "task_decision", "evidence"}
+    assert kinds == {
+        "answer_quality",
+        "task_decision",
+        "evidence",
+        "photobench_open_v1:answer_quality",
+        "atm_qs_v1:choice",
+        "atm_qs_v1:number",
+        "atm_qs_v1:open",
+    }
 
 
 def test_post_config_persists_and_answers_in_the_1_0_shape(client: TestClient):

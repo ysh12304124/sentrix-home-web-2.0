@@ -1,0 +1,26 @@
+.capacity-report { background: #f6f8fc; color: #24334d; padding: 28px; border-radius: 16px; margin: 18px 0; }
+.capacity-report h2 { font-size: 30px; margin: 4px 0 12px; }
+.capacity-report h3 { margin: 28px 0 10px; }
+.capacity-report p, .capacity-report li { line-height: 1.65; }
+.capacity-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.capacity-heading > span, .capacity-eyebrow { color: #63748e; font-size: 12px; }
+.capacity-eyebrow { letter-spacing: 2px; margin: 0; }
+.capacity-identity { padding: 12px 16px; background: #e9eef7; border-radius: 8px; }
+.capacity-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0; }
+.capacity-cards article { background: white; padding: 22px; border: 1px solid #dce2ec; border-radius: 10px; }
+.capacity-cards span, .capacity-cards small { display: block; color: #63748e; }
+.capacity-cards strong { display: block; font-size: 29px; margin: 10px 0; color: #174a8b; }
+.capacity-table-wrap { overflow-x: auto; }
+.capacity-report table { width: 100%; background: white; border-collapse: collapse; font-size: 12px; }
+.capacity-report th, .capacity-report td { text-align: left; padding: 12px 8px; border-bottom: 1px solid #e0e6ef; white-space: nowrap; }
+.capacity-report th { background: #e9eef7; }
+.capacity-report td button { border: 0; padding: 0; color: #2454a6; background: transparent; cursor: pointer; font: inherit; font-weight: 600; }
+.capacity-pass { color: #14705e; font-weight: 600; }
+.capacity-pending { color: #a85e27; }
+.capacity-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.capacity-chart { margin: 0; padding: 18px; background: white; border: 1px solid #dce2ec; border-radius: 10px; }
+.capacity-chart svg { width: 100%; display: block; margin-top: 12px; }
+.capacity-chart figcaption { font-weight: 600; }
+.capacity-chart div { font-size: 12px; }
+.capacity-hashes { overflow-wrap: anywhere; font-size: 11px; color: #63748e; }
+@media (max-width: 800px) { .capacity-cards, .capacity-charts { grid-template-columns: 1fr; } .capacity-heading { align-items: flex-start; flex-direction: column; } }

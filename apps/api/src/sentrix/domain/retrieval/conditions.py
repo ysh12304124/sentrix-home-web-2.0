@@ -41,9 +41,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sentrix.domain.media.capture_time import within_time_bounds
 from sentrix.domain.media.models import Asset, Observation
 from sentrix.domain.places.aliases import EMPTY_ALIASES, PlaceAliases
-from sentrix.domain.places.matching import place_text_matches
+from sentrix.domain.places.matching import place_admin_matches, place_text_matches
 from sentrix.domain.places.models import Place
 from sentrix.domain.retrieval.query_contracts import Strictness
 from sentrix.domain.retrieval.time_expression import parse_time_expression
@@ -184,13 +185,9 @@ def _time(condition: Condition, asset: Asset, observation: Observation) -> Evide
         # 一次删光，而用户看到的是「没找到照片」——一次解析失败伪装成了一次空结果。
         return Evidence(ConditionStatus.UNKNOWN)
     captured = asset.captured_at or observation.captured_at
-    if captured is None:
-        # 与地点那条相反：拍摄时间是**本地事实**，缺失就真的没法判。1.0 同样返回
-        # contradicted（`_condition` 的 time 分支：`bounds and captured` 缺一即 contradicted）。
-        return Evidence(ConditionStatus.CONTRADICTED, "asset_metadata", asset.id)
-    # 1.0 ``_parse_datetime`` 抹掉时区后按 naive 比较；两边同一口径才可比。
-    moment = captured.replace(tzinfo=None) if captured.tzinfo else captured
-    matched = bounds[0] <= moment < bounds[1]
+    matched = within_time_bounds(bounds, captured)
+    if matched is None:
+        return Evidence(ConditionStatus.UNKNOWN)
     return Evidence(
         ConditionStatus.MATCHED if matched else ConditionStatus.CONTRADICTED,
         "asset_metadata",
@@ -226,8 +223,11 @@ def _place(
     if not value:
         return Evidence(ConditionStatus.UNKNOWN)
 
-    if context.place is not None and place_text_matches(value, context.place, context.place_aliases):
+    if place_admin_matches(value, context.place, context.place_aliases):
         return Evidence(ConditionStatus.MATCHED, "asset_metadata", asset.id, 0.9)
+
+    if place_text_matches(value, context.place, context.place_aliases):
+        return Evidence(ConditionStatus.POSSIBLE, "nearby_or_coarse_location", asset.id, 0.6)
 
     observation_place = observation.place.strip()
     if observation_place and observation_place == value:
@@ -240,7 +240,7 @@ def _place(
         # **possible 而不是 matched**：捕获文本里出现了那个词，不等于这张图在那个地方。
         return Evidence(ConditionStatus.POSSIBLE, "observation", observation.id, observation.confidence)
 
-    if context.place is not None:
+    if context.place is not None and not context.place.admin.is_empty:
         return Evidence(ConditionStatus.CONTRADICTED, "asset_metadata", asset.id, 0.9)
     return Evidence(ConditionStatus.UNKNOWN)
 

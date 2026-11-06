@@ -34,12 +34,14 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 
-from sentrix.domain.assistant.ports import ModelServiceError
+from sentrix.domain.assistant.ports import ModelServiceError, PromptTooLongError
 
-# 探测是一次本地 HTTP 往返，不是推理：10 秒足够。超时本身就说明端点没在正常服务。
+# 独立探测的默认期限。应用装配使用已有模型请求期限：繁忙的 MLX 服务可能
+# 同时延迟元数据响应，10 秒没有响应不能证明推理服务已退出。
 PROBE_TIMEOUT_S = 10.0
 
 # 缓存有效期。取 60 秒是因为两边都不亏：
@@ -55,7 +57,7 @@ class ServedModel:
     """端点当前服务的模型名，带进程内缓存。
 
     **线程安全**：uvicorn 的同步端点在线程池里跑，多个回合会并发调用 ``current()``。
-    锁只保护缓存字段，HTTP 探测在锁外做——探测最坏要 10 秒，握着锁等会把并发请求串起来。
+    锁只保护缓存字段，HTTP 探测在锁外做——探测可能等到配置期限，不能握锁等待。
     代价是缓存未命中时可能有两个线程同时探一次；结果一样，多花的是一次本地往返，
     比串行化整个端点便宜。
     """
@@ -67,7 +69,15 @@ class ServedModel:
         timeout_s: float = PROBE_TIMEOUT_S,
         ttl_s: float = PROBE_TTL_S,
         monotonic: Callable[[], float] = time.monotonic,
+        generation_profile: str = "legacy",
+        exact_output_budget: bool = False,
+        context_tokens: int = 6144,
     ) -> None:
+        if generation_profile not in {"legacy", "qwen35_nonthinking"}:
+            raise ValueError("unknown generation profile")
+        self.generation_profile = generation_profile
+        self.exact_output_budget = exact_output_budget
+        self.context_tokens = context_tokens
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
         self._ttl_s = ttl_s
@@ -75,6 +85,75 @@ class ServedModel:
         self._lock = threading.Lock()
         self._name = ""
         self._expires_at = 0.0
+
+    def generation_parameters(self) -> dict[str, Any]:
+        """Sampling shared by agent, structured planning and visual inspection."""
+        if self.generation_profile == "qwen35_nonthinking":
+            return {
+                "temperature": 0.7,
+                "seed": 42,
+                "top_p": 0.8,
+                "top_k": 20,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        return {"temperature": 0.0}
+
+    def apply_output_budget(self, payload: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
+        """Count the identical rendered prompt on the server; never crop or estimate.
+
+        A failed tokenize request cannot have dispatched a generation. Fail closed
+        when a server cannot account for templates, tools and image tokens.
+        """
+        if not self.exact_output_budget:
+            return {}
+        request = {
+            key: payload[key]
+            for key in (
+                "model",
+                "messages",
+                "tools",
+                "tool_choice",
+                "response_format",
+                "chat_template_kwargs",
+            )
+            if key in payload
+        }
+        request["add_generation_prompt"] = True
+        try:
+            response = httpx.post(
+                self._base_url.removesuffix("/v1") + "/tokenize", json=request, timeout=timeout_s
+            )
+            response.raise_for_status()
+            result = response.json()
+            count, window = result["count"], result["max_model_len"]
+            if (
+                type(count) is not int
+                or type(window) is not int
+                or count < 0
+                or window != self.context_tokens
+            ):
+                raise ValueError("tokenizer count or deployed context window does not match configuration")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+            raise ModelServiceError(
+                "无法核验模型真实输入长度或上下文窗口，未发送生成请求。",
+                diagnostics={"request_sent": False, "error_category": "tokenization_unavailable"},
+            ) from error
+        budget = window - count
+        facts = {
+            "prompt_tokens_exact": count,
+            "context_window_tokens": window,
+            "output_budget_tokens": budget,
+            "output_budget_source": "serving_tokenizer",
+        }
+        if budget <= 0:
+            raise PromptTooLongError(
+                "模型输入已用尽上下文窗口，未发送生成请求。",
+                diagnostics={**facts, "request_sent": False, "error_category": "context_window_exceeded"},
+            )
+        payload["max_tokens"] = budget
+        return facts
 
     @property
     def base_url(self) -> str:
@@ -106,7 +185,14 @@ class ServedModel:
         try:
             response = httpx.get(f"{self._base_url}/models", timeout=self._timeout_s)
         except httpx.HTTPError as error:
-            raise ModelServiceError(f"模型端点 {self._base_url} 不可达：{error}") from error
+            raise ModelServiceError(
+                f"模型端点 {self._base_url} 元数据查询失败：{error}",
+                diagnostics={
+                    "request_sent": False,
+                    "error_category": "model_metadata_unavailable",
+                    "metadata_timeout_s": self._timeout_s,
+                },
+            ) from error
 
         if response.status_code != 200:
             raise ModelServiceError(

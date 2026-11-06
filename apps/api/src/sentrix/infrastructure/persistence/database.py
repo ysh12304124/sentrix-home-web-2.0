@@ -9,11 +9,17 @@ inside a transaction, and recorded in ``schema_migrations``.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 
+from sentrix.domain.media.capture_time import time_sort_key, within_time_bounds
+
 BUSY_TIMEOUT_MS = 30_000
+_connection_locks: dict[Path, threading.RLock] = {}
+_connection_locks_guard = threading.Lock()
 
 
 class MigrationError(RuntimeError):
@@ -35,17 +41,29 @@ class Database:
     def __init__(self, path: Path, migrations_dir: Path) -> None:
         self.path = Path(path)
         self.migrations_dir = Path(migrations_dir)
+        # 同一文件的实例共享连接锁，避免并发切换WAL及SQLite文件句柄竞争。
+        # 图谱查询会在同一线程嵌套读取，因此连接锁允许重入。
+        with _connection_locks_guard:
+            self._connect_lock = _connection_locks.setdefault(self.path.resolve(), threading.RLock())
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-        try:
-            yield connection
-        finally:
-            connection.close()
+        with self._connect_lock:
+            connection = sqlite3.connect(self.path)
+            connection.row_factory = sqlite3.Row
+            connection.create_function(
+                "capture_sort_key",
+                1,
+                lambda value: time_sort_key(datetime.fromisoformat(value) if value else None),
+                deterministic=True,
+            )
+            connection.create_function("capture_in_bounds", 3, _capture_in_bounds, deterministic=True)
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            try:
+                yield connection
+            finally:
+                connection.close()
 
     def migrations(self) -> list[tuple[str, Path]]:
         """磁盘上的 ``(版本号, 脚本路径)``，按版本号排序。
@@ -58,7 +76,10 @@ class Database:
         scripts = sorted(self.migrations_dir.glob("*.sql"))
         if not scripts:
             raise MigrationError(f"迁移目录里没有任何 .sql: {self.migrations_dir}")
-        return [(script.stem.split("_", 1)[0], script) for script in scripts]
+        versions = [(script.stem.split("_", 1)[0], script) for script in scripts]
+        if len({version for version, _ in versions}) != len(versions):
+            raise MigrationError("迁移版本号重复")
+        return versions
 
     def applied_versions(self) -> set[str]:
         with self.connect() as connection:
@@ -97,6 +118,7 @@ class Database:
             done = connection.execute(
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
+            done = _reconcile_merged_migration_versions(connection, script.name, done)
             if done is not None:
                 connection.execute("COMMIT")
                 return False
@@ -111,3 +133,87 @@ class Database:
             raise
         finally:
             connection.isolation_level = previous
+
+
+def _reconcile_merged_migration_versions(
+    connection: sqlite3.Connection, script_name: str, done: object | None
+) -> object | None:
+    """Reconcile databases created before the local/upstream migration merge.
+
+    The local audio/document branch and upstream main independently allocated
+    versions 0015--0018.  The merged tree keeps upstream's numbers and moves
+    the local scripts to 0019--0022.  Existing databases are identified by the
+    schema they actually contain, never by a branch name, then their recorded
+    local version is moved before the upstream script is applied.
+    """
+    if done is None:
+        return None
+
+    has_table = lambda name: connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+    columns = lambda table: {
+        row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+
+    if script_name == "0015_audio_transcriptions.sql":
+        if has_table("audio_transcriptions"):
+            return done
+        if has_table("text_vectors"):
+            connection.execute("UPDATE schema_migrations SET version='0019' WHERE version='0015'")
+            return None
+        # An older xy database recorded capture-time as 0015.
+        if {"capture_time_json"} <= columns("assets") and {"nearest_evidence_json"} <= columns(
+            "asset_places"
+        ):
+            connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0015'")
+            return None
+    if script_name == "0016_video_jobs.sql" and {"capture_time_json"} <= columns("assets"):
+        if has_table("video_jobs"):
+            return done
+        connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0016'")
+        return None
+    if script_name == "0016_video_jobs.sql":
+        if has_table("video_jobs"):
+            return done
+        if "local_speaker_label" in columns("audio_transcript_segments"):
+            connection.execute("UPDATE schema_migrations SET version='0020' WHERE version='0016'")
+            return None
+    if script_name == "0017_video_job_config_hash.sql":
+        if "config_hash" in columns("video_jobs"):
+            return done
+        if "audio_evidence_json" in columns("agent_result_sets"):
+            connection.execute("UPDATE schema_migrations SET version='0021' WHERE version='0017'")
+            return None
+    if script_name == "0018_capture_time.sql":
+        if {"capture_time_json"} <= columns("assets") and {"nearest_evidence_json"} <= columns(
+            "asset_places"
+        ):
+            return done
+        if has_table("documents"):
+            connection.execute("UPDATE schema_migrations SET version='0022' WHERE version='0018'")
+            return None
+    if script_name in {
+        "0015_audio_transcriptions.sql",
+        "0016_video_jobs.sql",
+        "0017_video_job_config_hash.sql",
+        "0018_capture_time.sql",
+    }:
+        raise MigrationError(f"{script_name[:4]}记录与已知迁移表结构不一致")
+    return done
+
+
+def _capture_in_bounds(value: str | None, start: str | None, end: str | None) -> bool:
+    if not value:
+        return False
+    moment = datetime.fromisoformat(value)
+    bound = datetime.fromisoformat(start or end or "0001-01-01")
+    if start and end:
+        return (
+            within_time_bounds((datetime.fromisoformat(start), datetime.fromisoformat(end)), moment) is True
+        )
+    if bound.utcoffset() is None:
+        moment = moment.replace(tzinfo=None)
+    elif moment.utcoffset() is None:
+        return False
+    return moment >= bound if start else moment < bound

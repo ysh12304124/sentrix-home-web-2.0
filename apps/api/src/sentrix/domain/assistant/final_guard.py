@@ -111,7 +111,7 @@ _MESSAGES: Mapping[str, str] = {
     "placeholder_leak": "回答里出现了「地点名称/数量/时间」这类未填写的占位符，必须替换成真实数据或删除。",
     "denial_without_search": (
         "你的回答声称没有找到相关记录，但本轮没有调用任何检索工具。"
-        "请先调用 search_memories 完成检索，再基于工具结果回答。"
+        "请按问题类型先调用 search_memories 或 search_documents，再基于工具结果回答。"
     ),
     "omission_conflict": (
         "工具确认存在相关结果（total>0），但你的回答却说没有找到。"

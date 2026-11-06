@@ -207,13 +207,13 @@ class SqliteEntityRepository:
         紧接着对每一行再 ``get_observation`` 一次——那个投影是多余的，2.0 不复刻它。
         下面那两层 N+1（逐条取观察、逐条取 asset）倒是照搬，因为它们的**结果**要进响应。
 
-        ``captured_at`` 相同时没有第二排序键，与 1.0 一致；不确定性写在端口 docstring 里。
+        跨offset按绝对时刻排序；相同拍摄时间以id稳定排序。
         """
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT o.id FROM entity_observations eob"
                 " JOIN observations o ON o.id = eob.observation_id"
-                " WHERE eob.entity_id = ? ORDER BY o.captured_at DESC LIMIT ?",
+                " WHERE eob.entity_id = ? ORDER BY capture_sort_key(o.captured_at) DESC, o.id DESC LIMIT ?",
                 (entity_id, limit),
             ).fetchall()
         return [row["id"] for row in rows]
@@ -318,7 +318,7 @@ class SqliteEntityRepository:
                     "SELECT entity_id, asset_id, file_name, media_type FROM ("
                     " SELECT eob.entity_id, a.id AS asset_id, a.file_name, a.media_type,"
                     " ROW_NUMBER() OVER (PARTITION BY eob.entity_id"
-                    "  ORDER BY o.captured_at DESC, o.id DESC) AS rn"
+                    "  ORDER BY capture_sort_key(o.captured_at) DESC, o.id DESC) AS rn"
                     " FROM entity_observations eob"
                     " JOIN observations o ON o.id = eob.observation_id"
                     " JOIN assets a ON a.id = o.asset_id"

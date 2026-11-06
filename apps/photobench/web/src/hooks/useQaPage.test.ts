@@ -285,6 +285,7 @@ describe("useQaPage · 筛选与分页", () => {
       answerability: "",
       agent_status: "",
       primary: "",
+      evaluation_type: "",
     });
     const last = seen[seen.length - 1] ?? "";
     expect(last).not.toContain("tag=");
@@ -404,4 +405,15 @@ describe("useQaPage · visibleQaItems（1.0 :355-364）", () => {
     rerender({ rejudge: { status: "completed", rejudge_id: "r1" } });
     expect(result.current.visibleQaItems.map((item) => item.index)).toEqual([1, 2, 3]);
   });
+});
+
+
+it('uses both standards from one page request without per-profile fanout', async () => {
+  const scores={photobench_open_v1:{score:2,status:'completed'},atm_qs_v1:{score:0,status:'completed'}};
+  mockApi.mockImplementation(async () => pageOf([{index:7,judge:scores.photobench_open_v1,profile_scores:scores}]));
+  const {result}=renderHook(() => useQaPage({activeRunId:'r',scoringQuery:'scoring_profile=photobench_open_v1'}));
+  await act(async () => {result.current.setQaFilter('score','2');});
+  await act(async () => {await result.current.loadQaPage();});
+  expect(result.current.qaPage.items[0].profile_scores).toEqual(scores);
+  expect(mockApi.mock.calls.every(([url]) => !url.includes('scoring_profile=atm_qs_v1'))).toBe(true);
 });

@@ -1,0 +1,45 @@
+{
+  "checked_at": "2026-11-04T18:51:21.638895",
+  "run_id": "20261104-183352-album3-max-video10-current-291e9b",
+  "status": "running_with_observed_errors",
+  "inference_revision": "2f370731b30023d616db39a1912875f660c456bc",
+  "raw_snapshot_sha256": "163e93736684c24cd0b876f5a44d0297f28ecb9ab9c68d09c96f6bd07a6163bb",
+  "returned": 55,
+  "engine_error_match_count": 0,
+  "confirmed_path": "ServedModel.current -> _probe -> GET /v1/models -> httpx.ReadTimeout at 10 seconds; generation POST for these attempts was not reached.",
+  "notes": "Partial observation only. No inference-source or timeout changes deployed; no request replay. Event-loop starvation is a hypothesis, not established causal timing. Existing inference HTTP timeout 1800 seconds does not apply to independent metadata probe default10.",
+  "failed_questions": 3,
+  "failure_reasons": {
+    "model_error": 2,
+    "planner_blocked": 1
+  },
+  "failed_call_durations_ms": [
+    10010.6,
+    10010.2,
+    10018.6
+  ],
+  "source_probe_timeout_seconds": 10,
+  "deployed_model_http_timeout_seconds": 1800,
+  "candidate_repair": "Inherit the minimum configured chat and VLM timeout for the shared model-name resolver; retain /models validation, TTL and invalidate behavior. Tag metadata transport failure as request_sent=false. No POST retry and no stale-name fallback.",
+  "candidate_status": "Local real-HTTP regression: 3 expected failures on the original code, then 3 passes after repair; all 58 related integration tests passed. Complete make ci passed. Candidate has not been deployed to the running full487-v11, whose inference revision remains 2f370731b30023d616db39a1912875f660c456bc.",
+  "observation_sha256": "f6ec0b48c38b5e9b0d4b2a5c15f83a359d750ab38ac78a977f9cc5cec99a97cf",
+  "candidate_ci": {
+    "completed_at": "2026-11-04T19:01:51.700181",
+    "command": "make ci",
+    "exit_code": 0,
+    "python_passed": 3417,
+    "real_environment_deselected": 49,
+    "python_warnings": 10,
+    "web_passed": 143,
+    "photobench_web_passed": 613,
+    "mypy_source_files": 367,
+    "log_sha256": "fffa9c6501bb8a546e1f15165b24fe0dfa9f8677149b9638e621f581fb88085c",
+    "source_sha256": {
+      "apps/api/src/sentrix/bootstrap/container.py": "a5333db7b097e1b5ac4d5c06d0cb146622a97a2b218c85a6400ff35b324ec3fe",
+      "apps/api/src/sentrix/infrastructure/assistant/model_endpoint.py": "1c1a696614b4da7b7da6947468fb970b1b8e925e799c46cad5e526253ffdf33f",
+      "apps/api/tests/integration/test_chat_client.py": "647311642c57648cf6a15131863687e95fd87ad0cd882096fbe6e3816738f739",
+      "apps/api/tests/integration/test_model_endpoint.py": "7651f291c3e5ede13508d97f9005e8768ac91ad0709ca92eaf43140f283d6179"
+    },
+    "qualification_boundary": "Local real HTTP simulation and repository CI. No post-repair Mac model acceptance or QA benchmark yet."
+  }
+}

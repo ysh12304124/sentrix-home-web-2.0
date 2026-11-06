@@ -28,6 +28,7 @@ from sentrix.api.schemas.timeline import (
     MemoryGraphBuildResponse,
     PipelineProcessRequest,
     PipelineProcessResponse,
+    PipelineStageSpan,
     TimelineDay,
     TimelineEvent,
     TimelinePhoto,
@@ -39,6 +40,7 @@ from sentrix.application.media.import_album import (
     ImportAlbum,
     ProcessAlbumPipeline,
 )
+from sentrix.application.media.stage_timing import StageTimings
 from sentrix.application.media.track_import import TrackImport
 from sentrix.application.memories.read_timeline import (
     DEFAULT_LIMIT,
@@ -325,30 +327,38 @@ def process_album_pipeline(
         summarize_event=_summarize_event(container).execute,
         workers=container.settings.album_workers,
     )
-    result = pipeline.execute(
-        AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
-    )
-    timings = dict(result.timings)
+    stage_timings = StageTimings()
+    with stage_timings.activate(), stage_timings.measure("pipeline_total"):
+        result = pipeline.execute(
+            AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
+        )
+        timings = dict(result.timings)
 
-    participant_started = time.perf_counter()
-    observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
-    _confirmed_person_events(container).refresh_participants([item.id for item in observations])
-    timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
+        with stage_timings.measure("finalize"):
+            participant_started = time.perf_counter()
+            with stage_timings.measure("participant_projection"):
+                observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
+                _confirmed_person_events(container).refresh_participants([item.id for item in observations])
+            timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
 
-    graph_started = time.perf_counter()
-    graph = refresh_memory_graph(container, request.scope_id)
-    timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
-    timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
+            graph_started = time.perf_counter()
+            with stage_timings.measure("memory_graph"):
+                graph = refresh_memory_graph(container, request.scope_id)
+            timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
+            timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
 
-    family_started = time.perf_counter()
-    family_graph = _maybe_run_family_graph(container, request.scope_id)
-    timings["family_graph"] = round(time.perf_counter() - family_started, 3)
+            family_started = time.perf_counter()
+            with stage_timings.measure("family_graph"):
+                family_graph = _maybe_run_family_graph(container, request.scope_id)
+            timings["family_graph"] = round(time.perf_counter() - family_started, 3)
 
-    insights_started = time.perf_counter()
-    insights = _maybe_run_insights(container, request.scope_id, result.processed)
-    timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
-    timings["total"] = round(time.perf_counter() - total_started, 3)
+            insights_started = time.perf_counter()
+            with stage_timings.measure("person_insights"):
+                insights = _maybe_run_insights(container, request.scope_id, result.processed)
+            timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
+        timings["total"] = round(time.perf_counter() - total_started, 3)
 
+    timings.update(stage_timings.walls())
     return PipelineProcessResponse(
         scope_id=result.scope_id,
         processed=result.processed,
@@ -358,6 +368,7 @@ def process_album_pipeline(
         video_scenes=result.video_scenes,
         summarized=result.summarized,
         timings=timings,
+        timing_spans=[PipelineStageSpan(**span) for span in stage_timings.spans()],
         failures=[ImportFailure(file_name=item.file_name, reason=item.reason) for item in result.failures],
         memory_graph=(
             MemoryGraphBuildResponse(

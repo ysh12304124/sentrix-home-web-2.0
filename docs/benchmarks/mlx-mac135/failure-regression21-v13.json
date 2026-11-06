@@ -1,0 +1,70 @@
+{
+  "execution_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+  "label": "failure-regression21-v13",
+  "run_id": "20261105-031712-album3-max-video10-current-413986",
+  "concurrency": 16,
+  "questions": 21,
+  "completed": 21,
+  "returned": 21,
+  "judge_completed": 21,
+  "judge_failed": 0,
+  "status": "completed",
+  "passed": true,
+  "qa_per_min": 1.9478724594950743,
+  "qa_seconds": 646.8596,
+  "judge_seconds": 529.296,
+  "actual_batch_peak": 16,
+  "model_request_count": 126,
+  "model_call_evidence": {
+    "expected_calls": 126,
+    "recorded_calls": 126,
+    "token_multiset_matches": true,
+    "all_api_calls_complete": true,
+    "unique_terminal_ids": true,
+    "conflicting_observations": 0,
+    "output_counters_consistent": true,
+    "verified": true
+  },
+  "prefix_cache_evidence": {
+    "verified": true,
+    "observed_requests": 126,
+    "expected_requests": 126,
+    "errors": [],
+    "requests_with_reuse": 95,
+    "cached_tokens": 97280,
+    "uncached_tokens": 169678,
+    "request_hit_rate": 0.753968253968254,
+    "token_hit_rate": 0.3644018909341544
+  },
+  "run_json_sha256": "c98b8d8db16d96c24bad2c6cc289aeda7aaf4a7909d5fb19806827044330d4ef",
+  "run_valid": true,
+  "failures": {},
+  "scope": "Independent regression of all20 previously affected complete QA rows plus one control. All conversation turns retained. Execution validation, not a guarantee of answer correctness or fixed64 speed gate.",
+  "source_summary_sha256": "f9e45cd41def04cb3388652f60e85bdb9f5e613d48036dae26e6b133f7e3cddc",
+  "selection": {
+    "source_sha256": "73fa4512dde072fb0df9cf45ff3ebd192192db606f9764054bde002dcbf0be47",
+    "selected_sha256": "21c8098db4c2691031302a00a7b4ee838e1d8f8affd5dd00c523b48d6470706c",
+    "full_original_rows": true
+  },
+  "valid_judge_count": 21,
+  "tool_observations": {
+    "policy_denied_calls": 8,
+    "no_text_detected_results": 1,
+    "partial_calls": 0,
+    "note": "Policy refusals and no-text OCR outcomes remain in original traces; no model/transport/timeout diagnostic failure."
+  },
+  "native_log": {
+    "segment_start_process": 32638,
+    "segment_ends_before_next_process": 38473,
+    "ansi_stripped_segment_sha256": "f69e53b441d67ad101f4e449d01eadcb7a19450474c3e206118e963fcaf6810e",
+    "oom_occurrences": 0,
+    "tracebacks": 0
+  },
+  "resources": {
+    "samples": 78,
+    "actual_swap_in_bytes_delta": 128696320.0,
+    "actual_swap_out_bytes_delta": 580517888.0,
+    "engine_metrics_missing_samples": 0
+  },
+  "formal_acceptance": "C16 trial1 running at publication; no completed formal v13 trial or full487 result."
+}

@@ -10,11 +10,14 @@ from sentrix.infrastructure.thread_limits import configure_thread_environment
 configure_thread_environment()
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 from starlette.types import Scope
@@ -24,10 +27,12 @@ from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
     diagnostics,
+    documents,
     facts,
     family,
     health,
     identity,
+    imports,
     insights,
     knowledge,
     maintenance,
@@ -132,6 +137,23 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
     app.state.web_dist = WebDist(directory=directory, mounted=True)
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Real startup inference stays mandatory; schema export only assembles routes."""
+    container: Container = app.state.container
+    from sentrix.api.routes.media import recover_video_jobs
+
+    recover_video_jobs(container)
+    smoke_ok, smoke_error = await run_in_threadpool(container.embedding_health.smoke_test)
+    if not smoke_ok:
+        raise RuntimeError(
+            f"嵌入方案启动测试失败（embedding_scheme={container.settings.embedding_scheme}）: "
+            f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+        )
+    log.info("嵌入方案启动测试通过（%s）", container.settings.embedding_scheme)
+    yield
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，
     # 线程上限必须在它们之前生效（见 infrastructure.thread_limits）。
@@ -142,13 +164,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     container = Container.build(settings)
     container.database.migrate()
 
-    app = FastAPI(title="Sentrix Home API", version=__version__, docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Sentrix Home API",
+        version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_lifespan,
+    )
     app.state.container = container
     app.add_exception_handler(DomainError, domain_error_handler)
 
     v1 = APIRouter(prefix="/api/v1")
     v1.include_router(health.router)
+    v1.include_router(imports.router)
     v1.include_router(media.router)
+    v1.include_router(documents.router)
     v1.include_router(search.router)
     v1.include_router(assistant.router)
     v1.include_router(diagnostics.router)

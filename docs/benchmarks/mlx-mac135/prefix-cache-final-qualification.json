@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "cold_output_and_usage_identical": true,
+  "prefix_cache_evidence": {
+    "verified": true,
+    "observed_requests": 12,
+    "expected_requests": 12,
+    "errors": [],
+    "requests_with_reuse": 11,
+    "cached_tokens": 11264,
+    "uncached_tokens": 5266,
+    "request_hit_rate": 0.9166666666666666,
+    "token_hit_rate": 0.6814277071990321
+  },
+  "started_at": 1793771392.5821068,
+  "finished_at": 1793771409.5602088,
+  "note": "Synthetic final public-entry qualification; not formal 64-question throughput."
+}

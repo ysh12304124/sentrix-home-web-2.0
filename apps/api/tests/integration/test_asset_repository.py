@@ -74,3 +74,37 @@ def test_ensure_is_idempotent(migrations_ready_db: Database):
 
     assert len(spaces.list_all()) == 1
     assert spaces.get("album1").name == "第一个相册"
+
+
+def test_offset_roundtrip_keeps_local_capture_day_for_calendar_queries(migrations_ready_db: Database):
+    from dataclasses import replace
+    from datetime import timedelta, timezone
+
+    from sentrix.domain.media.models import Observation
+    from sentrix.domain.retrieval.conditions import Condition, ConditionStatus, EvidenceContext, evaluate
+
+    repo = SqliteAssetRepository(migrations_ready_db)
+    local = datetime(2024, 1, 1, 23, 30, tzinfo=timezone(timedelta(hours=-5)))
+    original = replace(make_asset(), captured_at=local)
+    repo.add(original)
+    loaded = repo.get(original.id)
+    assert loaded.captured_at.isoformat() == "2024-01-01T23:30:00-05:00"
+    observation = Observation(
+        id="o",
+        scope_id=original.scope_id,
+        asset_id=original.id,
+        source_type="import",
+        captured_at=local,
+        confidence=1,
+        created_at=local,
+        updated_at=local,
+    )
+    context = EvidenceContext()
+    assert (
+        evaluate(Condition("time", "2024年1月1日"), loaded, observation, context=context).status
+        == ConditionStatus.MATCHED
+    )
+    assert (
+        evaluate(Condition("time", "2024年1月2日"), loaded, observation, context=context).status
+        == ConditionStatus.CONTRADICTED
+    )

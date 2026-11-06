@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sentrix.domain.media.capture_time import time_sort_key
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository
 from sentrix.domain.memories.events import EventRecord
 from sentrix.domain.memories.ports import EventRepository
@@ -175,7 +176,7 @@ class ReadTimeline:
 
     def _asset_ids(self, event_id: str) -> list[str]:
         """事件里出现过的 asset，按拍摄时间排序、去重。"""
-        ordered: list[tuple[datetime, str]] = []
+        ordered: list[tuple[str, str]] = []
         for observation_id in self._events.observation_ids(event_id):
             observation = self._observations.get(observation_id)
             if observation is None:
@@ -183,7 +184,7 @@ class ReadTimeline:
             asset = self._assets.get(observation.asset_id)
             if asset is None:
                 continue
-            ordered.append((asset.captured_at or asset.created_at, asset.id))
+            ordered.append((time_sort_key(asset.captured_at or asset.created_at), asset.id))
         ordered.sort(key=lambda item: (item[0], item[1]))
         return list(dict.fromkeys(asset_id for _, asset_id in ordered))
 

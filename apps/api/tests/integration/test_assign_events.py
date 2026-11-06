@@ -152,7 +152,7 @@ def test_first_observation_creates_an_event(repository_set):
     assert result.score is None
     assert result.event.time_start == BASE
     assert result.event.admin_district == "萧山区"
-    assert result.event.place == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert result.event.place == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
     assert repository_set["events"].observation_ids(result.event.id) == ["obs_1"]
 
 
@@ -491,3 +491,15 @@ def test_a_shared_confirmed_person_keeps_the_event_together(repository_set):
     assert result.score is not None
     assert result.score.person == 0.8
     assert result.score.split_guard is None
+
+
+def test_importing_mixed_timezone_assets_preserves_separate_events(repository_set):
+    aware = seed(repository_set, asset_id="aware", observation_id="obs-aware")
+    naive = seed(
+        repository_set, asset_id="naive", observation_id="obs-naive", captured_at=BASE.replace(tzinfo=None)
+    )
+    first = repository_set["assign"].execute(aware)
+    second = repository_set["assign"].execute(naive)
+    assert first.event.id != second.event.id
+    assert repository_set["assets"].get("aware").captured_at == BASE
+    assert repository_set["assets"].get("naive").captured_at == BASE.replace(tzinfo=None)

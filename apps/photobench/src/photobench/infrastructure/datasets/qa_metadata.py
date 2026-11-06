@@ -18,6 +18,9 @@ from typing import Any
 #: ``_load_qa_metadata`` 只取这些字段——1.0 ``:4886``。多取一个字段就是多一份内存，
 #: 而这张表是「每个 qa_id 一条」的，全库扫描一次。
 _FIELDS = (
+    "evaluation",
+    "benchmark_id",
+    "source_qa_id",
     "ability_taxonomy_version",
     "ability_family_ids",
     "ability_primary_ids",

@@ -58,6 +58,7 @@ from sentrix.application.assistant.run_turn import (
     TurnRequest,
 )
 from sentrix.application.assistant.tools import AssistantToolbox
+from sentrix.application.documents.search_documents import SearchDocuments
 from sentrix.bootstrap.container import Container
 from sentrix.domain.assistant.models import Conversation, ProgressEvent, TurnRecord
 from sentrix.domain.assistant.profile import DEFAULT_PROFILE
@@ -124,15 +125,25 @@ def _run_turn(container: Container) -> RunTurn:
             # `inspect_photo` 的两件（T123）：把问题问给图的那一层，与目标人物的裁剪件。
             photo_inspector=container.photo_inspector,
             person_crops=container.person_crop_renderer,
+            events=container.event_repository,
             # preview 的 ``place`` 取自这里（导入期 EXIF GPS 反解出来的行政地名），
             # 不是 ``observations.place``（VLM 的场景描述）——理由见 ``_place_label``。
             asset_places=container.asset_place_repository,
+            documents=SearchDocuments(
+                documents=container.document_repository,
+                assets=container.asset_repository,
+                embedder=container.text_embedder,
+                vectors=container.text_vector_repository,
+            ),
         ),
         # 墙钟是部署事实：Mac/CPU 上 4 并发时一次 inspect 就可能 30-60s，
         # 180s 的默认值会把正常回合截成 timeout。由 Settings 注入，153 仍用 180。
         profile=replace(
             DEFAULT_PROFILE,
             wall_time_s=container.settings.agent_wall_time_s,
+            max_steps=container.settings.agent_max_steps,
+            max_tool_calls=container.settings.agent_max_tool_calls,
+            strict_model_step_budget=container.settings.vlm_exact_output_budget,
         ),
     )
 

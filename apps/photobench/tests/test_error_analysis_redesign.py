@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,6 @@ from fastapi.testclient import TestClient
 from photobench.config import Settings
 from photobench.domain.error_analysis.diagnosis import (
     evidence_package,
-    representative,
     scope_facts,
     task_contract,
     terminal_facts,
@@ -224,8 +224,6 @@ def test_claim_validation_and_evidence_bounds():
     assert validate_claims(raw, {"i1:case"})[1] == "invalid_references"
     assert validate_claims("bad", set())[1] == "invalid_json"
     assert validate_claims("{}", set())[1] == "invalid_schema"
-    cases = [case(i) for i in range(10)] + [case(10, judge={"score": 2})]
-    assert 10 in representative(cases, 2)
 
 
 def setup_ai(tmp_path: Path, count: int = 4) -> tuple[Path, dict[str, Any], dict[str, Any]]:
@@ -251,10 +249,26 @@ def setup_ai(tmp_path: Path, count: int = 4) -> tuple[Path, dict[str, Any], dict
         "parent_job": "parent",
         "indices": list(range(count)),
         "mode": "overview",
-        "max_cases": count,
     }
     secret = {"provider_id": "test", "model": "m", "url": "http://test/v1", "key": "do-not-save"}
     return parent, options, secret
+
+
+def prepare_gt(target: Path, options: dict[str, Any]) -> None:
+    if options.get("resume_path"):
+        shutil.copytree(Path(options["resume_path"]) / "gt", target / "gt")
+        return
+    (target / "gt").mkdir()
+    for index in options["indices"]:
+        (target / "gt" / f"input-{index}.json").write_text(
+            json.dumps(
+                {
+                    "index": index,
+                    "gt_images": [],
+                    "missing_evidence": ["gt_references_not_recorded"],
+                }
+            )
+        )
 
 
 def run(
@@ -262,6 +276,7 @@ def run(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     target = tmp_path / name
     target.mkdir()
+    prepare_gt(target, options)
     run_worker(
         str(tmp_path),
         str(target),
@@ -298,6 +313,15 @@ def answer(ref: str) -> dict[str, Any]:
                                 }
                             ],
                             "missing_evidence": [],
+                            "diagnosis": {
+                                "error_types": ["unknown"],
+                                "summary": "Recorded result",
+                                "cause": "Internal cause not confirmed",
+                                "certainty": "unknown",
+                                "next_step": "Check the recorded failed request",
+                                "limitations": "sample only",
+                                "evidence_refs": [ref],
+                            },
                         }
                     )
                 }
@@ -438,6 +462,7 @@ def test_new_outcome_prompt_rejects_old_resume_without_changing_history(
     requests.clear()
     target = tmp_path / "new-version"
     target.mkdir()
+    prepare_gt(target, options)
     run_worker(
         str(tmp_path),
         str(target),
@@ -580,6 +605,7 @@ def test_ai_cancellation_preserves_first_result(tmp_path: Path, monkeypatch: pyt
     install_mock(monkeypatch, respond)
     target = tmp_path / "cancel"
     target.mkdir()
+    prepare_gt(target, options)
     run_worker(
         str(tmp_path), str(target), {"kind": "ai", "options": options}, cancel, threading.Event(), secret
     )
@@ -592,7 +618,7 @@ def test_ai_exports_keep_scope_and_escape_claim_text():
     from photobench.domain.error_analysis.exports import export_auxiliary
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "note": "引用待核",
         "coverage": {"reference_valid": 1},
         "scope": {"indices": [1]},
@@ -691,7 +717,7 @@ def test_partitions_detect_overlap_even_when_memberships_equal_labeled_populatio
     # Counts of known memberships equal the entire population despite overlap + missing.
     assert sum(x["total"] for x in r["groups"]["ability_family"] if x["value"] != "unknown") == 3
     assert r["group_partitions"]["qa"]["benchmark_group"]["exclusive"]
-    assert r["group_partitions"]["qa"]["ability_type"]["not_applicable"] == 1
+    assert r["group_partitions"]["qa"]["ability_type"]["not_applicable"] == 0
     assert "P1" not in {x["value"] for x in r["groups"]["ability_type"]}  # supporting only
     assert not aggregate([])["group_partitions"]["qa"]
 
@@ -824,3 +850,183 @@ def test_version_filter_is_shared_by_api_statistics_and_export(tmp_path):
         assert [x["index"] for x in exported["cases"]] == [0]
         assert client.get(url + "/view?ability_taxonomy_version=unknown").json()["total"] == 1
     assert json.loads(path.read_text()) == state
+
+
+def test_top_level_http_error_is_preserved_before_trace_budget():
+    raw = {
+        "qa_id": "q",
+        "question": "find",
+        "execution_status": "failed",
+        "error": "HTTP 500 Internal Server Error: Internal Server Error",
+        "judge": {"score": None, "reason": "error"},
+        "tool_trace": [{"tool": "search", "text": "x" * 100000}] * 30,
+    }
+    package = evidence_package(case_from_item(raw, 0), raw)
+    record = next(r for r in package["records"] if r["id"] == "i0:execution")
+    assert not record["truncated"]
+    assert json.loads(record["excerpt"])["error"] == raw["error"]
+    assert json.loads(record["excerpt"])["execution_status"] == "failed"
+    assert package["omissions"]
+
+
+def test_structured_diagnosis_requires_types_cause_and_actual_references():
+    from photobench.domain.error_analysis.diagnosis import validate_case_diagnosis
+
+    response = json.loads(answer("i0:execution")["choices"][0]["message"]["content"])
+    response["diagnosis"]["error_types"] = ["service_error", "record_missing"]
+    assert validate_case_diagnosis(json.dumps(response), {"i0:execution"})[1] is None
+    response["diagnosis"]["evidence_refs"] = ["invented"]
+    assert validate_case_diagnosis(json.dumps(response), {"i0:execution"})[1] == "invalid_references"
+    response["diagnosis"]["evidence_refs"] = ["i0:execution"]
+    response["diagnosis"]["cause"] = ""
+    assert validate_case_diagnosis(json.dumps(response), {"i0:execution"})[1] == "invalid_diagnosis"
+    del response["diagnosis"]
+    assert validate_case_diagnosis(json.dumps(response), {"i0:execution"})[1] == "missing_diagnosis"
+
+
+def test_structured_diagnosis_exports_preserve_summary_and_escape_fields():
+    import csv
+    import io
+
+    from photobench.domain.error_analysis.exports import export_auxiliary
+
+    diagnosis = {
+        "error_types": ["service_error"],
+        "summary": "HTTP 500，无回答",
+        "cause": "<script>服务错误</script>",
+        "certainty": "unknown",
+        "next_step": "先处理答题请求错误",
+        "evidence_refs": ["i691:execution"],
+        "limitations": "内部原因未记录",
+    }
+    report = {
+        "schema_version": 3,
+        "note": "引用已核",
+        "coverage": {"reference_valid": 1},
+        "cases": [
+            {
+                "index": 691,
+                "qa_id": "album3v4-710",
+                "valid": True,
+                "result": {"diagnosis": diagnosis, "claims": []},
+            }
+        ],
+    }
+    html = export_auxiliary(report, "ai", "html")
+    assert "服务请求失败" in html and "原因未确认" in html
+    assert "HTTP 500，无回答" in html and "先处理答题请求错误" in html
+    assert "&lt;script&gt;服务错误&lt;/script&gt;" in html and "<script>" not in html
+    rows = list(csv.reader(io.StringIO(export_auxiliary(report, "ai", "csv"))))
+    row = next(row for row in rows if len(row) > 2 and row[2] == "diagnosis")
+    assert json.loads(row[3]) == diagnosis and row[4] == "i691:execution"
+
+
+@pytest.mark.parametrize("version", [None, 1, 2])
+def test_legacy_ai_exports_only_request_regeneration(version):
+    from photobench.domain.error_analysis.exports import export_auxiliary
+
+    report = {"schema_version": version, "cases": [{"result": {"observations": "旧结论"}}]}
+    for format in ("html", "csv"):
+        text = export_auxiliary(report, "ai", format)
+        assert "请重新生成分析" in text
+        assert "旧结论" not in text
+    assert json.loads(export_auxiliary(report, "ai", "json")) == report
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+def test_ai_analyzes_entire_selected_scope_without_sampling(tmp_path, monkeypatch, filtered):
+    _, options, secret = setup_ai(tmp_path, count=105)
+    options["mode"] = "cases"
+    if filtered:
+        options["indices"] = [1, 9, 104]
+    called = []
+
+    def respond(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        called.append(payload["index"])
+        return httpx.Response(200, json=answer(f"i{payload['index']}:case"))
+
+    install_mock(monkeypatch, respond)
+    report, job = run(tmp_path, "all-selected", options, secret)
+    assert job["status"] == "completed"
+    assert called == options["indices"]
+    assert report["covered"] == len(called)
+    assert report["coverage"]["unprocessed"] == 0
+    options["resume_path"] = str(tmp_path / "all-selected")
+    resumed, _ = run(tmp_path, "resume-selected", options, secret)
+    assert len(called) == len(options["indices"])
+    assert all(c["reused"] for c in resumed["cases"])
+
+
+def test_ai_summary_includes_every_diagnosis_across_bounded_groups(tmp_path, monkeypatch):
+    _, options, secret = setup_ai(tmp_path, count=105)
+    seen = []
+    leaf_claims = []
+    reduced_claims = []
+
+    def respond(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        if "records" in payload:
+            return httpx.Response(200, json=answer(f"i{payload['index']}:case"))
+        assert len(json.dumps(payload, ensure_ascii=False)) < 42000
+        assert payload["coverage"]["reference_valid"] == 105
+        if "summaries" in payload:
+            reduced_claims.extend(payload["summaries"])
+        else:
+            seen.extend(d["index"] for d in payload["diagnoses"])
+            assert (
+                len(payload["diagnoses"])
+                == len(payload["task_contracts"])
+                == len(payload["terminal_outcomes"])
+            )
+        response = answer(payload["allowed_evidence_refs"][0])
+        if "summaries" not in payload:
+            leaf_claims.append(json.loads(response["choices"][0]["message"]["content"]))
+        return httpx.Response(200, json=response)
+
+    install_mock(monkeypatch, respond)
+    report, job = run(tmp_path, "all-summary", options, secret)
+    assert job["status"] == "completed" and report["summary_status"] == "completed"
+    assert sorted(seen) == list(range(105))
+    assert len(report["summary_parts"]) > 1
+    # Every leaf summary reaches a later aggregation request.
+    assert all(value["claims"] in [v["claims"] for v in reduced_claims] for value in leaf_claims)
+
+
+def test_missing_frozen_input_fails_explicitly_preserving_completed_cases(tmp_path, monkeypatch):
+    parent, options, secret = setup_ai(tmp_path, count=3)
+    options["mode"] = "cases"
+    (parent / "input.jsonl").write_text((parent / "input.jsonl").read_text().splitlines()[0] + "\n")
+    install_mock(monkeypatch, lambda req: httpx.Response(200, json=answer("i0:case")))
+    report, job = run(tmp_path, "missing-input", options, secret)
+    assert job["status"] == "failed"
+    assert "Frozen evidence missing" in job["error"]
+    assert report["covered"] == 1 and report["coverage"]["unprocessed"] == 2
+
+
+def test_continue_reuses_valid_and_retries_all_failed_or_unprocessed(tmp_path, monkeypatch):
+    _, options, secret = setup_ai(tmp_path, count=15)
+    options["mode"] = "cases"
+    calls = []
+    first = True
+
+    def respond(req):
+        payload = json.loads(json.loads(req.content)["messages"][1]["content"])
+        index = payload["index"]
+        calls.append(index)
+        return httpx.Response(200, json=answer("invented" if first and index == 2 else f"i{index}:case"))
+
+    install_mock(monkeypatch, respond)
+    report, _ = run(tmp_path, "original", options, secret)
+    assert report["coverage"]["invalid"] == 1
+    # A saved interrupted report with a valid first pair and an invalid third item.
+    saved = tmp_path / "original" / "diagnosis.json"
+    report["cases"] = report["cases"][:3]
+    saved.write_text(json.dumps(report))
+    first = False
+    calls.clear()
+    options["resume_path"] = str(saved.parent)
+    resumed, job = run(tmp_path, "continued", options, secret)
+    assert calls == list(range(2, 15))
+    assert job["status"] == "completed" and resumed["covered"] == 15
+    assert [c["index"] for c in resumed["cases"] if c["reused"]] == [0, 1]

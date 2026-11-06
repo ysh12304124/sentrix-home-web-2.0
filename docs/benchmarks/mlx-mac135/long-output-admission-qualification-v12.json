@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "qualification": "v12-long-output-and-ordinary-admission",
+  "passed": true,
+  "scope": "Independent synthetic stability qualification; not formal QA or a throughput comparison.",
+  "inference_revision": "def406bc4ada6a6b504390ea14695eff464cb5c1",
+  "source_sha256": "a40d125c2cd90f7642f89310e880cc0768897f0930fc1c359ad3ed6c21428565",
+  "native_log": {
+    "sha256": "e93f2c5b849b0053eecd6ea3b7eeb01da9a81acf868a95658eba175046811b46",
+    "oom_occurrences": 0,
+    "tracebacks": 0,
+    "oom_patterns": [
+      "OutOfMemory",
+      "Insufficient Memory",
+      "InsufficientMemory"
+    ]
+  },
+  "configuration": {
+    "decode_capacity": 16,
+    "ordinary_prefill_max": 4,
+    "request_timeout_s": 1800,
+    "total_context_tokens": 32768,
+    "output_budget": "full remaining context; no diagnostic output cap",
+    "generator_sha256": "1b2e2be41f49a368ed8697ef27f848436f160c8c55ed5ebc9153ce814ef553b5"
+  },
+  "long_stress": {
+    "passed": true,
+    "client_count": 16,
+    "normal_stop_count": 16,
+    "unique_terminal_count": 16,
+    "return_count": 16,
+    "usage_matches": true,
+    "actual_batch_peak": 16,
+    "elapsed_s": 1104.1760919094086,
+    "sampled_mlx_active_peak_bytes": 10400721470,
+    "initial_two_completion_tokens": [
+      8205,
+      8205
+    ],
+    "before_join_min_generated_tokens": 6800,
+    "completion_token_histogram": {
+      "8205": 2,
+      "2059": 1,
+      "3085": 13
+    }
+  },
+  "ordinary_coverage": {
+    "passed": true,
+    "client_count": 16,
+    "normal_stop_count": 16,
+    "actual_batch_peak": 16,
+    "unique_terminal_count": 16,
+    "return_count": 16,
+    "usage_matches": true,
+    "observed_max_admitted": 4,
+    "admissions": [
+      {
+        "active": 0,
+        "pending": 2,
+        "admitted": 2
+      },
+      {
+        "active": 2,
+        "pending": 3,
+        "admitted": 3
+      },
+      {
+        "active": 5,
+        "pending": 11,
+        "admitted": 4
+      },
+      {
+        "active": 9,
+        "pending": 7,
+        "admitted": 4
+      },
+      {
+        "active": 13,
+        "pending": 3,
+        "admitted": 3
+      }
+    ]
+  },
+  "captured_case": {
+    "passed": true,
+    "prompt_tokens": 4534,
+    "output_budget": 28234,
+    "usage": {
+      "prompt_tokens": 4534,
+      "completion_tokens": 46,
+      "total_tokens": 4580
+    },
+    "elapsed_s": 12.883075714111328,
+    "response_sha256": "17afdbd55756b070ded3598e9fc6d62b000fa7c7f188a82a4d4ad0e3faa2cdda"
+  },
+  "previous_failed_stress_preserved": {
+    "normal_http_200": 5,
+    "http_504": 11,
+    "deadline_s": 900,
+    "passed": false
+  },
+  "interpretation": [
+    "New stress explicitly requests compact JSON and uses the configured 1800-second deadline. Both diagnostic prompt and deadline changed; no pure deadline or performance attribution.",
+    "Ordinary admission is bounded; decoding still reaches 16. Stress success does not establish complete 487-QA acceptance.",
+    "Original v11 and first 900-second stress failures remain unchanged."
+  ],
+  "formal_acceptance": "Pending original fixed64 C16 twice with unchanged speed gates, then independent487."
+}

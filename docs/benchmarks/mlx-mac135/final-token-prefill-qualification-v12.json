@@ -1,0 +1,108 @@
+{
+  "scope": "Independent compatibility qualification, not formal QA throughput or complete487 acceptance",
+  "diagnosis": {
+    "prepared_input_tokens": 4534,
+    "prepared_input_sha256": "84b621d09e1a0c5a942573a447afc26fc5b7e88868053ea3c2757e4351dbe0f2",
+    "server_and_native_input_identical": true,
+    "controlled_native_prefill": [
+      {
+        "label": "last1_explicit",
+        "prompt_tokens": 4534,
+        "output_tokens": 46,
+        "ended_eos": true,
+        "schema_valid": true,
+        "same_native_prefix": true,
+        "same_served_prefix": false,
+        "first_diff_native": null,
+        "dominant_count": 3,
+        "elapsed_s": 13.943408727645874,
+        "peak_bytes": 4024499828
+      },
+      {
+        "label": "last54_explicit",
+        "prompt_tokens": 4534,
+        "output_tokens": 256,
+        "ended_eos": false,
+        "schema_valid": false,
+        "same_native_prefix": false,
+        "same_served_prefix": true,
+        "first_diff_native": 11,
+        "dominant_count": 230,
+        "elapsed_s": 22.45928382873535,
+        "peak_bytes": 4028694158
+      },
+      {
+        "label": "last54_implicit",
+        "prompt_tokens": 4534,
+        "output_tokens": 256,
+        "ended_eos": false,
+        "schema_valid": false,
+        "same_native_prefix": false,
+        "same_served_prefix": true,
+        "first_diff_native": 11,
+        "dominant_count": 230,
+        "elapsed_s": 22.445638179779053,
+        "peak_bytes": 4245491678
+      }
+    ],
+    "interpretation": "Changing the final prefill block from54 tokens to1 reproduces native output for this captured case. This isolates a scheduling compatibility difference; it does not establish a general numerical-kernel defect."
+  },
+  "fix": {
+    "native_final_token_scheduling": true,
+    "ordinary_new_prefill_limit": 4,
+    "decode_capacity": 16,
+    "nonthinking_json_instruction_uses_existing_strict_mode": true,
+    "no_input_truncation": true,
+    "no_model_kernel_or_sampler_change": true,
+    "generator_sha256": "1b2e2be41f49a368ed8697ef27f848436f160c8c55ed5ebc9153ce814ef553b5"
+  },
+  "real_served_captured_case": {
+    "passed": true,
+    "prompt_tokens": 4534,
+    "output_budget": 28234,
+    "usage": {
+      "prompt_tokens": 4534,
+      "completion_tokens": 46,
+      "total_tokens": 4580
+    },
+    "elapsed_s": 14.259129047393799,
+    "response_sha256": "2f41bcba688e2fd87cafac9ff8305f93738cc790a4196c503eb25eaac201f4fe"
+  },
+  "fresh_install": {
+    "passed": true,
+    "fresh_base": {
+      "memory_cache.py": "c45f46590723d4170ec1066d53ae487fed67f4c0544f91f9c4659aa0b940b6c6",
+      "mllm_batch_generator.py": "592e1955cd00fd997ab52bf841b61cc5ee8c21871b0268b4545b8db0cd830e98"
+    },
+    "result": {
+      "memory_cache.py": "e6bf6b48ac344067f638db9f8b4fdf28e974b327381c24d05535aba3fd04ecb1",
+      "mllm_batch_generator.py": "1b2e2be41f49a368ed8697ef27f848436f160c8c55ed5ebc9153ce814ef553b5"
+    },
+    "fresh_install_and_idempotence": true
+  },
+  "remote_patch": {
+    "passed": true,
+    "hashes": {
+      "memory_cache.py": "e6bf6b48ac344067f638db9f8b4fdf28e974b327381c24d05535aba3fd04ecb1",
+      "mllm_batch_generator.py": "1b2e2be41f49a368ed8697ef27f848436f160c8c55ed5ebc9153ce814ef553b5"
+    },
+    "previous_formal_env_unchanged": true
+  },
+  "ci": {
+    "passed": true,
+    "python": 3420,
+    "real_environment_deselected": 49,
+    "warnings": 10,
+    "web": 143,
+    "photobench_web": 613,
+    "mypy_files": 367,
+    "log_sha256": "6077200bd21004a445f7b4ac5a116d382d2d30585e4b2583d0a3a9c0f1b70904"
+  },
+  "pending_at_capture": [
+    "long-output plus14newrequests qualification",
+    "complete protocol/cache qualification",
+    "25failedquestions+1control regression",
+    "same64 C16 two rounds",
+    "independent487"
+  ]
+}

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -103,8 +104,8 @@ class HttpxJsonClient:
 
     ``client`` 可注入是为了**用例不碰网络**：测试传一个
     ``httpx.Client(transport=httpx.MockTransport(handler))`` 就能把状态码、超时、
-    错误体逐条摆出来。默认的那个是进程级的——httpx 复用连接，而 1.0 的
-    ``urlopen`` 每次新建连接；这不改变任何返回值，只是少几次握手。
+    错误体逐条摆出来。默认每个工作线程持有独立客户端，避免关闭空闲连接时
+    与另一个线程发起请求竞争；请求仍然并发，未知 POST 不重发。
     """
 
     def __init__(
@@ -121,23 +122,31 @@ class HttpxJsonClient:
         # 失败：进程级 ``httpx.Client`` 复用了 uvicorn 已关闭的连接（默认 keep-alive 5s），
         # 而长回合让连接大段空闲。本机回环上每次重新握手几乎无成本，换掉这个失败面。
         # 调用方仍可显式传 keep_alive=True 复用连接。
-        self._client = (
-            client
-            if client is not None
-            else httpx.Client(
+        self._injected_client = client
+        self._thread_clients = threading.local()
+        self._keep_alive = keep_alive
+        self._retry_connections = retry_connections
+        self._sleep = sleep or time.sleep
+        self._clock = clock
+
+    @property
+    def _client(self) -> httpx.Client:
+        if self._injected_client is not None:
+            return self._injected_client
+        client: httpx.Client | None = getattr(self._thread_clients, "client", None)
+        if client is None:
+            client = httpx.Client(
                 verify=False,
                 follow_redirects=True,
                 timeout=120,
                 limits=httpx.Limits(
                     max_connections=32,
-                    max_keepalive_connections=20 if keep_alive else 0,
-                    keepalive_expiry=5.0 if keep_alive else 0.0,
+                    max_keepalive_connections=20 if self._keep_alive else 0,
+                    keepalive_expiry=5.0 if self._keep_alive else 0.0,
                 ),
             )
-        )
-        self._retry_connections = retry_connections
-        self._sleep = sleep or time.sleep
-        self._clock = clock
+            self._thread_clients.client = client
+        return client
 
     def _request(
         self,
@@ -160,7 +169,7 @@ class HttpxJsonClient:
                 )
                 if self._retry_connections and not safe:
                     raise RequestOutcomeUnknownError(
-                        method=method, cause_type=type(exc).__name__, attempts=attempt + 1
+                        method=method, cause_type=type(exc).__name__, attempts=attempt + 1, cause=exc
                     ) from exc
                 remaining = deadline - self._clock()
                 if (

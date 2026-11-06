@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from sentrix.domain.media.capture_time import time_sort_key
 from sentrix.domain.memories.events import EventRecord
 from sentrix.infrastructure.persistence.database import Database
 
@@ -18,7 +19,8 @@ _COLUMNS = (
     "id, scope_id, title, event_type, time_start, time_end, place, admin_district,"
     "activity, summary, confidence, aggregation_score, aggregation_breakdown_json,"
     " status, revision, created_at,"
-    " source_type, source_asset_id, source_scene_index, source_start_sec, source_end_sec"
+    " source_type, source_asset_id, source_scene_index, source_start_sec, source_end_sec,"
+    " source_metadata_json"
 )
 
 # 1.0 ``merge_observation_into_event`` 新建事件时的两个占位值（``db.py:2310`` 附近）。
@@ -77,7 +79,24 @@ def _row_to_event(row: sqlite3.Row) -> EventRecord:
         source_scene_index=row["source_scene_index"],
         source_start_sec=row["source_start_sec"],
         source_end_sec=row["source_end_sec"],
+        source_metadata=_json_object(row["source_metadata_json"]),
     )
+
+
+def _json_object(value: str | None) -> dict[str, object]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _with_speech(summary: str, metadata: dict[str, object]) -> str:
+    speech = str(metadata.get("speech_transcript") or "").strip()
+    if not speech:
+        return summary
+    marker = f"语音：{speech}"
+    return summary if marker in summary else f"{summary}；{marker}"
 
 
 class SqliteEventRepository:
@@ -137,7 +156,7 @@ class SqliteEventRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_COLUMNS} FROM events WHERE status = 'active' AND scope_id = ?"
-                " ORDER BY time_start DESC LIMIT ?",
+                " ORDER BY capture_sort_key(time_start) DESC, id ASC LIMIT ?",
                 (scope_id, limit),
             ).fetchall()
         return [_row_to_event(row) for row in rows]
@@ -149,7 +168,7 @@ class SqliteEventRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_COLUMNS} FROM events{clause}"
-                " ORDER BY COALESCE(time_start, created_at) DESC, id DESC LIMIT ? OFFSET ?",
+                " ORDER BY capture_sort_key(COALESCE(time_start, created_at)) DESC, id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
         return [_row_to_event(row) for row in rows]
@@ -174,8 +193,10 @@ class SqliteEventRepository:
         1.0 ``_persist_event_summary`` 的 UPDATE 就是这四列；置信度不在其中——
         1.0 也没有把确定性摘要的那 0.45 写回事件。
         """
-        if self.get(event_id) is None:
+        current = self.get(event_id)
+        if current is None:
             raise KeyError(event_id)
+        summary = _with_speech(summary, current.source_metadata)
         with self._database.connect() as connection, connection:
             connection.execute(
                 "UPDATE events SET title = ?, event_type = ?, activity = ?, summary = ?,"
@@ -256,6 +277,7 @@ class SqliteEventRepository:
         current = self.get(event_id)
         if current is None:
             raise KeyError(event_id)
+        _require_compatible_times(current.time_start, current.time_end, time_start, time_end)
         merged_activity = current.activity or activity
         merged_summary = current.summary
         if summary and summary not in merged_summary:
@@ -269,8 +291,8 @@ class SqliteEventRepository:
                 " aggregation_score = ?, aggregation_breakdown_json = ?,"
                 " revision = revision + 1, updated_at = ? WHERE id = ?",
                 (
-                    min(starts).isoformat() if starts else None,
-                    max(ends).isoformat() if ends else None,
+                    min(starts, key=time_sort_key).isoformat() if starts else None,
+                    max(ends, key=time_sort_key).isoformat() if ends else None,
                     place or current.place,
                     admin_district or current.admin_district,
                     merged_activity,
@@ -301,6 +323,7 @@ class SqliteEventRepository:
         target = self.get(target_event_id)
         if source is None or target is None:
             raise KeyError(source_event_id if source is None else target_event_id)
+        _require_compatible_times(source.time_start, source.time_end, target.time_start, target.time_end)
         with self._database.connect() as connection, connection:
             connection.execute(
                 "UPDATE OR IGNORE event_observations SET event_id = ? WHERE event_id = ?",
@@ -316,8 +339,8 @@ class SqliteEventRepository:
                 " confidence = MAX(confidence, ?), revision = revision + 1, updated_at = ?"
                 " WHERE id = ?",
                 (
-                    min(starts).isoformat() if starts else None,
-                    max(ends).isoformat() if ends else None,
+                    min(starts, key=time_sort_key).isoformat() if starts else None,
+                    max(ends, key=time_sort_key).isoformat() if ends else None,
                     source.confidence,
                     datetime.now(UTC).isoformat(),
                     target_event_id,
@@ -343,6 +366,8 @@ class SqliteEventRepository:
         source_scene_index: int,
         source_start_sec: float,
         source_end_sec: float,
+        speech_transcript: str = "",
+        speech_segments: Sequence[dict[str, object]] = (),
     ) -> EventRecord:
         """1.0 ``db.py:2397`` 的 ``create_video_scene_event``：**先查后插**，幂等。
 
@@ -356,12 +381,26 @@ class SqliteEventRepository:
         """
         with self._database.connect() as connection, connection:
             existing = connection.execute(
-                "SELECT id FROM events WHERE source_type = 'video_scene'"
+                "SELECT id, summary, source_metadata_json FROM events WHERE source_type = 'video_scene'"
                 " AND source_asset_id = ? AND source_scene_index = ?",
                 (source_asset_id, int(source_scene_index)),
             ).fetchone()
             if existing is not None:
                 scene_id = existing["id"]
+                metadata = _json_object(existing["source_metadata_json"])
+                metadata["speech_transcript"] = speech_transcript
+                metadata["speech_segments"] = list(speech_segments)
+                summary = _with_speech(summary, metadata)
+                connection.execute(
+                    "UPDATE events SET summary = ?, source_metadata_json = ?, revision = revision + 1,"
+                    " updated_at = ? WHERE id = ?",
+                    (
+                        summary,
+                        json.dumps(metadata, ensure_ascii=False),
+                        datetime.now(UTC).isoformat(),
+                        scene_id,
+                    ),
+                )
             else:
                 scene_id = event_id
                 now = datetime.now(UTC).isoformat()
@@ -372,7 +411,7 @@ class SqliteEventRepository:
                     " source_scene_index, source_start_sec, source_end_sec, source_metadata_json,"
                     " created_at, updated_at)"
                     " VALUES (?,?,?,'视频场景',?,?,?, '视频场景',?,1.0,0.0,?,'active',1,"
-                    " 'video_scene',?,?,?,?, '{}', ?, ?)",
+                    " 'video_scene',?,?,?,?, ?, ?, ?)",
                     (
                         scene_id,
                         scope_id,
@@ -386,6 +425,15 @@ class SqliteEventRepository:
                         int(source_scene_index),
                         float(source_start_sec),
                         float(source_end_sec),
+                        json.dumps(
+                            {
+                                "speech_transcript": speech_transcript,
+                                "speech_segments": list(speech_segments),
+                            }
+                            if speech_transcript
+                            else {},
+                            ensure_ascii=False,
+                        ),
                         now,
                         now,
                     ),
@@ -404,3 +452,9 @@ class SqliteEventRepository:
                 (source_asset_id,),
             ).fetchall()
         return [_row_to_event(row) for row in rows]
+
+
+def _require_compatible_times(*values: datetime | None) -> None:
+    kinds = {v.utcoffset() is not None for v in values if v is not None}
+    if len(kinds) > 1:
+        raise ValueError("不能归并已知时区与未知时区的事件")

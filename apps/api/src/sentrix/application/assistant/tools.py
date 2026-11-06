@@ -29,12 +29,14 @@ import dataclasses
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
+from sentrix.application.documents.search_documents import SearchDocuments, SearchDocumentsRequest
+from sentrix.application.media.speech_context import expand_frame_speech_context
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
 from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
 from sentrix.domain.assistant.evidence_binding import fact_value_type
@@ -45,13 +47,14 @@ from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet, ResultSetE
 from sentrix.domain.assistant.tools import MAX_DELIVERED_PHOTOS
 from sentrix.domain.identity.ports import FaceRepository, PersonCropRenderer
 from sentrix.domain.media.inspection import CERTAINTY_SUPPORTED
-from sentrix.domain.media.models import Observation
+from sentrix.domain.media.models import MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetRepository,
     ObservationRepository,
     PhotoInspector,
     RecordedPhotoInspector,
 )
+from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.fact_query import FactRejection
 
@@ -170,6 +173,12 @@ def _clamp_limit(value: Any) -> int:
     return min(MAX_SEARCH_LIMIT, max(1, parsed))
 
 
+def _document_page_label(start: int | None, end: int | None) -> str:
+    if start is None:
+        return ""
+    return str(start) if end in {None, start} else f"{start}-{end}"
+
+
 class AssistantToolbox:
     def __init__(
         self,
@@ -184,6 +193,8 @@ class AssistantToolbox:
         photo_inspector: PhotoInspector,
         person_crops: PersonCropRenderer,
         asset_places: AssetPlaceRepository | None = None,
+        events: EventRepository | None = None,
+        documents: SearchDocuments | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._assets = assets
@@ -193,6 +204,13 @@ class AssistantToolbox:
         # 照片的**行政地点**（导入期由 EXIF GPS 反解而来）。preview 的 ``place``
         # 必须取这一份而不是 ``observations.place``——理由见 ``_place_label``。
         self._asset_places = asset_places
+        # A video/keyframe result must expose its scene-aligned transcript to the agent.
+        # Retrieval can find the video from transcript text, but an asset-only preview
+        # would otherwise hide the event memory and send spoken-content questions to OCR.
+        self._events = events
+        # 文档检索是独立于照片结果集的一条证据链：只给模型可引用的原文、页码和上下文，
+        # 不把 asset_id / chunk_id 泄漏到模型侧。
+        self._documents = documents
         # ``query_photo_people`` 的两条读路径（T122）。两者都是**只读**，
         # 且都只被这一个工具用——不是通用能力。
         self._faces = faces
@@ -213,6 +231,8 @@ class AssistantToolbox:
     ) -> ToolOutcome:
         if name == "search_memories":
             return self._search(arguments, scope_id=scope_id, now=now)
+        if name == "search_documents":
+            return self._search_documents(arguments, scope_id=scope_id)
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -226,6 +246,56 @@ class AssistantToolbox:
         if name == "query_memory_facts":
             return self._facts(arguments, scope_id=scope_id, now=now)
         return _failure("unknown_tool", f"没有名为 {name} 的工具。")
+
+    def _search_documents(self, arguments: Mapping[str, Any], *, scope_id: str) -> ToolOutcome:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return _failure("empty_query", "query 不能为空，请用问题中的文档主题或关键词。")
+        if self._documents is None:
+            return ToolOutcome(
+                observation={"query": query, "total": 0, "document_asset_ids": [], "chunk_ids": []},
+                model_visible={"query": query, "documents": [], "note": "当前文档检索暂不可用。"},
+                blocks=EvidenceType.DOCUMENT_TEXT,
+                failure_reason="document_search_unavailable",
+            )
+
+        hits = self._documents.execute(
+            SearchDocumentsRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
+        )
+        visible: list[dict[str, Any]] = []
+        for index, hit in enumerate(hits, 1):
+            visible.append(
+                {
+                    "reference": f"document_{index}",
+                    "file_name": hit.file_name,
+                    "page": _document_page_label(hit.page_start, hit.page_end),
+                    "section": hit.section_path or "",
+                    "text": hit.text,
+                    "context": [
+                        {
+                            "page": _document_page_label(chunk.page_start, chunk.page_end),
+                            "text": chunk.text,
+                        }
+                        for chunk in hit.context
+                    ],
+                }
+            )
+        return ToolOutcome(
+            observation={
+                "query": query,
+                "total": len(hits),
+                "document_asset_ids": [hit.document_asset_id for hit in hits],
+                "chunk_ids": [hit.chunk_id for hit in hits],
+            },
+            model_visible={
+                "query": query,
+                "total": len(hits),
+                "has_more": False,
+                "documents": visible,
+                **({"note": "没有找到相关文档片段。"} if not hits else {}),
+            },
+            blocks=EvidenceType.DOCUMENT_TEXT if not hits else None,
+        )
 
     # ---- query_memory_facts -------------------------------------------------
 
@@ -304,7 +374,6 @@ class AssistantToolbox:
             asset_ids=tuple(hit.asset_id for hit in result.hits),
             created_at=now,
             evidence_classes={hit.asset_id: hit.evidence_class for hit in result.hits},
-            audio_evidence={hit.asset_id: hit.audio_context for hit in result.hits if hit.audio_context},
         )
         self._result_sets.add(result_set)
         channel_trace = [
@@ -422,6 +491,8 @@ class AssistantToolbox:
             "total": page.total,
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
+            "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            "page": page.page,
         }
         if extra:
             observation.update(extra)
@@ -474,6 +545,7 @@ class AssistantToolbox:
         asset = self._assets.get(entry.asset_id)
         observations = self._observations.list_by_asset(entry.asset_id)
         latest = observations[0] if observations else None
+        location = self._asset_places.get(entry.asset_id) if self._asset_places is not None else None
         return {
             "handle": entry.handle,
             "file_name": asset.file_name if asset else "",
@@ -488,6 +560,15 @@ class AssistantToolbox:
             # 带进上下文，而回答一个问题只需要前者。
             "source_kind": (asset.derived_kind if asset and asset.derived_kind else "photo"),
             "captured_at": asset.captured_at.isoformat() if asset and asset.captured_at else "",
+            "capture_time": asdict(asset.capture_time) if asset else {},
+            "location_evidence": {
+                "gps": asdict(asset.captured_location) if asset and asset.captured_location else None,
+                "admin": asdict(location.admin) if location else {},
+                "nearby": asdict(location.nearest) if location else {},
+                "source": location.source.value if location else "unknown",
+                "precision": location.precision.value if location else "unknown",
+                "nearby_is_containment": False,
+            },
             "level": _LEVEL_BY_EVIDENCE_CLASS.get(entry.evidence_class, ""),
             # **地点取 GPS 反解，不取 VLM 的场景描述。** 1.0 的 preview ``place``
             # 就是反地理编码出来的地名（``_short_place_label``，``tools.py:1862``
@@ -509,18 +590,95 @@ class AssistantToolbox:
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
-            # 音频锚点与其相邻语境直接进入模型可见 preview。视觉摘要和音频证据并列，
-            # 不预先让任一模态覆盖另一模态；is_anchor 让模型知道哪一句真正命中了查询。
+            # 音频检索命中的锚点及其相邻上下文随结果集冻结；给模型的是转写和时间，
+            # 而不是内部 segment id。
             "audio_evidence": [
                 {
-                    "start_ms": segment.start_ms,
-                    "end_ms": segment.end_ms,
-                    "text": segment.text,
-                    "is_anchor": segment.is_anchor,
-                    "speaker_label": segment.local_speaker_label,
+                    "start_ms": excerpt.start_ms,
+                    "end_ms": excerpt.end_ms,
+                    "text": excerpt.text,
+                    "is_anchor": excerpt.is_anchor,
+                    "speaker": excerpt.local_speaker_label,
                 }
-                for segment in entry.audio_evidence
+                for excerpt in entry.audio_evidence
             ],
+            **self._speech_preview(asset),
+        }
+
+    def _speech_preview(self, asset: Any) -> Mapping[str, Any]:
+        """Expose transcript evidence only for a video or its timestamped keyframe.
+
+        Video previews include their scene transcript with scene bounds. A derived
+        keyframe includes only transcript segments overlapping its source timestamp,
+        keeping speech aligned to the frame instead of copying the whole video's audio.
+        """
+        if self._events is None or asset is None:
+            return {}
+        video_asset_id = asset.id if asset.media_type.value == "video" else asset.parent_asset_id
+        if not video_asset_id:
+            return {}
+        scenes = self._events.list_video_scenes(video_asset_id)
+        if not scenes:
+            return {}
+
+        frame_time = asset.source_timestamp_sec if asset.media_type.value != "video" else None
+        evidence: list[dict[str, Any]] = []
+        for scene in scenes:
+            if frame_time is not None and not (
+                (scene.source_start_sec or 0.0) <= frame_time <= (scene.source_end_sec or 0.0)
+            ):
+                continue
+            metadata = scene.source_metadata
+            segments = metadata.get("speech_segments", [])
+            if not isinstance(segments, list):
+                segments = []
+            if frame_time is not None:
+                evidence.extend(
+                    expand_frame_speech_context(
+                        segments,
+                        frame_time_sec=float(frame_time),
+                    )
+                )
+                continue
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                try:
+                    start_sec = float(segment.get("start_sec", 0.0))
+                    end_sec = float(segment.get("end_sec", start_sec))
+                except (TypeError, ValueError):
+                    continue
+                if frame_time is not None and not start_sec <= frame_time <= end_sec:
+                    continue
+                text = str(segment.get("text") or "").strip()
+                if text:
+                    evidence.append(
+                        {
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "text": text[:1000],
+                            "speaker": str(segment.get("speaker") or ""),
+                            "is_anchor": True,
+                        }
+                    )
+            if not segments:
+                transcript = str(metadata.get("speech_transcript") or "").strip()
+                if transcript:
+                    evidence.append(
+                        {
+                            "scene_start_sec": scene.source_start_sec,
+                            "scene_end_sec": scene.source_end_sec,
+                            "text": transcript[:1000],
+                        }
+                    )
+        if not evidence:
+            return {}
+        return {
+            "speech_evidence": evidence[:12],
+            "speech_evidence_note": (
+                "语音证据来自视频 ASR 转写；关键帧显示时间重叠锚点及其连续相邻片段。"
+                "可直接用于回答说话内容，不要改用图片 OCR。"
+            ),
         }
 
     def _people_count(self, asset_id: str) -> int:
@@ -790,6 +948,25 @@ class AssistantToolbox:
             )
 
         asked = str(arguments.get("question") or "").strip() or DEFAULT_INSPECT_QUESTION
+        # Parent video/audio assets can appear beside image keyframes in a result set.
+        # They are not image payloads; never send their bytes to the photo inspector.
+        if asset.media_type is not MediaType.IMAGE:
+            return ToolOutcome(
+                observation={
+                    "failure_reason": "unsupported_media_type",
+                    "asset_id": asset_id,
+                    "media_kind": asset.media_type.value,
+                },
+                model_visible={
+                    "error": "unsupported_media_type",
+                    "message": (
+                        "inspect_photo 只接受图片，当前 handle 是视频或音频原件。"
+                        "请从检索结果选择 media_kind=image、source_kind=video_keyframe 的视频关键帧"
+                        "或普通照片复核；没有相关关键帧时请重新检索，不要把未查看的原片当作视觉证据。"
+                    ),
+                },
+                failure_reason="unsupported_media_type",
+            )
         identities = self._faces.list_photo_identities(asset_id)
         manifest = self._faces.list_face_manifest(asset_id)
         described = sum(

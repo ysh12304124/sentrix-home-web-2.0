@@ -73,6 +73,11 @@ class EvidenceType(StrEnum):
     # **S6 补的第三类，也是最后一类。** 三类加起来是「看细节 / 这是谁 / 写着什么」，
     # 正好对应 1.0 那三个视觉工具的分工。
     VISIBLE_TEXT = "visible_text"
+    # 已导入 PDF / DOCX / TXT 中的原文片段。它与 ``VISIBLE_TEXT`` 不同：后者是
+    # 照片 OCR，需要先有照片结果集；文档文本有自己独立的解析、分块和检索链路。
+    DOCUMENT_TEXT = "document_text"
+    # ASR/transcribed speech is spoken evidence, not OCR from visible text in an image.
+    SPOKEN_CONTENT = "spoken_content"
 
 
 class RequirementStatus(StrEnum):

@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "original_dispatched_video_to_photo_inspector": true,
+  "candidate_rejects_non_image_before_inspector": true,
+  "rejection_is_not_successful_model_call": true,
+  "keyframe_is_real_derived_image": true,
+  "real_keyframe_tool_status": "ok",
+  "real_model_calls": 1,
+  "normal_terminals": 1,
+  "returns": 1,
+  "usage_matches": true,
+  "notes": [
+    "Diagnostic only; not QA throughput. Original failed full487 remains failed. No model, sampling, input cropping or scoring change.",
+    "Initial assertion used status ok; actual API observation status is complete. Read-only audit corrected the field expectation, with no repeated model POST."
+  ],
+  "input_tokens": 1427,
+  "output_tokens": 55,
+  "scope": "direct media-type guard and one real keyframe call; not complete QA or throughput qualification",
+  "local_ci": {
+    "passed": true,
+    "python_passed": 3426,
+    "real_environment_deselected": 49,
+    "warnings": 10,
+    "web_passed": 143,
+    "photobench_web_passed": 613,
+    "mypy_files": 367,
+    "log_sha256": "30caa542c4ba7fb9c50ff8cce0528f69902d3133a877617fdfc7c69a53c31a4a",
+    "initial_attempt": "Import sorting check failed; fixed import order and reran full make ci."
+  }
+}

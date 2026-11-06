@@ -8,8 +8,8 @@ import { fmtPct, keyframeDeltaLabel, keyframeReasonLabel } from "../../lib/forma
 /** 1.0 `:2046-2054`。七条指标定义。 */
 const keyframeMetricDefinitions = [
   { name: "保留率 / 压缩率", formula: "保留率 = 关键帧数 ÷ 原始视频帧数；压缩率 = 1 − 保留率", meaning: "衡量视频被压缩成关键帧后，计算量减少了多少；压缩越高不代表质量越高，必须结合父视频召回率观察。" },
-  { name: "源视频父级召回", formula: "被任一关键帧覆盖的 GT 源视频 ÷ GT 源视频目标", meaning: "回答需要某段视频时，关键帧是否至少代表了这段视频；允许返回关键帧而不是原视频。" },
-  { name: "候选关键帧精确率", formula: "与本题 GT 父视频一致的候选关键帧 ÷ 候选关键帧总数", meaning: "进入 Agent 候选池的关键帧有多少真正相关，反映检索噪声。" },
+  { name: "源视频父级召回", formula: "被候选或工具轨迹实际读取关键帧覆盖的 GT 源视频 ÷ GT 源视频目标", meaning: "回答需要某段视频时，检索或实际读取的关键帧是否指向了这段视频；允许使用关键帧而非原视频。" },
+  { name: "候选关键帧精确率", formula: "与本题 GT 父视频一致的候选或实际读取关键帧 ÷ 去重后的关键帧总数", meaning: "合并检索候选与工具轨迹中实际读取的关键帧，反映视频问答实际使用证据的相关度。" },
   { name: "最终返回精确率", formula: "与本题 GT 父视频一致的最终关键帧 ÷ 最终返回关键帧总数", meaning: "模型实际用于回答的关键帧相关程度，反映重排和工具选择后的有效性。" },
   { name: "时间间隔 / 覆盖跨度", formula: "同一视频关键帧相邻时间差的均值 / 最早至最晚时间差的均值", meaning: "间隔反映采样密度，跨度反映单个视频被覆盖的时间范围；二者都不是答案准确率。" },
   { name: "回答质量差值", formula: "有关键帧候选题 Judge 均分 − 无关键帧候选题 Judge 均分", meaning: "用于观察关键帧与回答质量的关联；受题型、样本量和模型状态影响，不能单独视为因果结论。" },
@@ -19,6 +19,13 @@ const keyframeMetricDefinitions = [
 /** 1.0 `:2043-2045` 的 `keyframeReasonLabel` 已由 `lib/format.ts` 移植。 */
 const secondsLabel = (value: unknown) =>
   value == null ? "-" : `${Number(value).toFixed(1)}s`;
+
+const stageTimingLabels = [
+  ["decode_seconds", "10fps 解码采样"],
+  ["svd_dedup_seconds", "SVD 相似帧去重"],
+  ["katna_seconds", "Katna 选帧"],
+  ["scene_construction_seconds", "场景构建"],
+] as const;
 
 export interface KeyframeAnalysisPanelProps {
   keyframeAnalysis: KeyframeAnalysis | null | undefined;
@@ -123,6 +130,20 @@ export function KeyframeAnalysisPanel({
                 ? `总耗时 ${processing.processing_seconds_total}s · 均值 ${processing.processing_seconds_mean ?? "-"}s/视频`
                 : "复用记忆没有视频处理耗时，不估算速度"}
             </span>
+          </div>
+          <div>
+            <small>分段耗时</small>
+            {stageTimingLabels.map(([key, label]) => {
+              const timing = processing?.stage_timings?.[key];
+              return (
+                <span key={key}>
+                  {label}：{timing?.total_seconds == null
+                    ? "未记录"
+                    : `${secondsLabel(timing.total_seconds)} 总计 · ${secondsLabel(timing.mean_seconds)}/视频（${timing.videos_measured ?? 0} 个）`}
+                </span>
+              );
+            })}
+            <span>场景构建含关键帧取图落库、事件、音视频对齐和记忆构建；总耗时还含视频探测等前置阶段。</span>
           </div>
         </div>
       ) : null}

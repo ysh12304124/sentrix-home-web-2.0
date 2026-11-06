@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "command": "make ci",
+  "python_passed": 3423,
+  "real_environment_deselected": 49,
+  "warnings": 10,
+  "web_passed": 143,
+  "photobench_web_passed": 613,
+  "mypy_files": 367,
+  "log_sha256": "8521f7b62521e282c2fcdabb2553728b99af7d07a6e2aa12f423e821325452d2",
+  "launcher_regression": "Three production-launcher cases fail at hardcoded900s before fix; pass at configured shorter chat/vision deadline after fix. Popen is intercepted; no inference claimed by these tests.",
+  "red_log_sha256": "e568f0379804fe8e56ffee05bd857ce8211e706265b864e457939c14b7091861",
+  "green_log_sha256": "cf426ab35f3b06fccef8290fde5325d90af130a79da1d1752031518df77c4236",
+  "prior_real_stress": {
+    "passed": false,
+    "diagnostic_only": true,
+    "reason": "fixed900s server deadline",
+    "http_status_counts": {
+      "200": 5,
+      "504": 11
+    },
+    "native_oom_observed": false,
+    "actual_batch_peak": 16,
+    "peak_active_bytes": 10525968698,
+    "two_long_abort_tokens": [
+      8471,
+      8465
+    ],
+    "state_sha256": "1fdc1fe9e11ab19f98805b11f6e890ebb9bd64cf16e46641bf966f744ab41362"
+  },
+  "new_diagnostic": "1800s engine deadline; synthetic compact JSON requests; still6800+tokens before14joins and actual16; currently running, no throughput comparison",
+  "formal_status": "not started; previous v11 full487 remains failed"
+}

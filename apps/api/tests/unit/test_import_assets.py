@@ -269,9 +269,9 @@ def test_video_import_reads_metadata_and_records_the_probe():
     assert probe.browser_preview_path == "/derived/preview.mp4"
     # 拍摄时间/GPS 接到与 EXIF 同一条路上：否则视频的 captured_at 只会是导入时刻。
     asset = assets.get(result.asset_id)
-    # 视频/音频的时间来自 ffprobe，带偏移；落库前统一转成本地 naive
+    # 带偏移的原始拍摄时间保持，服务器时区不参与。
     # （与 1.0 存的 `2017-09-27 11:36:15` 同口径，见 domain/media/models.py）。
-    expected = datetime.fromisoformat("2026-08-02T06:55:56+00:00").astimezone().replace(tzinfo=None)
+    expected = datetime.fromisoformat("2026-08-02T14:55:56+08:00")
     assert asset.captured_at == expected
     assert asset.captured_location == GpsPoint(22.4846, 114.5438)
 
@@ -288,6 +288,40 @@ def test_video_probe_failure_is_recorded_not_swallowed():
     probe = videos.probes[result.asset_id]
     assert probe.metadata is None
     assert "ffprobe failed: boom" in probe.probe_error
+
+
+def test_video_without_metadata_keeps_capture_time_unknown():
+    clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
+    use_case, assets, _ = build_video(
+        metadata_reader=FakeVideoMetadata(error="ffprobe: command not found"),
+        clock=lambda: clock_value,
+    )
+    result = use_case.execute(
+        ImportRequest(scope_id="album1", file_name="clip.mov", content_type=None, content=b"mov")
+    )
+    asset = assets.rows[result.asset_id]
+    assert asset.captured_at is None
+    assert asset.capture_time.status == "unknown"
+    assert asset.created_at == clock_value
+
+
+def test_image_without_exif_keeps_capture_time_unknown():
+    clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
+    assets = FakeAssets()
+    use_case = ImportAssets(
+        assets=assets,
+        observations=FakeObservations(),
+        storage=FakeStorage(),
+        metadata=FakeMetadata(),
+        clock=lambda: clock_value,
+    )
+    result = use_case.execute(
+        ImportRequest(scope_id="album1", file_name="a.jpg", content_type="image/jpeg", content=b"jpg")
+    )
+    asset = assets.rows[result.asset_id]
+    assert asset.captured_at is None
+    assert asset.capture_time.status == "unknown"
+    assert asset.created_at == clock_value
 
 
 def test_transcode_failure_keeps_the_import_and_records_the_reason():
@@ -452,9 +486,9 @@ def test_audio_import_reads_metadata_and_records_the_probe():
     assert audios.probes[result.asset_id].metadata is AUDIO_METADATA
     # 拍摄时间/GPS 接到与 EXIF/视频同一条路上：否则音频的 captured_at 只会是导入时刻。
     asset = assets.get(result.asset_id)
-    # 视频/音频的时间来自 ffprobe，带偏移；落库前统一转成本地 naive
+    # 带偏移的原始拍摄时间保持，服务器时区不参与。
     # （与 1.0 存的 `2017-09-27 11:36:15` 同口径，见 domain/media/models.py）。
-    expected = datetime.fromisoformat("2026-08-02T06:55:56+00:00").astimezone().replace(tzinfo=None)
+    expected = datetime.fromisoformat("2026-08-02T14:55:56+08:00")
     assert asset.captured_at == expected
     assert asset.captured_location == GpsPoint(22.4846, 114.5438)
 

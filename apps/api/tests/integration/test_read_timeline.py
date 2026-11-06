@@ -144,7 +144,7 @@ def test_photos_carry_the_backend_computed_place_display(timeline: ReadTimeline,
 
     item = timeline.execute(scope_id="album1").days[0].events[0]
 
-    assert item.photos[0].place == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert item.photos[0].place == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
     assert item.place == "浙江省杭州市萧山区"
     assert item.admin_district == "萧山区"
 

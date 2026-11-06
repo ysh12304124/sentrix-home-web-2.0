@@ -18,10 +18,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api/client.ts";
+import { api, post, type RequestError } from "../api/client.ts";
 import type { Run, RunPage, RunSummary } from "../api/types.ts";
 import { useRunDetail } from "./useRunDetail.ts";
-import type { RunDetailApi } from "./useRunDetail.ts";
+import type { RunDetailApi, RejudgeJudgeConfig } from "./useRunDetail.ts";
 
 /** 由其它切片（逐题 hook）提供的桥接；接上后 `loadActiveRun` 的并发集与 1.0 完全一致。 */
 export interface UseRunsOptions {
@@ -37,6 +37,7 @@ export interface UseRunsOptions {
    * 用户会看到一个永远灰着的「重新 Judge」按钮，且「恢复默认」点下去是清空。
    */
   judgePromptFallback?: string;
+  judgeConfig?: RejudgeJudgeConfig;
 }
 
 /**
@@ -86,12 +87,14 @@ export function useRuns(options: UseRunsOptions = {}) {
   const [runPage, setRunPage] = useState<RunPageState>(INITIAL_RUN_PAGE);
   const [activeRunId, setActiveRunIdState] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [detailError, setDetailError] = useState<{ runId: string; message: string } | null>(null);
   const [polling, setPolling] = useState(false);
 
   // 1.0 的 `activeRunId.value` 是同步可读的；state 读不到本轮 set 的值，
   // 所以 async 里的「是否已切换 run」判断（1.0 `:2314` / `:2267`）读 ref。
   const activeRunIdRef = useRef<string | null>(null);
   const runsRef = useRef<Run[]>([]);
+  const liveScoringRef = useRef<{runId: string; rejudge: NonNullable<Run['rejudge']>; scoring: unknown} | null>(null);
   const runPageRef = useRef<RunPageState>(INITIAL_RUN_PAGE);
   /** 1.0 `#runs-region`（`:2989`）的落点，由视图挂到 `<section>` 上。 */
   const runsRegionRef = useRef<HTMLElement | null>(null);
@@ -99,6 +102,7 @@ export function useRuns(options: UseRunsOptions = {}) {
   const runDetailRef = useRef<HTMLElement | null>(null);
 
   const setActiveRunId = useCallback((id: string | null) => {
+    if (id !== activeRunIdRef.current) liveScoringRef.current = null;
     activeRunIdRef.current = id;
     setActiveRunIdState(id);
   }, []);
@@ -107,10 +111,21 @@ export function useRuns(options: UseRunsOptions = {}) {
   const loadRuns = useCallback(async (page?: number) => {
     const target = Math.max(1, Number(page ?? runPageRef.current.page) || 1);
     const payload = await api<RunPage>(
-      `/runs?page=${target}&page_size=${runPageRef.current.page_size}`,
+      `/runs?page=${target}&page_size=${runPageRef.current.page_size}&group_tasks=true`,
       { timeoutMs: 8000, retries: 2 },
     );
-    const list = payload.runs || [];
+    // 列表索引可能仍是补评开始时的快照；同一任务使用详情已读取的实时评分。
+    const live = liveScoringRef.current;
+    const list = (payload.runs || []).map(run => {
+      if (!live || run.run_id !== activeRunIdRef.current || run.run_id !== live.runId) return run;
+      const newTask = run.rejudge?.rejudge_id !== live.rejudge.rejudge_id;
+      const newlyTerminal = live.rejudge.status === 'running' && run.rejudge?.status !== 'running';
+      if (newTask || newlyTerminal) {
+        liveScoringRef.current = null;
+        return run;
+      }
+      return {...run, rejudge: live.rejudge, summary: {...run.summary, scoring: live.scoring}};
+    });
     runsRef.current = list;
     setRuns(list);
     const next: RunPageState = {
@@ -128,9 +143,13 @@ export function useRuns(options: UseRunsOptions = {}) {
   }, []);
 
   /** 1.0 `:2317-2319`：把 `effectiveRunSummary` 合回对应行。 */
-  const updateRunSummary = useCallback((runId: string, summary: RunSummary) => {
+  const updateRunSummary = useCallback((runId: string, summary: RunSummary, snapshot?: Run) => {
+    setDetailError(previous => previous?.runId === runId ? null : previous);
+    if (snapshot?.rejudge?.rejudge_id) {
+      liveScoringRef.current = {runId, rejudge: snapshot.rejudge, scoring: summary.scoring};
+    }
     const next = runsRef.current.map((run) =>
-      run.run_id === runId ? { ...run, summary: { ...(run.summary || {}), ...summary } } : run,
+      run.run_id === runId ? { ...run, ...(snapshot ? { status: snapshot.status, phases: snapshot.phases, qa_count: snapshot.qa_count, item_count: snapshot.item_count, rejudge: snapshot.rejudge, execution_versions:snapshot.execution_versions, task_run_ids:snapshot.task_run_ids } : {}), summary: { ...(run.summary || {}), ...summary } } : run,
     );
     runsRef.current = next;
     setRuns(next);
@@ -152,6 +171,7 @@ export function useRuns(options: UseRunsOptions = {}) {
     onRunsReloaded,
     onRejudgeStarted,
     judgePromptFallback,
+    judgeConfig: options.judgeConfig,
   });
   const { loadActiveRun, setActiveRun } = detail;
   // App 的 QA 桥接函数可在每次渲染时重建；它们只更新下一次轮询用的
@@ -188,7 +208,13 @@ export function useRuns(options: UseRunsOptions = {}) {
       timer = null;
       try {
         await loadRuns();
-        if (activeRunIdRef.current) await pollDetailLoader.current();
+        const runId = activeRunIdRef.current;
+        if (runId) {
+          await pollDetailLoader.current();
+          if (activeRunIdRef.current === runId) {
+            setDetailError(previous => previous?.runId === runId ? null : previous);
+          }
+        }
         if (cancelled) return;
         if (hasRunningNow() || ["pending", "running"].includes(String(runPageRef.current.scan?.state))) {
           timer = window.setTimeout(poll, 2000);
@@ -226,11 +252,13 @@ export function useRuns(options: UseRunsOptions = {}) {
   const selectRun = useCallback(
     (run: Run) => {
       setActiveRunId(run.run_id);
+      setDetailError(null);
       setActiveRun({ ...run });
       scrollToRunDetail();
       void loadActiveRun({ resetPage: true }).catch((err: unknown) => {
         if ((err as Error).name !== "AbortError" && activeRunIdRef.current === run.run_id) {
-          setError((err as Error).message || "读取评测详情失败");
+          if (run.status === "pending" && (err as RequestError).status === 404) return;
+          setDetailError({ runId: run.run_id, message: `读取评测详情失败：${(err as Error).message || "请稍后重试"}` });
         }
       });
     },
@@ -254,11 +282,30 @@ export function useRuns(options: UseRunsOptions = {}) {
     [setActiveRunId, setActiveRun, loadRuns],
   );
 
+  const resumingRef = useRef(false);
+  const [resuming, setResuming] = useState(false);
+  const resumeRun = useCallback(async (runId: string, body: Record<string, unknown>) => {
+    const plan = detail.recoveryPlan;
+    if (resumingRef.current || hasRunningNow() || detail.rejudgeSubmitting || detail.rejudgeConfirmation ||
+        activeRunIdRef.current !== runId || plan?.run_id !== runId || !plan.can_resume || plan.remaining_qa_count <= 0) return;
+    resumingRef.current = true;
+    setResuming(true);
+    setError("");
+    try {
+      const result = await post<{run_id: string}>(`/runs/${encodeURIComponent(runId)}/resume`, body);
+      await loadRuns();
+      selectRun({run_id: result.run_id, status: "pending"});
+      startPolling();
+    } catch (error) { setError((error as Error).message); }
+    finally { resumingRef.current = false; setResuming(false); }
+  }, [hasRunningNow, loadRuns, selectRun, startPolling, detail.recoveryPlan, detail.rejudgeSubmitting, detail.rejudgeConfirmation]);
+
   return {
     runs,
+    resuming, resumeRun,
     runPage,
     activeRunId,
-    error,
+    error: error || (detailError?.runId === activeRunId ? detailError.message : ""),
     setError,
     hasRunning,
     loadRuns,

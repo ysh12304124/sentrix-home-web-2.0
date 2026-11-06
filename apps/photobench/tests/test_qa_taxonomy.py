@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -165,7 +166,10 @@ def test_pure_safety_and_pending_are_not_content_denominators():
     assert "retrieval_gt" not in cases[1]["missing"]
     html = export_report(r, cases, "html", {})
     assert "事实查询" in html and "细分题型" in html
-    assert "不适用、待核或未记录" in html
+    assert "数据覆盖与分析边界" not in html
+    payload = re.search(r'<script type="application/json" id="report-data">(.*?)</script>', html, re.S)
+    assert payload is not None
+    assert json.loads(payload.group(1))["cases"] == cases
 
 
 def test_annotation_change_does_not_claim_evidence_changed():

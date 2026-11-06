@@ -268,15 +268,24 @@ def chat_json(
     started = time.perf_counter()
     try:
         body = {
+            **(model.generation_parameters() if model.generation_profile != "legacy" else {}),
             "model": model.current(),
             "messages": [{"role": "user", "content": content}],
             "max_tokens": MAX_ANSWER_TOKENS,
         }
+        if model.generation_profile == "qwen35_nonthinking":
+            # Count the same structured-output request that will be generated.
+            body["response_format"] = {"type": "json_object"}
+        fact["diagnostics"].update(model.apply_output_budget(body, timeout_s=timeout_s))
         fact["diagnostics"]["request_sent"] = None
         response = httpx.post(endpoint, json=body, timeout=timeout_s)
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()
+        if (payload.get("choices") or [{}])[0].get("finish_reason") == "length":
+            fact["diagnostics"]["error_category"] = "output_truncated"
+            fact.update(error_type="OutputTruncatedError", error="vision generation reached context limit")
+            return None
         raw_content = _first_content(payload)
         fact["json_output"] = json_output_fact(raw_content)
         parsed = parse_json_object(raw_content)

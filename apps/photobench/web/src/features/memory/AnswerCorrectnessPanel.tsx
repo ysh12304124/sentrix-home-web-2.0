@@ -4,6 +4,7 @@
  * `memoryValidityArchitecture`（1.0 `:32-87` 的 computed）已由 `lib/graphs.ts` 移植，
  * 这里只消费它的产出（`layers`），不在组件内重算。
  */
+import { scoreChoices } from "../analysis/presentation.ts";
 import type { MemoryEffectiveness } from "../../api/types.ts";
 import { fmtPct } from "../../lib/format.ts";
 import type { ValidityLayer } from "../../lib/graphs.ts";
@@ -19,6 +20,8 @@ export interface AnswerCorrectnessPanelProps {
 
 export function AnswerCorrectnessPanel({ memoryEffectiveness, validityLayers }: AnswerCorrectnessPanelProps) {
   const correctness = memoryEffectiveness?.details?.answer_correctness;
+  const choices = scoreChoices({evaluation_summary: correctness?.evaluation_summary});
+  const label = (value: string) => choices.find(s => s.value === value)?.label;
   const created = memoryEffectiveness?.levels?.find((level) => level.key === "L4+")?.created || 0;
   return (
     <section className="answer-correctness-panel">
@@ -28,19 +31,19 @@ export function AnswerCorrectnessPanel({ memoryEffectiveness, validityLayers }: 
       </div>
       <div className="answer-correctness-grid">
         <div className="answer-correct answer-correct-good">
-          <small>回答正确 · 2 分</small>
+          <small>{label("2")}</small>
           <b>{correctness?.correct}</b>
           <span>
             {fmtPct(correctness?.exact_accuracy)} · 共 {created} 题
           </span>
         </div>
-        <div className="answer-correct answer-correct-partial">
-          <small>部分正确 · 1 分</small>
+        {label("1") && <div className="answer-correct answer-correct-partial">
+          <small>{label("1")}</small>
           <b>{correctness?.partial}</b>
           <span>{fmtPct((correctness?.partial || 0) / (created || 1))}</span>
-        </div>
+        </div>}
         <div className="answer-correct answer-correct-bad">
-          <small>回答错误 · 0 分</small>
+          <small>{label("0")}</small>
           <b>{correctness?.incorrect}</b>
           <span>{fmtPct((correctness?.incorrect || 0) / (created || 1))}</span>
         </div>

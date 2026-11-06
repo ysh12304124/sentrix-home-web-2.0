@@ -28,7 +28,7 @@ export interface ApiOptions extends RequestInit {
 }
 
 /** 网络层错误：带一个 `retryable` 标记（1.0 也是这么挂在 Error 上的）。 */
-type RequestError = Error & { retryable?: boolean };
+export type RequestError = Error & { retryable?: boolean; status?: number };
 
 /**
  * 发一个请求并解析 JSON。
@@ -64,7 +64,7 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
       if (!response.ok) {
         const httpError = Object.assign(
           new Error((data as { error?: string } | null)?.error || `HTTP ${response.status}`),
-          { retryable: response.status >= 500 },
+          { retryable: response.status >= 500, status: response.status },
         );
         throw httpError;
       }
@@ -85,9 +85,9 @@ export async function api<T = unknown>(path: string, options: ApiOptions = {}): 
     }
   }
   const failure = lastError as RequestError | undefined;
-  throw new Error(
+  throw Object.assign(new Error(
     failure?.name === "AbortError" ? `请求超时：${path}` : failure?.message || `请求失败：${path}`,
-  );
+  ), { status: failure?.status });
 }
 
 /** JSON POST（1.0 `post` `App.vue:321`）。 */

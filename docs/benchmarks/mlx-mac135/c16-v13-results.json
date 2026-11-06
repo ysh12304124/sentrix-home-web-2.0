@@ -1,0 +1,254 @@
+{
+  "execution_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+  "speed_gate": {
+    "passed": true,
+    "baseline_qpm": 2.257366200350068,
+    "baseline_trials": 1,
+    "baseline_reference_mode": "single_completed_trial_user_cancel",
+    "candidate_qpm": 3.658465653795679,
+    "weighted_speedup": 1.6206788483092958,
+    "round_speedups": [
+      1.6471983691250025,
+      1.5949997140229102
+    ],
+    "required_weighted_speedup": 1.15,
+    "required_each_round_speedup": 1.1,
+    "baseline_labels": [
+      "C16-R1-v7"
+    ],
+    "candidate_labels": [
+      "C16-R1-v13",
+      "C16-R2-v13"
+    ]
+  },
+  "rounds": [
+    {
+      "execution_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+      "reporting_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+      "metrics_probe_timeout_s": [
+        30
+      ],
+      "label": "C16-R1-v13",
+      "run_id": "20261105-032828-album3-max-video10-current-d238be",
+      "concurrency": 16,
+      "questions": 64,
+      "trial": 1,
+      "completed": 64,
+      "returned": 64,
+      "failure_categories": {
+        "oom": 0,
+        "lock_conflict": 0,
+        "service_exit": 0,
+        "timeout": 0,
+        "truncation": 0,
+        "unknown": 0
+      },
+      "judge_completed": 64,
+      "judge_failed": 0,
+      "status": "completed",
+      "passed": true,
+      "qa_per_min": 3.7183299237345353,
+      "qa_seconds": 1032.7217,
+      "judge_seconds": 937.8573,
+      "latency_p50_s": 210.31445000000002,
+      "latency_p95_s": 414.90281,
+      "ttft_p95_s": 46.53027768135071,
+      "actual_batch_peak": 16,
+      "queue_peak": 14.0,
+      "memory_peak_gib": 11.158798217773438,
+      "swap_delta_gib": -0.171875,
+      "failures": {},
+      "run_json_sha256": "d35d581e0e816d3372b28ff05190fdaf44cd8e416e652431241ec2d5633796b2",
+      "model_request_count": 253,
+      "resource_summary": {
+        "samples": 141,
+        "cpu_percent": {
+          "p50": 15.5,
+          "p95": 26.2,
+          "max": 45.8
+        },
+        "gpu_percent": {
+          "p50": 99.0,
+          "p95": 100.0,
+          "max": 100.0
+        },
+        "memory_used_bytes": {
+          "p50": 10744299520.0,
+          "p95": 11568447488.0,
+          "max": 11981668352.0
+        },
+        "memory_available_bytes": {
+          "p50": 3332751360.0,
+          "p95": 5200789504.0,
+          "max": 7054802944.0
+        },
+        "swap_used_bytes": {
+          "p50": 2377121792.0,
+          "p95": 2461007872.0,
+          "max": 2477785088.0
+        },
+        "swap_used_bytes_delta": -184549376.0,
+        "swap_in_bytes_delta": 5708939264.0,
+        "swap_out_bytes_delta": 51314688.0,
+        "actual_swap_in_bytes_delta": 185352192.0,
+        "actual_swap_out_bytes_delta": 0.0,
+        "engine_num_requests_running_peak": 16.0,
+        "engine_num_requests_waiting_peak": 14.0,
+        "engine_metrics_missing_samples": 0
+      },
+      "model_call_evidence": {
+        "expected_calls": 253,
+        "recorded_calls": 253,
+        "token_multiset_matches": true,
+        "all_api_calls_complete": true,
+        "unique_terminal_ids": true,
+        "conflicting_observations": 0,
+        "output_counters_consistent": true,
+        "verified": true
+      },
+      "prefix_cache_evidence": {
+        "verified": true,
+        "observed_requests": 253,
+        "expected_requests": 253,
+        "errors": [],
+        "requests_with_reuse": 221,
+        "cached_tokens": 226304,
+        "uncached_tokens": 282913,
+        "request_hit_rate": 0.8735177865612648,
+        "token_hit_rate": 0.44441564205436973
+      },
+      "telemetry_status": "complete",
+      "ttft_p50_s": 8.788057088851929,
+      "judge_per_min": 4.094439527207391,
+      "input_tokens_max": 4050,
+      "run_valid": true,
+      "original_summary_sha256": "20cec40720f1208a7ca411941506f66ace8c7a1035f289c45742084ecca4181f",
+      "valid_judge_scores_independently_verified": 64,
+      "resource_counter_semantics": "Only actual_swap fields represent vm_stat Swapins/Swapouts; darwin_pagein/pageout count general page traffic. swap_used is a stock."
+    },
+    {
+      "execution_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+      "reporting_revision": "05bc8602f2bfa5df4f3fd85c0e6397afacb1601d",
+      "metrics_probe_timeout_s": [
+        30
+      ],
+      "label": "C16-R2-v13",
+      "run_id": "20261105-034607-album3-max-video10-current-d50670",
+      "concurrency": 16,
+      "questions": 64,
+      "trial": 2,
+      "completed": 64,
+      "returned": 64,
+      "failure_categories": {
+        "oom": 0,
+        "lock_conflict": 0,
+        "service_exit": 0,
+        "timeout": 0,
+        "truncation": 0,
+        "unknown": 0
+      },
+      "judge_completed": 64,
+      "judge_failed": 0,
+      "status": "completed",
+      "passed": true,
+      "qa_per_min": 3.6004984440033416,
+      "qa_seconds": 1066.519,
+      "judge_seconds": 968.562,
+      "latency_p50_s": 227.85070000000002,
+      "latency_p95_s": 434.80334999999985,
+      "ttft_p95_s": 49.68998146057129,
+      "actual_batch_peak": 16,
+      "queue_peak": 14.0,
+      "memory_peak_gib": 11.5303955078125,
+      "swap_delta_gib": -0.046875,
+      "failures": {},
+      "run_json_sha256": "7faede7f3ef0c97ec6130941d057b4de655f8159316d4ee90d4dd4b3e3fa7826",
+      "model_request_count": 257,
+      "resource_summary": {
+        "samples": 143,
+        "cpu_percent": {
+          "p50": 14.7,
+          "p95": 21.640000000000004,
+          "max": 42.2
+        },
+        "gpu_percent": {
+          "p50": 99.0,
+          "p95": 100.0,
+          "max": 100.0
+        },
+        "memory_used_bytes": {
+          "p50": 11007098880.0,
+          "p95": 11870432460.800001,
+          "max": 12380667904.0
+        },
+        "memory_available_bytes": {
+          "p50": 3596910592.0,
+          "p95": 5015778099.200001,
+          "max": 5728976896.0
+        },
+        "swap_used_bytes": {
+          "p50": 2259681280.0,
+          "p95": 2293235712.0,
+          "max": 2293235712.0
+        },
+        "swap_used_bytes_delta": -50331648.0,
+        "swap_in_bytes_delta": 3126607872.0,
+        "swap_out_bytes_delta": 35618816.0,
+        "actual_swap_in_bytes_delta": 38027264.0,
+        "actual_swap_out_bytes_delta": 0.0,
+        "engine_num_requests_running_peak": 16.0,
+        "engine_num_requests_waiting_peak": 14.0,
+        "engine_metrics_missing_samples": 0
+      },
+      "model_call_evidence": {
+        "expected_calls": 257,
+        "recorded_calls": 257,
+        "token_multiset_matches": true,
+        "all_api_calls_complete": true,
+        "unique_terminal_ids": true,
+        "conflicting_observations": 0,
+        "output_counters_consistent": true,
+        "verified": true
+      },
+      "prefix_cache_evidence": {
+        "verified": true,
+        "observed_requests": 257,
+        "expected_requests": 257,
+        "errors": [],
+        "requests_with_reuse": 224,
+        "cached_tokens": 229376,
+        "uncached_tokens": 296035,
+        "request_hit_rate": 0.8715953307392996,
+        "token_hit_rate": 0.4365648987173851
+      },
+      "telemetry_status": "complete",
+      "ttft_p50_s": 9.457160949707031,
+      "judge_per_min": 3.9646403637557532,
+      "input_tokens_max": 4047,
+      "run_valid": true,
+      "original_summary_sha256": "dc6db91a1ed3e62268d5ffb847ee3f464bd43bd28488aaef0238e6b33138de71",
+      "valid_judge_scores_independently_verified": 64,
+      "resource_counter_semantics": "Only actual_swap fields represent vm_stat Swapins/Swapouts; darwin_pagein/pageout count general page traffic. swap_used is a stock."
+    }
+  ],
+  "native_log_checks": [
+    {
+      "label": "C16-R1-v13",
+      "ansi_stripped_process_segment_sha256": "09bed92e8bbb61e413bdc372a1e2980bf5a06623c9387ebc82ac942664faa113",
+      "oom_occurrences": 0,
+      "tracebacks": 0
+    },
+    {
+      "label": "C16-R2-v13",
+      "ansi_stripped_process_segment_sha256": "bd81a901b0693db8ede1cbeb80fc1add5b662e168605cb041c86c6249fc59b08",
+      "oom_occurrences": 0,
+      "tracebacks": 0
+    }
+  ],
+  "full487": {
+    "status": "running_at_publication",
+    "run_id": "20261105-040417-album3-max-video10-current-338e92",
+    "not_yet_accepted": true
+  },
+  "note": "Completed fixed64 C16 pair only. Prior v7 single-round deployment speed reference has a left-padding compatibility defect and is not a numerical correctness oracle. Full487 remains a separate acceptance step. Original failed and cancelled runs remain unchanged. Two trials do not establish statistical significance or pure optimization causality."
+}

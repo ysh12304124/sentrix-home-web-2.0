@@ -31,6 +31,40 @@
   width: min(80vw, 560px);
 }
 
+.asset-video-speech {
+  width: min(92vw, 900px);
+  margin: 18px auto 0;
+  color: var(--ink);
+}
+
+.asset-video-speech h3 { margin: 0 0 10px; font-size: 13px; }
+.asset-video-speech ol {
+  list-style: none;
+  max-height: 210px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.asset-video-speech li button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.asset-video-speech li button:hover { border-color: var(--green); background: var(--soft); }
+.asset-video-speech time { color: var(--green); font-size: 10px; font-variant-numeric: tabular-nums; }
+.asset-video-speech li button span { font-size: 11px; line-height: 1.55; }
+.asset-video-speech li button small { grid-column: 2; color: var(--muted); font-size: 9px; }
+
 .asset-text {
   max-width: min(88vw, 760px);
   max-height: 48vh;

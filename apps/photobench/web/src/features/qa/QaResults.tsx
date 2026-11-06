@@ -1,3 +1,5 @@
+import { OPEN_PROFILE, PROFILE_LABELS } from "../../lib/scoring.ts";
+import { scoreChoices } from "../analysis/presentation.ts";
 import { taxonomyLabel } from "../../lib/qaTaxonomy.ts";
 /**
  * 「QA 逐题结果」入口。移植 1.0 `App.vue:3432-3670` 的
@@ -37,6 +39,8 @@ import type { QaPageView, ReviewDraft } from "./qaShared.ts";
 export interface QaResultsProps {
   /** 1.0 `activeRun`。取其 `run_id` / `rejudge` / `album_id` / `status`。 */
   activeRun: Run | null;
+  readProfile?: string;
+  onReadProfileChange?: (value:string) => void;
   /**
    * 逐题状态。**由组合层持有**（`useQaPage`）——它必须与 `RunDetail` 的记忆面板共享同一份
    * `qaDetails`，所以不能在本组件内部再起一个 hook 实例（1.0 是单组件、天然共享）。
@@ -64,7 +68,7 @@ export interface QaResultsProps {
 }
 
 export function QaResults({
-  activeRun,
+  activeRun, readProfile = OPEN_PROFILE, onReadProfileChange,
   qa,
   resultRef,
   reviewFor,
@@ -72,6 +76,7 @@ export function QaResults({
   onOpenMedia,
 }: QaResultsProps) {
   const activeRejudge = activeRun?.rejudge ?? null;
+  const scoreOptions = scoreChoices({evaluation_summary: readProfile ? {max_score: readProfile === OPEN_PROFILE ? 2 : 1} : activeRun?.summary?.evaluation_summary});
   const {
     qaPage,
     qaDetails,
@@ -162,11 +167,11 @@ export function QaResults({
             value={qaFilters.search}
             onChange={(event) => setQaFilter("search", event.target.value)}
           />
+<select aria-label="评分题型" value={qaFilters.evaluation_type || ""} onChange={event => setQaFilter("evaluation_type", event.target.value)}><option value="">全部评分题型</option><option value="number">ATM 数值</option><option value="list_recall">ATM 列表召回</option><option value="open_end">ATM 开放问答</option><option value="choice">选择题</option><option value="media_list">媒体列表召回</option><option value="open">开放回答</option></select>
+          <label>筛分标准 <select aria-label="逐题筛分标准" value={readProfile} onChange={event => {setQaFilter("score", ""); onReadProfileChange?.(event.target.value);}}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
           <select value={qaFilters.score} onChange={(event) => setQaFilter("score", event.target.value)}>
             <option value="">全部 Judge 分数</option>
-            <option value="2">2 分</option>
-            <option value="1">1 分</option>
-            <option value="0">0 分</option>
+            {scoreOptions.filter(s => s.value !== "None").map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
           <select value={qaFilters.task_type} onChange={(event) => setQaFilter("task_type", event.target.value)}>
             <option value="">全部任务类型</option>

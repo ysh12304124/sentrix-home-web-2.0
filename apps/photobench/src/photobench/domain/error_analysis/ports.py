@@ -26,7 +26,10 @@ class AnalysisBackend(Protocol):
         ...
 
     def evidence(self, job_id: str, index: int) -> dict[str, Any]:
-        """Read the immutable report snapshot. Missing job/item raises KeyError.
+        """Read the immutable rules snapshot or both sides of a paired AI comparison.
+
+        Comparison snapshots include frozen QA, items, GT metadata, source identities
+        and the exact source paths sent to the model. Missing job/item raises KeyError.
 
         Legacy reports without a pinned snapshot raise ValueError; never substitute
         the current run, which may have a different GT or trajectory.

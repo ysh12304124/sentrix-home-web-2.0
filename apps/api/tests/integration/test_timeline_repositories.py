@@ -127,7 +127,7 @@ def test_place_round_trips_all_two_slots(places: SqliteAssetPlaceRepository, ass
     assert stored.precision is PlacePrecision.DISTRICT
     assert stored.source is PlaceSource.PYGEOCN
     assert stored.gps == XIAOSHAN
-    assert stored.display() == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert stored.display() == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
 
 
 def test_place_save_is_idempotent_and_corrective(places: SqliteAssetPlaceRepository, assets):

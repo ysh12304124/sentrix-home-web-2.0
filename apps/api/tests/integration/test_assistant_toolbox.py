@@ -26,6 +26,7 @@ from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import PersonProfile, PersonRelationship
 from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet
+from sentrix.domain.documents.models import DocumentChunk, DocumentSearchHit
 from sentrix.domain.identity.models import ENTITY_STATUS_CONFIRMED, FACE_VALIDITY_VERIFIED
 from sentrix.domain.media.models import Asset, AssetStatus, GpsPoint, MediaType, Observation
 from sentrix.domain.media.transcription import AudioEvidenceExcerpt
@@ -50,6 +51,9 @@ from sentrix.infrastructure.persistence.repositories.result_sets import SqliteRe
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
 from sentrix.infrastructure.persistence.repositories.structured import (
     SqliteStructuredQueryRepository,
+)
+from sentrix.infrastructure.persistence.repositories.text_vectors import (
+    SqliteTextVectorRepository,
 )
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 from sentrix.infrastructure.persistence.repositories.video import SqliteVideoRepository
@@ -108,10 +112,43 @@ class StubPeople:
         return self._profiles.get(name)
 
 
+class StubDocuments:
+    def execute(self, request):
+        return (
+            DocumentSearchHit(
+                document_asset_id="asset_document_internal",
+                chunk_id="chunk_internal",
+                file_name="统计建模论文.pdf",
+                text="该研究采用分层抽样，并使用均方误差评价模型。",
+                score=0.9,
+                section_path="3.2 模型评价",
+                page_start=12,
+                page_end=12,
+                source_locator="pdf:page=12",
+                channels=("document_fts",),
+                context=(
+                    DocumentChunk(
+                        id="neighbor_1",
+                        document_asset_id="asset_document_internal",
+                        scope_id=SCOPE,
+                        revision=1,
+                        ordinal=3,
+                        text="前一段介绍了训练集与测试集的划分方法。",
+                        start_element_id="e1",
+                        end_element_id="e1",
+                        page_start=11,
+                        page_end=11,
+                    ),
+                ),
+            ),
+        )
+
+
 @pytest.fixture
 def toolbox(migrations_ready_db, tmp_path):
     assets = SqliteAssetRepository(migrations_ready_db)
     vectors = SqliteVectorRepository(migrations_ready_db)
+    text_vectors = SqliteTextVectorRepository(migrations_ready_db)
     result_sets = SqliteResultSetRepository(migrations_ready_db)
     media = tmp_path / "media"
     media.mkdir()
@@ -161,7 +198,7 @@ def toolbox(migrations_ready_db, tmp_path):
                 index=SqliteLexicalIndex(migrations_ready_db, observations, assets=assets, places=places)
             ),
             metadata=RetrieveMetadata(assets=assets, places=places, aliases=EMPTY_ALIASES),
-            text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=vectors),
+            text=RetrieveTextAnn(embedder=ScriptedTextEmbedder(), vectors=text_vectors),
         ),
         assets=assets,
         result_sets=result_sets,
@@ -199,6 +236,7 @@ def toolbox(migrations_ready_db, tmp_path):
         person_crops=StubCrops(),
         # preview 的 ``place`` 取自 ``asset_places``（GPS 反解的行政地名）。
         asset_places=places,
+        documents=StubDocuments(),
     )
     return build, result_sets
 
@@ -206,6 +244,30 @@ def toolbox(migrations_ready_db, tmp_path):
 def run(toolbox, name: str, **arguments: object):
     build, _result_sets = toolbox
     return build.execute(name, arguments, scope_id=SCOPE, now=NOW)
+
+
+def test_document_search_returns_citable_text_without_internal_ids(toolbox):
+    outcome = run(toolbox, "search_documents", query="论文如何评价模型")
+
+    assert outcome.ok
+    assert outcome.observation["document_asset_ids"] == ["asset_document_internal"]
+    assert outcome.model_visible["documents"] == [
+        {
+            "reference": "document_1",
+            "file_name": "统计建模论文.pdf",
+            "page": "12",
+            "section": "3.2 模型评价",
+            "text": "该研究采用分层抽样，并使用均方误差评价模型。",
+            "context": [
+                {
+                    "page": "11",
+                    "text": "前一段介绍了训练集与测试集的划分方法。",
+                }
+            ],
+        }
+    ]
+    assert "asset_document_internal" not in str(outcome.model_visible)
+    assert "chunk_internal" not in str(outcome.model_visible)
 
 
 def _seed_plain_assets(db, tmp_path, count: int) -> list[str]:

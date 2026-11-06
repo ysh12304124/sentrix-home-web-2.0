@@ -4,9 +4,6 @@ from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanne
 
 
 def test_svd_keyframes_become_selected_scene_timestamps(tmp_path, monkeypatch):
-    module_path = tmp_path / "backend" / "video" / "svd_keyframe.py"
-    module_path.parent.mkdir(parents=True)
-    module_path.touch()
     seen = {}
 
     class Extractor:
@@ -23,11 +20,11 @@ def test_svd_keyframes_become_selected_scene_timestamps(tmp_path, monkeypatch):
             )
 
     monkeypatch.setattr(
-        "sentrix.infrastructure.media.svd_scene_planner.importlib.import_module",
-        lambda _: SimpleNamespace(SVDLowRankKeyframeExtractor=Extractor),
+        "sentrix.infrastructure.media.svd_scene_planner.SVDLowRankKeyframeExtractor",
+        Extractor,
     )
     video_path = tmp_path / "video.mp4"
-    planner = SVDLowRankScenePlanner(tmp_path, tmp_path / "derived")
+    planner = SVDLowRankScenePlanner(tmp_path / "derived")
 
     scenes = planner(video_path, "video-1", 10.0)
 

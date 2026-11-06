@@ -1,0 +1,163 @@
+{
+  "status": "completed",
+  "passed": false,
+  "results": [
+    {
+      "row": 0,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1222,
+        "completion_tokens": 268,
+        "total_tokens": 1490
+      }
+    },
+    {
+      "row": 1,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1268,
+        "completion_tokens": 268,
+        "total_tokens": 1536
+      }
+    },
+    {
+      "row": 2,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1314,
+        "completion_tokens": 268,
+        "total_tokens": 1582
+      }
+    },
+    {
+      "row": 3,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1360,
+        "completion_tokens": 268,
+        "total_tokens": 1628
+      }
+    },
+    {
+      "row": 4,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1406,
+        "completion_tokens": 268,
+        "total_tokens": 1674
+      }
+    },
+    {
+      "row": 5,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1452,
+        "completion_tokens": 268,
+        "total_tokens": 1720
+      }
+    },
+    {
+      "row": 6,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1498,
+        "completion_tokens": 268,
+        "total_tokens": 1766
+      }
+    },
+    {
+      "row": 7,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1544,
+        "completion_tokens": 268,
+        "total_tokens": 1812
+      }
+    },
+    {
+      "row": 8,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1590,
+        "completion_tokens": 268,
+        "total_tokens": 1858
+      }
+    },
+    {
+      "row": 9,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1636,
+        "completion_tokens": 268,
+        "total_tokens": 1904
+      }
+    },
+    {
+      "row": 10,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1682,
+        "completion_tokens": 268,
+        "total_tokens": 1950
+      }
+    },
+    {
+      "row": 11,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1728,
+        "completion_tokens": 268,
+        "total_tokens": 1996
+      }
+    },
+    {
+      "row": 12,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1774,
+        "completion_tokens": 268,
+        "total_tokens": 2042
+      }
+    },
+    {
+      "row": 13,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1820,
+        "completion_tokens": 273,
+        "total_tokens": 2093
+      }
+    },
+    {
+      "row": 14,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1866,
+        "completion_tokens": 268,
+        "total_tokens": 2134
+      }
+    },
+    {
+      "row": 15,
+      "passed": true,
+      "usage": {
+        "prompt_tokens": 1912,
+        "completion_tokens": 268,
+        "total_tokens": 2180
+      }
+    }
+  ],
+  "actual_batch_peak": 16,
+  "optimization_totals": {
+    "grammar_batches": 510,
+    "grammar_rows": 5172,
+    "grammar_batch_peak": 16,
+    "strided_kv_calls": 0,
+    "strided_kv_fallbacks": 0
+  },
+  "terminal_count": 16,
+  "return_count": 16,
+  "usage_matches": true,
+  "elapsed_s": 109.00289607048035,
+  "note": "Synthetic 16-way marker/schema isolation and actual batch qualification, not QA throughput"
+}

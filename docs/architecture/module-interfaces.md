@@ -170,7 +170,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | 8 | 禁止 benchmark 泄漏进 agent | 提示词/代码不得出现评测地名、答案、题号 | `frozen.md` + Review |
 | 9 | 禁止出口清洗 | 清洗会掩盖真实模型问题，违反“先定位根因” | Review |
 | 10 | 应用不管理模型进程生命周期 | 只经 HTTP 消费端点；不建 model-manager | s11 裁决 |
-| 11 | 导入是同步长请求，没有任务队列 | 不假装异步、不藏进度 | s9 裁决 |
+| 11 | 图片/音频保留同步导入契约；视频通过 SQLite 持久 Job 与后台 worker 处理，浏览器生命周期不控制任务 | 视频任务必须可查询、可恢复、以唯一 worker claim 防重；其他媒体入口保持兼容 | video job/checkpoint capability |
 | 12 | 配置最小化：只有部署事实才进 `Settings` | 1.0 的 126 个 env flag 互相矛盾 | `config.py` + Review |
 
 > **第 12 条的判据**：这个值是不是“部署方决定、运行时会变”的事实？是 → 可以进 `Settings`；只是代码常量 → 放 domain，不要加环境变量。
@@ -234,7 +234,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `VideoMetadataReader` | `:297` | `read(path) -> VideoMetadata` | `FfprobeVideoMetadataReader` |
 | `VideoTranscoder` | `:320` | `browser_preview(asset_id, source, codec) -> Path \| None` | `FfmpegVideoTranscoder` |
 | `VideoKeyframeExtractor` | `:332` | `extract(source, asset_id, scene_index, timestamp_sec) -> Path` | `FfmpegVideoKeyframeExtractor` |
-| `VideoRepository` | `:378` | `save_probe/save_processing_seconds/probe/list_derived/add_derived/cleanup_derivatives` | `SqliteVideoRepository` |
+| `VideoRepository` | `:416` | `save_probe/save_processing_seconds/probe/list_derived/add_derived/cleanup_derivatives/create_job/get_job/list_jobs/claim_job/update_job/stage/list_stages/update_stage/recover_stale_jobs/refresh_derived_file` | `SqliteVideoRepository` |
 | `AudioMetadataReader` | `:452` | `read(path) -> AudioMetadata` | `FfprobeAudioMetadataReader` |
 | `AudioRepository` | `:489` | `save_probe` | `SqliteAudioRepository` |
 | `AudioTranscriber` | `:516` | `available/load_error/transcribe(path) -> AsrResult` | `FunAsrSidecarTranscriber` |
@@ -350,9 +350,18 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `TelemetryProvider` | `:88` | `gpu_stats/process_memory/kv_cache/system_memory` |
 | `SentrixProcess` | `domain/deploy/ports.py:55` | `running_endpoint/restart` |
 | `RunStore` | `domain/results/ports.py:26` | 运行索引读写 |
-| `RunResultWriter` | `:65` | `run.json/results.jsonl/gpu_samples.jsonl` 写面 |
+| `RunResultWriter` | `domain/results/ports.py` | `write_snapshot/write_telemetry_view/reset_gpu_samples/append_gpu_sample/save_reviews`；运行快照、实时遥测视图、采样原始记录及人工评审写面 |
 | `ConfigStore` | `domain/config/ports.py:27` | 评测配置读写 |
 | `SecretEnvStore` | `:51` | 密钥环境变量 |
+
+`RunResultWriter.write_telemetry_view(run_id, view)` 由 application 层的运行执行服务调用，
+由 `infrastructure/results/store.py` 的 `FileResultWriter` 实现。它在运行目录锁内将
+小型视图写入临时文件，再原子替换 `telemetry-live.json`，供读取端展示实时遥测；
+视图包含 `run_id/started_at/telemetry_live/gpu_metrics/llama_server_args`。
+该写入独立于包含全部答题记录的 `write_snapshot`，不改写 `run.json/results.jsonl`；
+完整采样原始记录仍由 `append_gpu_sample` 写入 `gpu_samples.jsonl`。
+非法运行 ID 抛出 `KeyError`，文件系统错误向调用方传播；写入失败时清理临时文件，
+不生成虚假采样或成功状态。
 
 ---
 
@@ -486,7 +495,8 @@ class VisualEmbedder(Protocol):
 2. 更新 `scheme.py` 的 `model_id`/维度（这会让旧向量自然失效）；
 3. 实现适配器，保持 `embed_image` / `embed_query` 同一空间；
 4. 装配 `visual_embedder` / `text_embedder` / `embedding_health`；
-5. **重建向量**：`vector_repository` 与 `vector_index` 都要按新 `model_name` 重写；
+5. **重建向量**：视觉/人脸重写 `vector_repository`（`memory_vectors`），文本重写
+   `text_vector_repository`（`text_vectors`）；`vector_index` 只跟视觉；
 6. 跑检索回归：macro/micro 召回、R@1/R@5、视频召回。
 
 > 不清空旧向量的后果：查询向量与库内向量不同空间，分数看似正常但全是噪声。
@@ -500,8 +510,9 @@ class VisualEmbedder(Protocol):
 
 - 方案常量在 `domain/retrieval/scheme.py` 的 `SCHEMES`；适配器在
   `infrastructure/models/wemm.py` 与 `legacy.py`。
-- **切换方案 = 重建向量**。`memory_vectors` 按 `model_name` 分套，Qdrant collection
-  按 `(space, model, dimension)` 分套；不重建就是“索引为空”。
+- **切换方案 = 重建向量**。`memory_vectors`（视觉/人脸）与 `text_vectors`
+  （`semantic`/`episodic`）都按 `model_name` 分套，Qdrant collection 按
+  `(space, model, dimension)` 分套；不重建就是“索引为空”。
 - 2.0 不提供“某个槽单独换模型”的能力。要换就改 `SCHEMES` 并整方案迁移。
 
 legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`；
@@ -516,7 +527,8 @@ legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`�
 
 **必须保持**
 
-- 权威存储是 SQLite `VectorRepository`；索引只是镜像；
+- 权威存储是 SQLite：视觉/人脸走 `VectorRepository`（`memory_vectors`），文本走同一端口的
+  `text_vectors` 适配器；索引只是视觉镜像；
 - `upsert` 幂等；拒绝空向量；
 - 按 `scope_id` 过滤；
 - 不可用抛 `VectorIndexUnavailable`，禁止返回空列表；
@@ -877,6 +889,9 @@ def test_chat_model_maps_prompt_too_long():
 | `SENTRIX_LEGACY_CLIP_URL` | chinese-clip 侧车 | `http://127.0.0.1:8103` | legacy 方案视觉 | 否 |
 | `SENTRIX_LEGACY_CLIP_TIMEOUT_S` | chinese-clip 超时 | `30` | legacy 视觉 | 否 |
 | `SENTRIX_TEXT_EMBEDDER_TIMEOUT_S` | bge 超时 | `10` | legacy 文本 | 否 |
+| `SENTRIX_RERANKER_URL` | BGE Reranker 侧车；**空串 = 关闭** | `""` | RRF 后头部重排 | 否（缺失降级为 RRF 顺序） |
+| `SENTRIX_RERANK_TOP_K` | 重排的头部条数 | `24` | 重排 | 否 |
+| `SENTRIX_RERANK_TIMEOUT_S` | 重排超时 | `10` | 重排 | 否 |
 | `SENTRIX_CHAT_TIMEOUT_S` | 对话超时 | `120` | ChatModel | 否 |
 | `SENTRIX_VLM_TIMEOUT_S` | 视觉超时 | `180` | VLM/PersonVision/PhotoInspector | 否 |
 | `SENTRIX_VLM_CONTEXT_TOKENS` | 单槽窗口兜底 | `6144` | ChatModel | 否（探测优先） |
@@ -1304,9 +1319,30 @@ relabeled as physically deduplicated totals. See photobench-metrics-contract.md.
 
 `AnalysisBackend`保留现有方法，新增`view(job_id, filters, page, page_size)`与`evidence(job_id, index)`。
 view统一范围统计与分页；evidence读取报告的不可变快照。不存在返回KeyError，状态/快照不可用返回ValueError，API映射沿既有错误契约。
-AI业务提示词与抽样/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
+AI业务提示词与输入预算/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
 新增API/OpenAPI和前端类型同步，详见[错误分析接口](photobench-error-analysis.md)。
+2026-11-02：单次AI分析删除max_cases，范围直接固定全部待分析题；续分析复用有效诊断，汇总全量分组归纳并保存各组输入/输出与引用链。
 
 ### 2026-10-29 阶段计时只读展示
 
 阶段卡按内容自然撑高；媒体导入首屏只保留数量、失败和请求墙钟，登记累计与范围说明按需展开。流水线核心标题显示pipeline_core实际经过时间，prepare为跨媒体准备时间累计，不能当父阶段墙钟或计算占比。收尾汇总participant_projection/memory_graph/family_graph/person_insights四个顺序执行段，causal_graph为memory_graph包含项，不重复计算；缺少任一独立段计时则不补零。两组占比均以timings.total为分母；不改run持久记录。
+
+
+### 2026-11-01 PhotoBench完整证据AI对比
+
+`AnalysisBackend`签名保持；既有`submit`新增`ai_compare`任务kind，响应新增独立AIComparisonReport。
+bootstrap向FileAnalysisBackend注入现有AlbumSource，图片读取复用media_file的精确路径及失败语义，未在用例层构造适配器。
+领域负责配对/提示词/命题引用校验，基础设施负责逐题完整输入冻结、GT图片字节与HTTP/部分结果持久化。
+请求增加model_role=judge|main、comparison_filter=all|score_changed；新UI共用filter/run范围，默认filter/Judge。
+旧compare/ai及selection请求兼容历史入口，原产物和原评分保持。完整输入不裁剪，4xx/5xx/网络错误均不自动重试；
+缺少必需GT图时该题失败并记录，不悄悄切换文本请求。详细边界见[错误分析契约](photobench-error-analysis.md)。
+
+### 2026-11-02 单次AI分析GT图片
+
+AnalysisBackend提交单次AI任务时调用freeze_side(..., side="gt", include_raw=False)，只冻结GT清单/字节与来源，不另复制原始item。AlbumSource读取精确typed引用；ai_worker校验SHA后发送多模态请求。DiagnosisReport.case增图片清单与证据缺口；OpenAPI/前端/导出同步。提示词与证据版本7使原冻结图片解析结果失效；续任务复用原冻结字节。声明图片不可用时单题失败，HTTP图片不支持不降级；真实图片能力需用户手动运行验收。详见错误分析接口文档。
+
+GT图片解析：单次与双次分析共用comparison_inputs，按Judge的typed media_key在指定相册manifest.photos中唯一匹配，再由AlbumSource.media_file校验路径。GT逻辑前缀不作文件目录；重名、缺失及路径穿越不匹配。图片记录dataset_path与SHA。全部逐题无有效诊断时任务失败且不请求汇总；UI直接显示图片、模型请求或输出校验失败原因。双次对比提示词版本3，单次版本7，旧任务须重新生成，不改历史。
+
+AI比较证据响应：AnalysisBackend.evidence支持ai_compare，返回job_id/index/sides；sides的left/right分别包含对比时冻结的index/source/item/qa/gt_images/evidence_locations，引用路径来自原pair-evidence。缺配对404、尚未生成证据400；原rules响应不变。ComparisonEvidenceSnapshot/ComparisonEvidenceSide纳入GET证据端点OpenAPI联合类型。comparison_evidence_ids提供嵌套调用稳定ID，NodeRecord供单次和双次轨迹共用，前端新comparison/ComparisonJourney/ComparisonFindings分别负责类型对齐、双轨迹、引用结论展示。
+
+AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=html)返回ValueError（API沿既有错误映射返回400）。JSON/CSV及其他报告导出不变。AI辅助分析区默认折叠。

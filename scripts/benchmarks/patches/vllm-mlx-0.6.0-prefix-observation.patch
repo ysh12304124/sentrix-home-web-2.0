@@ -1,0 +1,35 @@
+--- a/vllm_mlx/mllm_batch_generator.py
++++ b/vllm_mlx/mllm_batch_generator.py
+@@ -2192,6 +2192,20 @@
+                             req.request_id,
+                         )
+                         cached_kv = None
++
++                # Sentrix benchmark: observe accepted reuse without changing inference.
++                observer = getattr(self, "_sentrix_prefix_observer", None)
++                if observer is not None:
++                    accepted = 0
++                    if cached_kv is not None:
++                        accepted = (
++                            len(input_ids_list)
++                            if cached_last_logits is not None
++                            else len(input_ids_list) - len(remaining_ids)
++                            if remaining_ids
++                            else len(input_ids_list) - 1
++                        )
++                    observer(req, accepted)
+ 
+                 if cached_kv is not None and cached_last_logits is not None:
+                     request_cache = prepared_cache
+@@ -4236,6 +4250,11 @@
+                     cached_count = 0
+                     remaining_count = total_tokens
+ 
++                # Sentrix benchmark: observe accepted reuse without changing inference.
++                observer = getattr(batch_gen, "_sentrix_prefix_observer", None)
++                if observer is not None:
++                    observer(text_only_req, cached_count)
++
+                 # Absolute token position; also planned after a prefix hit so
+                 # each turn leaves a reusable state for the next one.
+                 checkpoint_at, checkpoint_key = batch_gen._prefill_checkpoint_plan(

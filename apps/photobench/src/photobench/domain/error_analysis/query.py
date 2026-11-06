@@ -6,7 +6,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from photobench.domain.error_analysis.taxonomy import category_value
+from photobench.domain.error_analysis.scoring import project_case_scoring
+from photobench.domain.error_analysis.taxonomy import category_value, project_case_abilities
 
 EVENT_FIELDS = {"code", "recovery", "tool_name", "issue_kind", "failure_reason", "component"}
 TURN_FIELDS = {
@@ -16,6 +17,7 @@ TURN_FIELDS = {
     "benchmark_group",
     "content_type",
     "content_subtype",
+    "scoring_question_type",
     "difficulty",
     "answerability",
     "score",
@@ -53,6 +55,7 @@ def turn_matches(turn: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
 
 
 def select_case(case: Mapping[str, Any], filters: Mapping[str, Any]) -> dict[str, Any] | None:
+    case = project_case_scoring(project_case_abilities(case))
     f = {k: v for k, v in filters.items() if v is not None and v != ""}
     query = str(f.pop("q", "")).casefold()
     if (
@@ -181,6 +184,7 @@ def filtered_view(
 ) -> dict[str, Any]:
     from photobench.domain.error_analysis.rules import Aggregator
 
+    cases = [project_case_scoring(project_case_abilities(case)) for case in cases]
     selected = [c for case in cases if (c := select_case(case, filters)) is not None]
     aggregate = Aggregator()
     for case in selected:

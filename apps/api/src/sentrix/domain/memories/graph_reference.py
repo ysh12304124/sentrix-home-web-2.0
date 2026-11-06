@@ -158,9 +158,11 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
             for node_id, attrs in events
             if (moment := _date(attrs.get("time_start"))) is not None
         ),
-        key=lambda item: (item[0], item[1]),
+        key=lambda item: (item[0].utcoffset() is not None, item[0], item[1]),
     )
     for (left_time, left_id), (right_time, right_id) in zip(timed_events, timed_events[1:], strict=False):
+        if (left_time.utcoffset() is None) != (right_time.utcoffset() is None):
+            continue
         gap = (right_time - left_time).total_seconds()
         if 0 <= gap <= 6 * 60 * 60:
             reference.add((left_id, right_id, "event_temporal_next", ""))

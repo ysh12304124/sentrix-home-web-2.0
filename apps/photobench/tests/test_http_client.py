@@ -51,6 +51,58 @@ def _client(handler: Handler) -> HttpxJsonClient:
     return HttpxJsonClient(client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
 
 
+def test_unknown_post_preserves_transport_errno_without_private_exception_text():
+    attempts = []
+
+    def handler(request):
+        attempts.append(request)
+        try:
+            raise ConnectionResetError(54, "private credential-bearing endpoint")
+        except OSError as cause:
+            raise httpx.ReadError("private request body", request=request) from cause
+
+    with pytest.raises(RequestOutcomeUnknownError) as caught:
+        _client(handler).request_json("http://local/turns", {"private": "payload"}, "POST")
+    assert len(attempts) == 1
+    assert caught.value.facts["transport_causes"] == [
+        {"type": "ReadError"},
+        {"type": "ConnectionResetError", "errno": 54},
+    ]
+    assert "private" not in json.dumps(caught.value.facts)
+    assert caught.value.facts["automatic_replay"] is False
+
+
+def test_default_client_separates_worker_pools_without_serializing_requests(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    original = httpx.Client
+    barrier = threading.Barrier(2)
+    created = []
+
+    def make_client(**kwargs):
+        identity = object()
+        created.append(identity)
+
+        def handler(request):
+            barrier.wait(timeout=5)
+            return httpx.Response(200, json={"pool": id(identity)})
+
+        return original(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "Client", make_client)
+    client = HttpxJsonClient()
+
+    def worker(_):
+        return [client.request_json("http://local/health")["pool"] for _ in range(2)]
+
+    with ThreadPoolExecutor(2) as pool:
+        first, second = list(pool.map(worker, range(2)))
+    assert len(created) == 2
+    assert first[0] == first[1] and second[0] == second[1]
+    assert first[0] != second[0]
+
+
 def test_get_returns_the_parsed_body():
     seen: dict = {}
 

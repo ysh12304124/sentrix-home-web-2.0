@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -32,6 +33,7 @@ from sentrix.domain.assistant.models import (
     TurnStatus,
 )
 from sentrix.domain.assistant.ports import ModelServiceError, PromptTooLongError
+from sentrix.domain.assistant.profile import DEFAULT_PROFILE
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS, ToolSpec
 from sentrix.infrastructure.persistence.repositories.conversations import (
     SqliteConversationRepository,
@@ -301,6 +303,33 @@ SEARCH_EMPTY = ToolOutcome(
     model_visible={"result_set_id": "rs_2", "query": "海边", "page": 1, "preview": [], "has_more": False},
 )
 
+DOCUMENT_SEARCH_OK = ToolOutcome(
+    observation={
+        "result_set_id": "rs_doc_1",
+        "query": "模型如何评价",
+        "total": 1,
+        "has_more": False,
+        "asset_ids": [],
+        "document_asset_ids": ["asset_doc_1"],
+        "chunk_ids": ["chunk_1"],
+    },
+    model_visible={
+        "query": "模型如何评价",
+        "total": 1,
+        "has_more": False,
+        "documents": [
+            {
+                "reference": "document_1",
+                "file_name": "统计建模论文.pdf",
+                "page": "12",
+                "section": "模型评价",
+                "text": "论文使用均方误差评价模型。",
+                "context": [],
+            }
+        ],
+    },
+)
+
 
 # ---- 夹具 -------------------------------------------------------------------
 
@@ -358,6 +387,36 @@ def test_the_full_loop_retrieves_delivers_and_answers(env):
     assert [item["status"] for item in result.requirements] == ["satisfied", "satisfied"]
     assert turns.get(turn_id).status is TurnStatus.COMPLETE
     assert turns.get(turn_id).attachments[0].handle == "photo_1"
+
+
+def test_the_existing_assistant_loop_can_retrieve_documents_and_answer(env):
+    _conversations, _turns, conversation, _db = env
+    model = ScriptedModel(
+        [
+            tool_call("search_documents", "c_doc", query="模型如何评价"),
+            final("论文使用均方误差评价模型（来源：统计建模论文.pdf，第 12 页）。"),
+        ],
+        planner=planner_reply(
+            "document_text",
+            goal="回答论文中的模型评价方法",
+            value_type="description",
+        ),
+    )
+    toolbox = StubToolbox({"search_documents": DOCUMENT_SEARCH_OK})
+    run_turn = build(env, model, toolbox)
+    turn_id = run_turn.start(
+        TurnRequest(conversation_id=conversation.id, question="论文是如何评价模型的？")
+    ).id
+
+    result = run_turn.run(turn_id)
+
+    assert result.status is TurnStatus.COMPLETE
+    assert result.answer == "论文使用均方误差评价模型（来源：统计建模论文.pdf，第 12 页）。"
+    assert toolbox.calls[0] == ("search_documents", {"query": "模型如何评价"})
+    assert "search_documents" in model.tool_sets[0]
+    assert "search_memories" not in model.tool_sets[0]
+    assert result.requirements[0]["status"] == "satisfied"
+    assert "统计建模论文.pdf" in model.calls[-1][-1].content
 
 
 def test_the_answer_is_persisted_as_an_assistant_message(env):
@@ -936,6 +995,30 @@ def test_the_stall_reminder_is_given_only_once(env):
     assert max(per_call) == 1, f"提醒只能被加进对话一次，实际每轮出现 {per_call}"
 
 
+def test_repeatedly_failed_tool_is_removed_from_subsequent_model_offers(env):
+    _conversations, _turns, conversation, _db = env
+    failing = ToolOutcome(
+        observation={"failure_reason": "file_unavailable"},
+        model_visible={"error": "file_unavailable"},
+        failure_reason="file_unavailable",
+    )
+    model = ScriptedModel(
+        [
+            tool_call("search_memories", "c1", query="海边"),
+            tool_call("inspect_photo", "c2", result_set_id="rs_1", question="是什么"),
+            tool_call("inspect_photo", "c3", result_set_id="rs_1", question="是什么"),
+            final("只能确认检索到两张海边的照片，无法核实视觉细节。"),
+        ],
+        planner=planner_reply("visual_observation"),
+    )
+    run_turn = build(env, model, StubToolbox({"search_memories": SEARCH_OK, "inspect_photo": failing}))
+    result = run_turn.run(start(run_turn, conversation))
+    assert "inspect_photo" in model.tool_sets[-2]
+    assert "inspect_photo" not in model.tool_sets[-1]
+    assert FINAL_ANSWER_TOOL in model.tool_sets[-1]
+    assert result.termination_reason is not TerminationReason.STEP_BUDGET_EXHAUSTED
+
+
 def test_a_repeated_identical_call_is_replayed_not_re_executed(env):
     _conversations, _turns, conversation, _db = env
     model = ScriptedModel(
@@ -965,6 +1048,43 @@ def test_the_model_step_budget_ends_the_turn_with_a_reason(env):
     assert result.termination_reason is TerminationReason.STEP_BUDGET_EXHAUSTED
     assert result.status is TurnStatus.PARTIAL
     assert "结束" in result.answer
+
+
+def test_strict_budget_does_not_add_an_extra_recovery_model_call(env):
+    conversations, turns, conversation, _db = env
+    model = ScriptedModel([tool_call("get_result_page", "c1", result_set_id="rs_1", page=1)])
+    run_turn = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=StubToolbox({"get_result_page": SEARCH_OK}),
+        profile=replace(DEFAULT_PROFILE, max_steps=3, strict_model_step_budget=True),
+    )
+    result = run_turn.run(start(run_turn, conversation))
+    assert result.termination_reason is TerminationReason.STEP_BUDGET_EXHAUSTED
+    assert len(model.calls) == 3
+
+
+def test_strict_context_budget_preserves_history_and_does_not_retry_cropped_input(env):
+    conversations, turns, conversation, _db = env
+    model = ScriptedModel(
+        [
+            tool_call("search_memories", "c1", query="海边"),
+            PromptTooLongError("context exhausted"),
+            final_call("must not be generated", "photo_1"),
+        ]
+    )
+    run_turn = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=StubToolbox({"search_memories": SEARCH_OK}),
+        profile=replace(DEFAULT_PROFILE, strict_model_step_budget=True),
+    )
+    result = run_turn.run(start(run_turn, conversation))
+    assert result.status is TurnStatus.FAILED
+    assert len(model.calls) == 2
+    assert any(message.role is ChatRole.TOOL for message in model.calls[-1])
 
 
 def test_the_tools_are_withdrawn_when_the_budget_is_gone(env):

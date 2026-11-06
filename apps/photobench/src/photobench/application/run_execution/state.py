@@ -57,7 +57,7 @@ class RunState:
         run_id: str = "",
         writer: RunResultWriter | None = None,
         debounce: float = PERSIST_DEBOUNCE_SECONDS,
-        persist_timeout: float = 10.0,
+        persist_timeout: float = 60.0,
     ) -> None:
         self._lock = threading.RLock()
         self.data = initial
@@ -198,13 +198,31 @@ class RunState:
                     )
                     if self._persist_stopping:
                         return
-                    self._persist_condition.wait(timeout=self.debounce)
-                    target = self._persist_requested
+                    self._persist_condition.wait_for(lambda: self._persist_stopping, timeout=self.debounce)
+                    if self._persist_stopping:
+                        return
                 try:
-                    stored = self.snapshot()
+                    began = time.monotonic()
+                    # Include requests received while waiting for a state mutation.
+                    # Always take state.lock before the condition, as callers do.
+                    with self._lock:
+                        with self._persist_condition:
+                            target = self._persist_requested
+                        stored = self.snapshot()
+                    copied = time.monotonic()
                     writer = self._writer
                     assert writer is not None
                     writer.write_snapshot(self.run_id, stored)
+                    elapsed = time.monotonic() - began
+                    if elapsed >= 5:
+                        log.warning(
+                            "Slow run snapshot: run=%s revision=%d items=%d copy=%.3fs write=%.3fs",
+                            self.run_id,
+                            target,
+                            len(stored.get("items") or []),
+                            copied - began,
+                            elapsed - (copied - began),
+                        )
                 except Exception as exc:  # noqa: BLE001 — publish failure and stop, never mark as written
                     log.exception("Run snapshot failed: %s", self.run_id)
                     with self._lock:
@@ -246,7 +264,10 @@ class RunState:
                     raise RuntimeError(f"benchmark state persistence failed: {self._persist_error}")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("benchmark state persistence deadline exceeded")
+                    raise TimeoutError(
+                        "benchmark state persistence deadline exceeded "
+                        f"(wait={self.persist_timeout}s target={target} written={self._persist_written})"
+                    )
                 self._persist_condition.wait(timeout=remaining)
 
     def writer_pending(self) -> bool:

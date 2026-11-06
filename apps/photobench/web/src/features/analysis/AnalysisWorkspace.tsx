@@ -1,3 +1,4 @@
+import { EvaluationSummary } from "../../components/EvaluationResult.tsx";
 import { QualityRing, TagAnalysis } from "./AnalysisBreakdown.tsx";
 import type { AnalysisFilters, AnalysisView } from "../../api/analysis.ts";
 import {
@@ -5,7 +6,7 @@ import {
   displayWithLabels,
   dimensions,
   percent,
-  scores,
+  scoreChoices,
   toolLabel,
   analysisValue,
 } from "./presentation.ts";
@@ -13,7 +14,7 @@ import {
 export type AnalysisTab = "overview" | "ability" | "execution" | "behavior";
 const labels: Record<string, string> = {
   ...dimensions,
-  score: "完成质量",
+  score: "答案正确性",
   tool_name: "工具",
   failure_reason: "返回原因",
   issue_kind: "问题类型",
@@ -40,6 +41,7 @@ export function AnalysisFiltersBar({
   filters: AnalysisFilters;
   change: (f: AnalysisFilters, replace?: boolean) => void;
 }) {
+  const scores = scoreChoices(data.summary, filters.content_unit);
   const labelValue = (v: string) =>
     displayWithLabels(v, data.summary.ability_labels || {});
   const filterValue = (key: string, value: string) =>
@@ -198,6 +200,7 @@ export function AnalysisWorkspace({
 }) {
   const r = data.summary;
   const currentUnit = unit === "turn" ? "turn" : "qa";
+  const scores = scoreChoices(r, currentUnit);
   const noun = currentUnit === "turn" ? "轮" : "题";
   const total =
     currentUnit === "turn" ? r.denominators.turns || 0 : r.item_count;
@@ -245,6 +248,7 @@ export function AnalysisWorkspace({
         )}
         {!versions.length && <span>旧结果不能仅凭题号套用最新标签。</span>}
       </div>
+      <EvaluationSummary value={r.evaluation_summary} />
       <div role="tabpanel" className="analysis-view">
         {tab === "overview" && (
           <>

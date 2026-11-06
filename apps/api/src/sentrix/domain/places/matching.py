@@ -1,17 +1,4 @@
-"""地点条件 vs 解析结果的三条确定性匹配规则。纯函数，零 IO。
-
-对应 1.0 ``backend/geocoding.py:269-308`` 的 ``place_text_matches``。规则一条没改，
-改的只是入参形态：1.0 吃的是那个扁平 dict，2.0 吃 ``Place``。
-
-1.0 的三条规则（原文照抄）：
-1) 约束值整串出现在 geocode label/name/行政区文本里；
-2) 存储的行政区（省/市/区/县，去后缀后）出现在约束值里（'秦皇岛' 匹配
-   '秦皇岛如是海度假村'）；
-3) 中英别名命中（'清迈' 匹配 'Chiang Mai'）。
-
-第 2 条是关键：它让「用户说了一个比区县更细的地名」也能匹配上——
-``PLACE_ADMIN_SUFFIXES`` 归一后做**双向**子串，而不是相等。
-"""
+"""地点候选与确定归属。place_text_matches保留粗召回线索；place_admin_matches要求完整查询由已确定行政层级组成。附近居民点和上位区县不能证明具体道路或店铺。"""
 
 from __future__ import annotations
 
@@ -20,6 +7,36 @@ from sentrix.domain.places.models import Place
 
 # 1.0 参与第 2 条规则的槽位。``country`` 不在其中：拿国名去匹配会命中一切。
 _ADMIN_KEYS = ("province", "city", "district")
+
+
+def admin_text_matches(value: str, admin: tuple[str, str, str], aliases: PlaceAliases) -> bool:
+    """只有整个查询由已确定的行政层级组成，才作为确定归属。"""
+    remaining = value.strip().casefold()
+    if not remaining:
+        return False
+    names = {part.casefold() for part in admin if part}
+    names.update(aliases.strip_admin_suffix(part).casefold() for part in admin if part)
+    names = {name for name in names if len(name) >= 2}
+    # 别名只替换完整行政名，不把“清迈某酒店”整体缩成“清迈”。
+    for key, targets in aliases.table.items():
+        if any(target.casefold() in names for target in targets):
+            names.add(key.casefold())
+    matched = False
+    while remaining:
+        hit = next(
+            (name for name in sorted(names, key=len, reverse=True) if remaining.startswith(name)), None
+        )
+        if hit is None:
+            return False
+        matched = True
+        remaining = remaining[len(hit) :].lstrip(" ·,，/")
+    return matched
+
+
+def place_admin_matches(value: str, place: Place | None, aliases: PlaceAliases) -> bool:
+    return place is not None and admin_text_matches(
+        value, (place.admin.province, place.admin.city, place.admin.district), aliases
+    )
 
 
 def place_label(place: Place) -> str:

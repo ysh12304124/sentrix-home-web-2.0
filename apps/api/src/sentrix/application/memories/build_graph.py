@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from sentrix.domain.identity.ports import EntityRepository, RelationshipRepository
+from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
 from sentrix.domain.media.models import Observation
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository
 from sentrix.domain.media.scenes import KEYFRAME_DERIVED_KIND
@@ -604,11 +605,16 @@ class BuildMemoryGraph:
     ) -> None:
         ordered = sorted(
             (event for event in events if event.time_start is not None),
-            key=lambda event: (event.time_start, event.id),
+            key=lambda event: (
+                time_sort_key(event.time_start),
+                event.id,
+            ),
         )
         for left, right in zip(ordered, ordered[1:], strict=False):
             assert left.time_start is not None and right.time_start is not None
-            gap = (right.time_start - left.time_start).total_seconds()
+            if (left.time_start.utcoffset() is None) != (right.time_start.utcoffset() is None):
+                continue
+            gap = elapsed_seconds(right.time_start, left.time_start)
             if 0 <= gap <= TEMPORAL_EDGE_MAX_SECONDS:
                 add_edge(
                     _node_id("event", left.id),

@@ -36,7 +36,9 @@ import contextlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -289,7 +291,73 @@ class OpenAIChatModel:
         self._context_tokens = context_tokens
 
     def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply:
+        if (
+            self._model.generation_profile == "qwen35_nonthinking"
+            and len(tools) == 1
+            and tools[0].name == "final_answer"
+        ):
+            return self._complete_final_answer(messages, tools[0])
         return self._complete(messages, tools)
+
+    def _complete_final_answer(self, messages: Sequence[ChatMessage], tool: ToolSpec) -> ModelReply:
+        """Constrain the already selected terminal action, without prompt-only fallback.
+
+        vllm-mlx 0.6 implements named tool_choice as an instruction only: a real
+        final-only turn repeatedly called an unavailable history tool. Its strict
+        JSON Schema decoder can constrain the arguments of this known action.
+        Preserve model-generated arguments, usage and finish reason; the runtime
+        still performs its usual evidence/claim/delivery checks within 30 steps.
+        """
+        request_messages = list(messages)
+        if request_messages:
+            request_messages[0] = replace(
+                request_messages[0],
+                content=request_messages[0].content
+                + "\n本次动作已确定为 final_answer。只输出该动作的 JSON 参数对象，"
+                "不要输出工具调用标记或其他工具。" + tool.description,
+            )
+        reply = self._complete(
+            request_messages,
+            (),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": tool.name,
+                    "strict": True,
+                    "schema": dict(tool.parameters),
+                },
+            },
+        )
+        try:
+            arguments = json.loads(reply.content)
+            handles = arguments.get("selected_image_handles") if isinstance(arguments, dict) else None
+            valid = (
+                isinstance(arguments, dict)
+                and set(arguments) == {"answer", "selected_image_handles"}
+                and isinstance(arguments["answer"], str)
+                and isinstance(handles, list)
+                and all(isinstance(handle, str) for handle in handles)
+                and len(handles) <= tool.parameters["properties"]["selected_image_handles"]["maxItems"]
+                and not reply.tool_calls
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ModelServiceError(
+                "模型未返回 final_answer schema 规定的参数；未转换或重发该响应。",
+                diagnostics={
+                    **reply.diagnostics,
+                    "error_category": "forced_tool_schema_invalid",
+                    "tool_transport": "json_schema",
+                },
+            )
+        return replace(
+            reply,
+            content="",
+            tool_calls=(ToolCall(f"call_{uuid4().hex}", tool.name, reply.content),),
+            tool_argument_parse_facts=({"index": 0, "json_object_valid": True, "envelope_valid": True},),
+            diagnostics={**reply.diagnostics, "tool_transport": "json_schema", "forced_tool": tool.name},
+        )
 
     def complete_structured(
         self,
@@ -316,7 +384,9 @@ class OpenAIChatModel:
             # 这两条与 schema 无关，回退普通请求只会再失败一次。
             raise
         except ModelServiceError as error:
-            log.warning("端点不接受结构化输出，回退普通请求：%s", error)
+            if not error.diagnostics.get("structured_output_rejected"):
+                raise
+            log.warning("端点明确拒绝结构化输出，回退普通请求：%s", error)
             return self._complete(messages, tools)
 
     def _complete(
@@ -401,6 +471,14 @@ class OpenAIChatModel:
                     "error_category": "service_error",
                     "http_status": response.status_code,
                     "request_sent": True,
+                    "structured_output_rejected": bool(
+                        response_format is not None
+                        and response.status_code in {400, 422}
+                        and any(
+                            t in response.text.lower()
+                            for t in ("response_format", "json_schema", "structured output")
+                        )
+                    ),
                 },
             )
 
@@ -418,6 +496,15 @@ class OpenAIChatModel:
                 },
             ) from error
 
+        if choice.get("finish_reason") == "length":
+            raise OutputTruncatedError(
+                "模型输出达到上下文上限。",
+                diagnostics={
+                    "error_category": "output_truncated",
+                    "request_sent": True,
+                    **response.extensions.get("diagnostics", {}),
+                },
+            )
         usage = body.get("usage") or {}
         content, thought = split_thought_channel(str(message.get("content") or ""))
         if thought:
@@ -452,7 +539,7 @@ class OpenAIChatModel:
     ) -> httpx.Response:
         prompt_tokens = self.estimate_prompt_tokens(messages, tools)
         budget = self._max_tokens(messages, tools)
-        if budget < MIN_USABLE_OUTPUT_TOKENS:
+        if not self._model.exact_output_budget and budget < MIN_USABLE_OUTPUT_TOKENS:
             # **不发这个请求。** 发出去的结果只有两种，两种都会说错原因：端点回 500
             # （生成被截断、JSON 解析不了）或 400（超窗），而 ``complete`` 把它们统一
             # 报成 ``ModelServiceError`` ——用户看到「模型服务当前不可用」，运维去看端点
@@ -468,7 +555,7 @@ class OpenAIChatModel:
                     "output_budget_tokens": budget,
                 },
             )
-        if self.prompt_over_soft_limit(prompt_tokens):
+        if not self._model.exact_output_budget and self.prompt_over_soft_limit(prompt_tokens):
             raise PromptTooLongError(
                 f"提示词约 {prompt_tokens} token，超过软上限 "
                 f"{int(self._context_tokens * PROMPT_COMPACTION_RATIO)}"
@@ -486,7 +573,7 @@ class OpenAIChatModel:
         payload: dict[str, Any] = {
             "model": model_name,
             "messages": [_dump_message(message) for message in messages],
-            "temperature": 0.0,
+            **self._model.generation_parameters(),
             "stream": False,
             "max_tokens": budget,
         }
@@ -498,6 +585,7 @@ class OpenAIChatModel:
         if chat_template_kwargs is not None:
             payload["chat_template_kwargs"] = dict(chat_template_kwargs)
 
+        exact_budget = self._model.apply_output_budget(payload, timeout_s=self._timeout_s)
         try:
             with httpx.Client(timeout=self._timeout_s) as client:
                 response = client.post(f"{self._base_url}/chat/completions", json=payload)
@@ -505,6 +593,7 @@ class OpenAIChatModel:
                     "prompt_tokens_estimated": prompt_tokens,
                     "context_window_tokens": self._context_tokens,
                     "output_budget_tokens": budget,
+                    **exact_budget,
                 }
                 return response
         except httpx.HTTPError as error:

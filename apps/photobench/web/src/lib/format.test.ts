@@ -35,6 +35,7 @@ import {
   retrievalBackendDegraded,
   retrievalBackendLabel,
   scoreClass,
+  judgeScoreClass,
   statusLabel,
   taskDecisionLabel,
   toolBindingLabel,
@@ -151,6 +152,14 @@ describe("fmtTokens (:336)", () => {
 });
 
 describe("scoreClass (:337)", () => {
+  it("按本题满分区分绿色、黄色和零分", () => {
+    const result = (score: number) => ({judge: {scorer: "atm_list", max_score: 1, score}});
+    expect(judgeScoreClass(result(1))).toBe("score-2");
+    expect(judgeScoreClass(result(2/3))).toBe("score-1");
+    expect(judgeScoreClass(result(0))).toBe("score-0");
+    expect(judgeScoreClass({judge: {score: 1}})).toBe("score-1");
+    expect(judgeScoreClass({judge: {score: 2}})).toBe("score-2");
+  });
   it("2/1/0 各有类名，其余落 score-none", () => {
     expect(scoreClass(2)).toBe("score-2");
     expect(scoreClass(1)).toBe("score-1");

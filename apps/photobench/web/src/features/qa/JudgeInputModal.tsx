@@ -10,16 +10,31 @@ import { createPortal } from "react-dom";
 
 import type { RunItemDetail } from "../../api/types.ts";
 
+import { ItemScoringResults } from "../../components/ScoringResults.tsx";
+
 type Dict = Record<string, unknown>;
 
-/** 1.0 `:719-723`：`complete` = `judge.input.messages` 是数组。 */
-function judgeInput(item: RunItemDetail): { complete: boolean; rawJson: string } {
-  const judge = (item.judge ?? {}) as Dict;
-  const input = (judge.input ?? {}) as Dict;
-  return {
-    complete: Array.isArray(input.messages),
-    rawJson: Array.isArray(input.messages) ? JSON.stringify(input, null, 2) : "",
-  };
+const obj = (value: unknown): Dict => value && typeof value === "object" ? value as Dict : {};
+const roles = [["judge", "回答评分"], ["task_judge", "回答行为评分"], ["evidence_judge", "证据评分"]] as const;
+
+function judgeInputs(item: RunItemDetail) {
+  const turns = item.runtime_turns || [];
+  return roles.flatMap(([key, label]) => {
+    const recorded = turns.flatMap((turn, i) => obj(turn[key]).input || Array.isArray(obj(turn[key]).attempts)
+      ? [{ judge: obj(turn[key]), turn: i + 1 }] : []);
+    const sources = recorded.length ? recorded : [{ judge: obj(item[key === "judge" ? "evaluation_result" : key] || item[key]), turn: null }];
+    return sources.flatMap(({ judge, turn }) => {
+      const attempts = Array.isArray(judge.attempts) ? judge.attempts.map(obj) : [];
+      const inputs = attempts.filter(a => Array.isArray(obj(a.input).messages));
+      if (!inputs.length && Array.isArray(obj(judge.input).messages)) inputs.push({ input: judge.input });
+      return inputs.map((attempt, index) => ({
+        title: `${turn == null ? "" : `第 ${turn} 轮 · `}${label} · 请求 ${index + 1}${attempt.purpose ? ` · ${String(attempt.purpose)}` : ""}`,
+        input: attempt.input,
+        response: attempt.raw_response,
+        error: attempt.error,
+      }));
+    });
+  });
 }
 
 export interface JudgeInputModalProps {
@@ -28,7 +43,9 @@ export interface JudgeInputModalProps {
 }
 
 export function JudgeInputModal({ item, onClose }: JudgeInputModalProps) {
-  const { complete, rawJson } = judgeInput(item);
+  const inputs = judgeInputs(item);
+  const scorer = String(obj(item.evaluation_result || item.judge).scorer || "");
+  const deterministic = ["media_set", "atm_list", "atm_number"].includes(scorer);
   return createPortal(
     <div
       className="judge-modal-backdrop"
@@ -46,11 +63,19 @@ export function JudgeInputModal({ item, onClose }: JudgeInputModalProps) {
             ×
           </button>
         </header>
-        {complete ? (
-          <pre>{rawJson}</pre>
-        ) : (
-          <p className="judge-input-note">该历史结果在运行时未保存 Judge 原始请求 JSON，无法恢复。</p>
+        <div className="judge-requests">
+        {(item.scoring_results as unknown[] | undefined)?.length ? <ItemScoringResults results={item.scoring_results} diagnostics={item.diagnostic_results} /> : null}
+        {inputs.length ? inputs.map((entry, index) => (
+          <section className="judge-request" key={index}>
+            <h4>{entry.title}</h4>
+            <pre>{JSON.stringify(entry.input, null, 2)}</pre>
+            {entry.response != null && <details><summary>Judge 原始返回</summary><pre>{JSON.stringify(entry.response, null, 2)}</pre></details>}
+            {entry.error != null && <p className="judge-input-note">请求失败：{String(entry.error)}</p>}
+          </section>
+        )) : (item.scoring_results as unknown[] | undefined)?.length ? null : (
+          <p className="judge-input-note">{deterministic ? "本题主分由程序按确定性规则计算；当前记录中没有 Judge 模型请求。" : "该历史结果在运行时未保存 Judge 原始请求 JSON，无法恢复。"}</p>
         )}
+        </div>
       </section>
     </div>,
     document.body,

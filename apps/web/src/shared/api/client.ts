@@ -860,19 +860,39 @@ export interface ImportResponse {
   video_scenes?: number;
   /** 音频有没有真的走到 ffprobe。音频以外恒为 false。 */
   audio_probed?: boolean;
+  job_id?: string | null;
+  job_status?: string | null;
 }
 
+/** 文档专用链路的导入结果。 */
+export interface DocumentImportResponse {
+  asset_id: string;
+  deduplicated: boolean;
+  status: string;
+  format: string;
+  revision: number;
+  element_count: number;
+  chunk_count: number;
+  vector_count: number;
+  error?: string;
+}
+
+/** 统一入口明确告诉调用方最终选择了哪条底层链路。 */
+export type UnifiedImportResponse =
+  | { routed_to: "media"; result: ImportResponse }
+  | { routed_to: "document"; result: DocumentImportResponse };
+
 /**
- * 导入一个文件。`POST /api/v1/media/import`。
+ * 导入一个文件。`POST /api/v1/import` 会自动路由到文档或媒体链路。
  *
  * 用 multipart：`file` 是文件本身、`scope_id` 是表单字段。**不要手写 Content-Type**——
  * 浏览器要给 multipart 带上 boundary，手写会把 boundary 弄丢。
  */
-export async function importAsset(file: File, scopeId: string): Promise<ImportResponse> {
+export async function importAsset(file: File, scopeId: string): Promise<UnifiedImportResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("scope_id", scopeId);
-  return request<ImportResponse>("/media/import", { method: "POST", body: form });
+  return request<UnifiedImportResponse>("/import", { method: "POST", body: form });
 }
 
 /** 某个相册范围下的会话列表。`GET /api/v1/assistant/conversations`。 */
@@ -1254,6 +1274,14 @@ export interface VideoScenePayload {
   source_scene_index: number | null;
   source_start_sec: number | null;
   source_end_sec: number | null;
+  speech_segments: VideoSpeechSegment[];
+  keyframe_timestamps_sec: number[];
+}
+
+export interface VideoSpeechSegment {
+  start_sec: number;
+  end_sec: number;
+  text: string;
 }
 
 export interface VideoDetailResponse {
@@ -1640,6 +1668,44 @@ export interface VideoReprocessResponse {
   accepted: boolean;
   asset_id: string;
   status: string;
+  job_id?: string | null;
+}
+
+export interface VideoJobStage {
+  stage: string;
+  status: string;
+  progress: number;
+  attempt: number;
+  output_artifact: string;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface VideoJobResponse {
+  job_id: string;
+  asset_id: string;
+  file_name: string;
+  status: string;
+  current_stage: string;
+  overall_progress: number;
+  retry_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  stages: VideoJobStage[];
+}
+
+export async function getVideoJob(jobId: string): Promise<VideoJobResponse> {
+  return request<VideoJobResponse>(`/video-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function listVideoJobs(scopeId: string): Promise<VideoJobResponse[]> {
+  const query = new URLSearchParams({ scope_id: scopeId });
+  const response = await request<VideoJobResponse[]>(`/video-jobs?${query.toString()}`);
+  return response;
+}
+
+export async function resumeVideoJob(jobId: string): Promise<VideoJobResponse> {
+  return request<VideoJobResponse>(`/video-jobs/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
 }
 
 /**

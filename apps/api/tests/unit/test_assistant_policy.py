@@ -24,7 +24,7 @@ def call(name: str, **arguments: object) -> ToolCall:
 
 
 def test_the_tool_list_is_exactly_what_ships():
-    """七个取证工具 + 一个终止动作。
+    """八个取证工具 + 一个终止动作。
 
     **这是一个逐字断言的清单，不是 ``>= 4``。** 工具多一个少一个都会改变模型看到的
     契约，而「多了一个没人注意的工具」正是那种不会报错、只会让模型偶尔调错东西的改动。
@@ -35,6 +35,7 @@ def test_the_tool_list_is_exactly_what_ships():
     """
     assert [spec.name for spec in TOOL_SPECS] == [
         "search_memories",
+        "search_documents",
         "query_memory_facts",
         "query_photo_people",
         "inspect_photo",
@@ -51,7 +52,11 @@ def test_every_tool_declares_the_evidence_it_satisfies():
     2.0 用它驱动账本——「工具调用不等于证据」这条纪律（``requirement_completion.py:63``）
     在 2.0 的落点就是这张显式的绑定表。
     """
-    assert TOOLS_BY_NAME["search_memories"].satisfies == (EvidenceType.PHOTO_SET,)
+    assert TOOLS_BY_NAME["search_memories"].satisfies == (
+        EvidenceType.PHOTO_SET,
+        EvidenceType.SPOKEN_CONTENT,
+    )
+    assert TOOLS_BY_NAME["search_documents"].satisfies == (EvidenceType.DOCUMENT_TEXT,)
     assert TOOLS_BY_NAME["final_answer"].satisfies == (EvidenceType.DELIVERED_PHOTO,)
     assert TOOLS_BY_NAME["get_person_profile"].satisfies == (EvidenceType.PERSON_PROFILE,)
 
@@ -122,6 +127,16 @@ def test_search_memories_cannot_be_called_twice(make_state):
     assert second.action is ToolAction.DENY
     assert second.code == "search_call_limit"
     assert "get_result_page" in second.reason
+
+
+def test_search_documents_cannot_be_called_twice(make_state):
+    state = make_state()
+    state.record(ToolCallRecord(call_id="c1", tool="search_documents", signature="x", status="ok"))
+
+    second = ToolPolicy().decide(call("search_documents", query="另一种问法"), state)
+
+    assert second.action is ToolAction.DENY
+    assert second.code == "document_search_call_limit"
 
 
 def test_search_limit_does_not_lapse_when_the_model_budget_is_gone(make_state):

@@ -25,17 +25,26 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
+from sentrix.application.media.cross_modal_attention import (
+    attended_speech_indices,
+    bidirectional_cross_modal_attention,
+)
 from sentrix.application.media.stage_spans import StageSpans
+from sentrix.application.media.stage_timing import stage_span
+from sentrix.domain.media.capture_time import offset_capture
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
+    AudioTranscriber,
+    TranscriptionSegment,
     VideoKeyframeExtractor,
     VideoRepository,
     VideoScenePlanner,
@@ -44,6 +53,7 @@ from sentrix.domain.media.scenes import KEYFRAME_DERIVED_KIND, SceneWindow, plan
 from sentrix.domain.memories.events import EventRecord
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
+from sentrix.domain.retrieval.ports import VisualEmbedder
 
 # 1.0 建场景事件时的占位地点（``db.py:2407`` 的 ``data.get("place") or "其他或不确定"``）。
 # 地点解析不出结果时事件不该是一行空字符串——那是「不知道」冒充「没有地点」。
@@ -52,6 +62,7 @@ UNKNOWN_PLACE = "其他或不确定"
 # 1.0 的 ``video/processor.py:203``：场景标题是「视频场景 N」（N 从 1 起），
 # 摘要带区间。两者都写死在事件上，后续的 ``refresh_event_summary`` 会按参与者重写。
 SCENE_TITLE_PREFIX = "视频场景"
+log = logging.getLogger("sentrix.application.media.extract_video_scenes")
 
 
 def _new_id(prefix: str) -> str:
@@ -99,6 +110,11 @@ class ExtractVideoScenes:
         # （它还要负责去重、落盘、探测）。第二参是 ``forced_event_id``。
         process_image: Callable[[Asset, str], object],
         scene_planner: VideoScenePlanner | None = None,
+        transcriber: AudioTranscriber | None = None,
+        cross_modal_embedder: VisualEmbedder | None = None,
+        has_memory: Callable[[Asset], bool] | None = None,
+        checkpoint: Callable[[str, int, int, int], None] | None = None,
+        resume_event_completed: int = 0,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._assets = assets
@@ -108,9 +124,21 @@ class ExtractVideoScenes:
         self._keyframes = keyframes
         self._process_image = process_image
         self._scene_planner = scene_planner
+        self._transcriber = transcriber
+        self._cross_modal_embedder = cross_modal_embedder
+        self._has_memory = has_memory
+        self._checkpoint = checkpoint
+        self._resume_event_completed = max(0, resume_event_completed)
         self._clock = clock
 
-    def execute(self, source_asset_id: str) -> VideoSceneExtraction:
+    def execute(
+        self,
+        source_asset_id: str,
+        *,
+        transcription_segments: Sequence[TranscriptionSegment] | None = None,
+        planned_windows: Sequence[SceneWindow] | None = None,
+        on_scene_plan: Callable[[Sequence[SceneWindow]], None] | None = None,
+    ) -> VideoSceneExtraction:
         total_started = time.perf_counter()
         spans = StageSpans()
         asset = self._assets.get(source_asset_id)
@@ -122,13 +150,23 @@ class ExtractVideoScenes:
         probe = self._video_repository.probe(source_asset_id)
         duration = (probe.metadata.duration_sec if probe and probe.metadata else 0.0) or 0.0
         planning_started = time.perf_counter()
-        windows = (
-            self._scene_planner(Path(asset.path), asset.id, duration)
-            if self._scene_planner is not None
-            else plan_scenes(duration)
-        )
+        with stage_span("video_scene_planning", asset.id):
+            windows = planned_windows or (
+                self._scene_planner(Path(asset.path), asset.id, duration)
+                if self._scene_planner is not None
+                else plan_scenes(duration)
+            )
+            if on_scene_plan is not None and planned_windows is None:
+                on_scene_plan(windows)
         planning_finished = time.perf_counter()
         planning_seconds = planning_finished - planning_started
+        planner_stage_timings: dict[str, float] = {}
+        stage_timings = getattr(self._scene_planner, "stage_timings", None)
+        if callable(stage_timings):
+            try:
+                planner_stage_timings = stage_timings(asset.id)
+            except Exception:  # noqa: BLE001 — instrumentation must not break video import
+                log.warning("读取视频抽帧计时失败 asset=%s", asset.id, exc_info=True)
         spans.include({"scene_planning": (planning_started, planning_finished)})
         if not windows:
             # 探测没读到时长（ffprobe 失败 / 还没探测过）。**不猜时长**：编一个只会
@@ -142,51 +180,176 @@ class ExtractVideoScenes:
                 },
             )
 
+        transcription_started = time.perf_counter()
+        segments: tuple[TranscriptionSegment, ...] = tuple(transcription_segments or ())
+        if transcription_segments is None and self._transcriber is not None:
+            try:
+                segments = tuple(self._transcriber.transcribe_video(Path(asset.path)))
+            except Exception as error:  # noqa: BLE001 — optional ASR must not block video import
+                log.warning("视频语音转写失败 asset=%s: %s", asset.id, error)
+        transcription_seconds = time.perf_counter() - transcription_started
+        construction_started = time.perf_counter()
+
         place = self._places.get(source_asset_id)
         place_text = place.display() if place else UNKNOWN_PLACE
-        existing = {item.source_frame_index for item in self._video_repository.list_derived(source_asset_id)}
+        derived_by_scene = {
+            item.source_scene_index: item
+            for item in self._video_repository.list_derived(source_asset_id)
+            if item.source_scene_index is not None
+        }
 
         scene_count = keyframe_count = reused = 0
         scene_write_seconds = 0.0
         keyframe_extract_seconds = 0.0
         keyframe_asset_write_seconds = 0.0
         keyframe_memory_seconds = 0.0
-        for window in windows:
-            scene_started = time.perf_counter()
-            event = self._ensure_scene_event(asset, window, place_text)
-            finished = time.perf_counter()
-            scene_write_seconds += finished - scene_started
-            spans.include({"scene_write": (scene_started, finished)})
-            scene_count += 1
-            if window.index in existing:
-                reused += 1
-                continue
+
+        # Prepare the complete visual sequence first so reverse attention can
+        # disambiguate audio across scene cuts.
+        frame_records: list[tuple[SceneWindow, Asset, bool]] = []
+        for position, window in enumerate(windows, start=1):
+            existing_asset = derived_by_scene.get(window.index)
+            if existing_asset is not None:
+                derived = self._assets.get(existing_asset.id)
+                if derived is not None:
+                    frame_path = Path(derived.path)
+                    intact = frame_path.is_file()
+                    if intact and derived.content_sha256:
+                        intact = _sha256(frame_path) == derived.content_sha256
+                    if intact:
+                        frame_records.append((window, derived, True))
+                        if self._checkpoint is not None:
+                            self._checkpoint("FRAME_SAMPLE_VSD", position, len(windows), window.index)
+                        continue
+                    log.warning(
+                        "video keyframe artifact missing or corrupt asset=%s scene=%d; rebuilding",
+                        asset.id,
+                        window.index,
+                    )
+                    frame = self._keyframes.extract(
+                        Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
+                    )
+                    digest = _sha256(frame)
+                    self._video_repository.refresh_derived_file(
+                        derived.id, str(frame), frame.stat().st_size, digest
+                    )
+                    derived = replace(
+                        derived,
+                        path=str(frame),
+                        size_bytes=frame.stat().st_size,
+                        content_sha256=digest,
+                        status=AssetStatus.QUEUED,
+                    )
+                    frame_records.append((window, derived, False))
+                    if self._checkpoint is not None:
+                        self._checkpoint("FRAME_SAMPLE_VSD", position, len(windows), window.index)
+                    continue
             extract_started = time.perf_counter()
-            frame = self._keyframes.extract(
-                Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
-            )
+            with stage_span("video_keyframe_extraction", asset.id):
+                frame = self._keyframes.extract(
+                    Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
+                )
             finished = time.perf_counter()
             keyframe_extract_seconds += finished - extract_started
             spans.include({"keyframe_extraction": (extract_started, finished)})
             asset_write_started = time.perf_counter()
-            derived = self._derived_asset(asset, frame, window)
-            self._video_repository.add_derived(
-                parent_asset_id=asset.id,
-                asset=derived,
-                derived_kind=KEYFRAME_DERIVED_KIND,
-                source_timestamp_sec=window.keyframe_timestamp_sec,
-                source_frame_index=window.index,
-                source_scene_index=window.index,
-            )
+            with stage_span("video_keyframe_asset_write", asset.id):
+                derived = self._derived_asset(asset, frame, window)
+                self._video_repository.add_derived(
+                    parent_asset_id=asset.id,
+                    asset=derived,
+                    derived_kind=KEYFRAME_DERIVED_KIND,
+                    source_timestamp_sec=window.keyframe_timestamp_sec,
+                    source_frame_index=window.index,
+                    source_scene_index=window.index,
+                )
             finished = time.perf_counter()
             keyframe_asset_write_seconds += finished - asset_write_started
             spans.include({"keyframe_asset_write": (asset_write_started, finished)})
+            frame_records.append((window, derived, False))
+            if self._checkpoint is not None:
+                self._checkpoint("FRAME_SAMPLE_VSD", position, len(windows), window.index)
+
+        attended_by_scene: dict[int, tuple[str, tuple[dict[str, object], ...]]] = {}
+        embedder = self._cross_modal_embedder
+        if embedder is not None and segments and frame_records:
+            try:
+                visual_features = [
+                    list(embedder.embed_image(Path(item.path))) for _, item, _ in frame_records
+                ]
+                audio_features = [list(embedder.embed_query(item.text)) for item in segments]
+                if all(visual_features) and all(audio_features):
+                    result = bidirectional_cross_modal_attention(
+                        visual_features,
+                        audio_features,
+                        [window.keyframe_timestamp_sec for window, _, _ in frame_records],
+                        [(item.start_sec + item.end_sec) / 2 for item in segments],
+                    )
+                    for (window, _, _), selected in zip(
+                        frame_records, attended_speech_indices(result), strict=True
+                    ):
+                        attended = tuple(
+                            {
+                                "start_sec": segments[index].start_sec,
+                                "end_sec": segments[index].end_sec,
+                                "text": segments[index].text,
+                                "speaker": segments[index].speaker,
+                                "attention_weight": round(weight, 6),
+                            }
+                            for index, weight in selected
+                        )
+                        transcript = _format_scene_transcript(attended)
+                        if transcript:
+                            attended_by_scene[window.index] = (transcript, attended)
+            except Exception as error:  # noqa: BLE001 — optional fusion must not block import
+                log.warning("跨模态注意力计算失败 asset=%s: %s", asset.id, error)
+
+        memory_completed = 0
+        existing_events = {
+            event.source_scene_index: event
+            for event in self._events.list_video_scenes(source_asset_id)
+            if event.source_scene_index is not None
+        }
+        for position, (window, derived, was_existing) in enumerate(frame_records, start=1):
+            if self._checkpoint is not None:
+                self._checkpoint("EVENT_BUILD", position - 1, len(frame_records), window.index)
+            scene_started = time.perf_counter()
+            overlapping = _scene_segments(segments, window.start_sec, window.end_sec)
+            transcript, event_segments = attended_by_scene.get(
+                window.index,
+                (_format_scene_transcript(overlapping), overlapping),
+            )
+            with stage_span("video_scene_write", asset.id):
+                event = (
+                    existing_events[window.index]
+                    if position <= self._resume_event_completed and window.index in existing_events
+                    else self._ensure_scene_event(asset, window, place_text, transcript, event_segments)
+                )
+            finished = time.perf_counter()
+            scene_write_seconds += finished - scene_started
+            spans.include({"scene_write": (scene_started, finished)})
+            scene_count += 1
+            if self._checkpoint is not None:
+                self._checkpoint("EVENT_BUILD", position, len(frame_records), window.index)
+            has_memory = self._has_memory(derived) if self._has_memory is not None else was_existing
+            if has_memory:
+                reused += 1
+                memory_completed += 1
+                if self._checkpoint is not None:
+                    self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
+                continue
             memory_started = time.perf_counter()
-            self._process_image(derived, event.id)
+            if self._checkpoint is not None:
+                self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
+            with stage_span("video_keyframe_memory", asset.id):
+                self._process_image(derived, event.id)
             finished = time.perf_counter()
             keyframe_memory_seconds += finished - memory_started
             spans.include({"keyframe_memory": (memory_started, finished)})
             keyframe_count += 1
+            memory_completed += 1
+            if self._checkpoint is not None:
+                self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
 
         spans.include({"total": (total_started, time.perf_counter())})
         return VideoSceneExtraction(
@@ -196,6 +359,11 @@ class ExtractVideoScenes:
             timing_spans=dict(spans.intervals),
             timings={
                 "scene_planning": round(planning_seconds, 3),
+                **planner_stage_timings,
+                "speech_transcription": round(transcription_seconds, 3),
+                # Includes selected-frame extraction, asset/event writes, cross-modal alignment,
+                # and keyframe memory construction. ASR and planner stages are reported separately.
+                "scene_construction_seconds": round(time.perf_counter() - construction_started, 3),
                 "scene_write": round(scene_write_seconds, 3),
                 "keyframe_extraction": round(keyframe_extract_seconds, 3),
                 "keyframe_asset_write": round(keyframe_asset_write_seconds, 3),
@@ -206,7 +374,14 @@ class ExtractVideoScenes:
 
     # ---- 内部 ----------------------------------------------------------------
 
-    def _ensure_scene_event(self, asset: Asset, window: SceneWindow, place_text: str) -> EventRecord:
+    def _ensure_scene_event(
+        self,
+        asset: Asset,
+        window: SceneWindow,
+        place_text: str,
+        transcript: str = "",
+        speech_segments: tuple[dict[str, object], ...] = (),
+    ) -> EventRecord:
         """1.0 ``db.py:2397`` 的 ``create_video_scene_event``：同一 (源片, 场景序号) 只有一条。
 
         区间是**原片秒数**，与事件自身的 ``time_start`` / ``time_end``
@@ -218,7 +393,7 @@ class ExtractVideoScenes:
             event_id=_new_id("evt"),
             scope_id=asset.scope_id,
             title=f"{SCENE_TITLE_PREFIX} {window.index + 1}",
-            summary=f"{SCENE_TITLE_PREFIX} · {start:.1f}s~{end:.1f}s",
+            summary=_scene_summary(start, end, transcript),
             place=place_text,
             time_start=_offset(asset.captured_at, start),
             time_end=_offset(asset.captured_at, end),
@@ -226,6 +401,8 @@ class ExtractVideoScenes:
             source_scene_index=window.index,
             source_start_sec=start,
             source_end_sec=end,
+            speech_transcript=transcript,
+            speech_segments=speech_segments,
         )
 
     def _derived_asset(self, source: Asset, frame: Path, window: SceneWindow) -> Asset:
@@ -248,6 +425,7 @@ class ExtractVideoScenes:
             content_sha256=_sha256(frame),
             captured_at=_offset(source.captured_at, window.keyframe_timestamp_sec),
             captured_location=source.captured_location,
+            capture_time=source.capture_time,
             created_at=now,
             updated_at=now,
         )
@@ -257,4 +435,45 @@ def _offset(captured_at: datetime | None, seconds: float) -> datetime | None:
     """拍摄时间加原片内偏移。源片没有拍摄时间时返回 ``None``——不拿导入时刻冒充。"""
     if captured_at is None:
         return None
-    return captured_at + timedelta(seconds=float(seconds))
+    return offset_capture(captured_at, float(seconds))
+
+
+def _scene_transcript(segments: tuple[TranscriptionSegment, ...], start: float, end: float) -> str:
+    """Select speech overlapping this scene, retaining chronology and removing repeated text."""
+    return _format_scene_transcript(_scene_segments(segments, start, end))
+
+
+def _scene_segments(
+    segments: tuple[TranscriptionSegment, ...], start: float, end: float
+) -> tuple[dict[str, object], ...]:
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for segment in sorted(segments, key=lambda item: (item.start_sec, item.end_sec)):
+        if segment.end_sec <= start or segment.start_sec >= end:
+            continue
+        text = " ".join(segment.text.split())
+        if not text or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        selected.append(
+            {
+                "start_sec": segment.start_sec,
+                "end_sec": segment.end_sec,
+                "text": text,
+                "speaker": segment.speaker,
+            }
+        )
+    return tuple(selected)
+
+
+def _format_scene_transcript(segments: tuple[dict[str, object], ...]) -> str:
+    selected: list[str] = []
+    for segment in segments:
+        speaker = f"{segment['speaker']}: " if segment.get("speaker") else ""
+        selected.append(f"{speaker}{segment['text']}")
+    return "；".join(selected)
+
+
+def _scene_summary(start: float, end: float, transcript: str) -> str:
+    summary = f"{SCENE_TITLE_PREFIX} · {start:.1f}s~{end:.1f}s"
+    return f"{summary}；语音：{transcript}" if transcript else summary

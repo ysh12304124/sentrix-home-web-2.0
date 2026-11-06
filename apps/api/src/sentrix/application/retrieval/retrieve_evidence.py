@@ -36,11 +36,11 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
-from sentrix.application.retrieval.expand_audio_context import ExpandAudioContext
+from sentrix.application.retrieval.index_observation_text import compose_text
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
 from sentrix.application.retrieval.retrieve_graph import GRAPH_CHANNEL, RetrieveGraph
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
@@ -56,10 +56,11 @@ from sentrix.application.retrieval.retrieve_visual import (
     VisualSearchResult,
 )
 from sentrix.domain.media.models import MediaType
-from sentrix.domain.media.transcription import AudioEvidenceExcerpt
+from sentrix.domain.media.ports import ObservationRepository
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.fusion import DEFAULT_CHANNEL_WEIGHTS, fuse
 from sentrix.domain.retrieval.models import CandidateHit, ChannelTrace, FusedCandidate
+from sentrix.domain.retrieval.ports import Reranker
 
 log = logging.getLogger("sentrix.retrieval.evidence")
 
@@ -68,6 +69,9 @@ ENTITY_CHANNEL = "entity"
 LEXICAL_CHANNEL = "lexical"
 VISUAL_CHANNEL = "visual_ann"
 TEXT_CHANNEL = "text_ann"
+# 重排不是召回通道，但它同样要有一条轨迹：侧车没起时结果集合不变、只有顺序退化，
+# 没有这一条的话「重排真的跑过」在响应里看不出来。
+RERANK_CHANNEL = "rerank"
 
 # 每条通道按调用方上限过取一层再融合。1.0 把理由写在了注释里
 # （``evidence_retrieval.py:171-176``）："Ask each enabled channel for the complete
@@ -125,9 +129,6 @@ class EvidenceHit:
     # 在转成 ``EvidenceHit`` 时把它丢了——于是「这条命中的是确定性锚点还是相似度」
     # 到不了检索预览，模型只能按名次猜哪张更可能是自己要找的。
     evidence_class: str = "semantic"
-    audio_start_ms: int | None = None
-    audio_end_ms: int | None = None
-    audio_context: tuple[AudioEvidenceExcerpt, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,8 +223,11 @@ class RetrieveEvidence:
         text: RetrieveTextAnn,
         conditions: EvaluateConditions | None = None,
         graph: RetrieveGraph | None = None,
-        audio_context: ExpandAudioContext | None = None,
-        max_audio_context_hits: int = 2,
+        # 重排是可选增强：``reranker`` 为 ``None`` 时整段逻辑不执行。
+        # ``observations`` 只在重排启用时需要——候选文本来自观察，不由请求自带。
+        reranker: Reranker | None = None,
+        observations: ObservationRepository | None = None,
+        rerank_top_k: int = 24,
     ) -> None:
         self._visual = visual
         self._lexical = lexical
@@ -232,8 +236,104 @@ class RetrieveEvidence:
         self._text = text
         self._conditions = conditions
         self._graph = graph
-        self._audio_context = audio_context
-        self._max_audio_context_hits = max(0, max_audio_context_hits)
+        self._reranker = reranker
+        self._observations = observations
+        self._rerank_top_k = rerank_top_k
+        if reranker is not None and observations is None:
+            raise ValueError("启用重排时必须提供 ObservationRepository：候选文本来自观察")
+
+    def _rerank(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[FusedCandidate],
+        traces: list[ChannelTrace],
+    ) -> list[FusedCandidate]:
+        """把 RRF 头部交给交叉编码器重排；任何失败都原样返回。
+
+        **只动顺序，不动集合。** 头部 ``rerank_top_k`` 条按重排分数降序（同分保持
+        RRF 顺序），没有观察文本的候选排在它们之后、仍是 RRF 顺序，``rerank_top_k``
+        之后的尾部原样跟在最后。这三条合起来保证重排不可能把一条候选弄丢——它带来
+        的只是「头部换序」，而交付上限截断的正是头部，所以顺序变化会真实影响结果。
+
+        **分数只进 ``raw_scores["rerank"]``，不覆盖 RRF 分数。** 交付的 ``score``
+        仍是融合分数，两个数在 trace 里能分开看：一个是「多路召回有多同意」，一个
+        是「交叉编码器认为有多相关」，混成一个数就再也拆不开。
+
+        失败（侧车没起、超时、分数条数对不上）→ 返回原列表并记一条 ``degraded``
+        轨迹。**降级必须被读出来**：1.0 的教训是降级只写日志，接口照常返回，读数
+        上看不出这一路其实没跑。
+        """
+        reranker = self._reranker
+        observations = self._observations
+        if reranker is None or observations is None:
+            return list(candidates)
+        head = list(candidates[: self._rerank_top_k])
+        tail = list(candidates[self._rerank_top_k :])
+        if not head:
+            return list(candidates)
+
+        started = time.monotonic()
+        documents: list[str] = []
+        for candidate in head:
+            latest = max(
+                observations.list_by_asset(candidate.asset_id),
+                key=lambda item: item.updated_at,
+                default=None,
+            )
+            documents.append(compose_text(latest) if latest is not None else "")
+        scorable = [index for index, document in enumerate(documents) if document]
+        if not scorable:
+            traces.append(
+                ChannelTrace(
+                    channel=RERANK_CHANNEL,
+                    status="ok",
+                    candidate_count=0,
+                    latency_ms=round((time.monotonic() - started) * 1000, 1),
+                    backend=reranker.model_id,
+                )
+            )
+            return list(candidates)
+
+        scores = reranker.rerank(query, [documents[index] for index in scorable])
+        latency_ms = round((time.monotonic() - started) * 1000, 1)
+        if len(scores) != len(scorable):
+            detail = getattr(reranker, "load_error", "")
+            reason = f"重排返回 {len(scores)}/{len(scorable)} 个分数"
+            if detail:
+                reason = f"{reason}；{detail}"
+            traces.append(
+                ChannelTrace(
+                    channel=RERANK_CHANNEL,
+                    status="degraded",
+                    candidate_count=0,
+                    latency_ms=latency_ms,
+                    backend=reranker.model_id,
+                    reason=reason,
+                )
+            )
+            return list(candidates)
+
+        # 同分时按候选在 RRF 里的原位置排序（``sorted`` 本身稳定，显式带上位置更清楚）。
+        ranked = sorted(
+            ((index, float(scores[position])) for position, index in enumerate(scorable)),
+            key=lambda item: (-item[1], item[0]),
+        )
+        scored = [
+            replace(head[index], raw_scores={**head[index].raw_scores, RERANK_CHANNEL: score})
+            for index, score in ranked
+        ]
+        unscored = [candidate for index, candidate in enumerate(head) if not documents[index]]
+        traces.append(
+            ChannelTrace(
+                channel=RERANK_CHANNEL,
+                status="ok",
+                candidate_count=len(scored),
+                latency_ms=latency_ms,
+                backend=reranker.model_id,
+            )
+        )
+        return [*scored, *unscored, *tail]
 
     def execute(self, request: EvidenceRequest) -> EvidenceResult:
         text = request.text.strip()
@@ -299,7 +399,6 @@ class RetrieveEvidence:
         # 通道挂了时盒子是空的 → 顶层回 ``none``/未降级，那正是 ``EvidenceResult`` 的
         # 默认值，也是实情。
         visual_box: list[VisualSearchResult] = []
-        text_box: list[TextSearchResult] = []
 
         def run_visual() -> tuple[Sequence[CandidateHit], str, bool, str]:
             result = self._visual.execute(
@@ -307,13 +406,6 @@ class RetrieveEvidence:
             )
             visual_box.append(result)
             return _visual_candidates_health(result)
-
-        def run_text() -> tuple[Sequence[CandidateHit], str, bool, str]:
-            result = self._text.execute(
-                TextSearchRequest(text=text, scope_id=request.scope_id, limit=recall_limit)
-            )
-            text_box.append(result)
-            return _text_candidates_health(result)
 
         # 这个 dict 的插入顺序必须与 1.0 的构建顺序一致：metadata 最先，锚点加成才会
         # 落在同时被 metadata 与语义通道命中的候选上。
@@ -357,16 +449,13 @@ class RetrieveEvidence:
             # **候选第一次出现时**的通道给，顺序换了拿到的加成就不一样。
             TEXT_CHANNEL: record(
                 TEXT_CHANNEL,
-                run_text,
+                lambda: _text_candidates_health(
+                    self._text.execute(
+                        TextSearchRequest(text=text, scope_id=request.scope_id, limit=recall_limit)
+                    )
+                ),
             ),
         }
-        audio_locations = {
-            hit.asset_id: (hit.start_ms, hit.end_ms)
-            for result in text_box
-            for hit in result.hits
-            if hit.start_ms is not None and hit.end_ms is not None
-        }
-
         # 先固定 primary 基线，再把它的头部交给图做种子。不能把所有过取候选都
         # 送进图：那会让一个低置信度的尾部命中扩大遍历面，也会令图效果基线失去
         # 「图加入前实际交付头部」的含义。
@@ -426,6 +515,12 @@ class RetrieveEvidence:
             primary_fused = [candidate for candidate in primary_fused if candidate.asset_id in kept]
             excluded_count = outcome.excluded_count
 
+        # **重排排在条件过滤之后、交付之前。** 条件判定是硬筛，先后顺序不影响筛的
+        # 结果；而交付截断与图槽位选择都应该看到重排后的头部。图种子在上面已经按
+        # **未重排**的 primary 头取过——图的基线是「图加入前实际交付的头部」，让
+        # 重排去改种子会把两个变量缠在一起，回头分不清是谁的效果。
+        primary_fused = self._rerank(query=text, candidates=primary_fused, traces=traces)
+
         # graph 是 expander，不应像第六条独立 primary 通道一样凭 RRF 分数把结果
         # 全部压在尾部（primary 的 RRF 分数天然大一个数量级，旧实现因此在正常
         # limit 下几乎永远看不到图扩展）。保留 primary 的排序作为基线，并为图扩展
@@ -465,41 +560,17 @@ class RetrieveEvidence:
         primary_asset_ids = tuple(candidate.asset_id for candidate in primary_fused[:limit])
         fused_asset_ids = tuple(candidate.asset_id for candidate in fused[:limit])
 
-        hits: list[EvidenceHit] = []
-        expanded = 0
-        for candidate in fused[:limit]:
-            audio_start_ms, audio_end_ms = audio_locations.get(candidate.asset_id, (None, None))
-            context: tuple[AudioEvidenceExcerpt, ...] = ()
-            if (
-                self._audio_context is not None
-                and expanded < self._max_audio_context_hits
-                and audio_start_ms is not None
-                and audio_end_ms is not None
-            ):
-                try:
-                    context = self._audio_context.execute(
-                        asset_id=candidate.asset_id,
-                        anchor_start_ms=audio_start_ms,
-                        anchor_end_ms=audio_end_ms,
-                    )
-                except Exception as error:  # noqa: BLE001 - 上下文是可降级增强
-                    log.warning("扩展音频上下文失败，本次只交付时间锚点: %s", error)
-                expanded += 1
-            hits.append(
+        return EvidenceResult(
+            hits=tuple(
                 EvidenceHit(
                     asset_id=candidate.asset_id,
                     score=candidate.score,
                     channels=dict(candidate.channels),
                     raw_scores=dict(candidate.raw_scores),
                     evidence_class=candidate.evidence_class,
-                    audio_start_ms=audio_start_ms,
-                    audio_end_ms=audio_end_ms,
-                    audio_context=context,
                 )
-            )
-
-        return EvidenceResult(
-            hits=tuple(hits),
+                for candidate in fused[:limit]
+            ),
             backend=visual_box[0].backend if visual_box else "none",
             degraded=visual_box[0].degraded if visual_box else False,
             degraded_reason=visual_box[0].degraded_reason if visual_box else "",

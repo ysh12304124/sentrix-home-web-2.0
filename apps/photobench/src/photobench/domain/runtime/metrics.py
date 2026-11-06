@@ -256,6 +256,8 @@ def resource_records(sample: dict[str, Any]) -> dict[str, Any]:
     for name, key, metric, scope, unit in RESOURCE_FIELDS:
         value = finite_number(sample.get(key))
         method = process_method
+        if name == "model_process_memory" and accounting == "apple_phys_footprint_v1":
+            method = "proc_pid_rusage_phys_footprint"
         if name == "device_memory":
             method = str(sample.get("system_memory_scope") or "physical_nonfree")
         elif "gpu_memory" in name:

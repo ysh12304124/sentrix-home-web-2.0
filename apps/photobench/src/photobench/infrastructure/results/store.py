@@ -19,6 +19,8 @@ from typing import Any
 
 from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
 from photobench.domain.runs.analysis import effective_summary, run_list_entry
+from photobench.domain.runs.task_history import execution_metadata
+from photobench.infrastructure.results.file_copy import copy_export
 
 log = logging.getLogger(__name__)
 # Fixed stripes bound lock memory, including deleted and never-seen run IDs.
@@ -55,9 +57,17 @@ def _sync_directory(path: Path) -> None:
 
 
 def _overview(state: dict[str, Any]) -> dict[str, Any]:
-    result = {key: value for key, value in state.items() if key != "items"}
+    result = {
+        key: value
+        for key, value in state.items()
+        if key not in {"items", "scoring_results", "diagnostic_results"}
+    }
     if isinstance(result.get("qa_snapshot"), dict):
         result["qa_snapshot"] = snapshot_metadata(result["qa_snapshot"])
+    result["scoring_batches"] = [
+        {k: v for k, v in b.items() if k not in {"materials", "targets"}}
+        for b in state.get("scoring_batches") or []
+    ]
     result["item_count"] = len(state.get("items") or [])
     result["summary"] = effective_summary(state)
     return result
@@ -68,13 +78,19 @@ def read_entry(run_dir: Path) -> dict[str, Any]:
     with run_lock(run_dir):
         metadata = committed_path(run_dir, "metadata.json")
         if metadata.is_file():
-            entry = json.loads(metadata.read_text(encoding="utf-8"))["entry"]
+            payload = json.loads(metadata.read_text(encoding="utf-8"))
+            entry = payload["entry"]
             if not isinstance(entry, dict):
                 raise ValueError("invalid committed entry")
+            # 已提交元数据中的旧列表投影可能缺少题型汇总；从同一快照概览补齐。
+            evaluation = (payload.get("overview", {}).get("summary") or {}).get("evaluation_summary")
+            if evaluation is not None:
+                entry.setdefault("summary", {})["evaluation_summary"] = evaluation
+            entry.update(execution_metadata(payload.get("overview") or {}))
             return entry
         path = run_dir / "run.json"
         stat = path.stat()
-        signature = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+        signature = [3, stat.st_ino, stat.st_size, stat.st_mtime_ns]
         index = run_dir / ".photobench-read-index.json"
         try:
             cached = json.loads(index.read_text(encoding="utf-8"))
@@ -146,7 +162,7 @@ def write_committed_snapshot(run_dir: Path, state: dict[str, Any]) -> None:
         try:
             for name in ("run.json", "results.jsonl"):
                 export = run_dir / (name + ".tmp")
-                shutil.copyfile(stage / name, export)
+                copy_export(stage / name, export)
                 export.replace(run_dir / name)
         except OSError:
             log.exception(
@@ -202,10 +218,13 @@ class FileRunStore:
             path = committed_path(run_dir, "run.json")
             if not path.is_file():
                 raise KeyError(run_id)
-            value = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(value, dict):
-                raise KeyError(run_id)
-            return value
+            # Detach the immutable generation bytes before releasing the lock.
+            # Parsing a large trace must not block the next durable commit.
+            text = path.read_text(encoding="utf-8")
+        value = json.loads(text)
+        if not isinstance(value, dict):
+            raise KeyError(run_id)
+        return value
 
     def load_overview(self, run_id: str) -> dict[str, Any]:
         run_dir = self._run_dir(run_id)
@@ -215,8 +234,33 @@ class FileRunStore:
                 overview = json.loads(path.read_text(encoding="utf-8"))["overview"]
                 if not isinstance(overview, dict):
                     raise ValueError("invalid committed overview")
-                return {**overview, "read_revision": self.revision(run_id)}
-            return {**_overview(self.load_state(run_id)), "read_revision": self.revision(run_id)}
+                if "scoring" not in (overview.get("summary") or {}):
+                    overview = _overview(self.load_state(run_id))
+            else:
+                overview = _overview(self.load_state(run_id))
+            live_path = run_dir / "telemetry-live.json"
+            if not overview.get("finished_at") and overview.get("status") in {
+                "pending",
+                "running",
+                "cancelling",
+            }:
+                try:
+                    view = json.loads(live_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    view = None
+                if (
+                    isinstance(view, dict)
+                    and view.get("run_id") == run_id
+                    and view.get("started_at")
+                    and view["started_at"] == overview.get("started_at")
+                ):
+                    overview["telemetry_live"] = view["telemetry_live"]
+                    phases = overview.setdefault("phases", {})
+                    if (phases.get("gpu_metrics") or {}).get("status") not in {"done", "skipped"}:
+                        phases["gpu_metrics"] = view["gpu_metrics"]
+                    if view.get("llama_server_args"):
+                        overview["llama_server_args"] = view["llama_server_args"]
+            return {**overview, "read_revision": self.revision(run_id)}
 
     def revision(self, run_id: str) -> str:
         run_dir = self._run_dir(run_id)
@@ -232,11 +276,15 @@ class FileRunStore:
         run_dir = self._run_dir(run_id)
         if not run_dir.is_dir():
             raise KeyError(run_id)
-        try:
-            stat = (run_dir / "gpu_samples.jsonl").stat()
-        except FileNotFoundError:
-            return "absent"
-        return f"{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+        signatures = []
+        for name in ("gpu_samples.jsonl", "telemetry-live.json"):
+            try:
+                stat = (run_dir / name).stat()
+            except FileNotFoundError:
+                signatures.append("absent")
+            else:
+                signatures.append(f"{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}")
+        return "|".join(signatures)
 
     def read_reviews(self, run_id: str) -> dict[str, Any]:
         run_dir = self._run_dir(run_id)
@@ -282,10 +330,23 @@ class FileResultWriter:
         run_dir = self._run_dir(run_id)
         write_committed_snapshot(run_dir, state)
 
+    def write_telemetry_view(self, run_id: str, view: dict[str, Any]) -> None:
+        run_dir = self._run_dir(run_id)
+        with run_lock(run_dir):
+            run_dir.mkdir(parents=True, exist_ok=True)
+            target = run_dir / "telemetry-live.json"
+            temporary = run_dir / "telemetry-live.tmp"
+            try:
+                temporary.write_text(json.dumps(view, ensure_ascii=False), encoding="utf-8")
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
     def reset_gpu_samples(self, run_id: str) -> None:
         path = self._run_dir(run_id) / "gpu_samples.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
+        (path.parent / "telemetry-live.json").unlink(missing_ok=True)
 
     def append_gpu_sample(self, run_id: str, sample: dict[str, Any]) -> None:
         path = self._run_dir(run_id) / "gpu_samples.jsonl"

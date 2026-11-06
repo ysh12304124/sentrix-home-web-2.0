@@ -83,10 +83,10 @@ it("默认任务类型展示正确/部分/错误/未评分，点击类别与分�
   const distribution = chart.setOption.mock.calls.find(([option]) => option.series?.[0]?.stack === "scores")?.[0];
   expect(distribution.series[0].data[0].label.show).toBe(true);
   expect(distribution.series[0].data[1].label.show).toBe(false);
-  fireEvent.click(screen.getByLabelText("内容概述 满分（2分）"));
+  fireEvent.click(screen.getByLabelText("内容概述 正确（2分）"));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_type: "T5_event_summary", score: "2", code: ""}));
   fireEvent.change(screen.getByLabelText("分布分组方式"), {target: {value: "content_subtype"}});
-  fireEvent.click(screen.getByLabelText("时间 部分完成（1分）"));
+  fireEvent.click(screen.getByLabelText("时间 部分正确（1分）"));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_subtype: "fact_time", score: "1", content_type: ""}));
 });
 
@@ -108,8 +108,8 @@ it("合并后的媒体检索与行为分类显示中文，窄柱段数字保留�
   const option = chart.setOption.mock.calls[0]?.[0];
   expect(option.yAxis.data).toEqual(["未标注内容题型", "媒体检索"]);
   expect(option.series[0].data[1].label.show).toBe(false);
-  expect(screen.getByLabelText("媒体检索 满分（2分）").textContent).toBe("2");
-  fireEvent.click(screen.getByLabelText("媒体检索 未完成（0分）"));
+  expect(screen.getByLabelText("媒体检索 正确（2分）").textContent).toBe("2");
+  fireEvent.click(screen.getByLabelText("媒体检索 错误（0分）"));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_type: "T1_retrieve_media", score: "0"}));
 });
 
@@ -126,12 +126,12 @@ it("按得分看题型按题数排序，占比以该得分全部题为分母，�
   const filter = vi.fn();
   render(<AnalysisCharts report={report} filter={filter} />);
   fireEvent.click(screen.getByRole("button", {name: "按得分看题型"}));
-  expect(screen.getByText(/满分（2分） · 共5题/)).toBeTruthy();
+  expect(screen.getByText(/正确（2分） · 共5题/)).toBeTruthy();
   expect(screen.getAllByText("50.0%")).toHaveLength(2);
   const scoreOption = () => chart.setOption.mock.calls.filter(([option]) => option.legend?.show === false).at(-1)![0];
   expect(scoreOption().yAxis.data).toEqual(["媒体检索", "内容概述"]);
   expect(scoreOption().series[0].data.map((x: {value: number}) => x.value)).toEqual([1, 1]);
-  fireEvent.click(screen.getByRole("button", {name: "媒体检索 满分（2分）案例"}));
+  fireEvent.click(screen.getByRole("button", {name: "媒体检索 正确（2分）案例"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_type: "T1_retrieve_media", score: "2"}));
   fireEvent.change(screen.getByLabelText("分布显示方式"), {target: {value: "ratio"}});
   expect(scoreOption().series[0].data.map((x: {value: number}) => x.value)).toEqual([50, 50]);
@@ -188,7 +188,7 @@ it("行为分布按轮单独组成100%，行为符合与质量分分别筛选", 
   fireEvent.change(screen.getByLabelText("分布得分"), {target: {value: "0"}});
   expect(screen.getAllByText("100.0%").length).toBeGreaterThan(0);
   expect(screen.getByText("未标注内容题型 1题")).toBeTruthy();
-  expect(screen.queryByRole("button", {name: "未标注内容题型 未完成（0分）案例"})).toBeNull();
+  expect(screen.queryByRole("button", {name: "未标注内容题型 错误（0分）案例"})).toBeNull();
 });
 
 it("旧报告要求重生成，不再使用混合的任务标签绘图", () => {
@@ -215,11 +215,11 @@ it("两级题型下钻保留得分筛选，纯安全和待核排除占比，轮�
   expect(screen.getByRole("button", {name: "不适用 1题"})).toBeTruthy();
   fireEvent.click(screen.getByRole("button", {name: "事实查询 ›"}));
   expect(screen.getByLabelText("分析内容大类")).toHaveProperty("value", "T2_fact_qa");
-  fireEvent.click(screen.getByRole("button", {name: "地点 满分（2分）案例"}));
+  fireEvent.click(screen.getByRole("button", {name: "地点 正确（2分）案例"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_subtype: "fact_place", score: "2", content_unit: "qa"}));
   fireEvent.change(screen.getByLabelText("内容统计单位"), {target: {value: "turn"}});
   fireEvent.click(screen.getByRole("button", {name: "展开细分题型"}));
-  fireEvent.click(screen.getByRole("button", {name: "时间 满分（2分）案例"}));
+  fireEvent.click(screen.getByRole("button", {name: "时间 正确（2分）案例"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({content_subtype: "fact_time", score: "2", content_unit: "turn"}));
 });
 
@@ -282,11 +282,11 @@ it("五类一级分布包含抗幻觉和抗注入，分母按题去重，二级�
   fireEvent.change(screen.getByLabelText("分布显示方式"), {target: {value: "ratio"}});
   const option = chart.setOption.mock.calls.map(([x]) => x).reverse().find(x => x.series?.[0]?.data?.some((d: {name?: string}) => d.name === "H"));
   expect(option.series[0].data).toEqual([{name: "P", value: 33.3}, {name: "H", value: 33.3}, {name: "I", value: 33.3}]);
-  fireEvent.click(screen.getByRole("button", {name: "抗幻觉 满分（2分）案例"}));
+  fireEvent.click(screen.getByRole("button", {name: "抗幻觉 正确（2分）案例"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({ability_family: "H", score: "2"}));
   fireEvent.click(screen.getByRole("button", {name: "展开二级能力"}));
-  expect(screen.getByText(/抗幻觉、抗注入攻击暂不细分/)).toBeTruthy();
-  expect(screen.getByRole("button", {name: "媒体定位与筛选 满分（2分）案例"})).toBeTruthy();
+  expect(screen.getByText(/此历史报告的安全题二级标签未记录/)).toBeTruthy();
+  expect(screen.getByRole("button", {name: "媒体定位与筛选 正确（2分）案例"})).toBeTruthy();
   expect(screen.getByText("100.0%")).toBeTruthy();
   expect(screen.queryByRole("option", {name: "抗幻觉"})).toBeNull();
 });
@@ -302,4 +302,25 @@ it("规则7保存的旧报告继续显示v1名称，不随新版字典静默更�
   expect(screen.getByText("记录定位与筛选")).toBeTruthy();
   expect(screen.getByText("过程与时间线整理")).toBeTruthy();
   expect(screen.queryByText("媒体定位与筛选")).toBeNull();
+});
+
+it("ATM原生题型可独立分组并按题型和分数筛选", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  const report = { schema_version: 2, rule_version: 13, generated_at: 1, item_count: 3,
+    source: {}, result_fingerprint: "r", gt_fingerprint: "g", counts: {score_2: 1, score_0: 2},
+    denominators: {quality_valid: 3, quality_missing: 0}, errors: [], heatmap: [], behavior_matrix: [], definitions: [],
+    groups: {scoring_question_type: [
+      {value: "number", total: 1, score_0: 1},
+      {value: "list_recall", total: 1, score_2: 1},
+      {value: "open_end", total: 1, score_0: 1},
+    ]},
+  } as AnalysisReport;
+  const filter = vi.fn();
+  render(<AnalysisCharts report={report} filter={filter} />);
+  fireEvent.change(screen.getByLabelText("分布分组方式"), {target: {value: "scoring_question_type"}});
+  expect(screen.getByText("ATM数值题")).toBeTruthy();
+  expect(screen.getByText("ATM列表题")).toBeTruthy();
+  expect(screen.getByText("ATM开放题")).toBeTruthy();
+  fireEvent.click(screen.getByLabelText("ATM数值题 错误（0分）"));
+  expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({scoring_question_type: "number", score: "0"}));
 });

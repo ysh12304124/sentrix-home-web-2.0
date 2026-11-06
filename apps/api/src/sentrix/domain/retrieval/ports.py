@@ -2,7 +2,8 @@
 
 三者的分工是 1.0 已经验证过的契约，2.0 原样保留：
 
-- ``VectorRepository`` 是**权威**（SQLite 里的 memory_vectors），写入必须先到它；
+- ``VectorRepository`` 是**权威**（SQLite；视觉/人脸在 ``memory_vectors``，文本在
+  ``text_vectors``，分表是存储细节，端口不区分），写入必须先到它；
 - ``VectorIndex`` 是**派生镜像**（Qdrant），可重建、可缺席；
 - 索引缺席或锁被占用时，检索必须回退到权威存储，并把「正在降级」这件事报出去。
 
@@ -111,7 +112,11 @@ class LexicalSearch(Protocol):
 
 
 class VectorRepository(Protocol):
-    """权威向量存储。SQLite 是唯一实现，也是索引重建的数据来源。"""
+    """权威向量存储。SQLite 是唯一实现，也是索引重建的数据来源。
+
+    实现按空间分表（视觉 ``memory_vectors``、文本 ``text_vectors``），但方法契约
+    完全相同——调用方只拿到端口，不关心某条记录落在哪张表。
+    """
 
     def upsert(self, record: VectorRecord) -> None: ...
 
@@ -280,6 +285,25 @@ class TextEmbedder(Protocol):
     def embed_query(self, text: str) -> Sequence[float]: ...
 
 
+class Reranker(Protocol):
+    """重排：一条查询 + 一批候选文档 → 每条文档的相关性分数（越大越相关）。
+
+    **与 ``TextEmbedder`` 分开，不合并。** 嵌入把文本压成一个向量，用于**召回**；
+    重排把「查询 + 文档」作为一个整体过交叉编码器，只用于**排序**。两者的侧车、
+    模型与失败代价都不同：嵌入缺席时整条通道是空的，重排缺席时只有顺序退化为
+    RRF，候选集合不变。
+
+    **失败返回空序列，不抛异常。** 返回值的长度必须等于 ``documents``；空序列或
+    长度不符都表示「这一趟没有可用分数」，调用方保留 RRF 顺序并记一条 degraded
+    轨迹。这个口径和 ``TextEmbedder`` 一致——降级要能被读出来，而不是变成异常。
+    """
+
+    @property
+    def model_id(self) -> str: ...
+
+    def rerank(self, query: str, documents: Sequence[str]) -> Sequence[float]: ...
+
+
 class StructuredQueryRepository(Protocol):
     """结构化聚合的读取侧：数量 / 极值 / 分组，**全部走 SQL，不经过 ANN**。
 
@@ -347,3 +371,17 @@ class EmbeddingHealthProbe(Protocol):
 
     @property
     def load_error(self) -> str: ...
+
+    def smoke_test(self) -> tuple[bool, str]:
+        """启动时端到端推理测试：确认嵌入功能真正可用，而不是只检查服务活着。
+
+        **为什么在端口上。** ``available`` 只能回答"服务进程在不在"，不能回答"能不能
+        算出向量"——2026-10-29 CLIP 侧车缺 ``from PIL import Image``，``/health`` 返回
+        ok 但推理时 ``NameError``。把 ``smoke_test`` 放在端口上，两种方案（legacy / wemm）
+        都必须提供，``Container.build()`` 才能在启动时统一调用。
+
+        **失败语义：fail-closed。** 返回 ``(False, error_message)`` 表示测试失败，
+        调用方（``Container.build()``）应抛出 ``RuntimeError`` 阻止 API 启动。
+        不抛异常——返回结构化结果让调用方决定怎么处理。
+        """
+        ...

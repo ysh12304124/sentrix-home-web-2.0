@@ -3,7 +3,7 @@
 1.0 的 ``OfflineReverseGeocoder.lookup()``（``geocoding.py:196-216``）先问 PyGeoCN，
 拿到结果就**不再问** ``reverse_geocoder``——它只有一个 ``label`` 槽位，两个来源写进去
 会互相盖掉。2.0 有 ``admin`` / ``nearest`` 两个语义不同、不可互换的槽位（设计 §3.2），
-所以两个来源都要问一遍，才能拼出 ``浙江省杭州市萧山区 · 赵州镇大石桥村附近``。
+所以两个来源都要问一遍，才能拼出 ``浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近``。
 
 这里合成的是**数据**（一份两行的 GeoNames dump），不是被测的那条合成规则：假
 ``AdminResolver`` 提供面，真 ``GeoNamesNearestResolver`` 提供点。
@@ -83,7 +83,7 @@ def test_both_sources_land_in_their_own_slots(tmp_path: Path):
     assert place.admin == XIAOSHAN_AREA
     assert place.nearest.township == "赵州镇"
     assert place.nearest.locality == "大石桥村"
-    assert place.display() == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert place.display() == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
 
 
 def test_precision_and_confidence_prefer_the_admin_face(tmp_path: Path):
@@ -106,7 +106,7 @@ def test_missing_admin_still_returns_the_nearest_point(tmp_path: Path):
     assert place.precision is PlacePrecision.LOCALITY
     assert place.source is PlaceSource.GEONAMES
     assert place.confidence == pytest.approx(GEONAMES_CONFIDENCE)
-    assert place.display() == "赵州镇大石桥村附近"
+    assert place.display() == "赵州镇 / 大石桥村附近"
 
 
 def test_missing_points_still_returns_the_admin_area(tmp_path: Path):

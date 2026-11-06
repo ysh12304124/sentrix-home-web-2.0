@@ -7,11 +7,12 @@ domain；具体怎么解码由 infrastructure 实现。
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from sentrix.domain.media.capture_time import CaptureTime
 from sentrix.domain.media.models import (
     Asset,
     AssetStatus,
@@ -385,6 +386,22 @@ class VideoScenePlanner(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptionSegment:
+    """A time-aligned speech segment returned by an ASR service (source-video seconds)."""
+
+    start_sec: float
+    end_sec: float
+    text: str
+    speaker: str = ""
+
+
+class AudioTranscriber(Protocol):
+    """Transcribe speech from a video and return source-timestamped segments."""
+
+    def transcribe_video(self, path: Path) -> Sequence[TranscriptionSegment]: ...
+
+
+@dataclass(frozen=True, slots=True)
 class VideoProbe:
     """一次视频探测的落库形态（写进 ``assets.metadata_json``）。
 
@@ -404,6 +421,7 @@ class VideoProbe:
     # ``save_processing_seconds`` 落库。**不在 ``save_probe`` 那一次写**：计时范围要包含
     # 场景抽取，而场景抽取排在 ``save_probe`` 之后（见 ``import_assets.py``）。
     processing_seconds: float | None = None
+    processing_timings: dict[str, float] = field(default_factory=dict)
 
 
 class VideoRepository(Protocol):
@@ -427,6 +445,10 @@ class VideoRepository(Protocol):
         ``save_probe`` 之后——一次写不完。同样是合并写，不覆盖 ``metadata_json`` 上的
         其他键（1.0 同一列上还压着反地理、事实 id 等）。
         """
+        ...
+
+    def save_processing_timings(self, asset_id: str, timings: Mapping[str, float]) -> None:
+        """Merge selected keyframe-pipeline stage timings into video metadata."""
         ...
 
     def probe(self, asset_id: str) -> VideoProbe | None:
@@ -470,6 +492,10 @@ class VideoRepository(Protocol):
         """
         ...
 
+    def refresh_derived_file(self, asset_id: str, path: str, size_bytes: int, content_sha256: str) -> None:
+        """Atomically refresh source file metadata after a missing/corrupt artifact is rebuilt."""
+        ...
+
     def cleanup_derivatives(self, parent_asset_id: str) -> int:
         """删掉这个源片的派生物与场景事件，返回删掉的派生物行数。
 
@@ -478,6 +504,32 @@ class VideoRepository(Protocol):
         且连接开的是 ``PRAGMA foreign_keys = ON``，顺序写反会直接 ``IntegrityError``。
         """
         ...
+
+    def create_job(
+        self, asset_id: str, video_hash: str, job_id: str, config_hash: str = ""
+    ) -> dict[str, object]:
+        """Create or return the durable processing job for a source video."""
+        ...
+
+    def get_job(self, job_id: str) -> dict[str, object] | None: ...
+
+    def get_job_for_asset(self, asset_id: str) -> dict[str, object] | None: ...
+
+    def list_jobs(self, scope_id: str | None = None) -> Sequence[dict[str, object]]: ...
+
+    def claim_job(self, job_id: str, worker_id: str) -> bool:
+        """Atomically claim a queued/retryable job; only one worker may win."""
+        ...
+
+    def update_job(self, job_id: str, **fields: object) -> None: ...
+
+    def stage(self, job_id: str, stage: str) -> dict[str, object] | None: ...
+
+    def list_stages(self, job_id: str) -> Sequence[dict[str, object]]: ...
+
+    def update_stage(self, job_id: str, stage: str, **fields: object) -> None: ...
+
+    def recover_stale_jobs(self, stale_before: str) -> int: ...
 
 
 class AudioMetadataReader(Protocol):
@@ -587,3 +639,9 @@ class OperationControl(Protocol):
     def finish(self, operation_id: str) -> None:
         """Acknowledge worker exit, never just a cancellation request."""
         ...
+
+
+class CaptureTimeResolver(Protocol):
+    def __call__(
+        self, value: datetime | None, gps: GpsPoint | None, source: str
+    ) -> tuple[datetime | None, CaptureTime]: ...

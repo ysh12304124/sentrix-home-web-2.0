@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Iterator
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -48,10 +50,14 @@ class _Handler(BaseHTTPRequestHandler):
     served: list[str] = ["test-model"]
     #: 模拟「端点不认 response_format」：只拒绝带结构化字段的那次请求。
     reject_structured: bool = False
+    models_delay_s: float = 0.0
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的接口
+        time.sleep(type(self).models_delay_s)
         payload = json.dumps(self._models()).encode()
-        self._send(payload, 200)
+        # A bounded metadata timeout can close the socket first.
+        with suppress(BrokenPipeError):
+            self._send(payload, 200)
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的接口
         length = int(self.headers.get("Content-Length") or 0)
@@ -103,6 +109,7 @@ def _reset_handler() -> None:
     _Handler.status = 200
     _Handler.served = ["test-model"]
     _Handler.reject_structured = False
+    _Handler.models_delay_s = 0.0
 
 
 def chat_model(server: str) -> OpenAIChatModel:
@@ -135,6 +142,48 @@ def messages() -> list[ChatMessage]:
         ChatMessage(ChatRole.SYSTEM, "你是家庭相册助手。"),
         ChatMessage(ChatRole.USER, "给我看看在海边的照片"),
     ]
+
+
+def test_container_waits_for_busy_metadata_within_configured_model_deadline(server, tmp_path):
+    """A busy local model can answer /models after the old independent 10s limit."""
+    from sentrix.bootstrap.container import Container
+    from sentrix.config import Settings
+
+    container = Container.build(
+        Settings(data_dir=tmp_path, vlm_base_url=server, chat_timeout_s=15, vlm_timeout_s=15)
+    )
+    _Handler.response = reply()
+    _Handler.models_delay_s = 10.5
+    result = container.chat_model.complete(messages(), ())
+
+    assert result.content == "好的。"
+    assert len(_Handler.received) == 1, "Metadata discovery must not duplicate a generation POST"
+    assert _Handler.received[0]["body"]["model"] == "test-model"
+
+
+@pytest.mark.parametrize("chat_timeout,vlm_timeout", [(0.05, 1.0), (1.0, 0.05)])
+def test_shared_metadata_respects_shorter_model_deadline_and_marks_unsent(
+    server, tmp_path, chat_timeout, vlm_timeout
+):
+    from sentrix.bootstrap.container import Container
+    from sentrix.config import Settings
+
+    container = Container.build(
+        Settings(
+            data_dir=tmp_path,
+            vlm_base_url=server,
+            chat_timeout_s=chat_timeout,
+            vlm_timeout_s=vlm_timeout,
+        )
+    )
+    _Handler.response = reply()
+    _Handler.models_delay_s = 0.2
+    with pytest.raises(ModelServiceError) as error:
+        container.chat_model.complete(messages(), ())
+
+    assert error.value.diagnostics["request_sent"] is False
+    assert error.value.diagnostics["error_category"] == "model_metadata_unavailable"
+    assert _Handler.received == [], "No generation may be dispatched without a verified model name"
 
 
 def test_structured_completion_sends_schema_and_template_kwargs(server: str):
@@ -225,6 +274,74 @@ def test_the_tools_field_carries_standard_json_schema(server: str):
         "final_answer",
     ]
     assert sent["tools"][0]["function"]["parameters"]["type"] == "object"
+
+
+def test_qwen_final_only_turn_enforces_the_only_advertised_function(server: str):
+    arguments = '{"answer":"无法确认", "selected_image_handles":[]}'
+    _Handler.response = reply(content=arguments)
+    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
+    final = tuple(tool for tool in TOOL_SPECS if tool.name == "final_answer")
+    original_messages = messages()
+    result = model.complete(original_messages, final)
+    assert result.tool_calls[0].name == "final_answer"
+    assert result.tool_calls[0].arguments_json == arguments
+    assert result.content == ""
+    assert result.prompt_tokens == _Handler.response["usage"]["prompt_tokens"]
+    assert result.completion_tokens == _Handler.response["usage"]["completion_tokens"]
+    assert result.finish_reason == _Handler.response["choices"][0]["finish_reason"]
+    assert result.diagnostics["tool_transport"] == "json_schema"
+    sent = _Handler.received[-1]["body"]
+    assert "tools" not in sent and "tool_choice" not in sent
+    assert sent["response_format"]["json_schema"]["schema"] == final[0].parameters
+    assert sent["response_format"]["json_schema"]["strict"] is True
+    assert original_messages == messages()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not JSON",
+        "[]",
+        "{}",
+        '{"answer":42,"selected_image_handles":[]}',
+        '{"answer":"x","selected_image_handles":[42]}',
+        '{"answer":"x","selected_image_handles":[],"tool":"query_memory_facts"}',
+    ],
+)
+def test_qwen_final_schema_does_not_repair_or_retry_invalid_output(server: str, content: str):
+    _Handler.response = reply(content=content)
+    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
+    final = tuple(tool for tool in TOOL_SPECS if tool.name == "final_answer")
+    with pytest.raises(ModelServiceError) as error:
+        model.complete(messages(), final)
+    assert error.value.diagnostics["error_category"] == "forced_tool_schema_invalid"
+    assert len(_Handler.received) == 1
+
+
+def test_qwen_final_schema_rejection_does_not_fall_back_to_prompt_only(server: str):
+    _Handler.reject_structured = True
+    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
+    final = tuple(tool for tool in TOOL_SPECS if tool.name == "final_answer")
+    with pytest.raises(ModelServiceError):
+        model.complete(messages(), final)
+    assert len(_Handler.received) == 1
+
+
+def test_qwen_final_schema_never_renames_an_unavailable_tool_response(server: str):
+    _Handler.response = reply(
+        tool_calls=[
+            {
+                "id": "stale",
+                "type": "function",
+                "function": {"name": "query_memory_facts", "arguments": "{}"},
+            }
+        ]
+    )
+    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
+    final = tuple(tool for tool in TOOL_SPECS if tool.name == "final_answer")
+    with pytest.raises(ModelServiceError):
+        model.complete(messages(), final)
+    assert len(_Handler.received) == 1
 
 
 def test_the_system_message_is_first_and_only_once(server: str):
@@ -336,7 +453,9 @@ def test_an_unreachable_endpoint_is_a_model_service_error():
     with pytest.raises(ModelServiceError) as error:
         model.complete(messages(), TOOL_SPECS)
 
-    assert "不可达" in str(error.value)
+    assert "元数据查询失败" in str(error.value)
+    assert error.value.diagnostics["request_sent"] is False
+    assert error.value.diagnostics["error_category"] == "model_metadata_unavailable"
 
 
 def test_an_unrecognisable_body_is_a_model_service_error(server: str):

@@ -39,6 +39,7 @@ export interface QaFilters {
   score: string;
   task_type: string;
   question_type?: string;
+  evaluation_type?: string;
   tag: string;
   angle: string;
   difficulty: string;
@@ -52,6 +53,7 @@ const EMPTY_QA_FILTERS: QaFilters = {
   score: "",
   task_type: "",
   question_type: "",
+  evaluation_type: "",
   tag: "",
   angle: "",
   difficulty: "",
@@ -79,9 +81,13 @@ export interface UseQaPageOptions {
   activeRunId: string | null;
   /** 1.0 `activeRejudge`（`:354`，取自 `activeRun.value?.rejudge`），`visibleQaItems` 用它。 */
   activeRejudge?: RejudgeTask | null;
+  scoringQuery?: string;
 }
 
-export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOptions) {
+export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = '' }: UseQaPageOptions) {
+  const queryRef = useRef(scoringQuery);
+  queryRef.current = scoringQuery;
+  const queryEpoch = useRef(0);
   const [qaPage, setQaPageState] = useState<ItemPage>(INITIAL_QA_PAGE);
   const qaPageRef = useRef(qaPage);
   const [qaDetails, setQaDetailsState] = useState<Record<number, RunItemDetail>>({});
@@ -123,6 +129,7 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
   /** 1.0 `loadQaDetail`（`:2347-2355`）。 */
   async function loadQaDetail(index: number, { force = false }: { force?: boolean } = {}): Promise<void> {
     const runId = activeRunIdRef.current;
+    const epoch = queryEpoch.current;
     if (!runId || loadingQaItemsRef.current.has(index) || (!force && qaDetailsRef.current[index])) return;
     setLoadingQaItems((prev) => {
       const next = new Set(prev);
@@ -130,12 +137,12 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
       return next;
     });
     try {
-      const payload = await api<ItemDetailResponse>(`/runs/${encodeURIComponent(runId)}/items/${index}`);
-      if (aliveRef.current && activeRunIdRef.current === runId) {
-        setQaDetails((prev) => ({ ...prev, [index]: payload.item }));
+      const payload = await api<ItemDetailResponse>(`/runs/${encodeURIComponent(runId)}/items/${index}${queryRef.current ? '?' + queryRef.current : ''}`);
+      if (aliveRef.current && activeRunIdRef.current === runId && epoch === queryEpoch.current) {
+        setQaDetails((prev) => ({ ...prev, [index]: {...payload.item, profile_scores:payload.item.profile_scores} }));
       }
     } finally {
-      setLoadingQaItems((prev) => {
+      if (epoch === queryEpoch.current) setLoadingQaItems((prev) => {
         const next = new Set(prev);
         next.delete(index);
         return next;
@@ -159,13 +166,15 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
    */
   async function loadQaPage(page = qaPageRef.current.page || 1): Promise<void> {
     const runId = activeRunIdRef.current;
+    const epoch = queryEpoch.current;
     if (!runId) return;
     const params = new URLSearchParams({ page: String(page), page_size: String(qaPageSizeRef.current) });
+    new URLSearchParams(queryRef.current).forEach((value,key) => params.set(key,value));
     for (const [key, value] of Object.entries(qaFiltersRef.current)) {
       if (value) params.set(key, value);
     }
     const payload = await api<ItemPage>(`/runs/${encodeURIComponent(runId)}/items?${params}`);
-    if (!aliveRef.current || activeRunIdRef.current !== runId) return;
+    if (!aliveRef.current || activeRunIdRef.current !== runId || epoch !== queryEpoch.current) return;
     setQaPage(payload);
 
     const refreshDetails: number[] = [];
@@ -176,6 +185,8 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
       const oldJudge: Judge = detail.judge || {};
       const newJudge: Judge = summary.judge || {};
       if (
+        (summary.profile_scores && JSON.stringify(summary.profile_scores) !== JSON.stringify(detail.profile_scores)) ||
+        (queryRef.current && (newJudge.status !== oldJudge.status || newJudge.finished_at !== oldJudge.finished_at)) ||
         newJudge.rejudge_id &&
         (newJudge.rejudge_id !== oldJudge.rejudge_id ||
           (newJudge.status === "completed" && oldJudge.status !== "completed"))
@@ -253,10 +264,25 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
    * 当前值（1.0 `:2323` 的 `page_size: qaPageSize.value`），不是 `20` 这个初值。
    */
   function resetQaState(): void {
+    queryEpoch.current += 1;
+    setLoadingQaItems(new Set());
     setQaPage({ items: [], page: 1, page_size: qaPageSizeRef.current, total: 0, pages: 1 });
     setQaDetails({});
     setOpenQaItems(new Set());
   }
+  const loadedQuery = useRef(scoringQuery);
+  useEffect(() => {
+    if (loadedQuery.current === scoringQuery) return;
+    loadedQuery.current = scoringQuery;
+    resetQaState();
+    if (activeRunIdRef.current) void loadQaPage(1);
+  }, [scoringQuery]);
+  useEffect(() => {
+    if (activeRejudge?.unit === 'scoring_item' && activeRejudge.status !== 'running') {
+      setQaDetails({});
+      void loadQaPage();
+    }
+  }, [activeRejudge?.status, activeRejudge?.rejudge_id]);
 
   /**
    * `openChainNode`（1.0 `:1984-2015`）在 `await` 多个 `loadQaDetail` 之后要读**权威**的
@@ -276,7 +302,7 @@ export function useQaPage({ activeRunId, activeRejudge = null }: UseQaPageOption
   const visibleQaItems = useMemo(() => {
     const items = qaPage.items || [];
     const task = activeRejudge;
-    if (!task || task.status === "completed") return items;
+    if (!task || task.status === "completed" || task.unit === 'scoring_item') return items;
     if (!["running", "failed", "interrupted"].includes(task.status ?? "")) return items;
     return items.filter((item) => {
       const judge = item.judge || {};

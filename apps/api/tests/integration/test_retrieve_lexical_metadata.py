@@ -232,8 +232,8 @@ def test_metadata_alias_bridges_chinese_to_english(repos):
     aliases = PlaceAliases(table={"清迈": ("Chiang Mai",)})
     retrieve = RetrieveMetadata(assets=repos["assets"], places=repos["places"], aliases=aliases)
 
-    assert len(retrieve.execute(scope_id="album1", place="清迈")) == 1
-    assert retrieve.execute(scope_id="album1", place="清迈") != []
+    assert retrieve.execute(scope_id="album1", place="清迈") == []
+    # 附近城市只作弱线索，不作为确定归属。
     # 没有别名表时同一条查询不命中——别名是唯一的中英桥。
     empty = RetrieveMetadata(assets=repos["assets"], places=repos["places"], aliases=EMPTY_ALIASES)
     assert empty.execute(scope_id="album1", place="清迈") == []
@@ -256,7 +256,7 @@ def test_metadata_drops_assets_with_gps_but_no_resolved_place(repos):
     assert retrieve.execute(scope_id="album1", place="萧山区") == []
 
 
-def test_metadata_keeps_assets_without_gps_at_all(repos):
+def test_metadata_missing_gps_is_not_a_location_anchor(repos):
     seed(repos, asset_id="asset_1", observation_id="obs_1", gps=None, resolved_place=None)
     retrieve = RetrieveMetadata(
         assets=repos["assets"],
@@ -264,7 +264,7 @@ def test_metadata_keeps_assets_without_gps_at_all(repos):
         aliases=EMPTY_ALIASES,
         recognize_place=lambda _asset_id: False,
     )
-    assert len(retrieve.execute(scope_id="album1", place="萧山区")) == 1
+    assert retrieve.execute(scope_id="album1", place="萧山区") == []
 
 
 def test_metadata_recall_limit_is_a_constant_not_an_env_var():

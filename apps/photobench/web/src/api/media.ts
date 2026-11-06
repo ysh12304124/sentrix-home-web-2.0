@@ -88,6 +88,8 @@ export function mediaRefs(item: MediaLike | null | undefined, prefix = "retrieva
 
 /** 1.0 `:553`。按资产 id 取文件，取不到才用响应里带的 `media_url`。 */
 export function imageUrl(image: MediaLike | null | undefined): string {
+  const local = String(image?.media_url || "");
+  if (local.startsWith(`${BASE}/albums/`)) return local;
   const assetId = image?.asset_id;
   return assetId
     ? `${BASE}/assets/${encodeURIComponent(String(assetId))}/file`

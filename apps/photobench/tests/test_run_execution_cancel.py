@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 from typing import Any
 
 import pytest
@@ -81,6 +82,42 @@ def test_persist_without_a_writer_is_a_noop():
     state.persist(wait=True)
     state.start_persist_writer()
     state.stop_persist_writer()
+
+
+def test_requests_queued_behind_a_mutation_share_its_committed_snapshot():
+    waiting = threading.Event()
+    mutex = threading.RLock()
+    writes = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name.startswith("persist-"):
+                waiting.set()
+            mutex.acquire()
+
+        def __exit__(self, *args):
+            mutex.release()
+
+    class Writer:
+        def write_snapshot(self, run_id, snapshot):
+            writes.append(snapshot)
+
+    state = RunState({"value": 1}, run_id="r", writer=Writer(), debounce=0)
+    state._lock = ObservedLock()
+    with mutex:
+        state.start_persist_writer()
+        state.persist()
+        assert waiting.wait(1)
+        state.data["value"] = 2
+        state.persist()
+    try:
+        with state._persist_condition:
+            assert state._persist_condition.wait_for(lambda: state._persist_written >= 2, timeout=2)
+        assert writes == [{"value": 2}]
+        state.data["value"] = 3
+        assert writes == [{"value": 2}]
+    finally:
+        state.stop_persist_writer()
 
 
 def test_stop_persist_writer_flushes_the_last_requested_snapshot():
@@ -379,7 +416,8 @@ def test_product_pending_cleanup_blocks_release_until_acknowledged():
     assert writer.last_state()["cleanup"]["status"] == "stopped"
 
 
-def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows():
+@pytest.mark.parametrize("judge_backpressure", [True, False])
+def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(judge_backpressure):
     import threading
 
     execution, _ = _execution()
@@ -393,11 +431,13 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
         }
     )
     execution._state = state
-    entered, release = threading.Event(), threading.Event()
+    entered, release, all_agents_done = threading.Event(), threading.Event(), threading.Event()
     started, errors = [], []
 
     def evaluate(row, *_args):
         started.append(row["qa_id"])
+        if len(started) == 20:
+            all_agents_done.set()
         return {"qa_id": row["qa_id"], "answer": "a", "execution_status": "completed"}
 
     class Judge:
@@ -412,7 +452,7 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
 
     def run():
         try:
-            execution._phase_qa_eval(state, _request(qa_concurrency=1))
+            execution._phase_qa_eval(state, _request(qa_concurrency=1, judge_backpressure=judge_backpressure))
         except Exception as error:
             errors.append(error)
 
@@ -420,7 +460,11 @@ def test_slow_judge_backpressure_bounds_queued_work_and_still_finishes_all_rows(
     worker.start()
     try:
         assert entered.wait(2)
-        assert len(started) <= 3
+        if judge_backpressure:
+            assert len(started) <= 3
+        else:
+            assert all_agents_done.wait(2), "cloud Judge must not reduce measured Agent concurrency"
+            assert len(started) == 20
     finally:
         release.set()
         worker.join(5)

@@ -28,6 +28,9 @@ class ImportResponse(BaseModel):
     audio_probed: bool = False
     # completed / review / failed；适用于音频与视频音轨，其余媒体或 ASR 未接线时为空。
     audio_transcription_status: str | None = None
+    # 视频走异步任务时返回任务标识；图片、音频和文档路由为空。
+    job_id: str | None = None
+    job_status: str | None = None
 
 
 class AssetSummary(BaseModel):

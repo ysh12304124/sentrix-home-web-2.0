@@ -13,6 +13,8 @@ api 可以 import domain 与 application，而 application **不许** import api
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class DomainError(Exception):
     """带错误码与 HTTP 状态的领域错误基类。"""
@@ -42,12 +44,27 @@ class InvalidRequestError(DomainError):
 class RequestOutcomeUnknownError(RuntimeError):
     """A non-idempotent request may have executed; automatic replay is forbidden."""
 
-    def __init__(self, *, method: str, cause_type: str, attempts: int) -> None:
-        self.facts = {
+    def __init__(
+        self, *, method: str, cause_type: str, attempts: int, cause: BaseException | None = None
+    ) -> None:
+        self.facts: dict[str, Any] = {
             "code": "request_outcome_unknown",
             "method": method,
             "cause_type": cause_type,
             "attempts": attempts,
             "automatic_replay": False,
         }
+        causes: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen and len(causes) < 8:
+            seen.add(id(cause))
+            fact: dict[str, Any] = {"type": type(cause).__name__}
+            if isinstance(errno := getattr(cause, "errno", None), int):
+                fact["errno"] = errno
+            causes.append(fact)
+            cause = cause.__cause__ or cause.__context__
+        if causes:
+            # Exception text can contain request URLs or credentials. Keep only
+            # exception types and OS error numbers for transport diagnosis.
+            self.facts["transport_causes"] = causes
         super().__init__(f"{method} outcome unknown after {cause_type}; request was not replayed")
