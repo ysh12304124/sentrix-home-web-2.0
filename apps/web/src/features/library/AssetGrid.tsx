@@ -9,8 +9,8 @@
 import { useState } from "react";
 
 import {
-  assetDisplayUrl,
   assetPosterUrl,
+  assetThumbnailUrl,
   getAsset,
   type AssetDetailResponse,
   type AssetSummary,
@@ -35,7 +35,7 @@ function AssetThumb({
   if (asset.media_type === "image" || (asset.media_type === "video" && !posterFailed)) {
     return (
       <img
-        src={asset.media_type === "video" ? assetPosterUrl(asset.id) : assetDisplayUrl(asset)}
+        src={asset.media_type === "video" ? assetPosterUrl(asset.id) : assetThumbnailUrl(asset.id)}
         alt={asset.media_type === "video" ? "视频封面" : "资料图片"}
         loading="lazy"
         onError={() => {

@@ -116,19 +116,31 @@ class ReadRotation:
             sequence = self._rotations.sequence_for(scope_key, day) or sequence
             position = 0
             media_by_event = {item.media.event_id: item.media for item in fresh}
-        elif not media_by_event:
-            media_by_event = {
-                item.media.event_id: item.media
-                for item in self._candidates(scope_id, event_ids=sequence.event_ids)
-            }
-
         cards: list[RotationMedia] = []
         index = position
-        while index < len(sequence.event_ids) and len(cards) < page_size:
-            card = media_by_event.get(sequence.event_ids[index])
-            if card is not None:
-                cards.append(card)
-            index += 1
+        if media_by_event:
+            while index < len(sequence.event_ids) and len(cards) < page_size:
+                card = media_by_event.get(sequence.event_ids[index])
+                if card is not None:
+                    cards.append(card)
+                index += 1
+        else:
+            # 序列已存在时只需要当前页附近的事件，不能为了 10 张卡片把整册
+            # 事件与观察重新拼一遍（这是首次加载后每翻一页都慢的主因）。
+            chunk_size = max(page_size * 3, 30)
+            while index < len(sequence.event_ids) and len(cards) < page_size:
+                chunk = sequence.event_ids[index : index + chunk_size]
+                chunk_media = {
+                    item.media.event_id: item.media
+                    for item in self._candidates(scope_id, event_ids=chunk)
+                }
+                for event_id in chunk:
+                    index += 1
+                    card = chunk_media.get(event_id)
+                    if card is not None:
+                        cards.append(card)
+                    if len(cards) >= page_size:
+                        break
         next_cursor = index
         has_more = next_cursor < len(sequence.event_ids) and len(sequence.event_ids) > 1
         if cards:

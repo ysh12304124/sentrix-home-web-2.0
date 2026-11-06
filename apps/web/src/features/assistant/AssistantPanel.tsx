@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  deliveredPhotoThumbUrl,
   deliveredPhotoUrl,
   getConversation,
   pollTurn,
@@ -441,7 +442,7 @@ export function AssistantPanel({
                         }
                       >
                         <img
-                          src={deliveredPhotoUrl(photo.asset_id, photo.file_name)}
+                          src={deliveredPhotoThumbUrl(photo.asset_id)}
                           alt="相关照片"
                           loading="lazy"
                         />

@@ -141,6 +141,11 @@ export function assetPreviewUrl(assetId: string): string {
   return `${BASE}/assets/${assetId}/preview`;
 }
 
+/** 列表/网格用的 480px 缩略图；详情和全屏仍用 preview。 */
+export function assetThumbnailUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/thumbnail`;
+}
+
 /** 浏览器能直接渲染的格式走原图，其余（HEIC 等）走服务端转码预览。 */
 export function assetDisplayUrl(asset: AssetSummary): string {
   if (asset.mime_type === "image/heic" || asset.mime_type === "image/heif") {
@@ -151,11 +156,13 @@ export function assetDisplayUrl(asset: AssetSummary): string {
 
 /** 后端已经按 mime 决定过怎么交付；助手交付的照片只带回这些字段，走同一条判断。 */
 export function deliveredPhotoUrl(assetId: string, fileName: string): string {
-  const lowered = fileName.toLowerCase();
-  if (lowered.endsWith(".heic") || lowered.endsWith(".heif")) {
-    return assetPreviewUrl(assetId);
-  }
-  return assetFileUrl(assetId);
+  void fileName;
+  return assetPreviewUrl(assetId);
+}
+
+/** 助手/人物卡片的小图走缩略图，避免把原图塞进对话框。 */
+export function deliveredPhotoThumbUrl(assetId: string): string {
+  return assetThumbnailUrl(assetId);
 }
 
 export interface SearchHit {
@@ -1450,10 +1457,7 @@ export async function runFamilyGraph(scopeId: string): Promise<FamilyRun> {
  * 自己拼 `/file`**：原片可能是 HEVC/HEIC，浏览器放不了。
  */
 export function assetInlineUrl(asset: AssetSummary): string {
-  if (asset.media_type === "video" || asset.media_type === "audio") {
-    return assetPreviewUrl(asset.id);
-  }
-  return assetDisplayUrl(asset);
+  return assetPreviewUrl(asset.id);
 }
 
 /**

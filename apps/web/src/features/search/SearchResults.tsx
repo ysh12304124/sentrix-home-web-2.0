@@ -15,9 +15,9 @@
 import { useState } from "react";
 
 import {
-  assetDisplayUrl,
   assetPosterUrl,
   assetPreviewUrl,
+  assetThumbnailUrl,
   getAsset,
   type AssetDetailResponse,
   type SearchHit,
@@ -186,7 +186,7 @@ export function SearchResults({
                       title="查看详情"
                     >
                       {item.asset.media_type === "image" ? (
-                        <img src={assetDisplayUrl(item.asset)} alt="搜索结果照片" loading="lazy" />
+                        <img src={assetThumbnailUrl(item.asset.id)} alt="搜索结果照片" loading="lazy" />
                       ) : (
                         <span className="search-result-mark" aria-hidden="true">
                           {MEDIA_MARK[item.asset.media_type] ?? "▦"}

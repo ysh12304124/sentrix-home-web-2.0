@@ -13,7 +13,7 @@ import { useState, type FormEvent } from "react";
 
 import {
   deleteFamilyRelationship,
-  deliveredPhotoUrl,
+  deliveredPhotoThumbUrl,
   getPerson,
   putFamilyRelationship,
   renamePerson,
@@ -341,7 +341,7 @@ export function PersonDetail({
           <ul className="detail-media">
             {person.representative_media.map((media) => (
               <li key={media.id}>
-                <img src={deliveredPhotoUrl(media.id, media.file_name)} alt="人物照片" loading="lazy" />
+                <img src={deliveredPhotoThumbUrl(media.id)} alt="人物照片" loading="lazy" />
               </li>
             ))}
           </ul>

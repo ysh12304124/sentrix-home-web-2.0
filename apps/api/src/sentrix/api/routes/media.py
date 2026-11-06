@@ -51,6 +51,49 @@ VIDEO_RETRY_DELAY_SECONDS = 2.0
 
 PREVIEW_MAX_DIMENSION = 1600
 PREVIEW_QUALITY = 85
+THUMBNAIL_MAX_DIMENSION = 480
+THUMBNAIL_QUALITY = 78
+IMAGE_CACHE_CONTROL = "private, max-age=86400"
+
+
+def _cached_image_response(
+    asset: Asset,
+    container: Container,
+    *,
+    max_dimension: int,
+    quality: int,
+) -> Response:
+    """按资产 id + 尺寸落盘缓存一张 JPEG；页面反复打开时不再重复解码原图。"""
+    source = Path(asset.path)
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="media file missing on disk")
+    cache_dir = container.settings.preview_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"{asset.id}-{max_dimension}.jpg"
+    try:
+        if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+            return FileResponse(
+                target,
+                media_type="image/jpeg",
+                headers={"Cache-Control": IMAGE_CACHE_CONTROL},
+            )
+    except OSError:
+        pass
+    payload = container.preview_encoder.encode_jpeg(
+        source, max_dimension=max_dimension, quality=quality
+    )
+    try:
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(payload)
+        os.replace(temporary, target)
+    except OSError:
+        # 缓存写失败不影响本次返回。
+        pass
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers={"Cache-Control": IMAGE_CACHE_CONTROL},
+    )
 
 
 def to_summary(asset: Asset, place: str = "") -> AssetSummary:
@@ -949,10 +992,12 @@ def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Res
         raise HTTPException(status_code=404, detail="media file missing on disk")
     if original:
         return FileResponse(path, media_type=asset.mime_type or "application/octet-stream")
-    payload = container.preview_encoder.encode_jpeg(
-        path, max_dimension=PREVIEW_MAX_DIMENSION, quality=PREVIEW_QUALITY
+    return _cached_image_response(
+        asset,
+        container,
+        max_dimension=PREVIEW_MAX_DIMENSION,
+        quality=PREVIEW_QUALITY,
     )
-    return Response(content=payload, media_type="image/jpeg")
 
 
 def deliver_media(asset: Asset, container: Container) -> Response:
@@ -1002,6 +1047,22 @@ def _self_served_or_none(asset_id: str, container: Container) -> Asset | None:
     if asset is None or asset.media_type not in (MediaType.VIDEO, MediaType.AUDIO):
         return None
     return asset
+
+
+@router.get("/assets/{asset_id}/thumbnail")
+def asset_thumbnail(asset_id: str, container: Container = Depends(get_container)) -> Response:
+    """列表缩略图。480px 足够 4 列网格，避免把原图整张传给浏览器。"""
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type is not MediaType.IMAGE:
+        raise HTTPException(status_code=404, detail="thumbnail available for images only")
+    return _cached_image_response(
+        asset,
+        container,
+        max_dimension=THUMBNAIL_MAX_DIMENSION,
+        quality=THUMBNAIL_QUALITY,
+    )
 
 
 @router.get("/assets/{asset_id}/file")

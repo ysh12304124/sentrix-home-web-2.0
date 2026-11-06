@@ -10,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import { fetchEvent, type TimelineEvent } from "../../shared/api/client";
-import { timelinePhotoUrl } from "./photoUrl";
+import { timelinePhotoThumbUrl, timelinePhotoUrl } from "./photoUrl";
 
 interface Loaded {
   readonly id: string;
@@ -141,11 +141,11 @@ export function TimelineEventDetail({
                             onOpenImage(timelinePhotoUrl(photo), photo.place || formatDateTime(photo.captured_at))
                           }
                         >
-                          <img src={timelinePhotoUrl(photo)} alt="事件照片" loading="lazy" />
+                          <img src={timelinePhotoThumbUrl(photo)} alt="事件照片" loading="lazy" />
                         </button>
                       ) : (
                         <a href={timelinePhotoUrl(photo)} target="_blank" rel="noreferrer">
-                          <img src={timelinePhotoUrl(photo)} alt="事件照片" loading="lazy" />
+                          <img src={timelinePhotoThumbUrl(photo)} alt="事件照片" loading="lazy" />
                         </a>
                       )}
                       <small>{formatDateTime(photo.captured_at)}</small>
