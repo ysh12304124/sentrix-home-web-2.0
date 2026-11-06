@@ -250,22 +250,20 @@ class Monitor:
             services["clip"] = _probe(client, self._settings.clip_health_url)
             users: dict[str, Any] = {}
             for account_id, route in _routes(self._routes):
-                result = _probe(
-                    client,
-                    f"{route.api_url}/api/v1/health/live",
-                    headers={"x-sentrix-internal-token": route.api_token},
-                )
+                # 用户 API 不再做独立健康探测：服务状态面板只展示共享服务。
+                # 这里仍读一次 internal status，用于“按用户运行”的作业/回合数据；
+                # 读不到只把该用户标成异常，不生成可用性告警。
+                result: dict[str, Any] = {"ok": False, "api_url": route.api_url}
                 try:
                     status_response = client.get(
                         f"{route.api_url}/api/v1/internal/status",
                         headers={"x-sentrix-internal-token": route.api_token},
                     )
+                    result["ok"] = status_response.is_success
                     if status_response.is_success:
                         result["status"] = status_response.json()
-                except httpx.HTTPError:
-                    pass
-                # 管理台要区分“哪台用户 API”；token 永不出控制面。
-                result["api_url"] = route.api_url
+                except httpx.HTTPError as error:
+                    result["error"] = type(error).__name__
                 users[account_id] = result
             services["users"] = users
         return services
@@ -470,15 +468,8 @@ class Monitor:
         }
         for source, healthy in checks.items():
             self._track(source, healthy, now, f"{source} 不可用")
-        users = services.get("users", {})
-        for account_id, value in users.items():
-            self._track(
-                f"user:{account_id}",
-                bool(value.get("ok")),
-                now,
-                f"用户 API {account_id} 不可用",
-                user_id=account_id,
-            )
+        # 用户 API 不做独立探活，因此不在这里生成可用性告警；
+        # internal status 仍驱动 _evaluate_stalled 的导入/问答停滞告警。
         free_gib = host.get("disk_free_gb")
         if isinstance(free_gib, (int, float)):
             if free_gib < DISK_STOP_GIB:

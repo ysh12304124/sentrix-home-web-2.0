@@ -628,7 +628,7 @@ export function AdminPage() {
         <article className="panel">
           <div className="panel-head">
             <h2>服务状态</h2>
-            <small>按真实端点探活</small>
+            <small>共享服务按真实端点探活；用户 API 不在此探测</small>
           </div>
           <div className="service-list">
             {rows.map((row) => (
@@ -1579,11 +1579,6 @@ function serviceRows(overview: Overview | null) {
     { key: "model", name: "主模型", state: services?.model },
     { key: "bge", name: "BGE-M3 文本嵌入", state: services?.bge },
     { key: "clip", name: "Chinese-CLIP 视觉嵌入", state: services?.clip },
-    ...Object.entries(services?.users ?? {}).map(([account, state]) => ({
-      key: `user-${account}`,
-      name: `用户 API · ${account}`,
-      state,
-    })),
   ];
 }
 
