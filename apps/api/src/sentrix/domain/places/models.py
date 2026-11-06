@@ -103,22 +103,25 @@ class NearestPlace:
     township: str = ""
     locality: str = ""
     distance_m: float | None = None
+    township_distance_m: float | None = None
+    township_country: str = ""
+    locality_country: str = ""
+    township_admin_codes: tuple[str, ...] = ()
+    locality_admin_codes: tuple[str, ...] = ()
+    hierarchy_verified: bool = False
 
     def __post_init__(self) -> None:
-        if self.distance_m is not None and (not math.isfinite(self.distance_m) or self.distance_m < 0):
-            raise ValueError(f"距离必须是非负有限值: {self.distance_m!r}")
+        for distance in (self.distance_m, self.township_distance_m):
+            if distance is not None and (not math.isfinite(distance) or distance < 0):
+                raise ValueError(f"距离必须是非负有限值: {distance!r}")
 
     @property
     def is_empty(self) -> bool:
         return not (self.township or self.locality)
 
     def label(self) -> str:
-        """``赵州镇大石桥村``；同名层级只出现一次。"""
-        parts: list[str] = []
-        for part in (self.township, self.locality):
-            if part and part not in parts:
-                parts.append(part)
-        return "".join(parts)
+        # 两个独立最近邻不拼接成隶属关系。
+        return " / ".join(dict.fromkeys(p for p in (self.township, self.locality) if p))
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +144,7 @@ class Place:
     def display(self) -> str:
         """展示形式：``浙江省杭州市萧山区 · 赵州镇大石桥村附近``。
 
-        只有 ``nearest`` 时才带「附近」——那是它唯一的诚实说法；``admin`` 是权威
+        ``nearest`` 始终带「附近」——那是它唯一的诚实说法；``admin`` 是权威
         归属，加「附近」会把确定性说没。
         """
         head = self.admin.label()

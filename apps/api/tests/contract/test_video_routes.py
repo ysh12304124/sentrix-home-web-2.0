@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -15,11 +16,27 @@ NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def import_video(client: TestClient, name: str = "clip.mov", payload: bytes = b"fake-mov-bytes"):
-    return client.post(
+    response = client.post(
         "/api/v1/media/import",
         files={"file": (name, payload, "video/quicktime")},
         data={"scope_id": "album1"},
     )
+
+    response.raise_for_status()
+    wait_for_video_job(client, response.json()["job_id"])
+    return response
+
+
+def wait_for_video_job(client: TestClient, job_id: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        job = client.app.state.container.video_repository.get_job(job_id)
+        assert job is not None
+        if job["status"] in {"COMPLETED", "DEGRADED", "FAILED"}:
+            assert job["status"] == "COMPLETED", job
+            return job
+        time.sleep(0.01)
+    pytest.fail(f"video job did not finish: {job_id}")
 
 
 def test_importing_a_video_reports_that_it_was_probed(client: TestClient):
@@ -137,39 +154,33 @@ def test_video_preview_route_no_longer_500s(client: TestClient):
     assert response.headers["content-type"].startswith("video/")
 
 
-def test_reprocess_clears_and_rebuilds_the_derivatives(client: TestClient):
-    """``POST /videos/{id}/reprocess`` → 202 + 清场 + **真重跑一次抽取链**（T514）。
-
-    判据是**派生物的 id 变了**：重跑前先 ``cleanup_derivatives`` 清掉旧的，所以新帧
-    是新行。如果只清了不重建（S8a 的行为），列表会是空的；如果没清就重跑（幂等跳过），
-    列表里会是**同一个 id**——两种退化都被这一条挡住。
-    """
+def test_reprocess_preserves_completed_derivatives(client: TestClient):
+    """已完成任务复用持久检查点，再次请求保留原关键帧。"""
     asset_id = import_video(client).json()["asset_id"]
     container = client.app.state.container
     before = container.video_repository.list_derived(asset_id)
     assert len(before) == 1
-
     response = client.post(f"/api/v1/videos/{asset_id}/reprocess")
-
     assert response.status_code == 202
-    assert response.json() == {"accepted": True, "asset_id": asset_id, "status": "processed"}
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["asset_id"] == asset_id
+    assert body["status"] == "COMPLETED"
+    wait_for_video_job(client, body["job_id"])
     after = container.video_repository.list_derived(asset_id)
-    assert [item.id for item in after] != [item.id for item in before]
-    assert len(after) == 1
+    assert [item.id for item in after] == [item.id for item in before]
     assert len(container.event_repository.list_video_scenes(asset_id)) == 1
-    # 同步跑完，资产行上不再是 queued——响应里那个 status 说的就是这件事。
     assert container.asset_repository.get(asset_id).status.value == "processed"
 
 
-def test_the_import_response_reports_the_scene_count(client: TestClient):
-    """导入响应里的 ``video_scenes``（T512）：与 ``video_probed`` 同一个可观测面。
-
-    没有它，「视频导入成功但一个场景都没建」在接口上完全看不出来——正是 S8a 修过的
-    那种静默。图片一律 0。
-    """
+def test_import_response_tracks_async_scene_completion(client: TestClient):
     body = import_video(client).json()
-
-    assert body["video_scenes"] == 1
+    assert body["status"] == "queued"
+    assert body["video_scenes"] == 0
+    job = wait_for_video_job(client, body["job_id"])
+    assert job["overall_progress"] == 1.0
+    detail = client.get(f"/api/v1/videos/{body['asset_id']}/scenes").json()
+    assert len(detail["scenes"]) == 1
 
 
 def test_reprocess_404s_on_a_missing_video(client: TestClient):

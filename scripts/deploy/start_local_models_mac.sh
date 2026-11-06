@@ -6,6 +6,7 @@
 #   8101  BGE-M3 text embeddings (1024d)
 #   8103  Chinese-CLIP ViT-L/14 image embeddings (768d)
 #   8104  BGE reranker (optional; skipped when the weights are missing)
+#   8105  Qwen3-ASR (optional; started only when a local server is configured)
 #   8191  Sentrix API (legacy embedding scheme)
 set -euo pipefail
 
@@ -21,9 +22,13 @@ CLIP_PORT="${SENTRIX_LEGACY_CLIP_PORT:-8103}"
 RERANK_PORT="${SENTRIX_BGE_RERANK_PORT:-8104}"
 RERANK_MODEL_DIR="${SENTRIX_BGE_RERANKER_MODEL_PATH:-$PROJ/data/models/bge-reranker-v2-m3}"
 API_PORT="${SENTRIX_API_PORT:-8191}"
+ASR_PORT="${SENTRIX_QWEN_ASR_PORT:-8105}"
 VLM_MODEL="${SENTRIX_VLM_MODEL:-$PROJ/data/models/qwen35-q4km/qwen35-q4km.gguf}"
 VLM_MMPROJ="${SENTRIX_VLM_MMPROJ:-$PROJ/data/models/qwen35-q4km/qwen35-mmproj-f16.gguf}"
 CLIP_CHECKPOINT="${SENTRIX_CHINESE_CLIP_CHECKPOINT:-$PROJ/data/models/chinese-clip/clip_cn_vit-l-14.pt}"
+ASR_SERVER_BIN="${SENTRIX_MLX_AUDIO_SERVER_BIN:-}"
+ASR_BASE_URL="${SENTRIX_QWEN_ASR_BASE_URL:-}"
+ASR_MODEL="${SENTRIX_QWEN_ASR_MODEL:-mlx-community/Qwen3-ASR-0.6B-4bit}"
 
 export FACE_PROVIDERS="${FACE_PROVIDERS:-CPUExecutionProvider}"
 export RETINAFACE_PROVIDERS="${RETINAFACE_PROVIDERS:-CPUExecutionProvider}"
@@ -95,6 +100,33 @@ wait_http "http://127.0.0.1:$CLIP_PORT/health" 180 || {
   tail -60 logs/legacy-clip.log >&2
   exit 1
 }
+
+# Optional local Qwen3-ASR sidecar. Existing deployments may provide an external
+# OpenAI-compatible endpoint through SENTRIX_QWEN_ASR_BASE_URL instead. Keep ASR
+# opt-in unless a local server binary or explicit URL is configured.
+if [ -n "$ASR_SERVER_BIN" ]; then
+  if ! port_in_use "$ASR_PORT"; then
+    if [ ! -x "$ASR_SERVER_BIN" ] && ! command -v "$ASR_SERVER_BIN" >/dev/null 2>&1; then
+      echo "MLX Audio server binary not found: $ASR_SERVER_BIN" >&2
+      exit 1
+    fi
+    echo "启动 Qwen3-ASR :$ASR_PORT"
+    mkdir -p logs/asr
+    nohup "$ASR_SERVER_BIN" --host 127.0.0.1 --port "$ASR_PORT" --log-dir logs/asr \
+      > logs/asr/server.log 2>&1 < /dev/null &
+  fi
+  ASR_BASE_URL="${ASR_BASE_URL:-http://127.0.0.1:$ASR_PORT/v1}"
+  wait_http "$ASR_BASE_URL/models" 180 || {
+    echo "Qwen3-ASR 未就绪，日志：" >&2
+    tail -60 logs/asr/server.log >&2
+    exit 1
+  }
+fi
+
+if [ -n "$ASR_BASE_URL" ]; then
+  export SENTRIX_QWEN_ASR_BASE_URL="$ASR_BASE_URL"
+  export SENTRIX_QWEN_ASR_MODEL="$ASR_MODEL"
+fi
 
 # 重排是可选增强：权重目录不在就跳过，API 侧传空串（= 关闭），检索照常走 RRF。
 RERANK_URL=""

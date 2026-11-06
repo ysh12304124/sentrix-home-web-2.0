@@ -44,12 +44,12 @@ def test_nearest_only_is_valid():
 
 
 def test_display_uses_dot_separator_and_fujin():
-    """展示形式来自设计 §3.2：``浙江省杭州市萧山区 · 赵州镇大石桥村附近``。"""
+    """展示形式来自设计 §3.2：``浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近``。"""
     value = place(
         admin=AdminArea("浙江省", "杭州市", "萧山区"),
         nearest=NearestPlace("赵州镇", "大石桥村", 270.0),
     )
-    assert value.display() == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    assert value.display() == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
 
 
 def test_display_without_nearest_has_no_fujin():

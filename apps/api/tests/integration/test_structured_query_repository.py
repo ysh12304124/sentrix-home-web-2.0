@@ -26,7 +26,7 @@ from sentrix.domain.media.models import (
     Observation,
 )
 from sentrix.domain.places.aliases import PlaceAliases
-from sentrix.domain.places.matching import place_label, place_text_matches
+from sentrix.domain.places.matching import place_admin_matches, place_label
 from sentrix.domain.places.models import (
     AdminArea,
     NearestPlace,
@@ -312,7 +312,7 @@ def test_place_filter_agrees_with_place_text_matches(
     expected = sum(
         1
         for asset_id in ("asset_1", "asset_2", "asset_3")
-        if value == "" or place_text_matches(value, places.get(asset_id), aliases)
+        if value == "" or place_admin_matches(value, places.get(asset_id), aliases)
     )
     filter = derive_filter(spec_of(Constraint("place", value, HARD, "asset_metadata")), scope_id="album1")
 

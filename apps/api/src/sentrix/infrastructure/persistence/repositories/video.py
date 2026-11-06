@@ -12,9 +12,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 from sentrix.domain.media.models import Asset, DerivedAsset, VideoMetadata
 from sentrix.domain.media.ports import VideoProbe
@@ -29,6 +31,7 @@ _PREVIEW_PATH_KEY = "browser_preview_path"
 _PREVIEW_ERROR_KEY = "browser_preview_error"
 _PROBE_ERROR_KEY = "video_probe_error"
 _PROCESSING_SECONDS_KEY = "video_processing_seconds"
+_PROCESSING_TIMINGS_KEY = "video_processing_timings"
 
 _VIDEO_KEYS = (_VIDEO_METADATA_KEY, _PREVIEW_PATH_KEY, _PREVIEW_ERROR_KEY, _PROBE_ERROR_KEY)
 
@@ -107,6 +110,143 @@ class SqliteVideoRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    @staticmethod
+    def _job_dict(row: sqlite3.Row) -> dict[str, object]:
+        return dict(row)
+
+    def create_job(
+        self, asset_id: str, video_hash: str, job_id: str, config_hash: str = ""
+    ) -> dict[str, object]:
+        now = datetime.now(UTC).isoformat()
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO video_jobs("
+                "job_id,asset_id,video_hash,config_hash,status,current_stage,created_at,updated_at) "
+                "VALUES(?,?,?,?,'QUEUED','UPLOAD',?,?)",
+                (job_id, asset_id, video_hash, config_hash, now, now),
+            )
+            row = connection.execute("SELECT * FROM video_jobs WHERE asset_id=?", (asset_id,)).fetchone()
+            if row is None:
+                raise KeyError(asset_id)
+            actual_id = str(row["job_id"])
+            for stage in (
+                "UPLOAD",
+                "VIDEO_PROBE",
+                "SOURCE_MEMORY",
+                "SPEECH_TRANSCRIPTION",
+                "FRAME_SAMPLE_VSD",
+                "EVENT_BUILD",
+                "KEYFRAME_MEMORY",
+                "MEMORY_GRAPH",
+            ):
+                connection.execute(
+                    "INSERT OR IGNORE INTO video_job_stages(job_id,stage) VALUES(?,?)",
+                    (actual_id, stage),
+                )
+            return self._job_dict(row)
+
+    def get_job(self, job_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute("SELECT * FROM video_jobs WHERE job_id=?", (job_id,)).fetchone()
+        return self._job_dict(row) if row else None
+
+    def get_job_for_asset(self, asset_id: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute("SELECT * FROM video_jobs WHERE asset_id=?", (asset_id,)).fetchone()
+        return self._job_dict(row) if row else None
+
+    def list_jobs(self, scope_id: str | None = None) -> Sequence[dict[str, object]]:
+        query = "SELECT j.* FROM video_jobs j JOIN assets a ON a.id=j.asset_id"
+        params: tuple[object, ...] = ()
+        if scope_id:
+            query += " WHERE a.scope_id=?"
+            params = (scope_id,)
+        query += " ORDER BY j.created_at DESC"
+        with self._database.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._job_dict(row) for row in rows]
+
+    def claim_job(self, job_id: str, worker_id: str) -> bool:
+        now = datetime.now(UTC).isoformat()
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE video_jobs SET status='PROCESSING',worker_id=?,heartbeat_at=?,updated_at=?,"
+                "retry_count=retry_count+1,error_code=NULL,error_message=NULL "
+                "WHERE job_id=? AND status IN ('QUEUED','RETRY_WAIT')",
+                (worker_id, now, now, job_id),
+            )
+        return cursor.rowcount == 1
+
+    def update_job(self, job_id: str, **fields: object) -> None:
+        allowed = {
+            "status",
+            "current_stage",
+            "overall_progress",
+            "worker_id",
+            "heartbeat_at",
+            "error_code",
+            "error_message",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        updates["updated_at"] = datetime.now(UTC).isoformat()
+        assignments = ",".join(f"{key}=?" for key in updates)
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE video_jobs SET {assignments} WHERE job_id=?", (*updates.values(), job_id)
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(job_id)
+
+    def stage(self, job_id: str, stage: str) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM video_job_stages WHERE job_id=? AND stage=?", (job_id, stage)
+            ).fetchone()
+        return self._job_dict(row) if row else None
+
+    def list_stages(self, job_id: str) -> Sequence[dict[str, object]]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM video_job_stages WHERE job_id=? ORDER BY rowid", (job_id,)
+            ).fetchall()
+        return [self._job_dict(row) for row in rows]
+
+    def update_stage(self, job_id: str, stage: str, **fields: object) -> None:
+        allowed = {
+            "status",
+            "progress",
+            "attempt",
+            "input_hash",
+            "output_artifact",
+            "started_at",
+            "finished_at",
+            "error_code",
+            "error_message",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ",".join(f"{key}=?" for key in updates)
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE video_job_stages SET {assignments} WHERE job_id=? AND stage=?",
+                (*updates.values(), job_id, stage),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"{job_id}:{stage}")
+
+    def recover_stale_jobs(self, stale_before: str) -> int:
+        """Return abandoned RUNNING jobs to RETRY_WAIT after their heartbeat lease expires."""
+        now = datetime.now(UTC).isoformat()
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE video_jobs SET status='RETRY_WAIT',worker_id=NULL,error_code='VIDEO-WORKER-001',"
+                "error_message='服务重启后从已保存的处理进度恢复',updated_at=? "
+                "WHERE status='PROCESSING' AND (heartbeat_at IS NULL OR heartbeat_at < ?)",
+                (now, stale_before),
+            )
+        return cursor.rowcount
+
     def save_probe(self, asset_id: str, probe: VideoProbe) -> None:
         """**合并写**，不整包覆盖 ``metadata_json``：那里可能已经有别的东西
         （1.0 同一列上还压着反地理、事实 id 等），覆盖会把它们一起抹掉。"""
@@ -141,6 +281,31 @@ class SqliteVideoRepository:
                 (json.dumps(payload, ensure_ascii=False), asset_id),
             )
 
+    def save_processing_timings(self, asset_id: str, timings: Mapping[str, float]) -> None:
+        """Persist measured keyframe stages without replacing other video metadata."""
+        with self._database.connect() as connection, connection:
+            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            if row is None:
+                raise KeyError(asset_id)
+            payload = _parse_metadata(row["metadata_json"])
+            payload[_PROCESSING_TIMINGS_KEY] = {
+                str(key): float(value) for key, value in timings.items() if isinstance(value, (int, float))
+            }
+            connection.execute(
+                "UPDATE assets SET metadata_json = ?, updated_at = datetime('now') WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), asset_id),
+            )
+
+    def refresh_derived_file(self, asset_id: str, path: str, size_bytes: int, content_sha256: str) -> None:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE assets SET path=?,size_bytes=?,content_sha256=?,status='queued',"
+                "updated_at=datetime('now') WHERE id=? AND parent_asset_id IS NOT NULL",
+                (path, size_bytes, content_sha256, asset_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(asset_id)
+
     def probe(self, asset_id: str) -> VideoProbe | None:
         with self._database.connect() as connection:
             row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
@@ -150,6 +315,7 @@ class SqliteVideoRepository:
         if not any(key in payload for key in _VIDEO_KEYS):
             return None
         seconds = payload.get(_PROCESSING_SECONDS_KEY)
+        processing_timings = payload.get(_PROCESSING_TIMINGS_KEY)
         return VideoProbe(
             metadata=_metadata_from_payload(payload.get(_VIDEO_METADATA_KEY)),
             browser_preview_path=str(payload.get(_PREVIEW_PATH_KEY) or ""),
@@ -157,6 +323,13 @@ class SqliteVideoRepository:
             probe_error=str(payload.get(_PROBE_ERROR_KEY) or ""),
             # 缺键 / 老库 / 类型不对都回落 None——「没记过」与「记了 0 秒」要能分开。
             processing_seconds=float(seconds) if isinstance(seconds, (int, float)) else None,
+            processing_timings={
+                str(key): float(value)
+                for key, value in processing_timings.items()
+                if isinstance(value, (int, float))
+            }
+            if isinstance(processing_timings, dict)
+            else {},
         )
 
     def list_derived(self, parent_asset_id: str, *, scene_index: int | None = None) -> Sequence[DerivedAsset]:
@@ -197,8 +370,8 @@ class SqliteVideoRepository:
                 "INSERT INTO assets (id, scope_id, file_name, media_type, path, mime_type,"
                 " size_bytes, status, content_sha256, captured_at, gps_latitude, gps_longitude,"
                 " created_at, updated_at, parent_asset_id, derived_kind, source_timestamp_sec,"
-                " source_frame_index, source_scene_index)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " source_frame_index, source_scene_index, capture_time_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     asset.id,
                     asset.scope_id,
@@ -219,6 +392,7 @@ class SqliteVideoRepository:
                     float(source_timestamp_sec),
                     int(source_frame_index),
                     int(source_scene_index),
+                    json.dumps(dataclasses.asdict(asset.capture_time)),
                 ),
             )
 

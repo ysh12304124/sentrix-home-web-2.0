@@ -12,13 +12,15 @@
  * 服务端转码的 JPEG）。原片可能 HEVC/HEIC，浏览器放不了，详情里不再直接塞 `/file`。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   assetFileUrl,
   assetInlineUrl,
+  getVideo,
   type AssetDetailResponse,
   type ObservationPayload,
+  type VideoScenePayload,
 } from "../../shared/api/client";
 import "./asset-detail.css";
 
@@ -82,6 +84,17 @@ export function AssetDetail({
   const observations = providedObservations ?? asset.observations ?? [];
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textError, setTextError] = useState<string | null>(null);
+  const [videoScenes, setVideoScenes] = useState<{ id: string; scenes: VideoScenePayload[]; error: string | null } | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (asset.media_type !== "video") return;
+    let cancelled = false;
+    getVideo(asset.id)
+      .then((response) => !cancelled && setVideoScenes({ id: asset.id, scenes: response.scenes, error: null }))
+      .catch((cause: Error) => !cancelled && setVideoScenes({ id: asset.id, scenes: [], error: cause.message }));
+    return () => { cancelled = true; };
+  }, [asset.id, asset.media_type]);
 
   // 文本资产没有 `<img>`/`<video>` 可看，1.0 只显示文件名；这里把 `/file` 的内容读出来，
   // 仍然走 `/assets/{id}/file` 这条既有交付路径，不新造端点。
@@ -110,6 +123,7 @@ export function AssetDetail({
     if (asset.media_type === "video") {
       return (
         <video
+          ref={videoRef}
           controls
           preload="metadata"
           playsInline
@@ -141,6 +155,18 @@ export function AssetDetail({
     <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资产详情">
       <button type="button" className="close" onClick={onClose}>关闭</button>
       <div className="asset-detail-media">{media}</div>
+      {asset.media_type === "video" ? (
+        <VideoSpeechTranscript
+          scenes={videoScenes?.id === asset.id ? videoScenes.scenes : null}
+          error={videoScenes?.id === asset.id ? videoScenes.error : null}
+          onSeek={(seconds) => {
+            if (videoRef.current) {
+              videoRef.current.currentTime = seconds;
+              void videoRef.current.play();
+            }
+          }}
+        />
+      ) : null}
       <dl>
         <dt>文件名</dt><dd>{asset.file_name}</dd>
         <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? asset.media_type}（{asset.mime_type ?? "未知 MIME"}）</dd>
@@ -159,5 +185,57 @@ export function AssetDetail({
         <dd><a href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件</a></dd>
       </dl>
     </div>
+  );
+}
+
+function formatVideoTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function VideoSpeechTranscript({
+  scenes,
+  error,
+  onSeek,
+}: {
+  scenes: VideoScenePayload[] | null;
+  error: string | null;
+  onSeek: (seconds: number) => void;
+}) {
+  const segments = (scenes ?? [])
+    .flatMap((scene) => scene.speech_segments.map((segment) => ({
+      ...segment,
+      sceneTitle: scene.title,
+      alignedKeyframes: (scene.keyframe_timestamps_sec ?? []).filter(
+        (timestamp) => timestamp >= segment.start_sec && timestamp <= segment.end_sec,
+      ),
+    })))
+    .sort((a, b) => a.start_sec - b.start_sec);
+  return (
+    <section className="asset-video-speech" aria-label="视频语音转写">
+      <h3>语音转写与关键帧时间对齐</h3>
+      {error ? <p className="error">语音信息读取失败：{error}</p> : scenes === null ? (
+        <p className="asset-detail-note">正在读取语音片段…</p>
+      ) : segments.length === 0 ? (
+        <p className="asset-detail-note">这个视频没有可展示的语音转写。</p>
+      ) : (
+        <ol>
+          {segments.map((segment, index) => (
+            <li key={`${segment.start_sec}-${index}`}>
+              <button type="button" onClick={() => onSeek(segment.start_sec)}>
+                <time>{formatVideoTime(segment.start_sec)}–{formatVideoTime(segment.end_sec)}</time>
+                <span>{segment.text}</span>
+                <small>
+                  {segment.sceneTitle}
+                  {segment.alignedKeyframes.map((timestamp) => (
+                    <span key={timestamp}> · 关键帧 {formatVideoTime(timestamp)}</span>
+                  ))}
+                </small>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
   );
 }

@@ -68,8 +68,9 @@ S8c 追加一条：**音频走同一条链，但不转码、不转写**（用户
 4. 交付的 content-type 由后端按后缀定（``audio_mime_type``），不照抄上传方给的
    ``application/octet-stream``——音频没有转码件这条退路，类型错了就没有第二次机会。
 
-**不做转写**：1.0 的 ``observations.transcript`` 与 ``compose_text`` 里的那一段都不搬
-（``docs/refactor/s8-deviations.md`` §1.1），2.0 的 ``compose_text`` 保持七字段。
+**独立音频资产不转写**：1.0 的 ``observations.transcript`` 与 ``compose_text`` 里的那一段都不搬
+（``docs/refactor/s8-deviations.md`` §1.1），2.0 的 ``compose_text`` 保持七字段。视频场景
+的可选 ASR 在 ``ExtractVideoScenes``，按原片时间戳给关键帧场景文本补充语音上下文。
 
 **去重命中时只重跑幂等的那几步**（视觉向量 + 地点）。事件归属不重跑：它不是幂等的，
 对同一条 Observation 再跑一次可能给它开出第二个事件。1.0 有过 223 张图没有任何视觉
@@ -88,20 +89,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
-from sentrix.domain.media.models import (
-    Asset,
-    AssetStatus,
-    MediaType,
-    Observation,
-    normalize_captured_datetime,
-)
+from sentrix.domain.media.capture_time import CaptureTime
+from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetObserver,
     AssetRepository,
     AudioMetadataReader,
     AudioProbe,
     AudioRepository,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -115,18 +113,6 @@ from sentrix.domain.media.ports import (
 from sentrix.domain.places.ports import AssetPlaceIndex
 from sentrix.domain.retrieval.ports import AssetVisualIndexer, LexicalIndex, PreparedVisual
 from sentrix.domain.spaces.ports import SpaceRepository
-
-
-def _local_naive_datetime(value: datetime) -> datetime:
-    """Return the local wall-clock time without tzinfo for legacy event arithmetic.
-
-    EXIF/ffprobe timestamps are normalized by their metadata models.  The only timestamp
-    created here is the import-time fallback used when a video has no usable probe metadata;
-    it must follow the same naive-local contract before event assignment subtracts it from
-    photo timestamps.
-    """
-
-    return value.astimezone().replace(tzinfo=None) if value.tzinfo is not None else value
 
 log = logging.getLogger("sentrix.media.import_assets")
 
@@ -255,6 +241,7 @@ class ImportAssets:
         observations: ObservationRepository,
         storage: MediaStorage,
         metadata: MetadataReader,
+        resolve_capture_time: CaptureTimeResolver | None = None,
         visual_indexer: AssetVisualIndexer | None = None,
         place_indexer: AssetPlaceIndex | None = None,
         observer: AssetObserver | None = None,
@@ -291,6 +278,7 @@ class ImportAssets:
         self._observations = observations
         self._storage = storage
         self._metadata = metadata
+        self._resolve_capture_time = resolve_capture_time
         self._video_metadata = video_metadata
         self._video_transcoder = video_transcoder
         self._video_repository = video_repository
@@ -401,10 +389,21 @@ class ImportAssets:
             else request.content_type
         )
 
+        source = "exif" if media_type is MediaType.IMAGE else "unknown"
+        if video_probe is not None and video_probe.metadata is not None:
+            source = video_probe.metadata.creation_source or "video_metadata"
+        if audio_probe is not None and audio_probe.metadata is not None:
+            source = audio_probe.metadata.creation_source or "audio_metadata"
+        provenance = CaptureTime(
+            captured_at.isoformat() if captured_at else "",
+            source if captured_at else "unknown",
+            status=("offset_only" if captured_at.utcoffset() is not None else "timezone_unknown")
+            if captured_at
+            else "unknown",
+        )
+        if self._resolve_capture_time is not None:
+            captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
         now = self._clock()
-        # ``captured_at`` 始终归一为本地 naive 时间，避免与事件时间比较时
-        # aware/naive datetime 相减失败。
-        captured_at = normalize_captured_datetime(captured_at or now)
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -416,6 +415,7 @@ class ImportAssets:
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
             captured_at=captured_at,
+            capture_time=provenance,
             captured_location=gps,
             created_at=now,
             updated_at=now,
@@ -446,12 +446,23 @@ class ImportAssets:
         total_started = time.perf_counter()
         asset = staged.asset
         commit_started = time.perf_counter()
-        processed = self.commit_image(asset, prepared)
+        with stage_span("source_memory_commit", asset.id):
+            processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
         commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
-        video_scenes = self._extract_video_scenes(asset)
+        if asset.media_type is MediaType.VIDEO:
+            with stage_span("video_total", asset.id):
+                video_scenes = self._extract_video_scenes(asset)
+        else:
+            video_scenes = self._extract_video_scenes(asset)
+        if (
+            staged.media_type is MediaType.VIDEO
+            and video_scenes.timings
+            and self._video_repository is not None
+        ):
+            self._video_repository.save_processing_timings(asset.id, video_scenes.timings)
 
         # 整个视频阶段的秒数落库**排在场景抽取之后**：1.0 的 ``video_processing_seconds``
         # 覆盖的是「探测 → 图片流水线 → 抽帧建场景」整段（``processor.py:205/420``），

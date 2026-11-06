@@ -105,6 +105,7 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 - 只有全相册级统计（共几张、多少次、哪些媒体类型）才声明 structured_fact；单张的时间、地点在 preview 里。
 - 只有 preview 摘要不足、且问画面可见属性（颜色、服饰、动作、物体、建筑）时才声明 visual_observation。
 - 只有问图内文字、数字、价格、招牌时声明 visible_text；地点、颜色、服饰、场景不算。
+- 问视频或录音里的人说了什么、提到什么内容时声明 spoken_content；不要把语音转写归为图内 OCR。
 - 只有问照片里的人是谁、身份归属时声明 photo_identity。
 - 一条 requirement 只对应一种 evidence_type；「先找照片」与「看清细节」要分成两条。
 - photo_set + delivered_photo 之外最多再声明 2 条证据需求；同一 evidence_type 可按
@@ -146,6 +147,11 @@ _TYPE_ALIASES: Mapping[str, str] = {
     "ocr": EvidenceType.VISIBLE_TEXT.value,
     "price": EvidenceType.VISIBLE_TEXT.value,
     "visible_text": EvidenceType.VISIBLE_TEXT.value,
+    "speech": EvidenceType.SPOKEN_CONTENT.value,
+    "spoken": EvidenceType.SPOKEN_CONTENT.value,
+    "transcript": EvidenceType.SPOKEN_CONTENT.value,
+    "audio_transcript": EvidenceType.SPOKEN_CONTENT.value,
+    "spoken_content": EvidenceType.SPOKEN_CONTENT.value,
 }
 
 _HEX_DIGITS = re.compile(r"^[0-9a-f]+$")

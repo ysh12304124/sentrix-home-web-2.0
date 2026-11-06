@@ -1,27 +1,19 @@
-"""Adapter from the original local SVD extractor to Web2 scene windows."""
+"""Adapter from the original CPU SVD extractor to Web2 scene windows."""
 
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 
 from sentrix.domain.media.scenes import SceneWindow
+from sentrix.infrastructure.media.svd_keyframe import SVDLowRankKeyframeExtractor
 
 
 class SVDLowRankScenePlanner:
-    """Run the original two-pass SVD + required YOLO algorithm for a video."""
+    """Run the original SVD low-rank algorithm without an external checkout."""
 
-    def __init__(self, source_root: Path, output_root: Path) -> None:
-        self._source_root = Path(source_root).expanduser().resolve()
+    def __init__(self, output_root: Path) -> None:
         self._output_root = Path(output_root).expanduser().resolve()
-        module_path = self._source_root / "backend" / "video" / "svd_keyframe.py"
-        if not module_path.is_file():
-            raise FileNotFoundError(f"Original SVD implementation not found: {module_path}")
-        if str(self._source_root) not in sys.path:
-            sys.path.insert(0, str(self._source_root))
-        module = importlib.import_module("backend.video.svd_keyframe")
-        self._extractor = module.SVDLowRankKeyframeExtractor()
+        self._extractor = SVDLowRankKeyframeExtractor()
 
     def __call__(self, video_path: Path, video_id: str, duration_sec: float) -> tuple[SceneWindow, ...]:
         output = self._output_root / video_id

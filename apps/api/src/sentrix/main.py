@@ -139,6 +139,9 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Real startup inference stays mandatory; schema export only assembles routes."""
     container: Container = app.state.container
+    from sentrix.api.routes.media import recover_video_jobs
+
+    recover_video_jobs(container)
     smoke_ok, smoke_error = await run_in_threadpool(container.embedding_health.smoke_test)
     if not smoke_ok:
         raise RuntimeError(
@@ -160,7 +163,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     container.database.migrate()
 
     app = FastAPI(
-        title="Sentrix Home API", version=__version__, docs_url=None, redoc_url=None, lifespan=_lifespan
+        title="Sentrix Home API",
+        version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_lifespan,
     )
     app.state.container = container
     app.add_exception_handler(DomainError, domain_error_handler)

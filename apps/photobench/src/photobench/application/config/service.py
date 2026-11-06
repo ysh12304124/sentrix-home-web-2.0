@@ -28,7 +28,8 @@ from urllib.parse import urlparse
 
 from photobench.domain.config.ports import ConfigStore, SecretEnvStore
 from photobench.domain.errors import InvalidRequestError
-from photobench.domain.runs.judge import JUDGE_PROMPT, JUDGE_PROMPT_KINDS
+from photobench.domain.evaluation.profiles import LABELS, PROFILE_PROMPT_KINDS
+from photobench.domain.runs.judge import JUDGE_PROMPT
 
 RUNTIME_CONNECTION_NAME = "runtime_connection.json"
 JUDGE_PROVIDERS_NAME = "judge_providers.json"
@@ -256,6 +257,7 @@ class ConfigService:
         data = self._read_custom_judge_prompt_file()
         legacy = data.get("judge_prompt") or None
         return {
+            **{k: data.get(k) or None for k in PROFILE_PROMPT_KINDS},
             "answer_quality": data.get("answer_quality") or legacy,
             "task_decision": data.get("task_decision") or None,
             "evidence": data.get("evidence") or None,
@@ -267,7 +269,7 @@ class ConfigService:
         **空字符串表示恢复默认**（写 ``None`` 而不是空串）——一个空串会被判分器当成
         system 提示词发出去，模型于是收不到任何评分规则。
         """
-        if kind not in JUDGE_PROMPT_KINDS:
+        if kind not in PROFILE_PROMPT_KINDS:
             raise InvalidRequestError(f"unknown judge prompt kind: {kind}")
         data = self._read_custom_judge_prompt_file()
         if "judge_prompt" in data:  # 旧版单提示词键迁到 answer_quality
@@ -290,11 +292,13 @@ class ConfigService:
             "kinds": [
                 {
                     "kind": kind,
-                    "label": labels[kind],
-                    "default": JUDGE_PROMPT_KINDS[kind],
+                    "label": labels.get(kind, kind.split(":")[-1]),
+                    "profile_id": kind.split(":")[0] if ":" in kind else "shared",
+                    "profile_label": LABELS.get(kind.split(":")[0], "公共诊断"),
+                    "default": PROFILE_PROMPT_KINDS[kind],
                     "custom": custom.get(kind),
                 }
-                for kind in ("answer_quality", "task_decision", "evidence")
+                for kind in PROFILE_PROMPT_KINDS
             ],
             "storage_path": self.judge_prompt_storage_path(),
         }
@@ -358,6 +362,7 @@ class ConfigService:
             "embedding": self._runtime.get("embedding") or {},
             "product": self._runtime.get("product") or [],
             "product_settings": dict(self._runtime.get("product_settings") or {}),
+            "product_build_revision": str(self._runtime.get("product_build_revision") or ""),
         }
 
     def public_config(self) -> dict[str, Any]:
@@ -419,7 +424,7 @@ class ConfigService:
         if not values["judge_model"]:
             raise InvalidRequestError("Judge model is required")
         # 同一份 runtime_connection.json 里保留服务拓扑；遥测/API 都读它。
-        for key in ("embedding", "product", "product_settings"):
+        for key in ("embedding", "product", "product_settings", "product_build_revision"):
             if key in self._runtime:
                 values[key] = self._runtime[key]
         if "product_settings" in payload:

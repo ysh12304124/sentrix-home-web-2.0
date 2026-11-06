@@ -21,6 +21,7 @@
  *     再 onRejudgeStarted」以保持 1.0 的先后。
  */
 
+import { defaultScoring, newBatchNonce, scoringPayload } from '../lib/scoring.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, post } from "../api/client.ts";
@@ -34,6 +35,21 @@ import type {
   Run,
   RunSummary,
 } from "../api/types.ts";
+
+export type RejudgeScope = "missing" | "failed" | "unscored" | "needs_review" | "all";
+export interface RecoveryPlan {
+  run_id: string;
+  can_resume: boolean;
+  remaining_qa_count: number;
+  inherited_qa_count: number;
+  scope_id?: string;
+  product_version_changed: boolean;
+  source_product_build_revision?: string;
+  current_product_build_revision?: string;
+  judge_use_gt_images: boolean;
+  frozen_scoring_profiles?: string[];
+  scoring: Record<RejudgeScope, { qa_count: number; turn_count: number; subscore_count: number }>;
+}
 
 /** 1.0 `activeRunId` ref 的同步视图；由 `useRuns` 持有并传入。 */
 export interface ActiveRunIdRef {
@@ -70,7 +86,7 @@ export interface RunDetailOptions {
   /** 同步可读的 run id；所有 await 后的陈旧判断都用它（1.0 `:2314`）。 */
   activeRunIdRef: ActiveRunIdRef;
   /** 1.0 `:2317-2319`：把现算 summary 合回 runs 列表行。 */
-  updateRunSummary?: (runId: string, summary: RunSummary) => void;
+  updateRunSummary?: (runId: string, summary: RunSummary, snapshot?: Run) => void;
   /** 1.0 `:2331` 并发拉逐题当前页；`page` 缺省表示「当前页」（1.0 `qaPage.value.page`）。 */
   loadQaPage?: (page?: number) => Promise<unknown>;
   /** 1.0 `:2324-2326`：清空 qaPage / qaDetails / openQaItems，归逐题 hook。 */
@@ -85,6 +101,7 @@ export interface RunDetailOptions {
   onRejudgeStarted?: () => void;
   /** 配置里的 `judge_prompt`：`/judge-prompts` 没给 `default` 时的兜底（1.0 `:2770`）。 */
   judgePromptFallback?: string;
+  judgeConfig?: RejudgeJudgeConfig;
 }
 
 export type RunDetailApi = ReturnType<typeof useRunDetail>;
@@ -138,14 +155,41 @@ export function useRunDetail(options: RunDetailOptions) {
   // 1.0 `:2487` `exportScores = ref(["0","1","2"])`。
   const [exportScores, setExportScores] = useState<string[]>(["0", "1", "2"]);
   const [judgePromptKinds, setJudgePromptKinds] = useState<PromptKindMeta[]>([]);
-  const [activePromptKind, setActivePromptKind] = useState("answer_quality");
+  const [activePromptKind, setActivePromptKind] = useState("photobench_open_v1:answer_quality");
   // 1.0 `:253` `promptDrafts = reactive({ answer_quality:"", task_decision:"", evidence:"" })`。
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({
     answer_quality: "",
     task_decision: "",
     evidence: "",
   });
-  const [rejudgePrompt, setRejudgePrompt] = useState("");
+  const rejudgePrompt = promptDrafts[activePromptKind] || '';
+  const setRejudgePrompt = useCallback((value: string) => {
+    setPromptDrafts(previous => ({...previous, [activePromptKind]: value}));
+  }, [activePromptKind]);
+  const [scoring, setScoring] = useState(defaultScoring);
+  const [batchMode, setBatchMode] = useState<'auto' | 'resume' | 'new'>('auto');
+  const [resumeBatches, setResumeBatches] = useState<Record<string,string>>({});
+  const [batchNonce, setBatchNonce] = useState(newBatchNonce);
+  const [readProfile, setReadProfile] = useState('photobench_open_v1');
+  const [readBatch, setReadBatch] = useState('');
+  const initializedReadRun = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeRunId || activeRun?.run_id !== activeRunId || initializedReadRun.current === activeRunId) return;
+    initializedReadRun.current = activeRunId;
+    const batches = Array.isArray(activeRun.scoring_batches) ? activeRun.scoring_batches as Array<{profile_id:string}> : [];
+    setReadProfile(batches[0]?.profile_id || 'photobench_open_v1');
+    setReadBatch('');
+  }, [activeRunId, activeRun]);
+  const readQuery = readProfile ? new URLSearchParams({scoring_profile:readProfile, scoring_batch:readBatch}).toString() : '';
+  const [scoringPreview, setScoringPreview] = useState<{qa_count:number;turn_count:number;subscore_count:number;profiles:Record<string,number>} | null>(null);
+  const [scoringPreviewError, setScoringPreviewError] = useState("");
+  const [rejudgeScope, setRejudgeScope] = useState<RejudgeScope>("missing");
+  const [judgeUseGtImages, setJudgeUseGtImages] = useState(false);
+  const [recoveryPlan, setRecoveryPlan] = useState<RecoveryPlan | null>(null);
+  const [recoveryPlanError, setRecoveryPlanError] = useState("");
+  const [recoveryPlanRevision, setRecoveryPlanRevision] = useState(0);
+  const reloadRecoveryPlan = useCallback(() => setRecoveryPlanRevision(value => value + 1), []);
+  const pendingRejudge = useRef<{ runId: string; body: Record<string, unknown> } | null>(null);
   const [rejudgeSubmitting, setRejudgeSubmitting] = useState(false);
   /** 1.0 `startRejudge` 的 `window.confirm` 抽成「待确认动作」，让 UI 自己弹。 */
   const [rejudgeConfirmation, setRejudgeConfirmation] = useState<{ message: string } | null>(null);
@@ -158,6 +202,30 @@ export function useRunDetail(options: RunDetailOptions) {
   useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const reviewSavingRef = useRef(false);
   const rejudgeSubmittingRef = useRef(false);
+
+  useEffect(() => {
+    setRecoveryPlan(null);
+    setRecoveryPlanError("");
+    setJudgeUseGtImages(false);
+    setRejudgeScope("missing");
+    initializedReadRun.current = null;
+    setReadProfile('');
+    setReadBatch('');
+    setResumeBatches({});
+    setBatchMode('auto');
+    pendingRejudge.current = null;
+    setRejudgeConfirmation(null);
+  }, [activeRunId]);
+  useEffect(() => {
+    const runId = activeRun?.run_id;
+    if (!runId || !TERMINAL_STATUSES.has(activeRun.status || "") || activeRun.rejudge?.status === "running") return;
+    let stale = false;
+    setRecoveryPlanError("");
+    void api<RecoveryPlan>(`/runs/${encodeURIComponent(runId)}/recovery-plan`, { timeoutMs: 60000 })
+      .then(plan => { if (!stale && activeRunIdRef.current === runId) setRecoveryPlan(plan); })
+      .catch(error => { if (!stale && activeRunIdRef.current === runId) { setRecoveryPlan(null); setRecoveryPlanError((error as Error).message); } });
+    return () => { stale = true; };
+  }, [activeRun?.run_id, activeRun?.status, activeRun?.rejudge?.status, activeRunIdRef, recoveryPlanRevision]);
 
   const emit = notify ?? defaultNotify;
 
@@ -270,7 +338,7 @@ export function useRunDetail(options: RunDetailOptions) {
         lastTime: Number(payload.telemetry_live?.history?.at(-1)?.t ?? known?.lastTime ?? 0),
         terminal: full ? TERMINAL_STATUSES.has(payload.status || "") : known?.terminal ?? false };
       setActiveRun(previous => retainFullHistory(previous, payload));
-      updateRunSummary?.(runId, effectiveRunSummary(payload));
+      updateRunSummary?.(runId, effectiveRunSummary(payload), payload);
       if (resetPage) {
         analysisOpen.current = false;
         setKeyframeAnalysis(null);
@@ -314,6 +382,7 @@ export function useRunDetail(options: RunDetailOptions) {
       ]);
     }
   }, [activeRunIdRef, loadKeyframeAnalysis, loadMemoryEffectiveness, loadGraphQuality]);
+
 
   /**
    * 1.0 `:2333` 是「惰性建草稿」的副作用版本，React 里 render 不能写 state，
@@ -365,10 +434,10 @@ export function useRunDetail(options: RunDetailOptions) {
       return;
     }
     window.open(
-      `/api/v1/runs/${encodeURIComponent(runId)}/export-trace?scores=${exportScores.join(",")}`,
+      `/api/v1/runs/${encodeURIComponent(runId)}/export-trace?scores=${exportScores.join(",")}${readQuery ? '&' + readQuery : ''}`,
       "_blank",
     );
-  }, [activeRunIdRef, exportScores, emit]);
+  }, [activeRunIdRef, exportScores, emit, readQuery]);
 
   /** 最老 1.0 backup `codex-macro-20260828-121920 :1401` 的 `exportSftTraces`。 */
   const exportSftTraces = useCallback(() => {
@@ -379,10 +448,10 @@ export function useRunDetail(options: RunDetailOptions) {
       return;
     }
     window.open(
-      `/api/v1/runs/${encodeURIComponent(runId)}/export-sft?scores=${exportScores.join(",")}`,
+      `/api/v1/runs/${encodeURIComponent(runId)}/export-sft?scores=${exportScores.join(",")}${readQuery ? '&' + readQuery : ''}`,
       "_blank",
     );
-  }, [activeRunIdRef, exportScores, emit]);
+  }, [activeRunIdRef, exportScores, emit, readQuery]);
 
   /**
    * 1.0 `:2467`。1.0 用裸 `fetch`（不是 `api()`），路径自带 `/api` 前缀——照搬。
@@ -395,27 +464,25 @@ export function useRunDetail(options: RunDetailOptions) {
       };
       const kinds = data.kinds || [];
       setJudgePromptKinds(kinds);
-      const next = { ...promptDrafts };
+      const loaded: Record<string,string> = {};
       for (const meta of kinds) {
         // answer_quality 的兜底是配置里的 `judge_prompt`（1.0 `:2770`
         // `config.custom_judge_prompt || config.judge_prompt`）。少了它，
         // `/judge-prompts` 不返回 default 时提示词就是空串 → `canRejudge` 永久为假。
         const fallback = meta.kind === "answer_quality" ? judgePromptFallback : "";
-        if (meta.kind) next[meta.kind] = meta.custom || meta.default || fallback;
+        if (meta.kind) loaded[meta.kind] = meta.custom || meta.default || fallback;
       }
-      setPromptDrafts(next);
-      setRejudgePrompt(next.answer_quality || "");
+      setPromptDrafts(previous => ({...loaded, ...Object.fromEntries(Object.entries(previous).filter(([,value]) => !!value))}));
     } catch {
       /* keep defaults from config */
     }
-  }, [promptDrafts, judgePromptFallback]);
+  }, [judgePromptFallback]);
 
   const switchPromptKind = useCallback(
     (kind: string) => {
       setActivePromptKind(kind);
-      setRejudgePrompt(promptDrafts[kind] || "");
     },
-    [promptDrafts],
+    [],
   );
 
   /**
@@ -428,14 +495,22 @@ export function useRunDetail(options: RunDetailOptions) {
   const resetJudgePrompt = useCallback(
     (fallback = judgePromptFallback) => {
       const meta = judgePromptKinds.find((item) => item.kind === activePromptKind) || null;
-      const value = meta?.default || fallback;
-      setRejudgePrompt(value);
+      const value = meta?.default || (activePromptKind === "answer_quality" || activePromptKind === "photobench_open_v1:answer_quality" ? fallback : "");
       setPromptDrafts((prev) => ({ ...prev, [activePromptKind]: value }));
     },
     [judgePromptKinds, activePromptKind, judgePromptFallback],
   );
 
   const activeRejudge = useMemo<RejudgeTask | null>(() => activeRun?.rejudge || null, [activeRun]);
+  const scoringBatches = useMemo(() => (Array.isArray(activeRun?.scoring_batches) ? activeRun.scoring_batches : []) as Array<{batch_id:string;profile_id:string;created_at:string}>, [activeRun?.scoring_batches]);
+  const body = useMemo(() => {
+    if (batchMode === 'resume') return {scope:rejudgeScope, resume_batch_ids:scoring.profiles.map(profile => resumeBatches[profile] || scoringBatches.filter(b => b.profile_id === profile).at(-1)?.batch_id || '')};
+    return {...scoringPayload(scoring, promptDrafts), ...options.judgeConfig, scope:rejudgeScope,
+      ...(batchMode === 'new' ? {batch_nonce:batchNonce} : {}),
+      task_system_prompt:promptDrafts.task_decision || undefined, evidence_system_prompt:promptDrafts.evidence || undefined};
+  }, [scoring, promptDrafts, options.judgeConfig, rejudgeScope, batchMode, resumeBatches, batchNonce, scoringBatches]);
+  const bodyKey = JSON.stringify(body);
+  const [previewKey, setPreviewKey] = useState('');
 
   /** 1.0 `:365-368`。 */
   const rejudgePercent = useMemo(() => {
@@ -448,11 +523,11 @@ export function useRunDetail(options: RunDetailOptions) {
     () =>
       Boolean(
         (activeRun?.item_count || activeRun?.summary?.completed) &&
-          !["running", "pending"].includes(String(activeRun?.status)) &&
+          !["running", "pending", "cancelling"].includes(String(activeRun?.status)) &&
           activeRejudge?.status !== "running" &&
-          rejudgePrompt.trim(),
+          scoringPreview?.subscore_count && previewKey === bodyKey && !scoringPreviewError,
       ),
-    [activeRun, activeRejudge, rejudgePrompt],
+    [activeRun, activeRejudge, scoringPreview, previewKey, bodyKey, scoringPreviewError],
   );
 
   /**
@@ -462,33 +537,50 @@ export function useRunDetail(options: RunDetailOptions) {
    */
   const requestRejudge = useCallback((): boolean => {
     if (!canRejudge || rejudgeSubmittingRef.current) return false;
+    const runId = activeRunIdRef.current;
+    if (!runId || activeRun?.run_id !== runId || pendingRejudge.current) return false;
+    pendingRejudge.current = { runId, body: JSON.parse(bodyKey) as Record<string,unknown> };
     setRejudgeConfirmation({
-      message: `仅使用现有 ${activeRun?.item_count || 0} 条 Agent 回答重新调用 Judge。旧评分将保留在历史记录中，确定开始？`,
+      message: '复用现有答卷评分，Agent调用为0。本次选择 ' + scoring.profiles.length + ' 套标准，预览 ' + (scoringPreview?.qa_count ?? '-') + ' 题、' + (scoringPreview?.turn_count ?? '-') + ' 轮、' + (scoringPreview?.subscore_count ?? '-') + ' 项评分。配置随提交冻结，同配置续写未完成项，新配置独立建批次。确定开始？',
     });
     return true;
-  }, [canRejudge, activeRun]);
+  }, [canRejudge, activeRun, activeRunIdRef, bodyKey, scoring.profiles.length, scoringPreview]);
 
-  const cancelRejudge = useCallback(() => setRejudgeConfirmation(null), []);
+  useEffect(() => {
+    let active = true;
+    setScoringPreview(null);
+    setScoringPreviewError('');
+    if (!activeRunId || activeRun?.run_id !== activeRunId ||
+        !(activeRun?.item_count || activeRun?.summary?.completed) ||
+        ['running', 'pending', 'cancelling'].includes(String(activeRun?.status)) ||
+        activeRejudge?.status === 'running') return;
+    const timer = window.setTimeout(() => {
+      post<{qa_count:number;turn_count:number;subscore_count:number;profiles:Record<string,number>}>(
+        '/runs/' + encodeURIComponent(activeRunId) + '/scoring-preview',
+        JSON.parse(bodyKey),
+      ).then(result => {if (active) {setScoringPreview(result);setPreviewKey(bodyKey);setScoringPreviewError('');}})
+       .catch(error => {if (active) setScoringPreviewError(String(error.message));});
+    }, 300);
+    return () => {active = false;window.clearTimeout(timer);};
+  }, [activeRunId, activeRun?.run_id, activeRun?.status, activeRun?.item_count, activeRun?.summary?.completed, bodyKey, activeRejudge?.status, recoveryPlanRevision]);
+
+  const cancelRejudge = useCallback(() => { pendingRejudge.current = null; setRejudgeConfirmation(null); }, []);
 
   /** 1.0 `:2583-2601` confirm 分支的主体。`judge` 对应 1.0 的连接配置区。 */
   const confirmRejudge = useCallback(
-    async (judge: RejudgeJudgeConfig = {}) => {
+    async () => {
       setRejudgeConfirmation(null);
-      const runId = activeRunIdRef.current;
-      if (!runId) return;
+      const pending = pendingRejudge.current;
+      pendingRejudge.current = null;
+      if (!pending || pending.runId !== activeRunIdRef.current || rejudgeSubmittingRef.current) return;
+      const runId = pending.runId;
       rejudgeSubmittingRef.current = true;
       setRejudgeSubmitting(true);
       setError?.("");
       try {
-        await post(`/runs/${encodeURIComponent(runId)}/rejudge`, {
-          judge_url: (judge.judge_url || "").trim(),
-          judge_model: (judge.judge_model || "").trim(),
-          judge_provider_id: judge.judge_provider_id || "",
-          ...(judge.judge_api_key ? { judge_api_key: judge.judge_api_key } : {}),
-          system_prompt: promptDrafts.answer_quality || rejudgePrompt,
-          task_system_prompt: promptDrafts.task_decision || undefined,
-          evidence_system_prompt: promptDrafts.evidence || undefined,
-        });
+            await post(`/runs/${encodeURIComponent(runId)}/rejudge`, pending.body);
+        setBatchNonce(newBatchNonce());
+        reloadRecoveryPlan();
         await onRunsReloaded?.();
         await loadActiveRun();
         onRejudgeStarted?.();
@@ -502,8 +594,6 @@ export function useRunDetail(options: RunDetailOptions) {
     [
       activeRunIdRef,
       setError,
-      promptDrafts,
-      rejudgePrompt,
       onRunsReloaded,
       loadActiveRun,
       onRejudgeStarted,
@@ -512,6 +602,10 @@ export function useRunDetail(options: RunDetailOptions) {
 
   return {
     activeRun,
+    scoring, setScoring, scoringPreview, scoringPreviewError,
+    batchMode, setBatchMode, resumeBatches, setResumeBatches, scoringBatches,
+    readProfile, setReadProfile, readBatch, setReadBatch, readQuery,
+    recoveryPlan, recoveryPlanError, reloadRecoveryPlan, rejudgeScope, setRejudgeScope, judgeUseGtImages, setJudgeUseGtImages,
     setActiveRun,
     keyframeAnalysis,
     keyframeAnalysisLoading,

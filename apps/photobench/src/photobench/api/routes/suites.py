@@ -83,8 +83,14 @@ def delete_run(request: Request, run_id: str) -> dict[str, Any]:
     return get_container(request).run_suites.delete_run(run_id)
 
 
+@router.get("/runs/{run_id}/recovery-plan")
+def recovery_plan(request: Request, run_id: str) -> dict[str, Any]:
+    """原任务续跑题数、产品版本和各补评范围的题/轮/评分项计数，只读。"""
+    return get_container(request).run_suites.recovery_plan(run_id)
+
+
 @router.post("/runs/{run_id}/resume", status_code=202)
-def resume_run(request: Request, run_id: str) -> dict[str, Any]:
+async def resume_run(request: Request, run_id: str) -> dict[str, Any]:
     """``POST /api/runs/{id}/resume``（1.0 ``:7768`` → ``resume_run`` ``:7488``）。
 
     202 与 ``POST /runs`` 同：它起后台线程，不是同步完成。
@@ -93,7 +99,8 @@ def resume_run(request: Request, run_id: str) -> dict[str, Any]:
     已存在 scope 这条路（S9b-2 删掉了 ``scope_attach``）」。那条理由随 ``mode=reuse``
     一起消失了——续跑与复用本就是同一件事的两种题目集。
     """
-    return get_container(request).run_suites.resume_run(run_id)
+    payload = await json_body(request)
+    return await run_in_threadpool(get_container(request).run_suites.resume_run, run_id, payload)
 
 
 @router.get("/active-work", response_model=WorkStatusResponse, response_model_exclude_none=True)
@@ -118,3 +125,9 @@ def refresh_cleanup(request: Request) -> dict[str, Any]:
     if extra:
         result["cleanup_status"] = "pending"
     return result
+
+
+@router.post("/runs/{run_id}/scoring-preview")
+async def preview_scoring(request: Request, run_id: str) -> dict[str, Any]:
+    payload = await json_body(request)
+    return await run_in_threadpool(get_container(request).run_suites.preview_profile_scoring, run_id, payload)

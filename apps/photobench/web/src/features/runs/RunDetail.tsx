@@ -1,3 +1,5 @@
+import { scoreChoices } from "../analysis/presentation.ts";
+import { OPEN_PROFILE, PROFILE_LABELS } from "../../lib/scoring.ts";
 /**
  * 运行详情外壳。逐行照搬 1.0
  * `services/photobench/frontend/src/App.vue:3039-3058`（只读权威）：标题 / 状态 /
@@ -26,13 +28,13 @@
 import type { ReactNode } from "react";
 
 import type { GraphQuality, Run } from "../../api/types.ts";
-import { EXECUTION_PHASES } from "../../lib/constants.ts";
-import { albumName, duration, fmtDate, modelName, qaName, statusLabel } from "../../lib/format.ts";
+import { albumName, duration, fmtDate, modelName, qaName } from "../../lib/format.ts";
 import { MemoryLayerPanel } from "../memory/MemoryLayerPanel.tsx";
 import type { MemoryLayerPanelProps } from "../memory/MemoryLayerPanel.tsx";
 import { ErrorAnalysisPanel } from "../analysis/ErrorAnalysisPanel.tsx";
 import { KeyMetrics } from "./KeyMetrics.tsx";
-import { PhaseList } from "./PhaseList.tsx";
+import { ExecutionHistory } from "./ExecutionHistory.tsx";
+import { RunTaskStatus } from "./RunTaskStatus.tsx";
 import { RejudgeCard } from "./RejudgeCard.tsx";
 import type { RejudgeCardProps } from "./RejudgeCard.tsx";
 import { ResultMetrics } from "./ResultMetrics.tsx";
@@ -76,6 +78,9 @@ function toggleScore(current: string[], value: string, checked: boolean): string
 }
 
 export interface RunDetailProps {
+  readProfile?: string;
+  onReadProfileChange?: (value:string) => void;
+  recovery?: ReactNode;
   activeRun: Run | null;
   exportScores: string[];
   onExportScoresChange: (scores: string[]) => void;
@@ -88,7 +93,7 @@ export interface RunDetailProps {
 }
 
 export function RunDetail({
-  activeRun,
+  activeRun, recovery, readProfile = OPEN_PROFILE, onReadProfileChange,
   exportScores,
   onExportScoresChange,
   onExportTraces,
@@ -108,11 +113,12 @@ export function RunDetail({
               {modelName(activeRun)} · {albumName(activeRun)} · {qaName(activeRun)}
             </h2>
             <div className="detail-head-tools">
-              <span className={"phase-status " + (activeRun.status || "")}>{statusLabel(activeRun.status)}</span>
-              <div className="export-control">
+              <RunTaskStatus run={activeRun} />
+              <details className="export-control"><summary>导出轨迹</summary><div className="export-control-body">
+                <label>筛分标准 <select aria-label="导出筛分标准" value={readProfile} onChange={e => onReadProfileChange?.(e.target.value)}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
                 <span className="field-label">导出轨迹</span>
                 <span className="export-score-filter">
-                  {["0", "1", "2"].map((value) => (
+                  {scoreChoices({evaluation_summary: readProfile ? {scorer:readProfile === OPEN_PROFILE ? "answer_quality" : "choice", max_score:readProfile === OPEN_PROFILE ? 2 : 1} : activeRun.summary?.evaluation_summary}).filter(s => s.value !== "None").slice().reverse().map(({value, label}) => (
                     <label className="checkbox-inline" key={value}>
                       <input
                         type="checkbox"
@@ -120,7 +126,7 @@ export function RunDetail({
                         checked={exportScores.includes(value)}
                         onChange={(event) => onExportScoresChange(toggleScore(exportScores, value, event.target.checked))}
                       />
-                      {value} 分
+                      {label}
                     </label>
                   ))}
                 </span>
@@ -130,31 +136,24 @@ export function RunDetail({
                 <button className="btn compact" onClick={onExportSftTraces}>
                   导出 SFT JSON
                 </button>
-              </div>
+              </div></details>
             </div>
           </div>
           <p className="run-meta">
-            开始 {fmtDate(activeRun.started_at)} · 总耗时 {duration(activeRun)}
-            {runScopeMeta(activeRun)}
+            最近答题开始 {fmtDate(activeRun.started_at)} · 本次执行耗时 {duration(activeRun)}
           </p>
-          {activeRun.fatal_error ? (
-            <div className="run-error-banner">
-              <b>任务终止原因</b>
-              <span>{String(activeRun.fatal_error)}</span>
-              {activeRun.failed_phase ? (
-                <small>
-                  失败阶段：
-                  {EXECUTION_PHASES.find((item) => item.key === String(activeRun.failed_phase))?.label ||
-                    String(activeRun.failed_phase)}
-                </small>
-              ) : null}
+          <details className="run-scope-source"><summary>相册来源</summary><p className="run-meta">{runScopeMeta(activeRun)}</p></details>
+          {activeRun.mode !== "build" ? <details className="recovery-panel" aria-label="续跑与评分" key="recovery-actions">
+            <summary className="recovery-panel-head"><h3>续跑与评分</h3><span>展开后可继续答题或为已有回答评分</span></summary>
+            <div className="recovery-grid">
+              <div className="recovery-column" aria-label="断点续跑">{recovery ?? <><h4>断点续跑</h4><p className="recovery-note">正在读取续跑条件。</p></>}</div>
+              <RejudgeCard {...rejudge} embedded />
             </div>
-          ) : null}
-          {activeRun.mode !== "build" ? <RejudgeCard {...rejudge} /> : null}
-          <PhaseList activeRun={activeRun} />
+          </details> : null}
           <KeyMetrics run={activeRun} />
-          <ErrorAnalysisPanel key={`analysis-${activeRun.run_id}`} runId={activeRun.run_id} terminal={["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status || "")} />
-          {memory ? <MemoryLayerPanel key={activeRun.run_id} {...memory} /> : null}
+          <ExecutionHistory run={activeRun} />
+          <ErrorAnalysisPanel key={[activeRun.run_id,activeRun.selected_scoring_profile,activeRun.selected_scoring_batch].join(":")} scoringProfile={OPEN_PROFILE} scoringBatch={String(activeRun.selected_scoring_batch || "")} runId={activeRun.run_id} terminal={["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status || "")} />
+          {memory ? <MemoryLayerPanel key={`memory-${activeRun.run_id}`} {...memory} /> : null}
           <GraphQualityPanel quality={graphQuality ?? null} />
           <h3 className="result-heading">结果指标</h3>
           {activeRun.persistence?.status ? <p className="error">结果保存异常：{String(activeRun.persistence.status)} · {String(activeRun.persistence.error || "")}</p> : null}

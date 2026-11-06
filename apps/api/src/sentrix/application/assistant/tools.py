@@ -29,18 +29,14 @@ import dataclasses
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-from sentrix.application.retrieval.retrieve_graph import (
-    graph_direction,
-    graph_intent,
-    graph_search_policy,
-)
+from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
 from sentrix.domain.assistant.evidence_binding import fact_value_type
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import Attachment
@@ -56,6 +52,7 @@ from sentrix.domain.media.ports import (
     PhotoInspector,
     RecordedPhotoInspector,
 )
+from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.fact_query import FactRejection
 
@@ -87,35 +84,6 @@ _LEVEL_BY_EVIDENCE_CLASS: Mapping[str, str] = {
     "semantic": "strong",
     "expander": "approximate",
 }
-
-_GRAPH_RELATION_LABELS: Mapping[str, str] = {
-    "asset_derived_from_asset": "视频与关键帧的媒体血缘",
-    "frame_temporal_next": "视频关键帧时间相邻",
-    "frame_shares_object": "关键帧共享对象",
-    "frame_shares_relation": "关键帧共享关系",
-    "frame_visual_similar": "关键帧视觉相似",
-    "image_temporal_next": "普通图片拍摄时间相邻",
-    "image_shares_object": "普通图片共享对象",
-    "image_visual_similar": "普通图片视觉相似",
-}
-
-
-def _graph_support_preview(provenance: Mapping[str, object]) -> Mapping[str, object]:
-    """把图路径压成模型能理解的解释，不暴露内部 asset/node id。"""
-    try:
-        hops = max(1, int(provenance.get("hops", 0)))
-    except (TypeError, ValueError):
-        hops = 1
-    relations = tuple(str(value) for value in provenance.get("relations", ()) if str(value))
-    labels = tuple(dict.fromkeys(_GRAPH_RELATION_LABELS.get(value, value) for value in relations))
-    return {
-        "hops": hops,
-        "relations": list(labels),
-        "note": (
-            "这条候选由图结构从另一条高相关媒体扩展得到；优先结合本条 preview 的内容"
-            "判断是否回答当前问题。"
-        ),
-    }
 
 
 #: 「合影」的判据：**这张照片上有两个人以上**。1.0 判的是「caption/activity 里出现了
@@ -217,6 +185,7 @@ class AssistantToolbox:
         photo_inspector: PhotoInspector,
         person_crops: PersonCropRenderer,
         asset_places: AssetPlaceRepository | None = None,
+        events: EventRepository | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._assets = assets
@@ -226,6 +195,10 @@ class AssistantToolbox:
         # 照片的**行政地点**（导入期由 EXIF GPS 反解而来）。preview 的 ``place``
         # 必须取这一份而不是 ``observations.place``——理由见 ``_place_label``。
         self._asset_places = asset_places
+        # A video/keyframe result must expose its scene-aligned transcript to the agent.
+        # Retrieval can find the video from transcript text, but an asset-only preview
+        # would otherwise hide the event memory and send spoken-content questions to OCR.
+        self._events = events
         # ``query_photo_people`` 的两条读路径（T122）。两者都是**只读**，
         # 且都只被这一个工具用——不是通用能力。
         self._faces = faces
@@ -337,7 +310,6 @@ class AssistantToolbox:
             asset_ids=tuple(hit.asset_id for hit in result.hits),
             created_at=now,
             evidence_classes={hit.asset_id: hit.evidence_class for hit in result.hits},
-            graph_provenance=dict(result.graph_provenance),
         )
         self._result_sets.add(result_set)
         channel_trace = [
@@ -352,7 +324,6 @@ class AssistantToolbox:
             for trace in result.channel_trace
         ]
         graph_trace = next((trace for trace in channel_trace if trace["channel"] == "graph"), None)
-        graph_policy = graph_search_policy(query)
         return self._page_outcome(
             result_set,
             page_no=1,
@@ -370,15 +341,7 @@ class AssistantToolbox:
                 "graph_candidate_asset_ids": list(result.graph_asset_ids),
                 "graph_primary_asset_ids": list(result.primary_asset_ids),
                 "graph_fused_asset_ids": list(result.fused_asset_ids),
-                "graph_promoted_asset_ids": list(result.graph_promoted_asset_ids),
-                "graph_suppressed_asset_ids": list(result.graph_suppressed_asset_ids),
-                "graph_policy": {
-                    "intent": graph_intent(query),
-                    "direction": graph_direction(query),
-                    "max_hops": graph_policy.max_hops,
-                    "graph_slots": graph_policy.graph_slots,
-                    "reason": graph_policy.reason,
-                },
+                "graph_policy": {"intent": graph_intent(query), "direction": graph_direction(query)},
             },
         )
 
@@ -464,6 +427,8 @@ class AssistantToolbox:
             "total": page.total,
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
+            "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            "page": page.page,
         }
         if extra:
             observation.update(extra)
@@ -516,7 +481,8 @@ class AssistantToolbox:
         asset = self._assets.get(entry.asset_id)
         observations = self._observations.list_by_asset(entry.asset_id)
         latest = observations[0] if observations else None
-        preview: dict[str, Any] = {
+        location = self._asset_places.get(entry.asset_id) if self._asset_places is not None else None
+        return {
             "handle": entry.handle,
             "file_name": asset.file_name if asset else "",
             "media_kind": asset.media_type.value if asset else "",
@@ -530,6 +496,15 @@ class AssistantToolbox:
             # 带进上下文，而回答一个问题只需要前者。
             "source_kind": (asset.derived_kind if asset and asset.derived_kind else "photo"),
             "captured_at": asset.captured_at.isoformat() if asset and asset.captured_at else "",
+            "capture_time": asdict(asset.capture_time) if asset else {},
+            "location_evidence": {
+                "gps": asdict(asset.captured_location) if asset and asset.captured_location else None,
+                "admin": asdict(location.admin) if location else {},
+                "nearby": asdict(location.nearest) if location else {},
+                "source": location.source.value if location else "unknown",
+                "precision": location.precision.value if location else "unknown",
+                "nearby_is_containment": False,
+            },
             "level": _LEVEL_BY_EVIDENCE_CLASS.get(entry.evidence_class, ""),
             # **地点取 GPS 反解，不取 VLM 的场景描述。** 1.0 的 preview ``place``
             # 就是反地理编码出来的地名（``_short_place_label``，``tools.py:1862``
@@ -551,10 +526,75 @@ class AssistantToolbox:
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
+            **self._speech_preview(asset),
         }
-        if entry.graph_provenance:
-            preview["graph_support"] = _graph_support_preview(entry.graph_provenance)
-        return preview
+
+    def _speech_preview(self, asset: Any) -> Mapping[str, Any]:
+        """Expose transcript evidence only for a video or its timestamped keyframe.
+
+        Video previews include their scene transcript with scene bounds. A derived
+        keyframe includes only transcript segments overlapping its source timestamp,
+        keeping speech aligned to the frame instead of copying the whole video's audio.
+        """
+        if self._events is None or asset is None:
+            return {}
+        video_asset_id = asset.id if asset.media_type.value == "video" else asset.parent_asset_id
+        if not video_asset_id:
+            return {}
+        scenes = self._events.list_video_scenes(video_asset_id)
+        if not scenes:
+            return {}
+
+        frame_time = asset.source_timestamp_sec if asset.media_type.value != "video" else None
+        evidence: list[dict[str, Any]] = []
+        for scene in scenes:
+            if frame_time is not None and not (
+                (scene.source_start_sec or 0.0) <= frame_time <= (scene.source_end_sec or 0.0)
+            ):
+                continue
+            metadata = scene.source_metadata
+            segments = metadata.get("speech_segments", [])
+            if not isinstance(segments, list):
+                segments = []
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                try:
+                    start_sec = float(segment.get("start_sec", 0.0))
+                    end_sec = float(segment.get("end_sec", start_sec))
+                except (TypeError, ValueError):
+                    continue
+                if frame_time is not None and not start_sec <= frame_time <= end_sec:
+                    continue
+                text = str(segment.get("text") or "").strip()
+                if text:
+                    evidence.append(
+                        {
+                            "start_sec": start_sec,
+                            "end_sec": end_sec,
+                            "text": text[:1000],
+                            "speaker": str(segment.get("speaker") or ""),
+                        }
+                    )
+            if not segments:
+                transcript = str(metadata.get("speech_transcript") or "").strip()
+                if transcript:
+                    evidence.append(
+                        {
+                            "scene_start_sec": scene.source_start_sec,
+                            "scene_end_sec": scene.source_end_sec,
+                            "text": transcript[:1000],
+                        }
+                    )
+        if not evidence:
+            return {}
+        return {
+            "speech_evidence": evidence[:12],
+            "speech_evidence_note": (
+                "语音证据来自视频 ASR 转写；关键帧仅显示与该帧时间戳重叠的语音片段。"
+                "可直接用于回答说话内容，不要改用图片 OCR。"
+            ),
+        }
 
     def _people_count(self, asset_id: str) -> int:
         """这张照片上有几个**人**（已确认的 + 未确认身份的同行者）。

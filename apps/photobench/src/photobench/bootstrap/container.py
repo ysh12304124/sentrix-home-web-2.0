@@ -134,7 +134,8 @@ class Container:
         run_store: RunStore = FileRunStore(settings.results_root)
         run_index = RunIndex()
         qa_metadata: QaMetadataSource = JsonQaMetadataSource(
-            settings.data_root, settings.config_root / "qa_task_actions.json"
+            settings.data_root,
+            settings.config_root / "qa_task_actions.json",
         )
 
         def lifecycle_provider(manager_url: str) -> LifecycleProvider:
@@ -209,7 +210,9 @@ class Container:
             return inline_judge_images(http, sentrix_url, images, assets_by_name)
 
         album_source: AlbumSource = JsonAlbumSource(
-            settings.data_root, settings.config_root / "qa_task_actions.json"
+            settings.data_root,
+            settings.config_root / "qa_task_actions.json",
+            settings.config_root / "gt_media_metadata",
         )
         http: JsonHttpClient = HttpxJsonClient(retry_connections=True, keep_alive=False)
         judge_http: JsonHttpClient = HttpxJsonClient()
@@ -308,7 +311,7 @@ class Container:
         # **``run_suites`` 先建、``runs`` 后建**：列表页要叠加「还在跑的 run」，
         # 而那些 run 只在 ``RunSuites._active`` 里（索引里没有它们，见
         # ``RunIndex.upsert``）。顺序反过来就拿不到那个回调。
-        analysis_backend: AnalysisBackend = FileAnalysisBackend(settings.results_root)
+        analysis_backend: AnalysisBackend = FileAnalysisBackend(settings.results_root, albums=album_source)
         error_analysis = ErrorAnalysis(analysis_backend, config)
         run_suites = RunSuites(
             store=run_store,

@@ -1,9 +1,7 @@
 /**
  * 事件时间线。对应 1.0 `src/app.js:626` 的 `timelineView()`（pageHeader 在 `:645`）。
  *
- * 右侧 `side-inspector` 是 1.0 的「视频记忆」说明块。2.0 没有视频链路（`videos` /
- * `video-scenes` 端点都不存在），所以**这里是空状态而不是照抄那段文案**——照抄会让
- * 人以为场景图片堆是可用的。
+ * 右侧提示视频场景与语音转写的查看入口；视频详情在资料库资产面板中打开。
  */
 
 import { useSearchParams } from "react-router";
@@ -51,10 +49,10 @@ export function TimelinePage() {
         <aside className="side-inspector">
           <p className="section-kicker">视频记忆</p>
           <h2>一段视频，也能成为清晰的家庭回忆</h2>
-          <p>系统会选出有代表性的画面，按场景整理，并继承拍摄时间与地点。</p>
+          <p>视频场景会对齐关键帧与语音片段。打开资料库中的视频详情，可查看带时间戳的转写并跳转播放。</p>
           <div className="inspector-note">
-            场景图片堆 <strong>尚未开放</strong>
-            <small>视频链路在 2.0 还没做——videos 与 video-scenes 端点都不存在。这里的结构留着，链路接上就能填。</small>
+            语音对齐 <strong>已接入视频场景</strong>
+            <small>转写片段保留起止时间；QA 检索可把语音作为视频证据，与画面证据一起回答问题。</small>
           </div>
         </aside>
       </section>

@@ -129,8 +129,8 @@ export function pipelineTimingView(phase: Phase = {}, imported: Phase = {}): Pip
       ]),
     });
     const finalizeParts = ["participant_projection", "memory_graph", "family_graph", "person_insights"].map(key => seconds(timings[key]));
-    const finalizeSeconds = finalizeParts.every(value => value !== null)
-      ? finalizeParts.reduce<number>((sum, value) => sum + (value as number), 0) : null;
+    const finalizeSeconds = seconds(timings.finalize_wall) ?? (finalizeParts.every(value => value !== null)
+      ? finalizeParts.reduce<number>((sum, value) => sum + (value as number), 0) : null);
     groups.push({ key: "finalize", title: "图谱与人物收尾", summary: actualSummary(finalizeSeconds),
       note: "核心处理结束后依次执行；汇总下方四个独立阶段的实际耗时，占比同样以后端处理耗时为分母。因果边判定已包含在记忆图构建中，不重复相加。",
       rows: rows([

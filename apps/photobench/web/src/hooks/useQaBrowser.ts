@@ -44,6 +44,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
   const [qaTask, setQaTask] = useState("");
   const [qaSubtype, setQaSubtype] = useState("");
   const [qaAction, setQaAction] = useState("");
+  const [qaEvaluation, setQaEvaluation] = useState("");
   const [qaBrowserLoading, setQaBrowserLoading] = useState(false);
   const [qaBrowserError, setQaBrowserError] = useState("");
   const [qaBrowserMediaResolution, setQaBrowserMediaResolution] = useState<MediaResolution | null>(null);
@@ -84,7 +85,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
       );
       if (!aliveRef.current) return;
       setQaBrowserItems(data.items || []);
-      setQaTask(""); setQaSubtype(""); setQaAction(""); setQaBrowserTag("");
+      setQaTask(""); setQaSubtype(""); setQaAction(""); setQaBrowserTag(""); setQaEvaluation("");
       setQaBrowserMediaResolution(data.media_resolution || null);
     } catch (e) {
       if (!aliveRef.current) return;
@@ -116,6 +117,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
       if (qaTask && item.task_type !== qaTask) return false;
       if (qaSubtype && item.question_type !== qaSubtype) return false;
       if (qaAction && item.expected_action !== qaAction) return false;
+      if (qaEvaluation && (item.evaluation as Record<string, unknown> | undefined)?.answer_format !== qaEvaluation) return false;
       if (!query) return true;
       return [item.qa_id, item.question, item.answer, taxonomyLabel(item.task_type), taxonomyLabel(item.question_type), ...(item.tags || [])].some((value) =>
         String(value || "")
@@ -123,10 +125,10 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
           .includes(query),
       );
     });
-  }, [qaBrowserItems, qaBrowserSearch, qaBrowserTag, qaTask, qaSubtype, qaAction]);
+  }, [qaBrowserItems, qaBrowserSearch, qaBrowserTag, qaTask, qaSubtype, qaAction, qaEvaluation]);
 
   return {
-    qaTask, setQaTask, qaSubtype, setQaSubtype, qaAction, setQaAction,
+    qaTask, setQaTask, qaSubtype, setQaSubtype, qaAction, setQaAction, qaEvaluation, setQaEvaluation,
     qaBrowserAlbum,
     setQaBrowserAlbum,
     qaBrowserSet,

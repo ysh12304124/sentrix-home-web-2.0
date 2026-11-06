@@ -61,10 +61,19 @@ def _download(payload: Any, file_name: str) -> Response:
 
 
 @router.get("/runs/{run_id}/export-trace")
-def export_trace(request: Request, run_id: str, scores: str = "", min_score: str = "") -> Response:
+def export_trace(
+    request: Request,
+    run_id: str,
+    scores: str = "",
+    min_score: str = "",
+    scoring_profile: str = "",
+    scoring_batch: str = "",
+) -> Response:
     """1.0 ``:7789-7803``。``scores`` 与 ``min_score`` 同时生效（1.0 是两个独立的 ``if``）。"""
     payload = get_container(request).reports.export_traces(
         run_id,
+        scoring_profile=scoring_profile,
+        scoring_batch=scoring_batch,
         scores=exports.parse_filter(scores) or None,
         min_score=exports.parse_min_score(min_score),
     )
@@ -72,10 +81,19 @@ def export_trace(request: Request, run_id: str, scores: str = "", min_score: str
 
 
 @router.get("/runs/{run_id}/export-sft")
-def export_sft(request: Request, run_id: str, scores: str = "", min_score: str = "") -> Response:
+def export_sft(
+    request: Request,
+    run_id: str,
+    scores: str = "",
+    min_score: str = "",
+    scoring_profile: str = "",
+    scoring_batch: str = "",
+) -> Response:
     """1.0 ``:7804-7819``。**给了 ``scores`` 就忽略 ``min_score``**（1.0 是 ``if/elif``）。"""
     payload = get_container(request).reports.export_sft(
         run_id,
+        scoring_profile=scoring_profile,
+        scoring_batch=scoring_batch,
         scores=exports.parse_filter(scores) or None,
         min_score=exports.parse_min_score(min_score),
     )

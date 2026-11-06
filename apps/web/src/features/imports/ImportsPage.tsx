@@ -7,14 +7,12 @@
  * 每批 20 个并发调用 `POST /media/import`。失败项**留在本次列表里**，可以只重试
  * 失败的那些；已经成功的不会被再传一遍。
  *
- * **视频阶段是真的。** 2.0 的导入是同步的：视频元数据、关键帧、场景在同一个请求里
- * 跑完（`routes/media.py` 的 `build_import_assets`），因此这里的计数来自真实的
- * Asset 血缘（`derived_kind === "video_keyframe"`）与 `GET /videos/{id}` 的场景列表。
- * **不伪造 1.0 的 `video-metadata` 等中间状态**——2.0 的 `AssetStatus` 只有
- * queued / processing / processed / failed 四个值。
+ * **视频处理是持久后台任务。** 上传接口保存原片和探测结果后返回 `job_id`；任务状态
+ * 由 SQLite 保存，页面按任务接口恢复，不依赖浏览器请求继续存活。关键帧、场景数量仍
+ * 从真实的 Asset 血缘与视频详情读取。
  *
- * 整册导入 `POST /imports` 仍未接：它同步跑模型调用、耗时很长，而 2.0 没有任务队列
- * （端点自己的 docstring 写了这一点）。这一页只做逐文件导入。
+ * 整册导入 `POST /imports` 保留原同步接口；此页面维持逐文件上传，视频处理在服务端
+ * SQLite Job worker 中后台运行。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,17 +23,25 @@ import { Section } from "../../shared/ui/Section";
 import { useToast } from "../../shared/ui/Toast";
 import {
   getVideo,
+  getVideoJob,
   importAsset,
+  listVideoJobs,
   listAssets,
   reprocessVideo,
+  resumeVideoJob,
   type AssetSummary,
   type ImportResponse,
+  type VideoJobResponse,
 } from "../../shared/api/client";
 import { IMPORT_BATCH_SIZE, runInBatches } from "./batch";
 import "../../styles/imports.css";
 import "./imports-extra.css";
 
-type OutcomeStatus = "pending" | "ok" | "failed";
+type OutcomeStatus = "pending" | "processing" | "ok" | "failed";
+
+type TrackedVideoJob = VideoJobResponse;
+
+const VIDEO_JOBS_STORAGE_KEY = "sentrix.video-jobs.v1";
 
 interface ImportEntry {
   readonly id: string;
@@ -57,6 +63,54 @@ export function assetStatusLabel(status: string): string {
   if (status === "queued") return "排队中";
   if (status === "failed") return "处理失败，可重试";
   return status || "排队中";
+}
+
+function videoStageLabel(stage: string): string {
+  return ({
+    UPLOAD: "上传与校验",
+    VIDEO_PROBE: "视频解析",
+    SOURCE_MEMORY: "视频语义准备",
+    SPEECH_TRANSCRIPTION: "语音识别",
+    FRAME_SAMPLE_VSD: "抽帧与关键帧筛选",
+    EVENT_BUILD: "事件构建",
+    KEYFRAME_MEMORY: "关键帧记忆与向量",
+    MEMORY_GRAPH: "记忆图更新",
+    COMPLETED: "处理完成",
+  } as Record<string, string>)[stage] ?? stage;
+}
+
+function videoStageCheckpoint(outputArtifact: string): string | null {
+  try {
+    const value: unknown = JSON.parse(outputArtifact);
+    if (typeof value !== "object" || value === null || !("completed" in value) || !("total" in value)) {
+      return null;
+    }
+    const completed = Number(value.completed);
+    const total = Number(value.total);
+    return Number.isFinite(completed) && Number.isFinite(total) && total > 0
+      ? `${completed}/${total}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function videoJobProgressLabel(job: VideoJobResponse): string {
+  const stage = job.stages.find((item) => item.stage === job.current_stage);
+  const checkpoint = stage ? videoStageCheckpoint(stage.output_artifact) : null;
+  return `${videoStageLabel(job.current_stage)}${checkpoint ? ` · ${checkpoint}` : ""} · ${Math.round(job.overall_progress * 100)}%`;
+}
+
+function videoJobStageStatus(job: VideoJobResponse, stage: VideoJobResponse["stages"][number]): string {
+  const checkpoint = videoStageCheckpoint(stage.output_artifact);
+  if (stage.status === "SUCCEEDED") return `✓ ${videoStageLabel(stage.stage)}`;
+  if (stage.status === "FAILED") return `⚠ ${videoStageLabel(stage.stage)}`;
+  if (stage.status === "RUNNING") {
+    return `● ${videoStageLabel(stage.stage)}${checkpoint ? ` ${checkpoint}` : ""}`;
+  }
+  if (stage.status === "SKIPPED") return `– ${videoStageLabel(stage.stage)}（跳过）`;
+  if (stage.stage === job.current_stage) return `● ${videoStageLabel(stage.stage)}`;
+  return `○ ${videoStageLabel(stage.stage)}`;
 }
 
 /** 把导入响应翻成一行给用户看的话。视频的 `video_scenes` 与图片的 `indexed` 同等重要。 */
@@ -92,6 +146,15 @@ export function ImportsPage() {
   const [videoScenes, setVideoScenes] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [videoBusy, setVideoBusy] = useState<string | null>(null);
+  const [videoJobs, setVideoJobs] = useState<readonly TrackedVideoJob[]>(() => {
+    try {
+      const stored = window.localStorage.getItem(VIDEO_JOBS_STORAGE_KEY);
+      const parsed: unknown = stored ? JSON.parse(stored) : [];
+      return Array.isArray(parsed) ? (parsed as TrackedVideoJob[]) : [];
+    } catch {
+      return [];
+    }
+  });
   const nextId = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -129,15 +192,56 @@ export function ImportsPage() {
 
   useEffect(reload, [reload]);
 
+  useEffect(() => {
+    void listVideoJobs(scopeId).then(setVideoJobs).catch(() => undefined);
+  }, [scopeId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(VIDEO_JOBS_STORAGE_KEY, JSON.stringify(videoJobs));
+  }, [videoJobs]);
+
+  useEffect(() => {
+    const pending = videoJobs.filter((job) => !["COMPLETED", "DEGRADED", "FAILED", "CANCELLED"].includes(job.status));
+    if (pending.length === 0) return;
+    const timer = window.setInterval(() => {
+      void Promise.allSettled(pending.map((job) => getVideoJob(job.job_id))).then((results) => {
+        let completed = false;
+        setVideoJobs((current) => current.map((job) => {
+          const result = results.find((item) => item.status === "fulfilled" && item.value.job_id === job.job_id);
+          if (!result || result.status !== "fulfilled") return job;
+          if (["COMPLETED", "DEGRADED", "FAILED"].includes(result.value.status)) completed = true;
+          return { ...result.value, file_name: job.file_name };
+        }));
+        if (completed) reload();
+      });
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [videoJobs, reload]);
+
   const importOne = useCallback(
     async (entry: ImportEntry): Promise<ImportOutcome> => {
       try {
         const result = await importAsset(entry.file, scopeId);
+        if (result.job_id) {
+          const initialJob: TrackedVideoJob = {
+            job_id: result.job_id,
+            asset_id: result.asset_id,
+            status: result.job_status ?? "QUEUED",
+            current_stage: "UPLOAD",
+            overall_progress: 0,
+            retry_count: 0,
+            error_code: null,
+            error_message: null,
+            stages: [],
+            file_name: entry.file.name,
+          };
+          setVideoJobs((current) => [initialJob, ...current.filter((job) => job.job_id !== initialJob.job_id)]);
+        }
         return {
           ...entry,
           name: entry.file.name,
-          status: "ok",
-          note: describeImportResult(result),
+          status: result.job_id ? "processing" : "ok",
+          note: result.job_id ? "视频已安全保存，后台正在处理；关闭页面也可以稍后恢复查看" : describeImportResult(result),
           assetId: result.asset_id,
           mediaType: result.media_type,
         };
@@ -379,6 +483,53 @@ export function ImportsPage() {
           })}
         </aside>
       </section>
+
+      {videoJobs.length > 0 ? (
+        <Section kicker="视频任务" title="处理进度可在刷新后恢复">
+          <div className="queue-list">
+            {videoJobs.slice(0, 20).map((job) => (
+              <div key={job.job_id} className="queue-row">
+                <span className="queue-type">视频</span>
+                <div>
+                  <strong>{job.file_name}</strong>
+                  <small>
+                    {job.status === "FAILED"
+                      ? (job.error_message ?? "视频处理暂时中断，已完成步骤不会丢失。")
+                      : videoJobProgressLabel(job)}
+                  </small>
+                  <progress max={1} value={job.overall_progress} aria-label={`${job.file_name}处理进度`} />
+                  <small>{job.stages.map((stage) => videoJobStageStatus(job, stage)).join("　")}</small>
+                </div>
+                {job.status === "FAILED" ? (
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={videoBusy === job.asset_id}
+                    onClick={() => {
+                      setVideoBusy(job.asset_id);
+                      void resumeVideoJob(job.job_id)
+                        .then((result) => setVideoJobs((current) => current.map((item) => item.job_id === job.job_id ? { ...result, file_name: item.file_name } : item)))
+                        .finally(() => setVideoBusy(null));
+                    }}
+                  >
+                    {videoBusy === job.asset_id ? "继续中…" : "从已完成步骤继续"}
+                  </button>
+                ) : (
+                    <span className="queue-status queued">
+                      {job.status === "COMPLETED"
+                        ? "已完成"
+                        : job.status === "DEGRADED"
+                          ? "部分能力降级"
+                          : job.status === "RETRY_WAIT"
+                            ? "系统重试中"
+                            : "处理中"}
+                    </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </Section>
+      ) : null}
 
       {outcomes.length > 0 ? (
         <Section

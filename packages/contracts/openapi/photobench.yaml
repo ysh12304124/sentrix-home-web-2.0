@@ -40,6 +40,13 @@ paths:
           type: string
           default: '20'
           title: Page Size
+      - name: group_tasks
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Group Tasks
       responses:
         '200':
           description: Successful Response
@@ -281,6 +288,20 @@ paths:
           type: boolean
           default: true
           title: Include History
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -288,6 +309,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunMetricsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/recovery-plan:
+    get:
+      tags:
+      - suites
+      summary: Recovery Plan
+      description: 原任务续跑题数、产品版本和各补评范围的题/轮/评分项计数，只读。
+      operationId: recovery_plan_api_v1_runs__run_id__recovery_plan_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Recovery Plan Api V1 Runs  Run Id  Recovery Plan Get
         '422':
           description: Validation Error
           content:
@@ -364,6 +414,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkStatusResponse'
+  /api/v1/runs/{run_id}/scoring-preview:
+    post:
+      tags:
+      - suites
+      summary: Preview Scoring
+      operationId: preview_scoring_api_v1_runs__run_id__scoring_preview_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Preview Scoring Api V1 Runs  Run Id  Scoring Preview
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runs/{run_id}/items:
     get:
       tags:
@@ -420,6 +499,13 @@ paths:
           type: string
           default: ''
           title: Question Type
+      - name: evaluation_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Evaluation Type
       - name: tag
         in: query
         required: false
@@ -462,6 +548,20 @@ paths:
           type: string
           default: ''
           title: Primary
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -495,6 +595,20 @@ paths:
         schema:
           type: string
           title: Item Index
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -625,6 +739,20 @@ paths:
           type: string
           default: ''
           title: Min Score
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -665,6 +793,20 @@ paths:
           type: string
           default: ''
           title: Min Score
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -721,6 +863,20 @@ paths:
         schema:
           type: string
           title: Run Id
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
       responses:
         '200':
           description: Successful Response
@@ -1067,6 +1223,13 @@ paths:
           type: string
           default: ''
           title: Content Subtype
+      - name: scoring_question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Question Type
       - name: test_scenario
         in: query
         required: false
@@ -1374,6 +1537,13 @@ paths:
           type: string
           default: ''
           title: Content Subtype
+      - name: scoring_question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Question Type
       - name: test_scenario
         in: query
         required: false
@@ -1454,7 +1624,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EvidenceSnapshot'
+                anyOf:
+                - $ref: '#/components/schemas/EvidenceSnapshot'
+                - $ref: '#/components/schemas/ComparisonEvidenceSnapshot'
+                title: Response Evidence Api V1 Analyses  Job Id  Evidence  Index  Get
         '422':
           description: Validation Error
           content:
@@ -1713,6 +1886,13 @@ paths:
           type: string
           default: ''
           title: Content Subtype
+      - name: scoring_question_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Question Type
       - name: test_scenario
         in: query
         required: false
@@ -2151,6 +2331,84 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AIComparisonReport:
+      properties:
+        schema_version:
+          type: integer
+          title: Schema Version
+        model:
+          type: string
+          title: Model
+        model_role:
+          type: string
+          title: Model Role
+        prompt_version:
+          type: string
+          title: Prompt Version
+        scope:
+          additionalProperties: true
+          type: object
+          title: Scope
+        sources:
+          additionalProperties: true
+          type: object
+          title: Sources
+        requested:
+          type: integer
+          title: Requested
+        cases:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Cases
+        coverage:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Coverage
+        requests:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Requests
+        overview:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Overview
+        summary_status:
+          type: string
+          title: Summary Status
+        summary_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary Error
+        stage:
+          type: string
+          title: Stage
+          default: cases
+        note:
+          type: string
+          title: Note
+      type: object
+      required:
+      - schema_version
+      - model
+      - model_role
+      - prompt_version
+      - scope
+      - sources
+      - requested
+      - cases
+      - coverage
+      - requests
+      - summary_status
+      - note
+      title: AIComparisonReport
     AnalysisFacet:
       properties:
         value:
@@ -2197,6 +2455,7 @@ components:
           - $ref: '#/components/schemas/AnalysisReport'
           - $ref: '#/components/schemas/ComparisonReport'
           - $ref: '#/components/schemas/DiagnosisReport'
+          - $ref: '#/components/schemas/AIComparisonReport'
           - type: 'null'
           title: Report
       additionalProperties: true
@@ -2340,14 +2599,34 @@ components:
       title: AnalysisReport
     AnalysisRequest:
       properties:
+        scoring_profile:
+          type: string
+          enum:
+          - ''
+          - photobench_open_v1
+          - atm_qs_v1
+          title: Scoring Profile
+          default: ''
+        scoring_batch:
+          type: string
+          title: Scoring Batch
+          default: ''
         kind:
           type: string
           enum:
           - rules
           - compare
           - ai
+          - ai_compare
           title: Kind
           default: rules
+        comparison_filter:
+          type: string
+          enum:
+          - all
+          - score_changed
+          title: Comparison Filter
+          default: all
         parent_job:
           anyOf:
           - type: string
@@ -2374,6 +2653,14 @@ components:
           - type: string
           - type: 'null'
           title: Provider Id
+        model_role:
+          anyOf:
+          - type: string
+            enum:
+            - judge
+            - main
+          - type: 'null'
+          title: Model Role
         mode:
           type: string
           enum:
@@ -2394,12 +2681,6 @@ components:
             type: string
           type: object
           title: Filters
-        max_cases:
-          type: integer
-          maximum: 100.0
-          minimum: 1.0
-          title: Max Cases
-          default: 12
         resume_job:
           anyOf:
           - type: string
@@ -2687,6 +2968,68 @@ components:
       - missing
       - signals
       title: CaseReference
+    ComparisonEvidenceSide:
+      properties:
+        index:
+          type: integer
+          title: Index
+        source:
+          additionalProperties: true
+          type: object
+          title: Source
+        item:
+          additionalProperties: true
+          type: object
+          title: Item
+        qa:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Qa
+        gt_images:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Gt Images
+        evidence_locations:
+          additionalProperties:
+            type: string
+          type: object
+          title: Evidence Locations
+      type: object
+      required:
+      - index
+      - source
+      - item
+      - qa
+      - gt_images
+      - evidence_locations
+      title: ComparisonEvidenceSide
+    ComparisonEvidenceSnapshot:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        index:
+          type: integer
+          title: Index
+        sides:
+          additionalProperties:
+            $ref: '#/components/schemas/ComparisonEvidenceSide'
+          propertyNames:
+            enum:
+            - left
+            - right
+          type: object
+          title: Sides
+      type: object
+      required:
+      - job_id
+      - index
+      - sides
+      title: ComparisonEvidenceSnapshot
     ComparisonReport:
       properties:
         comparable:
@@ -2835,11 +3178,6 @@ components:
           - type: string
           - type: 'null'
           title: Configuration Fingerprint
-        sample_indices:
-          items:
-            type: integer
-          type: array
-          title: Sample Indices
         summary_status:
           anyOf:
           - type: string

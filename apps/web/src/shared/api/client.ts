@@ -860,6 +860,8 @@ export interface ImportResponse {
   video_scenes?: number;
   /** 音频有没有真的走到 ffprobe。音频以外恒为 false。 */
   audio_probed?: boolean;
+  job_id?: string | null;
+  job_status?: string | null;
 }
 
 /**
@@ -1254,6 +1256,14 @@ export interface VideoScenePayload {
   source_scene_index: number | null;
   source_start_sec: number | null;
   source_end_sec: number | null;
+  speech_segments: VideoSpeechSegment[];
+  keyframe_timestamps_sec: number[];
+}
+
+export interface VideoSpeechSegment {
+  start_sec: number;
+  end_sec: number;
+  text: string;
 }
 
 export interface VideoDetailResponse {
@@ -1640,6 +1650,44 @@ export interface VideoReprocessResponse {
   accepted: boolean;
   asset_id: string;
   status: string;
+  job_id?: string | null;
+}
+
+export interface VideoJobStage {
+  stage: string;
+  status: string;
+  progress: number;
+  attempt: number;
+  output_artifact: string;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface VideoJobResponse {
+  job_id: string;
+  asset_id: string;
+  file_name: string;
+  status: string;
+  current_stage: string;
+  overall_progress: number;
+  retry_count: number;
+  error_code: string | null;
+  error_message: string | null;
+  stages: VideoJobStage[];
+}
+
+export async function getVideoJob(jobId: string): Promise<VideoJobResponse> {
+  return request<VideoJobResponse>(`/video-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function listVideoJobs(scopeId: string): Promise<VideoJobResponse[]> {
+  const query = new URLSearchParams({ scope_id: scopeId });
+  const response = await request<VideoJobResponse[]>(`/video-jobs?${query.toString()}`);
+  return response;
+}
+
+export async function resumeVideoJob(jobId: string): Promise<VideoJobResponse> {
+  return request<VideoJobResponse>(`/video-jobs/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
 }
 
 /**

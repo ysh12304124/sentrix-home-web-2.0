@@ -11,6 +11,7 @@
  * 1.0 里 RunsTable 与 RunDetail 是 `<main class="app-shell">` 下的兄弟节点（中间没有包装层），
  * 所以这里返回 fragment，不加多余 DOM。
  */
+import { ResumeCard } from "./ResumeCard.tsx";
 import type { RejudgeJudgeConfig } from "../../hooks/useRunDetail.ts";
 import type { UseRunsApi } from "../../hooks/useRuns.ts";
 import type { MemoryLayerPanelProps } from "../memory/MemoryLayerPanel.tsx";
@@ -41,7 +42,12 @@ export interface RunsViewProps {
   memory?: MemoryLayerPanelProps;
 }
 
-export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memory }: RunsViewProps) {
+export function RunsView({ runs, judgeModel, saveJudgePrompt, memory }: RunsViewProps) {
+  const selectedRun = runs.activeRun?.run_id === runs.activeRunId ? runs.activeRun : null;
+  const recoveryPlan = runs.recoveryPlan?.run_id === selectedRun?.run_id ? runs.recoveryPlan : null;
+  const canResume = !!selectedRun &&
+    ["interrupted", "failed", "cancelled", "completed_with_errors"].includes(selectedRun.status || "") &&
+    recoveryPlan?.can_resume && recoveryPlan.remaining_qa_count > 0;
   return (
     <>
       {/* **运行列表/详情/重判的错误出口。** 此前 `useRuns.error`（列表加载、删除、
@@ -61,7 +67,23 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
         regionRef={runs.runsRegionRef}
       />
       <RunDetail
+        key={runs.activeRunId || "empty"}
         activeRun={runs.activeRun}
+        readProfile={runs.readProfile}
+        onReadProfileChange={value => {runs.setReadProfile(value); runs.setReadBatch('');}}
+        recovery={<ResumeCard
+          key={`resume-${selectedRun?.run_id || "loading"}`}
+          plan={recoveryPlan}
+          disabledReason={!selectedRun ? "正在读取任务信息。" :
+            ["pending", "running", "cancelling"].includes(selectedRun.status || "") ? "任务正在运行，结束或停止后可继续未执行的题目。" :
+            recoveryPlan?.remaining_qa_count === 0 ? "答题已全部执行，无需续跑。" :
+            !recoveryPlan ? "正在读取续跑条件。" :
+            !canResume ? "此任务不满足续跑条件，可查看已有回答并重新评分。" : undefined}
+          error={selectedRun ? runs.recoveryPlanError : undefined}
+          onRetry={runs.reloadRecoveryPlan}
+          busy={runs.hasRunning || runs.resuming || runs.rejudgeSubmitting || !!runs.rejudgeConfirmation}
+          onResume={body => selectedRun ? runs.resumeRun(selectedRun.run_id, body) : undefined}
+        />}
         exportScores={runs.exportScores}
         onExportScoresChange={runs.setExportScores}
         onExportTraces={runs.exportTraces}
@@ -70,6 +92,10 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
         graphQuality={runs.graphQuality}
         rejudge={{
           activeRejudge: runs.activeRejudge,
+          batchMode:runs.batchMode, onBatchModeChange:runs.setBatchMode, batches:runs.scoringBatches,
+          resumeBatches:runs.resumeBatches, onResumeBatchChange:(profile,batch)=> runs.setResumeBatches(previous => ({...previous,[profile]:batch})),
+          scope: runs.rejudgeScope, onScopeChange: runs.setRejudgeScope,
+          scoring: runs.scoring, onScoringChange: runs.setScoring, scoringPreview: runs.scoringPreview, scoringPreviewError: runs.scoringPreviewError,
           judgePromptKinds: runs.judgePromptKinds,
           activePromptKind: runs.activePromptKind,
           onSwitchPromptKind: runs.switchPromptKind,
@@ -78,12 +104,15 @@ export function RunsView({ runs, judgeModel, judgeConfig, saveJudgePrompt, memor
           judgeModel,
           onSavePrompt: () => saveJudgePrompt(runs.activePromptKind, runs.rejudgePrompt),
           onResetPrompt: runs.resetJudgePrompt,
-          canRejudge: runs.canRejudge,
+          canRejudge: runs.canRejudge && !runs.hasRunning && !runs.resuming && !!recoveryPlan && !runs.recoveryPlanError,
+          disabledReason: runs.resuming || runs.hasRunning ? "已有任务运行，结束后可重新评分。" :
+            runs.recoveryPlanError ? "请先重新读取恢复信息。" : !recoveryPlan ? "正在读取可评分范围。" :
+            !runs.canRejudge ? "请确认任务已结束、存在已有回答，且评分提示词已配置。" : undefined,
           rejudgeSubmitting: runs.rejudgeSubmitting,
           rejudgeConfirmation: runs.rejudgeConfirmation,
-          onRequestRejudge: runs.requestRejudge,
+          onRequestRejudge: () => runs.requestRejudge(),
           onConfirmRejudge: () => {
-            void runs.confirmRejudge(judgeConfig);
+            void runs.confirmRejudge();
           },
           onCancelRejudge: runs.cancelRejudge,
           rejudgePercent: runs.rejudgePercent,

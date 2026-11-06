@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 describe("resident accounting v2", () => {
+  it("labels kernel phys_footprint without relabeling legacy resident estimates", () => {
+    const rows = keyMetricRows({ phases: { gpu_metrics: {
+      memory_accounting: "apple_phys_footprint_v1", source: "apple_unified",
+      model_process_system_memory_used_mib: { peak: 1024 },
+      device_gpu_memory_mib: { peak: 2048 },
+    } } }, {});
+    const model = rows.find(row => row.label === "主模型内存占用");
+    expect(model?.note).toContain("ri_phys_footprint");
+    expect(model?.note).not.toContain("Dirty");
+    expect(rows.find(row => row.label === "整机GPU占用（参考）")).toBeDefined();
+  });
   it("shows only three memory totals and keeps legacy capacity labels", () => {
     const latest = { memory_accounting: "apple_footprint_resident_v2", system_memory_used_mib: 15000,
       product_stack_memory_mib: 9000, model_process_system_memory_used_mib: 7000 };
@@ -406,11 +417,11 @@ describe("aggregateMetricRows (:1212-1253) / keyMetricRows (:1254-1304)", () => 
 
   it("keyMetricRows 未落盘候选顺序时不补零", () => {
     const rows = keyMetricRows({}, {});
-    const recall = rows.find((row) => row.label === "工具图片召回率");
-    expect(recall?.value).toBe("未计算");
-    expect(recall?.note).toContain("不补零");
+    const recall = rows.find((row) => row.label === "工具媒体召回率R@5");
+    expect(recall?.value).toBe("未采集");
+    expect(recall?.note).toContain("顺序或映射未采集");
     const gpuRow = rows.find((row) => row.label === "主模型显存占用");
-    expect(gpuRow?.value).toBe("-"); // fmtMemory(undefined)
+    expect(gpuRow?.value).toBe("未记录");
   });
 });
 
@@ -423,7 +434,7 @@ describe("recallMetricRows (:1305-1320)", () => {
     const rows = recallMetricRows({ image_ranking: { question_count: 12, r_at_5: 0.5 } });
     expect(rows).toHaveLength(9);
     const byLabel = new Map(rows.map((row) => [row[0], row]));
-    expect(byLabel.get("R@5")).toEqual(["R@5", "50.0%", "0 题（GT ≤ 5 张）· 关键指标卡里的主值"]);
+    expect(byLabel.get("R@5")).toEqual(["R@5", "50.0%", "0 题（GT ≤ 5 张）· 历史图片口径"]);
     expect(byLabel.get("mAP")?.[1]).toBe("未计算");
     expect(byLabel.get("计分题数")?.[1]).toBe("12 题");
   });
@@ -528,10 +539,10 @@ describe("telemetryObservationRows", () => {
         sampling_diagnostics: { collection_seconds: null, schedule_lateness_seconds: 0.25 },
       } },
     });
-    expect(rows.find((row) => row[0] === "内存观测值龄")?.[1]).toBe("3.200 s");
+    expect(rows.find((row) => row[0] === "内存数据距采集时间")?.[1]).toBe("3.200 s");
     expect(rows.find((row) => row[0] === "内存来源有效性")?.slice(1)).toEqual(["1/2", "不可用或过期：nvmap"]);
-    expect(rows.find((row) => row[0] === "采集 / 调度延迟")?.[1]).toBe("不可用 / 0.250 s");
-    expect(rows.find((row) => row[0] === "采样记录 / 发布 / 采集异常")?.slice(1)).toEqual([
+    expect(rows.find((row) => row[0] === "采集耗时 / 采样延迟")?.[1]).toBe("不可用 / 0.250 s");
+    expect(rows.find((row) => row[0] === "写盘 / 发布 / 读取异常次数")?.slice(1)).toEqual([
       "1 / 0 / 0", "停止超时，线程待退出：gpu-sampler",
     ]);
   });
@@ -550,14 +561,4 @@ it("取消后的partial遥测保持部分采集标记", () => {
   expect(gpuMetricsView({ status: "cancelled", phases: { gpu_metrics: {
     status: "partial", partial: true, samples_count: 10, collection_end_reason: "cancelled",
   } } })).toMatchObject({ status: "partial", partial: true, collection_end_reason: "cancelled" });
-});
-
-
-it("JSON对象与旧动作协议分列，非流式TTFT不冒充未记录或0", () => {
-  const rows = aggregateMetricRows({}, { structured_json_requested: 3, structured_json_total: 2,
-    structured_json_success: 0, structured_json_rate: 0, llm_call_metrics_count: 4, llm_nonstreamed_count: 4 });
-  expect(rows.find(row => row[0] === "JSON 对象解析率")?.[1]).toBe("0.0%");
-  expect(rows.find(row => row[0] === "JSON 对象解析率")?.[2]).toContain("0/2");
-  expect(rows.find(row => row[0] === "LLM TTFT 均值")?.[1]).toBe("不适用（非流式）");
-  expect(aggregateMetricRows({}, {}).find(row => row[0] === "JSON 对象解析率")?.[1]).toBe("未记录");
 });

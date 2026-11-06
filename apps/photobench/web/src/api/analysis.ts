@@ -44,6 +44,9 @@ export interface AnalysisTurn {
   behavior_correct: boolean | null;
   judge_reason: string;
   score: number | null;
+  scoring_evidence?: Record<string, unknown>;
+  evaluation_result?: Record<string, unknown>;
+  evaluation?: Record<string, unknown>;
   ability_family?: string[];
   ability_type?: string[];
   benchmark_group?: string[];
@@ -59,6 +62,9 @@ export interface AnalysisCase {
   answer: string;
   reference_answer: string;
   score: number | null;
+  scoring_evidence?: Record<string, unknown>;
+  evaluation_result?: Record<string, unknown>;
+  evaluation?: Record<string, unknown>;
   execution: string;
   ability_taxonomy_version?: string | null;
   ability_labels?: Record<string, string>;
@@ -80,6 +86,7 @@ export interface BehaviorGroup {
   missing: number;
 }
 export interface AnalysisReport {
+  evaluation_summary?: Record<string, unknown>;
   schema_version: number;
   rule_version: number;
   generated_at: number;
@@ -152,6 +159,7 @@ export interface ComparisonReport {
   }[];
 }
 export interface DiagnosisReport {
+  parent_job?: string;
   schema_version?: number;
   scope?: {
     kind: string;
@@ -173,7 +181,6 @@ export interface DiagnosisReport {
   summary_status?: string;
   summary_error?: string;
   prompt_version?: string;
-  sample_indices?: number[];
   requested: number;
   covered: number;
   model: string;
@@ -183,15 +190,22 @@ export interface DiagnosisReport {
     index: number;
     qa_id: string;
     valid: boolean;
+    status?: "completed" | "failed" | "invalid";
     result: {
+      diagnosis?: {
+        error_types: string[];
+        summary: string;
+        cause: string;
+        certainty: "confirmed" | "likely" | "unknown";
+        next_step: string;
+        evidence_refs: string[];
+        limitations: string;
+      };
       claims?: AnalysisClaim[];
-      observations?: string;
-      possible_causes?: string;
-      missing_evidence?: string | string[];
-      recommendations?: string;
-      experiments?: string;
-      evidence_refs?: string[];
+      missing_evidence?: string[];
     };
+    gt_images?: {id:string;media_id:string;media_type:string;turn:number;source:string;status:string;sha256?:string}[];
+    gt_missing_evidence?: string[];
     raw: string;
     error?: string;
   }[];
@@ -206,6 +220,7 @@ export interface AnalysisJob<T = AnalysisReport> {
   error?: string;
   report?: T;
   created_at?: number;
+  options?: { parent_job?: string; left_job?: string; right_job?: string };
   cancel_requested?: boolean;
 }
 export interface AnalysisPage {

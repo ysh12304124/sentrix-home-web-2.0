@@ -83,6 +83,7 @@ def test_the_prompt_lists_exactly_the_evidence_registry():
         "person_profile",
         "photo_identity",
         "photo_set",
+        "spoken_content",
         "structured_fact",
         "visible_text",
         "visual_observation",

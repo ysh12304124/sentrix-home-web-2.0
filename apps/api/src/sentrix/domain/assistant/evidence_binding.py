@@ -153,6 +153,25 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     confidence=1.0 if row.get("evidence_summary") else 0.6,
                 )
             )
+        speech = row.get("speech_evidence")
+        if isinstance(speech, (list, tuple)):
+            speech_text = "；".join(
+                _text(segment.get("text"))
+                for segment in speech
+                if isinstance(segment, Mapping) and _text(segment.get("text"))
+            )
+            if speech_text:
+                facts.append(
+                    Fact(
+                        fact_type="speech_transcript",
+                        value_type=RequirementValueType.DESCRIPTION,
+                        value=speech_text,
+                        # GoalPlanner treats the whole recording as the video-time
+                        # scope (rather than inventing a wall-clock capture date).
+                        scope={"event": "视频", "time": "视频时间"},
+                        provenance=f"{record.call_id}:{handle}",
+                    )
+                )
     return facts
 
 

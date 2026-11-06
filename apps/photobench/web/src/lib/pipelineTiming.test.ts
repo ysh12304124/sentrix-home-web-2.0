@@ -15,7 +15,7 @@ describe("流水线计时口径", () => {
     expect(view.groups[0]?.summary).toBe("实际经过 9分45.2秒 · 占后端 83.4%");
     const prepare = view.groups[0]!.rows.find(row => row.key === "source_memory_prepare")!;
     expect(prepare.value).toBe("未记录");
-    expect(prepare.description).toContain("12分48.6秒");
+    expect(prepare.description).toContain("任务累计 12分48.6秒（辅助统计）");
     expect(prepare.basis).toBe("整段实际耗时");
     expect(prepare.share).toBeNull();
     const tail = view.groups.find(group => group.key === "finalize")!;
@@ -31,9 +31,13 @@ describe("流水线计时口径", () => {
       video_scene_write: 2, video_keyframe_extraction: 3, video_keyframe_asset_write: 4, video_keyframe_memory: 25,
     } });
     const video = view.groups.find(group => group.key === "video")!;
-    expect(video.rows.every(row => row.value === "未记录")).toBe(true);
+    expect(video.rows.map(row => row.value)).toEqual(Array(5).fill("未记录"));
+    for (const [i, value] of ["1s", "2s", "3s", "4s", "25s"].entries()) {
+      expect(video.rows[i].description).toContain(`任务累计 ${value}（辅助统计）`);
+    }
     expect(video.rows.every(row => row.share === null)).toBe(true);
-    expect(view.groups[0]!.rows.find(row => row.key === "video_total")?.value).toBe("未记录");
+    expect(view.groups[0]!.rows.find(row => row.key === "video_total")).toMatchObject({ value: "未记录" });
+    expect(view.groups[0]!.rows.find(row => row.key === "video_total")?.description).toContain("任务累计 35s（辅助统计）");
   });
 
   it("旧合并接口保留主线程等待含义，不当作模型累计或独立流水线墙钟", () => {
@@ -96,18 +100,19 @@ it("收尾汇总只相加四个顺序执行段，缺项不补零，因果图不�
   }
 });
 
-
-it("并行与视频细分统一显示真实首尾跨度及占后端比例，累计值仅作辅助", () => {
-  const view = pipelineTimingView({ execution_mode: "explicit", status: "done", timings: {
-    total: 100, pipeline_core: 80, source_memory_prepare: 120, source_memory_prepare_wall: 60,
-    source_memory_commit: 5, source_memory_commit_wall: 70, event_summarize: 10,
-    video_total: 20, video_total_wall: 40, video_keyframe_memory: 15, video_keyframe_memory_wall: 30,
-  } });
-  const core = view.groups.find(group => group.key === "core")!;
-  expect(core.rows.find(row => row.key === "source_memory_prepare")).toMatchObject({ value: "1分", share: "60.0%" });
-  expect(core.rows.find(row => row.key === "source_memory_commit")).toMatchObject({ value: "1分10秒", share: "70.0%" });
-  expect(core.rows.find(row => row.key === "event_summarize")?.share).toBe("10.0%");
-  const video = view.groups.find(group => group.key === "video")!;
-  expect(video.summary).toBe("实际经过 40s · 占后端 40.0%");
-  expect(video.rows.find(row => row.key === "video_keyframe_memory")).toMatchObject({ value: "30s", share: "30.0%" });
+it("并行任务累计20秒，实际经过10秒，阶段主值与占比使用实际经过时间", () => {
+  const phase = { execution_mode: "explicit", status: "done", timings: {
+    total: 20, pipeline_core: 15, source_memory_prepare: 20, source_memory_prepare_wall: 10,
+    video_total: 8, video_total_wall: 7, video_scene_planning: 2, video_scene_planning_wall: 3,
+    finalize_wall: 5, participant_projection: 1, memory_graph: 1, family_graph: 1, person_insights: 1,
+  } };
+  const before = JSON.stringify(phase);
+  const view = pipelineTimingView(phase);
+  expect(view.groups[0].rows.find(row => row.key === "source_memory_prepare"))
+    .toMatchObject({ value: "10s", basis: "整段实际耗时", share: "50.0%" });
+  expect(view.groups[0].rows.find(row => row.key === "source_memory_prepare")?.description)
+    .toContain("任务累计 20s（辅助统计）");
+  expect(view.groups.find(group => group.key === "video")?.rows[0]).toMatchObject({ value: "3s", share: "15.0%" });
+  expect(view.groups.find(group => group.key === "finalize")?.summary).toBe("实际经过 5s · 占后端 25.0%");
+  expect(JSON.stringify(phase)).toBe(before);
 });

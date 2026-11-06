@@ -14,13 +14,50 @@ function activeRun(phases: Run["phases"]): Run {
 }
 
 describe("阶段卡（1.0 :3099-3129）", () => {
+  it("隔离小样区分答卷与源任务日志", () => {
+    const {container} = render(<PhaseList activeRun={{run_id:'sample', source_run_id:'full',
+      qa_count:3, item_count:3, summary:{judge_valid_count:3},
+      phases:{qa_eval:{status:'done',progress:{agent_completed:487,total:487}}}}}/>);
+    expect(container.textContent).toContain('复用答卷 3/3');
+    expect(container.textContent).toContain('源任务答题 487/487');
+    expect(container.textContent).not.toContain('487/3');
+  });
+  it("补评分单独显示本轮日志，首次执行错误默认折叠", () => {
+    const run: Run = {
+      ...activeRun({qa_eval:{status:"partial",error_details:[{sample_id:"q1",reason:"旧错误"}]}}),
+      qa_count:1, summary:{judge_valid_count:1}, rejudge:{rejudge_id:"new-task",status:"completed",completed:1,total:1,failed:0,results:[]},
+    };
+    const {container}=render(<PhaseList activeRun={run}/>);
+    expect(container.querySelector('.scoring-task-log')?.textContent).toContain("本轮评分 1/1 项 · 失败 0 项");
+    expect(container.querySelector('.scoring-task-log')?.textContent).not.toContain("旧错误");
+    expect(container.querySelector('.scoring-task-log .phase-status')?.textContent).toBe("完成");
+    expect(container.querySelector('.initial-execution-log')?.hasAttribute('open')).toBe(false);
+    expect(container.querySelector('.initial-execution-log')?.textContent).toContain("旧错误");
+    expect(container.textContent).not.toContain("有效评分 1/1");
+    expect(run.phases?.qa_eval?.status).toBe("partial");
+  });
+
+  it("每次补评都有独立记录，后续成功不覆盖上次错误", () => {
+    const {container}=render(<PhaseList activeRun={{run_id:'r',status:'completed_with_errors',
+      rejudge_history:[{rejudge_id:'old',status:'failed',failed:1,error_details:[{sample_id:'q1',reason:'上次错误'}]}],
+      rejudge:{rejudge_id:'new',status:'completed',completed:2,total:2,failed:0,results:[{sample_id:'q1',status:'completed',score:0,max_score:1}]}}}/>);
+    const logs=container.querySelectorAll('.scoring-task-log');
+    expect(logs).toHaveLength(2);
+    expect(logs[0]?.textContent).toContain('new');
+    expect(logs[0]?.textContent).toContain('0/1');
+    expect(logs[0]?.textContent).not.toContain('上次错误');
+    expect(logs[0]?.hasAttribute('open')).toBe(true);
+    expect(logs[1]?.textContent).toContain('上次错误');
+    expect(logs[1]?.hasAttribute('open')).toBe(false);
+  });
   it("历史外层已有70个Judge终态时，阶段卡不能显示0/487", () => {
     const { container } = render(<PhaseList activeRun={activeRun({ qa_eval: {
       status: "running", judge_completed: 70, judge_total: 487,
       progress: { completed: 71, total: 487 },
     } })} />);
-    expect(container.textContent).toContain("Agent 71/487 · Judge 已结束 70/487");
-    expect(container.textContent).not.toContain("Judge 已结束 0/487");
+    expect(container.textContent).toContain("答题已执行 71/487 · 有效评分 —/487");
+    expect(container.textContent).not.toContain("评分尝试已结束 0/487");
+    expect(container.textContent).toContain("评分尝试已结束 70/487（含失败）");
   });
 
   it("固定渲染 6 张卡，状态文案随 phase.status 变化", () => {
@@ -234,7 +271,9 @@ it("显式阶段区分请求墙钟、后端总计和嵌套步骤，长耗时显�
   expect(pipeline?.textContent).toContain("实际总耗时 2分");
   expect(pipeline?.textContent).toContain("后端处理耗时 1分40秒");
   expect(pipeline?.textContent).toContain("1分10秒 · 占后端 70.0%");
-  expect(getByRole("table", { name: "媒体处理与事件总结", hidden: true }).textContent).toContain("任务累计 3分20秒");
+  const processing = getByRole("table", { name: "媒体处理与事件总结", hidden: true });
+  expect(processing.textContent).toContain("任务累计 3分20秒（辅助统计）");
+  expect(processing.textContent).toContain("未记录整段实际耗时");
   expect(getByRole("table", { name: "图谱与人物收尾", hidden: true }).textContent).toContain("占后端 20.0%");
   expect(pipeline?.querySelector("details")?.open).toBe(false);
 });
@@ -262,4 +301,60 @@ it("导入首屏保留数量、失败和墙钟，登记细节折叠且终态不�
   expect(card.querySelector("details")?.open).toBe(false);
   expect(card.textContent).toContain("登记落库累计 0.1s");
   expect(card.querySelector(".phase-bar")).toBeNull();
+});
+
+it("取消任务的9题答题与3题有效评分分别展示，跳过题不当作已完成", () => {
+  const { container } = render(<PhaseList activeRun={{ run_id: "cancelled", status: "cancelled", qa_count: 12,
+    summary: { judge_valid_count: 3 }, phases: { qa_eval: { status: "cancelled", progress: {
+      completed: 9, total: 12, judge_completed: 9, judge_total: 12, judge_skipped: 3,
+    } } } }} />);
+  expect(container.textContent).toContain("答题已执行 9/12 · 有效评分 3/12");
+  expect(container.textContent).toContain("评分尝试已结束 9/12（含失败） · 未进入评分 3 题");
+});
+
+it("复用相册的三个准备阶段显示跳过，不借用任务异常或虚构进度", () => {
+  const run: Run = { run_id: "resume", mode: "reuse", status: "completed_with_errors", phases: {
+    model_deploy: { status: "done", total_seconds: 0.042 },
+    scope_setup: { status: "done", total_seconds: 0 },
+    qa_eval: { status: "partial", progress: { completed: 1171, total: 1171 } },
+  } };
+  const saved = JSON.stringify(run);
+  const { container, queryByRole } = render(<PhaseList activeRun={run} />);
+  const cards = container.querySelectorAll(".phase-card");
+  expect(cards).toHaveLength(6);
+  expect(cards[0]?.textContent).toContain("模型连接");
+  expect(cards[1]?.textContent).toContain("连接已有相册");
+  expect(cards[1]?.textContent).toContain("使用已有相册，不创建新相册");
+  expect(cards[1]?.textContent).not.toContain("<1ms");
+  for (const index of [2, 3, 4]) {
+    expect(cards[index]?.querySelector(".phase-status")?.textContent).toBe("跳过");
+    expect(cards[index]?.querySelector("details")).toBeNull();
+    expect(cards[index]?.textContent).not.toMatch(/等待|\?|有异常/);
+  }
+  expect(queryByRole("progressbar")).toBeNull();
+  expect(cards[5]?.querySelector(".phase-status")?.textContent).toBe("部分完成");
+  expect(JSON.stringify(run)).toBe(saved);
+});
+
+it("复用模式尚未开始时仍区分待执行与跳过，明确跳过的阶段不显示登记详情", () => {
+  const { container } = render(<PhaseList activeRun={{run_id: "reuse", mode: "reuse", status: "pending",
+    phases: { identity_seed: {status: "pending"}, photo_import: {status: "skipped"} },
+  }} />);
+  const cards = container.querySelectorAll(".phase-card");
+  expect(cards[0]?.querySelector(".phase-status")?.textContent).toBe("等待");
+  expect(cards[1]?.querySelector(".phase-status")?.textContent).toBe("等待");
+  expect(container.querySelectorAll(".phase-status.skipped")).toHaveLength(3);
+  expect(cards[3]?.querySelector("details")).toBeNull();
+});
+
+it("复用历史实际记录的失败保留错误，全链路缺失阶段继续显示等待", () => {
+  const { container, rerender } = render(<PhaseList activeRun={{run_id: "legacy", mode: "reuse", phases: {
+    pipeline_processing: { status: "failed", error_details: [{reason: "真实历史错误"}] },
+  }}} />);
+  expect(container.querySelectorAll(".phase-card")[4]?.textContent).toContain("真实历史错误");
+  expect(container.querySelectorAll(".phase-card")[4]?.querySelector(".phase-status")?.textContent).toBe("失败");
+  rerender(<PhaseList activeRun={{run_id: "full", mode: "full", status: "running", phases: {}}} />);
+  expect(container.querySelectorAll(".phase-status.skipped")).toHaveLength(0);
+  expect(container.querySelectorAll(".phase-card")[1]?.textContent).toContain("创建相册");
+  expect(container.querySelectorAll(".phase-card")[2]?.querySelector(".phase-status")?.textContent).toBe("等待");
 });

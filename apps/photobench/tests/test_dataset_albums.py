@@ -153,6 +153,18 @@ def test_media_file_returns_the_path_inside_the_collection(tmp_path: Path):
     assert source.media_file("album-x", "photos", "a.jpg") == str(tmp_path / "album-x" / "photos" / "a.jpg")
 
 
+def test_media_file_serves_only_manifest_declared_external_links(tmp_path: Path):
+    source = _source(tmp_path)
+    original = tmp_path / "original.jpg"
+    original.write_bytes(b"original media")
+    photo = tmp_path / "album-x/photos/a.jpg"
+    photo.unlink()
+    photo.symlink_to(original)
+    (photo.parent / "undeclared.jpg").symlink_to(original)
+    assert source.media_file("album-x", "photos", "a.jpg") == str(original)
+    assert source.media_file("album-x", "photos", "undeclared.jpg") is None
+
+
 def test_media_file_blocks_every_traversable_segment(tmp_path: Path):
     """三段都来自 URL，所以三段都要拦。
 

@@ -4,6 +4,8 @@ from sentrix.bootstrap.container import MIGRATIONS_DIR, Container
 from sentrix.config import Settings
 from sentrix.infrastructure.persistence.database import MigrationError
 
+pytestmark = pytest.mark.usefixtures("fake_embedding_startup")
+
 
 def test_container_builds_all_adapters(tmp_path, monkeypatch):
     # conftest.py 要到 Task 5 才建，这里就地构造 Settings，不依赖 settings fixture

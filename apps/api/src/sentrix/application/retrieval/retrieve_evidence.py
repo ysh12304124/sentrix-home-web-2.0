@@ -42,13 +42,7 @@ from datetime import datetime
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
 from sentrix.application.retrieval.index_observation_text import compose_text
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_graph import (
-    GRAPH_CHANNEL,
-    GRAPH_MIN_PROMOTION_MARGIN,
-    GRAPH_MIN_PROMOTION_SCORE,
-    RetrieveGraph,
-    graph_search_policy,
-)
+from sentrix.application.retrieval.retrieve_graph import GRAPH_CHANNEL, RetrieveGraph
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import (
@@ -89,6 +83,7 @@ RERANK_CHANNEL = "rerank"
 # 融合之后才按 limit 交付。
 RECALL_OVERSAMPLE_FACTOR = 4
 GRAPH_CHANNEL_WEIGHT = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRequest:
@@ -162,12 +157,6 @@ class EvidenceResult:
     primary_asset_ids: Sequence[str] = field(default_factory=tuple)
     graph_asset_ids: Sequence[str] = field(default_factory=tuple)
     fused_asset_ids: Sequence[str] = field(default_factory=tuple)
-    # 图候选是否真正获得了首屏交付槽位。图遥测不能只记录「走过图」，否则候选
-    # 召回变好、最终媒体交付变差时无法定位是融合还是模型选图出了问题。
-    graph_promoted_asset_ids: Sequence[str] = field(default_factory=tuple)
-    graph_suppressed_asset_ids: Sequence[str] = field(default_factory=tuple)
-    # 候选对应的最短图路径，用于结果集预览和关系感知的晋升门控。
-    graph_provenance: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 def _visual_candidates_health(
@@ -475,8 +464,6 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
-        graph_policy = graph_search_policy(text, limit=limit)
-        graph_provenance: Mapping[str, Mapping[str, object]] = {}
         if self._graph is not None:
             graph_started = time.monotonic()
             try:
@@ -485,10 +472,8 @@ class RetrieveEvidence:
                     scope_id=request.scope_id,
                     limit=max(recall_limit, limit * 2),
                     question=text,
-                    max_hops=graph_policy.max_hops,
                 )
                 channel_hits[GRAPH_CHANNEL] = graph_result.hits
-                graph_provenance = graph_result.provenance
                 traces.append(
                     ChannelTrace(
                         channel=GRAPH_CHANNEL,
@@ -530,62 +515,44 @@ class RetrieveEvidence:
             primary_fused = [candidate for candidate in primary_fused if candidate.asset_id in kept]
             excluded_count = outcome.excluded_count
 
-        # 图扩展复用主召回的相关性排序，但种子仍由重排前的 primary 头确定，
-        # 避免重排改变图检索的起点。
+        # **重排排在条件过滤之后、交付之前。** 条件判定是硬筛，先后顺序不影响筛的
+        # 结果；而交付截断与图槽位选择都应该看到重排后的头部。图种子在上面已经按
+        # **未重排**的 primary 头取过——图的基线是「图加入前实际交付的头部」，让
+        # 重排去改种子会把两个变量缠在一起，回头分不清是谁的效果。
         primary_fused = self._rerank(query=text, candidates=primary_fused, traces=traces)
 
-        # graph 是 expander：允许高置信且与查询相关的图候选晋升，但不让弱路径
-        # 仅凭图连通性挤掉 primary 结果。
-        graph_promoted_asset_ids: tuple[str, ...] = ()
-        graph_suppressed_asset_ids: tuple[str, ...] = ()
+        # graph 是 expander，不应像第六条独立 primary 通道一样凭 RRF 分数把结果
+        # 全部压在尾部（primary 的 RRF 分数天然大一个数量级，旧实现因此在正常
+        # limit 下几乎永远看不到图扩展）。保留 primary 的排序作为基线，并为图扩展
+        # 预留一个小而确定的尾部窗口；窗口内按 graph 的 0.5 应用层权重与路径排名
+        # 选择，未命中时再由 primary 补位。这样既不改冻结 DEFAULT_CHANNEL_WEIGHTS，
+        # 也不会让图候选反向改变 primary 排名。
         if channel_hits.get(GRAPH_CHANNEL):
-            primary_head_ids = {candidate.asset_id for candidate in primary_fused[:limit]}
+            primary_ids = {candidate.asset_id for candidate in primary_fused}
             graph_candidates = [
                 candidate
                 for candidate in fused
-                if (
-                    GRAPH_CHANNEL in candidate.channels
-                    and candidate.asset_id not in primary_head_ids
-                    and candidate.raw_scores.get(GRAPH_CHANNEL, 0.0) >= GRAPH_MIN_PROMOTION_SCORE
-                )
+                if GRAPH_CHANNEL in candidate.channels and candidate.asset_id not in primary_ids
             ]
-            # 图路径分数用于过滤弱路径；综合 RRF 分数用于验证查询相关性。路径关系
-            # （哪怕是一跳时间/视觉/对象/血缘边）不能替代查询相关性，否则会把有关联但
-            # 不回答当前问题的媒体顶掉 primary 头部中的正确候选。
             graph_candidates.sort(
                 key=lambda candidate: (
-                    -candidate.score,
-                    -candidate.raw_scores.get(GRAPH_CHANNEL, 0.0),
                     candidate.channels.get(GRAPH_CHANNEL, 10**9),
+                    -candidate.score,
                     candidate.asset_id,
                 )
             )
-            graph_slots = min(len(graph_candidates), graph_policy.graph_slots)
-            selected = list(primary_fused[:limit])
-            promoted: list[FusedCandidate] = []
-            suppressed: list[FusedCandidate] = []
-            # 图候选只有在自己的综合检索分数至少超过将被替换的 primary 尾部时
-            # 才能进入首屏。之前只看 graph path score，会把「图上相连但与查询
-            # 相关性很弱」的媒体放到 photo_6，导致候选集合的 GT 召回上升，模型
-            # 实际选图/交付反而下降。
-            for candidate in graph_candidates:
-                if len(promoted) >= graph_slots:
-                    suppressed.append(candidate)
-                    continue
-                replace_index = len(selected) - 1 - len(promoted)
-                if replace_index < 0:
-                    suppressed.append(candidate)
-                    continue
-                primary_tail = selected[replace_index]
-                if candidate.score < primary_tail.score + GRAPH_MIN_PROMOTION_MARGIN:
-                    suppressed.append(candidate)
-                    continue
-                selected[replace_index] = candidate
-                promoted.append(candidate)
-            selected.sort(key=lambda candidate: (-candidate.score, candidate.asset_id))
+            graph_slots = min(len(graph_candidates), max(1, min(4, limit // 4 or 1)))
+            selected: list[FusedCandidate] = [
+                *primary_fused[: max(0, limit - graph_slots)],
+                *graph_candidates[:graph_slots],
+            ]
+            selected_ids = {candidate.asset_id for candidate in selected}
+            if len(selected) < limit:
+                selected.extend(
+                    candidate for candidate in primary_fused if candidate.asset_id not in selected_ids
+                )
+                selected = selected[:limit]
             fused = selected
-            graph_promoted_asset_ids = tuple(candidate.asset_id for candidate in promoted)
-            graph_suppressed_asset_ids = tuple(candidate.asset_id for candidate in suppressed)
         else:
             fused = primary_fused[:limit]
 
@@ -613,7 +580,4 @@ class RetrieveEvidence:
             primary_asset_ids=primary_asset_ids,
             graph_asset_ids=graph_asset_ids,
             fused_asset_ids=fused_asset_ids,
-            graph_promoted_asset_ids=graph_promoted_asset_ids,
-            graph_suppressed_asset_ids=graph_suppressed_asset_ids,
-            graph_provenance=graph_provenance,
         )

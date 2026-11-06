@@ -11,6 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import yaml
 
@@ -22,7 +23,15 @@ def current_spec() -> dict[str, Any]:
     sys.path.insert(0, str(REPO_ROOT / "apps" / "api" / "src"))
     from sentrix.main import create_app
 
-    return create_app().openapi()
+    # Schema export runs offline; runtime startup inference is tested separately.
+    with (
+        patch("sentrix.infrastructure.models.wemm.WeMMSidecarEmbedder.smoke_test", return_value=(True, "")),
+        patch(
+            "sentrix.infrastructure.models.legacy.LegacyEmbeddingHealthProbe.smoke_test",
+            return_value=(True, ""),
+        ),
+    ):
+        return create_app().openapi()
 
 
 def main() -> int:

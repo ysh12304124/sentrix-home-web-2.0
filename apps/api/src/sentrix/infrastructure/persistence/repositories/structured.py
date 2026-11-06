@@ -1,40 +1,4 @@
-"""结构化查询的后半：``StructuredFilter`` → WHERE，并跑 count / 极值 / 分组。
-
-对应 1.0 ``backend/structured_memory.py`` 的 ``_base_query`` / ``_count`` /
-``_first_last`` / ``_group_by`` / ``_list``。前半（「筛什么」）在
-``domain/retrieval/structured_query.py``；这一半是 SQL，按分层只能待在 infrastructure。
-
-## 为什么把地点子句单独拎出来
-
-1.0 的 ``_place_clause`` 是一条**跨三层**的规则：它同时要读观察（``o.place``）、
-资产（``captured_location``）、反地理 JSON（``reverse_geocode.*``），并且在 SQL 里
-又写了一遍 ``geocoding.place_alias_names`` 的别名展开。2.0 里同一条规则有三个孪生：
-
-    ``domain/places/matching.py:place_text_matches``    ← 融合后逐候选判定（权威口径）
-    ``domain/retrieval/conditions.py:_place``           ← HARD 条件，走上面那个
-    本模块的 ``place_clause``                            ← 召回/统计时的 WHERE
-
-三者必须给出同一个判定，否则「同一个问题，走统计路径和走语义路径得到两个数」。
-所以这里的每一条子句都是照着 ``place_text_matches`` 写的，不是照着 1.0 的 SQL 抄的。
-
-## 三处与 1.0 的差异
-
-**一、``a.captured_location`` 那一支去掉。** 2.0 的 ``assets.captured_location``
-是 ``GpsPoint``（``domain/media/models.py``），把 ``30.274100,120.155100`` 拿去
-``LIKE '%杭州%'`` 永远匹配不上——``test_conditions.py:295`` 已经为这件事写过用例。
-1.0 拿它当地点串是因为那时候客户端可以塞一个「家中餐厅」进来，2.0 没有这条写入路径。
-
-**二、``label`` 是拼出来的，不是存的。** 1.0 把 ``reverse_geocode.label`` 存进
-``metadata_json``，2.0 按设计 §3.2 拆成了 ``asset_places`` 的五个槽位。这里的
-``place_label_sql`` 逐字节复刻 ``places/matching.py:place_label`` 的 ``" ".join``——
-空槽位在 SQL 的直接拼接下会留下连续空格，而 Python 那边不会，两边就差一个空格、
-少一批照片。
-
-**三、``place`` 分组的键改成确定性的。** 1.0 的 ``_GROUP_EXPR["place"]`` 直接读
-``LEFT JOIN`` 上来的 ``o.place``，而一个资产可以有多个观察行——**取到哪一行由
-SQLite 的扫描顺序决定**。同一个问题问两次可能给出不同的分组名。这里换成
-「取该资产最近一条非空观察」的相关子查询。
-"""
+"""结构化统计、极值和分组。时间与语义检索共用拍摄当地日历/显式时区规则；地点只统计已确定行政归属。附近点留给候选检索，不当作确定归属计数。"""
 
 from __future__ import annotations
 
@@ -42,6 +6,7 @@ import sqlite3
 from collections.abc import Sequence
 
 from sentrix.domain.places.aliases import PlaceAliases
+from sentrix.domain.places.matching import admin_text_matches
 from sentrix.domain.retrieval.structured_query import (
     TIME_GROUP_KEYS,
     AssetSample,
@@ -110,33 +75,14 @@ def strip_admin_suffix_sql(column: str, suffixes: Sequence[str]) -> str:
 
 
 def place_clause(value: str, aliases: PlaceAliases) -> tuple[str, list[object]]:
-    """地点过滤的 WHERE 片段。三条规则与 ``place_text_matches`` 一一对应。
-
-    1) 约束值整串出现在 ``observations.place`` 或地点 label 里；
-    2) 存储的行政区（去后缀后）出现在约束值里（``秦皇岛`` 匹配
-       ``秦皇岛如是海度假村``）；
-    3) 中英别名命中（``清迈`` 匹配 ``Chiang Mai``）。
-
-    用 ``instr`` 而不是 ``LIKE``：``LIKE`` 会把约束值里的 ``_`` / ``%`` 当通配符，
-    一个地名里的下划线就能让整条子句变成「什么都匹配」。``instr`` 是纯子串，
-    与 Python 的 ``in`` 逐字对应。
-    """
-    text = str(value or "").strip()
+    """整条查询由已确定的行政层级组成才成立。"""
+    text = value.strip()
     if not text:
         return "1=1", []
-    label = place_label_sql()
-    clauses = [f"(instr(o.place, ?) > 0 OR instr({label}, ?) > 0)"]
-    params: list[object] = [text, text]
-    for slot in _ADMIN_SLOTS:
-        stripped = strip_admin_suffix_sql(f"ap.{slot}", aliases.admin_suffixes)
-        clauses.append(f"(length({stripped}) >= 2 AND instr(?, {stripped}) > 0)")
-        params.append(text)
-    for alias in aliases.names_for(text):
-        # ``lower`` 在 SQLite 里只折 ASCII——别名是 GeoNames 给的英文/缩写，
-        # 正好落在它管得着的范围里（CJK 没有大小写）。
-        clauses.append(f"instr(lower({label}), lower(?)) > 0")
-        params.append(alias)
-    return "(" + " OR ".join(clauses) + ")", params
+    return (
+        "place_admin_supported(?, ap.admin_province, ap.admin_city, ap.admin_district)",
+        [text],
+    )
 
 
 def build_base(filter: StructuredFilter, aliases: PlaceAliases) -> tuple[str, str, list[object]]:
@@ -171,12 +117,9 @@ def build_base(filter: StructuredFilter, aliases: PlaceAliases) -> tuple[str, st
     for value in filter.media_exclude:
         clauses.append("a.media_type != ?")
         params.append(value)
-    if filter.time_start:
-        clauses.append("a.captured_at >= ?")
-        params.append(filter.time_start)
-    if filter.time_end:
-        clauses.append("a.captured_at < ?")
-        params.append(filter.time_end)
+    if filter.time_start or filter.time_end:
+        clauses.append("capture_in_bounds(a.captured_at, ?, ?)")
+        params.extend((filter.time_start, filter.time_end))
     if filter.place:
         clause, place_params = place_clause(filter.place, aliases)
         clauses.append(clause)
@@ -195,7 +138,7 @@ def build_base(filter: StructuredFilter, aliases: PlaceAliases) -> tuple[str, st
 _LATEST_OBSERVATION_PLACE = (
     "(SELECT op.place FROM observations op"
     " WHERE op.asset_id = a.id AND op.place <> ''"
-    " ORDER BY op.captured_at DESC, op.id DESC LIMIT 1)"
+    " ORDER BY capture_sort_key(op.captured_at) DESC, op.id DESC LIMIT 1)"
 )
 
 _GROUP_EXPR = {
@@ -240,6 +183,14 @@ class SqliteStructuredQueryRepository:
 
     def _rows(self, sql: str, params: Sequence[object]) -> list[sqlite3.Row]:
         with self._database.connect() as connection:
+            connection.create_function(
+                "place_admin_supported",
+                4,
+                lambda value, province, city, district: admin_text_matches(
+                    value, (province or "", city or "", district or ""), self._aliases
+                ),
+                deterministic=True,
+            )
             return connection.execute(sql, tuple(params)).fetchall()
 
     def count(self, filter: StructuredFilter) -> int:
@@ -248,15 +199,13 @@ class SqliteStructuredQueryRepository:
         return int(rows[0]["n"] or 0) if rows else 0
 
     def captured_bound(self, filter: StructuredFilter, *, latest: bool) -> str | None:
-        """最早（``latest=False``）或最晚（``latest=True``）的 ``captured_at``。
-
-        取的是**字符串**不是 ``datetime``：``captured_at`` 落库时已经归一成
-        ``isoformat()``，再解析回 ``datetime`` 只是把同一个值绕一圈，而绕的
-        那一圈会顺手把「值不是 ISO」这件事变成一个异常。
-        """
+        """跨offset按绝对时刻取极值；未知时区另组，不假定UTC。"""
         joins, where, params = build_base(filter, self._aliases)
+        direction = "DESC" if latest else "ASC"
         rows = self._rows(
-            f"SELECT {'MAX' if latest else 'MIN'}(a.captured_at) AS v FROM assets a {joins} WHERE {where}",
+            f"SELECT a.captured_at AS v FROM assets a {joins} WHERE {where}"
+            " AND a.captured_at IS NOT NULL"
+            f" ORDER BY capture_sort_key(a.captured_at) {direction}, a.id LIMIT 1",
             params,
         )
         return rows[0]["v"] if rows and rows[0]["v"] else None
@@ -284,9 +233,9 @@ class SqliteStructuredQueryRepository:
         rows = self._rows(
             "SELECT a.id AS asset_id, a.captured_at, a.media_type,"
             " (SELECT COALESCE(o2.caption, '') FROM observations o2"
-            "  WHERE o2.asset_id = a.id ORDER BY o2.captured_at DESC LIMIT 1) AS caption"
+            "  WHERE o2.asset_id = a.id ORDER BY capture_sort_key(o2.captured_at) DESC LIMIT 1) AS caption"
             f" FROM assets a {joins} WHERE {where}"
-            " ORDER BY a.captured_at DESC LIMIT ?",
+            " ORDER BY capture_sort_key(a.captured_at) DESC, a.id DESC LIMIT ?",
             [*params, limit],
         )
         return tuple(

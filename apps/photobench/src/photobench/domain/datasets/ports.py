@@ -60,6 +60,10 @@ class AlbumSource(Protocol):
         """
         ...
 
+    def gt_metadata_snapshot(self, album_id: str) -> dict[str, Any]:
+        """Load versioned Judge-only capture context; absence is recorded explicitly."""
+        ...
+
     def read_file(self, album_id: str, relative: str) -> bytes:
         """读 album 里的一个文件（参考图）。读不到抛 ``KeyError``。"""
         ...

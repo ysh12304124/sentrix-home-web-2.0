@@ -1,3 +1,6 @@
+import { OPEN_PROFILE, ATM_PROFILE } from '../../lib/scoring.ts';
+import { ChoiceMatchingResult, EvaluationResult, EvaluationTypeBadge, evaluationReason } from "../../components/EvaluationResult.tsx";
+import { ItemScoringResults } from '../../components/ScoringResults.tsx';
 import { taxonomyLabel, abilityLabel } from "../../lib/qaTaxonomy.ts";
 /**
  * 单题卡（列表项 + 展开体）。移植 1.0 `App.vue:3460-3674`。
@@ -25,6 +28,7 @@ import {
   fmtPct,
   judgeRoundState,
   judgeScoreLabel,
+  judgeScoreClass,
   scoreClass,
   turnTerminationLabel,
   taskDecisionLabel,
@@ -118,9 +122,16 @@ export function QaItemCard({
         <span className="item-idx">{String(s.index + 1).padStart(2, "0")}</span>
         <strong>{s.display_question || conversationTurns(detail)[0]?.message || s.question}</strong>
         {Number(s.conversation_turn_count || conversationTurns(detail).length) > 1 ? <span className="qa-dialogue-badge">{s.conversation_turn_count || conversationTurns(detail).length} 轮对话</span> : null}
-        <span className={`score ${scoreClass(s.judge?.score)} judge-round-${judgeRoundState(s, activeRejudge)}`}>
+        <EvaluationTypeBadge value={summary.evaluation || summary.evaluation_result || summary.judge} />
+        {summary.profile_scores && Object.keys(summary.profile_scores).length ? Object.entries(summary.profile_scores).map(([profile, judge]) => {
+          const value = typeof judge.score === 'number' && Number.isFinite(judge.score) ? judge.score : null;
+          const label = profile === OPEN_PROFILE ? '开放式' : profile === ATM_PROFILE ? 'QS' : profile;
+          const status = value !== null ? profile === OPEN_PROFILE ? value + '/2 分' : (value * 100).toFixed(1) + '%'
+            : judge.status === 'failed' ? '评分失败' : judge.status === 'running' ? '评分中' : judge.status === 'not_collected' ? '未运行采集' : '待评分';
+          return <span key={profile} className="score" title={String(judge.reason || '')}>{label} {status}</span>;
+        }) : <span className={'score ' + judgeScoreClass(s) + ' judge-round-' + judgeRoundState(s, activeRejudge)}>
           {judgeScoreLabel(s, activeRejudge)}
-        </span>
+        </span>}
         {Number(s.ground_truth_count) > 0 && summary.retrieval_metrics_applicable !== false && (
           <span className="muted small">
             精确率 {fmtPct(s.retrieval_precision)} · 召回率 {fmtPct(s.retrieval_recall)} · F1{" "}
@@ -186,7 +197,7 @@ function QaItemDetail({
   const timing = itemTimingBreakdown(detail);
   const qaSegments = qaLatencySegments(detail);
   const toolTrace = hasToolTrace(detail);
-  const qualityReason = judgeReason(detail.judge);
+  const qualityReason = evaluationReason(judgeReason(detail.judge));
   const behaviorReason = judgeReason(detail.task_judge);
   const evidenceReason = judgeReason(detail.evidence_judge);
 
@@ -207,6 +218,8 @@ function QaItemDetail({
           </span>
         ))}
       </div>
+      <ItemScoringResults results={detail.scoring_results} diagnostics={detail.diagnostic_results} current={detail.profile_scores} definition={detail.evaluation} />
+      {!detail.profile_scores && <details><summary>历史评分</summary><EvaluationResult value={detail.evaluation_result || detail.judge} definition={detail.evaluation} showChoiceMatching={!detail.choice_matching_result} />{detail.choice_matching_result != null && <ChoiceMatchingResult value={detail.choice_matching_result} definition={detail.evaluation} standalone />}</details>}
       <section className="qa-layer-chain">
         <div className="qa-layer-chain-head">
           <strong>本题证据链</strong>

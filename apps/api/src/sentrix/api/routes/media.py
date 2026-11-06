@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from collections.abc import Callable
+import os
+import threading
+import time
+import uuid
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -13,7 +22,7 @@ from sentrix.api.deps import get_container
 from sentrix.api.schemas.media import AssetListResponse, AssetSummary, ImportResponse
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets, ImportRequest
+from sentrix.application.media.import_assets import ImportAssets, ImportRequest, StagedImport
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
 from sentrix.application.media.observe_asset import ObserveAsset
@@ -23,11 +32,18 @@ from sentrix.application.memories.maintain_facts import MaintainFacts
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.bootstrap.container import Container
-from sentrix.domain.media.models import Asset, MediaType, Observation
+from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
+from sentrix.domain.media.ports import TranscriptionSegment
+from sentrix.domain.media.scenes import SceneWindow
 from sentrix.domain.memories.graph import GraphBuildStats
 
 router = APIRouter(tags=["media"])
 log = logging.getLogger("sentrix.api.media")
+_video_workers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sentrix-video")
+_active_video_jobs: set[str] = set()
+_active_video_jobs_lock = threading.Lock()
+MAX_VIDEO_ATTEMPTS = 3
+VIDEO_RETRY_DELAY_SECONDS = 2.0
 
 PREVIEW_MAX_DIMENSION = 1600
 PREVIEW_QUALITY = 85
@@ -65,15 +81,72 @@ async def import_media(
     if not content:
         raise HTTPException(status_code=400, detail="empty file")
 
-    use_case = build_import_assets(container, observe=False)
-    result = use_case.execute(
-        ImportRequest(
-            scope_id=scope_id,
-            file_name=file.filename or "unnamed",
-            content_type=file.content_type,
-            content=content,
-        )
+    request = ImportRequest(
+        scope_id=scope_id,
+        file_name=file.filename or "unnamed",
+        content_type=file.content_type,
+        content=content,
+        defer_processing=False,
     )
+    media_type = MediaType.from_upload(request.content_type, request.file_name)
+    if media_type is MediaType.VIDEO:
+        staged = build_import_assets(container, observe=False).stage(replace(request, defer_processing=True))
+        asset = (
+            staged.asset
+            if isinstance(staged, StagedImport)
+            else container.asset_repository.get(staged.asset_id)
+        )
+        if asset is None:
+            raise HTTPException(status_code=500, detail="video asset could not be loaded")
+        video_hash = asset.content_sha256 or ""
+        job = container.video_repository.create_job(
+            asset.id,
+            video_hash,
+            f"vjob_{uuid.uuid4().hex[:16]}",
+            _video_config_hash(container),
+        )
+        job_id = str(job["job_id"])
+        upload_stage = container.video_repository.stage(job_id, "UPLOAD")
+        if upload_stage and upload_stage.get("status") != "SUCCEEDED":
+            container.video_repository.update_stage(
+                job_id,
+                "UPLOAD",
+                status="SUCCEEDED",
+                progress=1.0,
+                input_hash=video_hash,
+                output_artifact=asset.path,
+                finished_at=datetime.now(UTC).isoformat(),
+            )
+        probe = container.video_repository.probe(asset.id)
+        probe_stage = container.video_repository.stage(job_id, "VIDEO_PROBE")
+        if probe_stage and probe_stage.get("status") != "SUCCEEDED":
+            probe_ready = probe is not None and probe.metadata is not None
+            container.video_repository.update_stage(
+                job_id,
+                "VIDEO_PROBE",
+                status="SUCCEEDED" if probe_ready else "FAILED",
+                progress=1.0 if probe_ready else 0.0,
+                input_hash=video_hash,
+                output_artifact="assets.metadata_json.video_metadata" if probe_ready else "",
+                error_code=None if probe_ready else "VIDEO-DECODE-001",
+                error_message=None if probe_ready else "ffprobe did not return video metadata",
+                finished_at=datetime.now(UTC).isoformat() if probe_ready else None,
+            )
+        schedule_video_job(container, job_id)
+        return ImportResponse(
+            asset_id=asset.id,
+            observation_id=None,
+            media_type="video",
+            status="queued",
+            deduplicated=not isinstance(staged, StagedImport),
+            indexed=False,
+            video_probed=probe is not None and probe.metadata is not None,
+            job_id=job_id,
+            job_status=str(job["status"]),
+        )
+
+    use_case = build_import_assets(container, observe=False)
+    result = use_case.execute(request)
     refresh_memory_graph(container, scope_id)
     return ImportResponse(
         asset_id=result.asset_id,
@@ -88,6 +161,534 @@ async def import_media(
         video_scenes=result.video_scenes,
         audio_probed=result.audio_probed,
     )
+
+
+def schedule_video_job(container: Container, job_id: str) -> None:
+    """Submit once per process; the repository claim is the cross-request/worker guard."""
+    with _active_video_jobs_lock:
+        if job_id in _active_video_jobs:
+            return
+        _active_video_jobs.add(job_id)
+    _video_workers.submit(_run_video_job, container, job_id)
+
+
+def resume_video_job(container: Container, job_id: str) -> dict[str, object]:
+    job = container.video_repository.get_job(job_id)
+    if job is None:
+        raise KeyError(job_id)
+    if job.get("status") in {"PROCESSING", "COMPLETED", "CANCELLED"}:
+        return job
+    for stage in container.video_repository.list_stages(job_id):
+        if stage.get("status") in {"FAILED", "RUNNING", "RETRY_WAIT"}:
+            container.video_repository.update_stage(
+                job_id, str(stage["stage"]), status="RETRY_WAIT", error_code=None, error_message=None
+            )
+    container.video_repository.update_job(
+        job_id, status="RETRY_WAIT", error_code=None, error_message=None, worker_id=None
+    )
+    schedule_video_job(container, job_id)
+    refreshed = container.video_repository.get_job(job_id)
+    return refreshed or job
+
+
+def recover_video_jobs(container: Container) -> None:
+    """Reclaim expired leases and jobs owned by a process that no longer exists."""
+    stale_before = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+    recovered = container.video_repository.recover_stale_jobs(stale_before)
+    for job in container.video_repository.list_jobs():
+        if job.get("status") != "PROCESSING":
+            continue
+        worker_id = str(job.get("worker_id") or "")
+        try:
+            owner_pid = int(worker_id.split(":", maxsplit=1)[0])
+        except ValueError:
+            continue
+        if _process_is_alive(owner_pid):
+            continue
+        job_id = str(job["job_id"])
+        for stage in container.video_repository.list_stages(job_id):
+            if stage.get("status") == "RUNNING":
+                container.video_repository.update_stage(job_id, str(stage["stage"]), status="RETRY_WAIT")
+        container.video_repository.update_job(
+            job_id,
+            status="RETRY_WAIT",
+            worker_id=None,
+            error_code="VIDEO-WORKER-001",
+            error_message="服务重启后从已保存的处理进度恢复",
+        )
+        recovered += 1
+    if recovered:
+        log.warning("video jobs recovered after process restart count=%d", recovered)
+    for job in container.video_repository.list_jobs():
+        if job.get("status") in {"QUEUED", "RETRY_WAIT"}:
+            schedule_video_job(container, str(job["job_id"]))
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _video_config_hash(container: Container) -> str:
+    settings = container.settings
+    config = {
+        "pipeline_version": "video-v1",
+        "embedding_scheme": settings.embedding_scheme,
+        "cross_modal_attention_enabled": settings.cross_modal_attention_enabled,
+        "qwen_asr_model": settings.qwen_asr_model,
+        "vlm_base_url": settings.vlm_base_url,
+        "legacy_clip_url": settings.legacy_clip_url,
+    }
+    return hashlib.sha256(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _run_video_job(container: Container, job_id: str) -> None:
+    worker_id = f"{os.getpid()}:{threading.get_ident()}"
+    try:
+        if not container.video_repository.claim_job(job_id, worker_id):
+            return
+        job_started = time.perf_counter()
+        stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop.wait(10):
+                try:
+                    container.video_repository.update_job(job_id, heartbeat_at=datetime.now(UTC).isoformat())
+                except Exception:  # noqa: BLE001 — worker reports its main error path
+                    log.exception("video job heartbeat failed job_id=%s", job_id)
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
+        try:
+            job = container.video_repository.get_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            asset_id = str(job["asset_id"])
+            asset = container.asset_repository.get(asset_id)
+            if asset is None or not Path(asset.path).is_file():
+                raise FileNotFoundError(f"source video artifact missing: {asset_id}")
+            container.asset_repository.update_status(asset_id, AssetStatus.PROCESSING)
+
+            def mark(
+                stage: str, *, artifact: str, progress: float = 1.0, input_hash: str | None = None
+            ) -> None:
+                stage_fields: dict[str, object] = {
+                    "status": "SUCCEEDED",
+                    "progress": progress,
+                    "output_artifact": artifact,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "error_code": None,
+                    "error_message": None,
+                }
+                if input_hash is not None:
+                    stage_fields["input_hash"] = input_hash
+                container.video_repository.update_stage(
+                    job_id,
+                    stage,
+                    **stage_fields,
+                )
+                container.video_repository.update_job(
+                    job_id,
+                    current_stage=stage,
+                    overall_progress=_job_progress(container, job_id),
+                    heartbeat_at=datetime.now(UTC).isoformat(),
+                )
+
+            upload_stage = container.video_repository.stage(job_id, "UPLOAD") or {}
+            if upload_stage.get("status") != "SUCCEEDED":
+                mark("UPLOAD", artifact=asset.path)
+            probe_stage = container.video_repository.stage(job_id, "VIDEO_PROBE") or {}
+            if probe_stage.get("status") != "SUCCEEDED":
+                container.video_repository.update_job(job_id, current_stage="VIDEO_PROBE")
+                probe = container.video_repository.probe(asset_id)
+                if probe is None or probe.metadata is None:
+                    raise RuntimeError("video probe artifact missing")
+                mark("VIDEO_PROBE", artifact="assets.metadata_json.video_metadata")
+
+            source_stage = container.video_repository.stage(job_id, "SOURCE_MEMORY") or {}
+            source_memory_exists = bool(container.observation_repository.list_by_asset(asset_id))
+            if source_stage.get("status") != "SUCCEEDED" or not source_memory_exists:
+                container.video_repository.update_job(job_id, current_stage="SOURCE_MEMORY")
+                container.video_repository.update_stage(
+                    job_id,
+                    "SOURCE_MEMORY",
+                    status="RUNNING",
+                    started_at=datetime.now(UTC).isoformat(),
+                    attempt=int(str(source_stage.get("attempt", 0))) + 1,
+                )
+                if not container.observation_repository.list_by_asset(asset_id):
+                    importer = build_import_assets(container, observe=False)
+                    importer.resume(asset)
+                    importer.commit_image(asset, importer.prepare_image(asset))
+                container.asset_repository.update_status(asset_id, AssetStatus.PROCESSED)
+                mark("SOURCE_MEMORY", artifact=f"sqlite:observations(asset_id={asset_id})")
+
+            degraded = False
+            speech_path = container.settings.data_dir / "video-jobs" / job_id / "speech.json"
+            speech_stage = container.video_repository.stage(job_id, "SPEECH_TRANSCRIPTION") or {}
+            if speech_stage.get("status") not in {"SUCCEEDED", "SKIPPED"}:
+                container.video_repository.update_job(job_id, current_stage="SPEECH_TRANSCRIPTION")
+                container.video_repository.update_stage(
+                    job_id,
+                    "SPEECH_TRANSCRIPTION",
+                    status="RUNNING",
+                    started_at=datetime.now(UTC).isoformat(),
+                    attempt=int(str(speech_stage.get("attempt", 0))) + 1,
+                )
+                speech_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    segments = tuple(
+                        container.audio_transcriber.transcribe_video(Path(asset.path))
+                        if container.audio_transcriber is not None
+                        else ()
+                    )
+                    payload = [
+                        {
+                            "start_sec": item.start_sec,
+                            "end_sec": item.end_sec,
+                            "text": item.text,
+                            "speaker": item.speaker,
+                        }
+                        for item in segments
+                    ]
+                    speech_tmp = speech_path.with_suffix(".json.tmp")
+                    with speech_tmp.open("w", encoding="utf-8") as output:
+                        json.dump(payload, output, ensure_ascii=False)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    os.replace(speech_tmp, speech_path)
+                    speech_digest = hashlib.sha256(speech_path.read_bytes()).hexdigest()
+                    mark("SPEECH_TRANSCRIPTION", artifact=str(speech_path), input_hash=speech_digest)
+                except Exception as error:  # noqa: BLE001 — speech is an optional evidence channel
+                    log.warning("video ASR degraded job_id=%s video_id=%s: %s", job_id, asset_id, error)
+                    speech_tmp = speech_path.with_suffix(".json.tmp")
+                    speech_tmp.write_text("[]", encoding="utf-8")
+                    os.replace(speech_tmp, speech_path)
+                    speech_digest = hashlib.sha256(speech_path.read_bytes()).hexdigest()
+                    container.video_repository.update_stage(
+                        job_id,
+                        "SPEECH_TRANSCRIPTION",
+                        status="SKIPPED",
+                        progress=1.0,
+                        output_artifact=str(speech_path),
+                        input_hash=speech_digest,
+                        error_code="VIDEO-ASR-001",
+                        error_message=f"{type(error).__name__}: {error}",
+                        finished_at=datetime.now(UTC).isoformat(),
+                    )
+                    segments = ()
+                    degraded = True
+            else:
+                try:
+                    speech_payload = json.loads(speech_path.read_text(encoding="utf-8"))
+                    speech_digest = hashlib.sha256(speech_path.read_bytes()).hexdigest()
+                    if speech_stage.get("input_hash") != speech_digest:
+                        raise ValueError("speech artifact hash mismatch")
+                    if not isinstance(speech_payload, list):
+                        raise ValueError("speech artifact must be a list")
+                    segments = tuple(
+                        TranscriptionSegment(
+                            start_sec=float(item["start_sec"]),
+                            end_sec=float(item["end_sec"]),
+                            text=str(item["text"]),
+                            speaker=str(item.get("speaker", "")),
+                        )
+                        for item in speech_payload
+                        if isinstance(item, dict)
+                    )
+                except Exception as error:  # noqa: BLE001 — invalid cache is rebuilt as the smallest stage
+                    log.warning("speech checkpoint invalid; rerunning ASR job_id=%s: %s", job_id, error)
+                    container.video_repository.update_stage(
+                        job_id,
+                        "SPEECH_TRANSCRIPTION",
+                        status="RETRY_WAIT",
+                        output_artifact="",
+                        error_code="VIDEO-ASR-ARTIFACT-001",
+                        error_message=str(error),
+                    )
+                    raise RuntimeError("speech checkpoint is missing or corrupt") from error
+            if speech_stage.get("status") == "SKIPPED":
+                degraded = True
+
+            for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY"):
+                current = container.video_repository.stage(job_id, stage_name) or {}
+                if current.get("status") != "SUCCEEDED":
+                    container.video_repository.update_stage(
+                        job_id,
+                        stage_name,
+                        status="RUNNING",
+                        started_at=datetime.now(UTC).isoformat(),
+                        attempt=int(str(current.get("attempt", 0))) + 1,
+                    )
+            container.video_repository.update_job(job_id, current_stage="FRAME_SAMPLE_VSD")
+            derived_frames = container.video_repository.list_derived(asset_id)
+            frame_artifacts_valid = bool(derived_frames)
+            for frame in derived_frames:
+                frame_asset = container.asset_repository.get(frame.id)
+                if frame_asset is None:
+                    frame_artifacts_valid = False
+                    break
+                frame_path = Path(frame_asset.path)
+                if not frame_path.is_file():
+                    frame_artifacts_valid = False
+                    break
+                if frame_asset.content_sha256:
+                    digest = hashlib.sha256(frame_path.read_bytes()).hexdigest()
+                    if digest != frame_asset.content_sha256:
+                        frame_artifacts_valid = False
+                        break
+            scene_artifacts_valid = (
+                frame_artifacts_valid
+                and len(container.event_repository.list_video_scenes(asset_id)) == len(derived_frames)
+                and all(container.observation_repository.list_by_asset(frame.id) for frame in derived_frames)
+            )
+            stage_artifacts_complete = scene_artifacts_valid and all(
+                (container.video_repository.stage(job_id, stage_name) or {}).get("status") == "SUCCEEDED"
+                for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY")
+            )
+            if not stage_artifacts_complete:
+                for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY"):
+                    current = container.video_repository.stage(job_id, stage_name) or {}
+                    if current.get("status") == "SUCCEEDED":
+                        container.video_repository.update_stage(
+                            job_id,
+                            stage_name,
+                            status="RUNNING",
+                            started_at=datetime.now(UTC).isoformat(),
+                            attempt=int(str(current.get("attempt", 0))) + 1,
+                        )
+
+            def checkpoint(stage: str, completed: int, total: int, scene_index: int) -> None:
+                current = container.video_repository.stage(job_id, stage) or {}
+                if current.get("status") == "SUCCEEDED":
+                    return
+                progress = completed / total if total else 1.0
+                container.video_repository.update_stage(
+                    job_id,
+                    stage,
+                    status="RUNNING",
+                    progress=progress,
+                    output_artifact=json.dumps(
+                        {"completed": completed, "total": total, "last_scene_index": scene_index},
+                        ensure_ascii=False,
+                    ),
+                )
+                container.video_repository.update_job(
+                    job_id,
+                    current_stage=stage,
+                    overall_progress=_job_progress(container, job_id),
+                    heartbeat_at=datetime.now(UTC).isoformat(),
+                )
+                log.info(
+                    "video job checkpoint job_id=%s video_id=%s stage=%s completed=%d total=%d scene=%d",
+                    job_id,
+                    asset_id,
+                    stage,
+                    completed,
+                    total,
+                    scene_index,
+                )
+
+            plan_path = container.settings.data_dir / "video-jobs" / job_id / "scene_windows.json"
+            frame_stage = container.video_repository.stage(job_id, "FRAME_SAMPLE_VSD") or {}
+            planned_windows: tuple[SceneWindow, ...] | None = None
+            if plan_path.is_file():
+                try:
+                    plan_payload = plan_path.read_bytes()
+                    plan_digest = hashlib.sha256(plan_payload).hexdigest()
+                    if frame_stage.get("input_hash") == plan_digest:
+                        raw_windows = json.loads(plan_payload)
+                        planned_windows = tuple(
+                            SceneWindow(
+                                index=int(item["index"]),
+                                start_sec=float(item["start_sec"]),
+                                end_sec=float(item["end_sec"]),
+                                selected_timestamp_sec=float(item["selected_timestamp_sec"]),
+                            )
+                            for item in raw_windows
+                        )
+                except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    planned_windows = None
+
+            event_stage = container.video_repository.stage(job_id, "EVENT_BUILD") or {}
+            resume_event_completed = 0
+            if event_stage.get("status") != "SUCCEEDED":
+                try:
+                    checkpoint_payload = json.loads(str(event_stage.get("output_artifact", "{}")))
+                    resume_event_completed = int(checkpoint_payload.get("completed", 0))
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    resume_event_completed = 0
+
+            def save_scene_plan(windows: Sequence[SceneWindow]) -> None:
+                plan_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = json.dumps(
+                    [
+                        {
+                            "index": window.index,
+                            "start_sec": window.start_sec,
+                            "end_sec": window.end_sec,
+                            "selected_timestamp_sec": window.keyframe_timestamp_sec,
+                        }
+                        for window in windows
+                    ],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                temporary = plan_path.with_suffix(".json.tmp")
+                with temporary.open("wb") as output:
+                    output.write(payload)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, plan_path)
+                container.video_repository.update_stage(
+                    job_id,
+                    "FRAME_SAMPLE_VSD",
+                    input_hash=hashlib.sha256(payload).hexdigest(),
+                    output_artifact=str(plan_path),
+                )
+
+            if not stage_artifacts_complete:
+                extraction = build_video_scenes(
+                    container,
+                    checkpoint=checkpoint,
+                    resume_event_completed=resume_event_completed,
+                ).execute(
+                    asset_id,
+                    transcription_segments=segments,
+                    planned_windows=planned_windows,
+                    on_scene_plan=save_scene_plan,
+                )
+                if extraction.reason:
+                    raise RuntimeError(f"video scene processing did not complete: {extraction.reason}")
+                container.video_repository.save_processing_timings(asset_id, extraction.timings)
+                mark("FRAME_SAMPLE_VSD", artifact=f"sqlite:video_keyframes(parent_asset_id={asset_id})")
+                mark("EVENT_BUILD", artifact=f"sqlite:events(source_asset_id={asset_id})")
+                mark("KEYFRAME_MEMORY", artifact=f"sqlite:observations(video_keyframes={asset_id})")
+
+            graph_stage = container.video_repository.stage(job_id, "MEMORY_GRAPH") or {}
+            if graph_stage.get("status") != "SUCCEEDED":
+                container.video_repository.update_job(job_id, current_stage="MEMORY_GRAPH")
+                container.video_repository.update_stage(
+                    job_id,
+                    "MEMORY_GRAPH",
+                    status="RUNNING",
+                    started_at=datetime.now(UTC).isoformat(),
+                    attempt=int(str(graph_stage.get("attempt", 0))) + 1,
+                )
+                graph_stats = refresh_memory_graph(container, asset.scope_id)
+                if graph_stats is None:
+                    degraded = True
+                    container.video_repository.update_stage(
+                        job_id,
+                        "MEMORY_GRAPH",
+                        status="SKIPPED",
+                        progress=1.0,
+                        error_code="VIDEO-MEMORY-GRAPH-001",
+                        error_message="记忆图更新暂不可用，基础视频记忆已保留",
+                        finished_at=datetime.now(UTC).isoformat(),
+                    )
+                else:
+                    mark("MEMORY_GRAPH", artifact=f"sqlite:memory_graph(scope_id={asset.scope_id})")
+            container.video_repository.update_job(
+                job_id,
+                status="DEGRADED" if degraded else "COMPLETED",
+                current_stage="DEGRADED" if degraded else "COMPLETED",
+                overall_progress=1.0,
+                worker_id=None,
+                heartbeat_at=datetime.now(UTC).isoformat(),
+                error_code=None,
+                error_message=None,
+            )
+            container.video_repository.save_processing_seconds(
+                asset_id, round(time.perf_counter() - job_started, 3)
+            )
+            container.asset_repository.update_status(asset_id, AssetStatus.PROCESSED)
+            log.info("video job completed job_id=%s video_id=%s", job_id, asset_id)
+        finally:
+            stop.set()
+            heartbeat_thread.join(timeout=1)
+    except Exception as error:  # noqa: BLE001 — persist a user-safe error and retain artifacts
+        job = container.video_repository.get_job(job_id)
+        current_stage = str(job.get("current_stage", "UNKNOWN")) if job else "UNKNOWN"
+        error_codes = {
+            "UPLOAD": "VIDEO-UPLOAD-001",
+            "VIDEO_PROBE": "VIDEO-DECODE-001",
+            "SOURCE_MEMORY": "VIDEO-MEMORY-001",
+            "SPEECH_TRANSCRIPTION": "VIDEO-ASR-001",
+            "FRAME_SAMPLE_VSD": "VIDEO-FRAME-001",
+            "EVENT_BUILD": "VIDEO-EVENT-001",
+            "KEYFRAME_MEMORY": "VIDEO-MEMORY-001",
+            "MEMORY_GRAPH": "VIDEO-INDEX-001",
+        }
+        error_code = error_codes.get(current_stage, "VIDEO-PROCESS-001")
+        log.exception("video job failed job_id=%s stage=%s error_code=%s", job_id, current_stage, error_code)
+        if job:
+            container.asset_repository.update_status(str(job["asset_id"]), AssetStatus.FAILED)
+        stage = container.video_repository.stage(job_id, current_stage)
+        if stage and stage.get("status") == "RUNNING":
+            container.video_repository.update_stage(
+                job_id,
+                current_stage,
+                status="FAILED",
+                error_code=error_code,
+                error_message=f"{type(error).__name__}: {error}",
+            )
+        attempts = int(str(job.get("retry_count", 0))) if job else MAX_VIDEO_ATTEMPTS
+        will_retry = attempts < MAX_VIDEO_ATTEMPTS
+        container.video_repository.update_job(
+            job_id,
+            status="RETRY_WAIT" if will_retry else "FAILED",
+            error_code=error_code,
+            error_message=(
+                "处理遇到暂时问题，系统正在重试；已完成步骤会保留。"
+                if will_retry
+                else "视频处理暂时中断，已完成步骤不会丢失。"
+            ),
+            worker_id=None,
+            heartbeat_at=datetime.now(UTC).isoformat(),
+        )
+        if will_retry:
+            log.warning(
+                "video job retry scheduled job_id=%s stage=%s attempt=%d delay_seconds=%.1f",
+                job_id,
+                current_stage,
+                attempts,
+                VIDEO_RETRY_DELAY_SECONDS,
+            )
+            timer = threading.Timer(
+                VIDEO_RETRY_DELAY_SECONDS,
+                schedule_video_job,
+                args=(container, job_id),
+            )
+            timer.daemon = True
+            timer.start()
+    finally:
+        with _active_video_jobs_lock:
+            _active_video_jobs.discard(job_id)
+
+
+def _job_progress(container: Container, job_id: str) -> float:
+    weights = {
+        "UPLOAD": 0.05,
+        "VIDEO_PROBE": 0.05,
+        "SOURCE_MEMORY": 0.15,
+        "SPEECH_TRANSCRIPTION": 0.08,
+        "FRAME_SAMPLE_VSD": 0.25,
+        "EVENT_BUILD": 0.2,
+        "KEYFRAME_MEMORY": 0.25,
+        "MEMORY_GRAPH": 0.05,
+    }
+    weighted_progress = sum(
+        weights.get(str(row["stage"]), 0) * float(str(row["progress"]))
+        for row in container.video_repository.list_stages(job_id)
+    )
+    return round(weighted_progress / sum(weights.values()), 4)
 
 
 def build_memory_graph(container: Container) -> BuildMemoryGraph:
@@ -142,17 +743,33 @@ def build_import_assets(container: Container, *, observe: bool) -> ImportAssets:
     )
 
 
-def build_video_scenes(container: Container) -> ExtractVideoScenes:
+def build_video_scenes(
+    container: Container,
+    *,
+    checkpoint: Callable[[str, int, int, int], None] | None = None,
+    resume_event_completed: int = 0,
+) -> ExtractVideoScenes:
     """独立的抽取链，给 ``POST /videos/{id}/reprocess`` 重跑用（S8b T514）。
 
     与导入时走的是同一个 ``_build_video_scenes``：重跑与首次导入是同一条链，
     差别只在重跑前先 ``cleanup_derivatives`` 清场。分开写一遍会让「重跑出来的场景
     与首次不一样」，而那种差异只有在对比两次结果时才看得出来。
     """
-    return _build_video_scenes(container, _build_importer(container, observe=True).process_image)
+    return _build_video_scenes(
+        container,
+        _build_importer(container, observe=True).process_image,
+        checkpoint=checkpoint,
+        resume_event_completed=resume_event_completed,
+    )
 
 
-def _build_video_scenes(container: Container, process_image: Callable[..., object]) -> ExtractVideoScenes:
+def _build_video_scenes(
+    container: Container,
+    process_image: Callable[..., object],
+    *,
+    checkpoint: Callable[[str, int, int, int], None] | None = None,
+    resume_event_completed: int = 0,
+) -> ExtractVideoScenes:
     return ExtractVideoScenes(
         assets=container.asset_repository,
         events=container.event_repository,
@@ -161,6 +778,11 @@ def _build_video_scenes(container: Container, process_image: Callable[..., objec
         keyframes=container.video_keyframe_extractor,
         process_image=lambda asset, event_id: process_image(asset, forced_event_id=event_id),
         scene_planner=container.video_scene_planner,
+        transcriber=container.audio_transcriber,
+        cross_modal_embedder=container.cross_modal_embedder,
+        has_memory=lambda asset: bool(container.observation_repository.list_by_asset(asset.id)),
+        checkpoint=checkpoint,
+        resume_event_completed=resume_event_completed,
     )
 
 
@@ -192,6 +814,7 @@ def _build_importer(
         observations=container.observation_repository,
         storage=container.media_storage,
         metadata=container.metadata_reader,
+        resolve_capture_time=container.capture_time_resolver,
         visual_indexer=IndexAssetVisual(
             embedder=container.visual_embedder,
             vectors=container.vector_repository,

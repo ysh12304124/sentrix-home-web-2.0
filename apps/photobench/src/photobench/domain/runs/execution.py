@@ -41,6 +41,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from photobench.domain.evaluation.profiles import item_scoring_error
 from photobench.domain.runs.analysis import (
     VIDEO_EXTENSIONS,
     infer_media_type,
@@ -112,6 +113,7 @@ def qa_completion_errors(
     items: Sequence[Mapping[str, Any]],
     *,
     judge_required: bool,
+    scoring_state: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Assess final QA facts without IO or changing scores/history.
 
@@ -146,6 +148,18 @@ def qa_completion_errors(
             )
             continue
         if not judge_required:
+            continue
+        if scoring_state is not None and scoring_state.get("primary_scoring_batch_ids"):
+            reason = item_scoring_error(scoring_state, item)
+            if reason:
+                errors.append(
+                    {
+                        "sample_id": item["qa_id"],
+                        "status": "failed",
+                        "error_type": "judge_error",
+                        "reason": reason,
+                    }
+                )
             continue
         outputs = [item.get(key) for key in ("judge", "task_judge", "evidence_judge")]
         outputs.extend(item.get("task_judges") or [])

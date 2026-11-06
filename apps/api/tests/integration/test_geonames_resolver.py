@@ -157,26 +157,19 @@ def test_zip_member_picker_falls_back_to_the_largest_txt(tmp_path: Path):
     assert resolver.resolve_nearest(GpsPoint(18.7883, 98.9853)) is not None
 
 
-def test_domestic_pool_wins_over_a_closer_foreign_point(geo_dir: Path):
-    """分池：国内池有命中就不看国外池。
-
-    合成数据里 ``Nowhere``（US）与查询点**完全重合**（距离 0），``大石桥村`` 在十几米外。
-    不分池时最近邻是 ``Nowhere``——这正是实测里 `cities15000` 的罗马字城市名
-    （``Xiaoshan``）压过中文村庄的同一件事。
-    """
+def test_closer_foreign_point_wins_over_domestic_pool(geo_dir: Path):
     resolver = GeoNamesNearestResolver(geo_dir)
-
     nearest = resolver.resolve_nearest(GpsPoint(30.1839, 120.2642))
-
     assert nearest is not None
-    assert nearest.locality != "Nowhere"
-    assert nearest.township == "赵州镇"
+    assert nearest.locality == "Nowhere"
+    assert nearest.locality_country == "US"
+    assert nearest.township == ""
 
 
 def test_nearest_is_chosen_by_distance_within_the_domestic_pool(geo_dir: Path):
     resolver = GeoNamesNearestResolver(geo_dir)
 
-    nearest = resolver.resolve_nearest(GpsPoint(30.1839, 120.2642))
+    nearest = resolver.resolve_nearest(GpsPoint(30.1841, 120.2644))
 
     assert nearest is not None
     # ``Xiaoshan`` 是 PPLA2、``大石桥村`` 稍远一点点；按距离取最近的，不分特征码优先级。
@@ -243,3 +236,34 @@ def test_corrupt_zip_is_skipped_without_raising(tmp_path: Path):
 def test_constants_are_the_documented_values():
     assert HOME_COUNTRY == "CN"
     assert MAX_NEAREST_RADIUS_M == 50_000.0
+
+
+def test_border_uses_nearer_country_and_foreign_adm4_is_not_domestic(tmp_path: Path):
+    (tmp_path / "border.txt").write_text(
+        "\n".join(
+            [
+                row(10, "中国居民点", 22.05, 100.0, "PPL", "CN"),
+                row(11, "Laos village", 22.0, 100.0, "PPL", "LA"),
+                row(12, "Laos admin", 22.0, 100.0, "ADM4", "LA"),
+            ]
+        )
+    )
+    resolver = GeoNamesNearestResolver(tmp_path)
+    nearest = resolver.resolve_nearest(GpsPoint(22.0, 100.0))
+    assert nearest is not None and nearest.locality_country == "LA"
+    assert nearest.township == ""
+    assert resolver.counts == (0, 1, 1)
+
+
+def test_resolver_streams_zip_without_materializing_dump(tmp_path: Path, monkeypatch):
+    import io
+
+    from sentrix.infrastructure.places import geonames
+
+    class LinesOnly(io.StringIO):
+        def read(self, *args, **kwargs):
+            raise AssertionError("dump must be iterated line by line")
+
+    monkeypatch.setattr(geonames, "_iter_dump_lines", lambda path: LinesOnly(DUMP))
+    (tmp_path / "source.txt").touch()
+    assert GeoNamesNearestResolver(tmp_path).counts == (1, 2, 3)

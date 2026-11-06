@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from photobench.api.deps import get_container, json_body
 from photobench.api.metrics_schema import RuntimeConfigResponse
 from photobench.domain.errors import InvalidRequestError
-from photobench.domain.runs.judge import JUDGE_PROMPT_KINDS
+from photobench.domain.evaluation.profiles import PROFILE_PROMPT_KINDS as JUDGE_PROMPT_KINDS
 
 router = APIRouter(tags=["config"])
 

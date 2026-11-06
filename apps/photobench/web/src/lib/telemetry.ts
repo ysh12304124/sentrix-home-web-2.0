@@ -48,7 +48,7 @@ export function telemetryNumber(value: unknown): number | null {
 export function telemetryPlatform(raw: unknown): string {
   const value = dict(raw);
   const accounting = value.memory_accounting || dict(value.latest).memory_accounting;
-  if (["apple_capacity_estimate", "apple_footprint_resident_v2"].includes(accounting)) return "apple_unified";
+  if (["apple_capacity_estimate", "apple_footprint_resident_v2", "apple_phys_footprint_v1"].includes(accounting)) return "apple_unified";
   if (["jetson_pss_plus_nvmap_estimate", "jetson_pss_and_nvmap_v3"].includes(accounting)) return "jetson_local_pss";
   if (accounting === "nvidia_pss_and_vram") return "nvidia";
   return value.source || ""; // Compatibility for historical records without a metric definition.
@@ -260,24 +260,24 @@ export function telemetryObservationRows(run: unknown): MetricRow[] {
     const ages = sources.map(([, value]) => telemetryNumber(dict(value).age_seconds))
       .filter((age): age is number => age !== null && age >= 0);
     const unavailable = sources.filter(([, value]) => dict(value).fresh !== true).map(([key]) => key);
-    rows.push(["内存观测值龄", ages.length ? `${Math.max(...ages).toFixed(3)} s` : "不可用",
-      "采样时最老来源的值龄；缓存命中不刷新原观测时间"]);
+    rows.push(["内存数据距采集时间", ages.length ? `${Math.max(...ages).toFixed(3)} s` : "不可用",
+      "取最早来源的原始采集时间；复用缓存时不重置时间"]);
     rows.push(["内存来源有效性", `${sources.length - unavailable.length}/${sources.length}`,
-      unavailable.length ? `不可用或过期：${unavailable.join("、")}` : "所有已记录来源均新鲜；各合计另按必要依赖判定"]);
+      unavailable.length ? `不可用或过期：${unavailable.join("、")}` : "已记录来源均在有效期内；合计值须具备所需来源"]);
   }
   const diagnostics = dict(latest.sampling_diagnostics);
   const collection = telemetryNumber(diagnostics.collection_seconds);
   const lateness = telemetryNumber(diagnostics.schedule_lateness_seconds);
   if (Object.keys(diagnostics).length) {
-    rows.push(["采集 / 调度延迟", `${collection === null ? "不可用" : collection.toFixed(3) + " s"} / ${lateness === null ? "不可用" : lateness.toFixed(3) + " s"}`,
-      "单次采集耗时 / 相对单调时钟计划的延迟；不包含后续写盘回调"]);
+    rows.push(["采集耗时 / 采样延迟", `${collection === null ? "不可用" : collection.toFixed(3) + " s"} / ${lateness === null ? "不可用" : lateness.toFixed(3) + " s"}`,
+      "本次读取耗时 / 实际开始晚于计划的时间；写盘耗时另计"]);
   }
   const integrity = dict(gpuMetricsView(run).sampling_integrity);
   if (Object.keys(integrity).length) {
     const counts = ["callback_failures", "publisher_failures", "collection_failures"].map((key) => telemetryNumber(integrity[key]));
     const pending = Array.isArray(integrity.stop_pending_threads) ? integrity.stop_pending_threads : [];
-    rows.push(["采样记录 / 发布 / 采集异常", counts.map((value) => value === null ? "未记录" : String(value)).join(" / "),
-      pending.length ? `停止超时，线程待退出：${pending.join("、")}` : "异常计数独立于被测任务成败；跳过的采样周期另见覆盖统计"]);
+    rows.push(["写盘 / 发布 / 读取异常次数", counts.map((value) => value === null ? "未记录" : String(value)).join(" / "),
+      pending.length ? `停止超时，线程待退出：${pending.join("、")}` : "依次为写盘、发布与读取失败次数；跳过周期见覆盖统计"]);
   }
   return rows;
 }
@@ -625,6 +625,7 @@ export function memoryProfileRows(rawProfile: unknown = {}): MetricRow[] {
 export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[] {
   const r = dict(run);
   const s = dict(summary);
+  const evaluation = dict(s.evaluation_summary);
   const dist = dict(s.judge_distribution);
   const evidenceDist = dict(s.evidence_distribution);
   const throughputSamples = Number(s.agent_throughput_latency_sample_count);
@@ -638,7 +639,7 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
   return [
     [typedMediaMetrics ? "媒体检索 Precision" : "历史图片检索 Precision", fmtPct(s.retrieval_precision_macro), `交付准确率：模型拿出来交付的图里有多少属于 GT · 逐 QA 求值后平均 · ${s.retrieval_metric_count ?? 0} 题有 GT · 排除 ${s.retrieval_excluded_unanswerable_count ?? 0} 道不可回答题`, true],
     [typedMediaMetrics ? "媒体检索 Recall" : "历史图片检索 Recall", fmtPct(s.retrieval_recall_macro), typedMediaMetrics ? "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；图/视频按类型与稳定标识匹配" : "交付覆盖率：该题 GT 里有多少被模型交付出来 · 逐 QA 等权平均；历史 run 无法补算视频指标", true],
-    ["回答质量均分", s.answer_quality_mean == null ? "-" : `${s.answer_quality_mean} / 2`, `Judge 给最终回答打分（2 完全支持 / 1 部分支持 / 0 不支持）的均值，唯一回答「模型能不能用」的端到端结论 · 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} · 无效 ${(s.total ?? 0) - (s.judge_valid_count ?? 0)} · 0:${dist["0"] || 0} · 1:${dist["1"] || 0} · 2:${dist["2"] || 0}`, true],
+    [evaluation.count ? "答案正确性均分" : "回答质量均分", evaluation.count ? fmtPct(evaluation.mean) : s.answer_quality_mean == null ? "-" : `${s.answer_quality_mean} / 2`, evaluation.count ? `逐题归一化均分 · 有效 ${evaluation.scored}/${evaluation.count} · 满分 ${dist["2"] || 0} · 部分正确或集合未满分 ${dist["1"] || 0} · 零分 ${dist["0"] || 0}` : `Judge 给最终回答打分（2 完全支持 / 1 部分支持 / 0 不支持）的均值，唯一回答「模型能不能用」的端到端结论 · 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} · 无效 ${(s.total ?? 0) - (s.judge_valid_count ?? 0)} · 0:${dist["0"] || 0} · 1:${dist["1"] || 0} · 2:${dist["2"] || 0}`, true],
     ["步数内 QA 完成率", fmtPct(s.qa_completion_within_steps_rate), `在步骤预算内生成终态回答的题占比；证据缺口计流程完成，答案质量另由 Judge 评分 · 有效记录 ${s.qa_completion_valid_count ?? 0} 题`, true],
     ["工具参数 JSON 解析率", fmtPct(s.tool_argument_json_rate), s.tool_argument_json_total == null ? "未记录或未调用原生工具；普通文本回答不进入分母" : `${s.tool_argument_json_success}/${s.tool_argument_json_total} 次原生工具参数`, true],
     ["JSON 对象解析率", s.structured_json_rate == null ? "未记录" : fmtPct(s.structured_json_rate), s.structured_json_requested == null ? "未记录：历史调用未采集 JSON 输出契约；自由文本不计入分母" : `明确要求 JSON 对象的规划、核验、工具内部及 Judge 调用；每次重试单独统计 · 解析成功 ${s.structured_json_success ?? 0}/${s.structured_json_total ?? 0} · 要求 JSON ${s.structured_json_requested} 次；无响应不计解析分母`, true],
@@ -658,8 +659,8 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
     ["证据对应均分", s.evidence_mean == null ? "未记录" : `${s.evidence_mean} / 2`, `Judge 给「回答引用的证据是否真的支持结论」打分（2/1/0）的均值 · 0:${evidenceDist["0"] || 0} · 1:${evidenceDist["1"] || 0} · 2:${evidenceDist["2"] || 0}`],
     ["证据完全支持率", fmtPct(s.evidence_fully_supported_rate), "证据 Judge 给满分（2）的题占比，衡量引用是否扎实"],
     ["端到端测评总时延（不含 Judge）", fmtMs(s.benchmark_e2e_latency_excluding_judge_ms), "身份/关系及图片导入开始至最后一个 Agent 完成；Judge 可并行执行"],
-    ["完全准确率", fmtPct(s.exact_accuracy), "Judge 给 2 分（完全支持）的题占比 · 严格口径"],
-    ["核心准确率", fmtPct(s.core_accuracy), "Judge 给 1 或 2 分的题占比 · 宽松口径"],
+    ["完全准确率", fmtPct(s.exact_accuracy), evaluation.count ? "达到各题评分量表满分的题占比" : "Judge 给 2 分（完全支持）的题占比 · 严格口径"],
+    ["核心准确率", fmtPct(s.core_accuracy), evaluation.count ? "得到正分的题占比；集合题含部分命中" : "Judge 给 1 或 2 分的题占比 · 宽松口径"],
     ["LLM TTFT 均值", s.llm_ttft_ms_mean == null && s.llm_call_metrics_count > 0 && s.llm_nonstreamed_count === s.llm_call_metrics_count ? "不适用（非流式）" : fmtMs(s.llm_ttft_ms_mean), "首 token 响应时间均值，衡量并发排队下的响应灵敏度"],
     ["LLM 生成速度", s.llm_tokens_per_second_mean == null ? "未记录" : `${Number(s.llm_tokens_per_second_mean).toFixed(1)} token/s`, "主 Agent 平均生成速度；流式调用是纯解码速率，非流式是端到端速率，两者不可直接横比"],
   ];
@@ -674,15 +675,18 @@ export function aggregateMetricRows(run: unknown, summary: unknown): MetricRow[]
 export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
   const r = dict(run);
   const s = dict(summary);
+  const evaluation = dict(s.evaluation_summary);
   const dist = dict(s.judge_distribution);
   const gpu = dict(gpuMetricsView(run));
-  const ranking = dict(s.image_ranking);
+  const ranking = dict(s.media_ranking);
   const pct = (value: unknown) => value == null ? "未计算" : fmtPct(value);
   const platform = telemetryPlatform(gpu);
   const isUnified = platform === "apple_unified";
   const isOrin = ["orin_ssh_pss", "jetson_local_pss"].includes(platform);
   const processMemory = dict(gpu.model_process_system_memory_used_mib).peak;
-  const processMemoryNote = resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
+  const processMemoryNote = gpu.memory_accounting === "apple_phys_footprint_v1"
+    ? "主模型服务 phys_footprint 采样峰值 · 内核 ri_phys_footprint 按唯一 PID 汇总，不加权重文件大小或 GPU 分配"
+    : resourceProtocol(gpu) ? "主模型进程内存的采样峰值；GPU 分配另计" : isUnified
     ? gpu.memory_accounting === "apple_footprint_resident_v2"
       ? "主模型驻留内存采样峰值（估计） · 整组PID去重：Dirty − Swapped + Clean + Reclaimable"
       : "主模型占用采样峰值（footprint+权重映射）· 容量估计，映射不保证驻留，非 GPU 专属显存"
@@ -693,21 +697,28 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
           : "主模型占用采样峰值 · smaps RSS + GPU/UMA；历史公式见原始记录，不推断物理去重"
         : "主模型 VmRSS 峰值 · Orin 无独立显存，这是进程驻留"
       : "主模型进程内存的采样峰值；历史缺失时未记录";
-  const gpuMemoryKey = isUnified ? "device_gpu_memory_mib"
-    : resourceProtocol(gpu) || isOrin ? "model_process_gpu_memory_mib" : "model_process_memory_used_mib";
+  const gpuMemoryKey = resourceProtocol(gpu) || isUnified || isOrin
+    ? "model_process_gpu_memory_mib" : "model_process_memory_used_mib";
+  const gpuPeak = telemetryNumber(dict(gpu[gpuMemoryKey]).peak);
+  const deviceGpuPeak = telemetryNumber(dict(gpu.device_gpu_memory_mib).peak);
+  const useDeviceGpu = isUnified && (gpuPeak === null || gpuPeak < 0) && deviceGpuPeak !== null && deviceGpuPeak >= 0;
+  const memoryPeak = telemetryNumber(processMemory);
+  const memoryValue = (peak: number | null) => peak !== null && peak >= 0 ? fmtMemory(peak) : "未记录";
   const gpuMemoryNote = isUnified
-    ? "IORegistry 整机 GPU 分配采样峰值（参考）；统一内存，与进程内存可能重叠"
+    ? useDeviceGpu
+      ? "Mac 未提供主模型独立 GPU 占用，显示整机 GPU 分配采样峰值，包含其他应用；统一内存，与进程内存可能重叠，不相加"
+      : "主模型 GPU 分配采样峰值；统一内存，与进程内存可能重叠，不相加"
     : isOrin
-      ? "主模型 PID 的 nvmap 分配采样峰值；共享内存，与进程内存不相加"
-      : "主模型进程组 GPU 分配采样峰值 · NVML 按 PID 汇总";
+      ? "主模型 GPU/UMA 分配采样峰值；来源以原采样记录为准，与进程内存可能重叠，不相加"
+      : "主模型进程组显存采样峰值 · NVML 按模型 PID 汇总；与主机内存分开记录";
   const throughputNote = s.agent_throughput_latency_mode === "measured_agent_phase"
     ? `Agent 阶段实际墙钟 ÷ ${s.agent_phase_completed_count ?? s.total ?? 0} 题 · 并发 ${r.qa_concurrency ?? "-"} · 不含 Judge（Judge 与 Agent 并行）`
     : "历史记录按时间线回退估算，不是实测值";
   return [
     {
-      label: "回答质量均分",
-      value: s.answer_quality_mean == null ? "未计算" : `${s.answer_quality_mean} / 2`,
-      note: `Judge 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} 题 · 0 分 ${dist["0"] || 0} · 1 分 ${dist["1"] || 0} · 2 分 ${dist["2"] || 0}`,
+      label: String(dict(s.selected_scoring).label || s.legacy_scoring_label || "评分汇总"),
+      value: evaluation.count ? fmtPct(evaluation.mean) : s.answer_quality_mean == null ? "未计算" : `${s.answer_quality_mean} / 2`,
+      note: evaluation.count ? `逐题归一化 · 有效 ${evaluation.scored}/${evaluation.count} 题 · 满分 ${dist["2"] || 0} · 部分正确或集合未满分 ${dist["1"] || 0} · 零分 ${dist["0"] || 0}` : `Judge 有效 ${s.judge_valid_count ?? 0}/${s.total ?? 0} 题 · 0 分 ${dist["0"] || 0} · 1 分 ${dist["1"] || 0} · 2 分 ${dist["2"] || 0}`,
     },
     {
       label: "Agent 并发吞吐折算时延",
@@ -715,11 +726,9 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
       note: throughputNote,
     },
     {
-      label: "工具图片召回率",
-      value: ranking.r_at_5 == null ? "未计算" : `R@5 ${pct(ranking.r_at_5)}`,
-      note: ranking.question_count == null
-        ? "该 run 未落盘候选顺序，无法补算；不补零、不用别的口径顶替"
-        : `工具召回的前 5 张里覆盖了该题 GT 的比例 · 统计 ${ranking.r_at_5_question_count ?? 0} 题（正样本 ≤ 5 张）· 明细见下方「召回指标」`,
+      label: "工具媒体召回率R@5",
+      value: ranking.recall_at_5 == null ? "未采集" : pct(ranking.recall_at_5),
+      note: '图视频联合候选去重后严格取前5份 · 纳入 ' + (ranking.included ?? 0) + ' 题 · GT超过5排除 ' + (ranking.excluded_gt_over_5 ?? 0) + ' 题 · 顺序或映射未采集 ' + (ranking.unavailable ?? 0) + ' 题',
     },
     {
       label: "模型申明图片准确率",
@@ -728,12 +737,12 @@ export function keyMetricRows(run: unknown, summary: unknown): KeyMetric[] {
     },
     {
       label: "主模型内存占用",
-      value: fmtMemory(processMemory),
+      value: memoryValue(memoryPeak),
       note: processMemoryNote,
     },
     {
-      label: isUnified ? "整机显存占用" : "主模型显存占用",
-      value: fmtMemory(dict(gpu[gpuMemoryKey]).peak),
+      label: useDeviceGpu ? "整机GPU占用（参考）" : "主模型显存占用",
+      value: memoryValue(useDeviceGpu ? deviceGpuPeak : gpuPeak),
       note: gpuMemoryNote,
     },
   ];
@@ -748,7 +757,7 @@ export function recallMetricRows(summary: unknown): MetricRow[] {
   const pct = (value: unknown) => value == null ? "未计算" : fmtPct(value);
   return [
     ["R@1", pct(ranking.r_at_1), `${ranking.r_at_1_question_count ?? 0} 题（GT 恰 1 张）· 单正样本口径，此时 R@1 与 Hit@1 必然相等`],
-    ["R@5", pct(ranking.r_at_5), `${ranking.r_at_5_question_count ?? 0} 题（GT ≤ 5 张）· 关键指标卡里的主值`],
+    ["R@5", pct(ranking.r_at_5), `${ranking.r_at_5_question_count ?? 0} 题（GT ≤ 5 张）· 历史图片口径`],
     ["R@10", pct(ranking.r_at_10), `${ranking.r_at_10_question_count ?? 0} 题（GT ≤ 10 张）`],
     ["Hit@1 / 5 / 10", `${pct(ranking.hit_at_1)} / ${pct(ranking.hit_at_5)} / ${pct(ranking.hit_at_10)}`, "与各自 R@K 同一批题，只问「有没有命中」；多正样本题下与 R@K 不是一回事，两个都要看"],
     ["mAP", pct(ranking.average_precision), `全部 ${ranking.question_count} 题 · 正样本张数不设限，多正样本场景的主指标`],
@@ -764,6 +773,7 @@ export function recallMetricRows(summary: unknown): MetricRow[] {
 /** 1.0 `:1321-1330`。`summary` 显式传入（1.0 读 `activeRun.value`）。 */
 export function tokenDistributionRows(summary: unknown): MetricRow[] {
   const s = dict(summary);
+
   return [
     ["最大输入 token", fmtTokens(s.llm_prompt_tokens_max), "单次调用喂进去的最大 prompt 长度，用于判断上下文是否快要撑爆"],
     ["P95 输入 token", fmtTokens(s.llm_prompt_tokens_p95), "95% 的调用输入不超过此值，比最大值更能代表常态"],

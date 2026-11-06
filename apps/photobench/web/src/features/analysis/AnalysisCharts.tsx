@@ -2,7 +2,7 @@ import { qaTaxonomy, subtypeParent, abilityParent } from "../../lib/qaTaxonomy.t
 import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
-import { dimensions, displayWithLabels, reportAbilityLabels, percent, scores } from "./presentation.ts";
+import { dimensions, displayWithLabels, reportAbilityLabels, percent, scoreChoices } from "./presentation.ts";
 import type { AnalysisFilters, AnalysisReport } from "../../api/analysis.ts";
 
 export function AnalysisChart({
@@ -70,9 +70,10 @@ export function AnalysisCharts({ report: r, filter }: {
   const [perspective, setPerspective] = useState("category");
   const [score, setScore] = useState("2");
   if (r.rule_version < 4) return <p>此报告使用旧分类口径，请重新生成分析以查看内容题型与回答行为。</p>;
+  const scores = scoreChoices(r, unit);
   const selectedScore = scores.find(s => s.value === score)!;
   const isAbility = ["ability_family", "ability_type"].includes(dimension);
-  const isContent = isAbility || ["content_type", "content_subtype"].includes(dimension);
+  const isContent = isAbility || ["content_type", "content_subtype", "scoring_question_type"].includes(dimension);
   const groups = unit === "turn" ? r.turn_groups || {} : r.groups;
   const allRows = groups[dimension] || [];
   const child = ["content_subtype", "ability_type"].includes(dimension);
@@ -160,7 +161,7 @@ export function AnalysisCharts({ report: r, filter }: {
   };
   return <>
     <article className="analysis-distribution">
-      <h4>任务完成质量 · 按内容与题目属性分组</h4>
+      <h4>答案正确性 · 按内容与题目属性分组</h4>
       <p>{unit === "turn" ? "按轮统计；点击后展示对应题目，同题多轮只列一次。" : "按题统计；能力取回答轮并集，旧内容题型采用最终任务，得分仍为题级最终分。"}</p>
       <div className="analysis-toolbar" role="group" aria-label="统计角度">
         <button className="btn compact" aria-pressed={perspective === "category"} onClick={() => setPerspective("category")}>按题型看得分</button>
@@ -174,7 +175,7 @@ export function AnalysisCharts({ report: r, filter }: {
           {scores.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select></label>}
         <label>分组方式<select aria-label="分布分组方式" value={dimension} onChange={e => { setDimension(e.target.value); setParent(""); }}>
-          {Object.entries(dimensions).filter(([key]) => r.rule_version >= 7 || !["ability_family", "ability_type", "benchmark_group"].includes(key)).filter(([key]) => unit !== "turn" || ["ability_family", "ability_type", "benchmark_group", "content_type", "content_subtype", "difficulty", "answerability"].includes(key)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          {Object.entries(dimensions).filter(([key]) => r.rule_version >= 7 || !["ability_family", "ability_type", "benchmark_group"].includes(key)).filter(([key]) => unit !== "turn" || ["ability_family", "ability_type", "benchmark_group", "content_type", "content_subtype", "scoring_question_type", "difficulty", "answerability"].includes(key)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </select></label>
         {dimension === "content_subtype" && <label>内容大类<select aria-label="分析内容大类" value={parent} onChange={e => setParent(e.target.value)}>
           <option value="">全部大类</option>{Object.entries(qaTaxonomy.tasks).map(([key, task]) => <option key={key} value={key}>{task.label}</option>)}
@@ -182,7 +183,7 @@ export function AnalysisCharts({ report: r, filter }: {
         {dimension === "ability_type" && <label>一级能力<select aria-label="分析一级能力" value={parent} onChange={e => setParent(e.target.value)}>
           <option value="">全部能力</option>{Object.keys(qaTaxonomy.abilities.families).filter(key => allRows.some(row => abilityParent[row.value] === key)).map(key => <option key={key} value={key}>{displayLabel(key)}</option>)}
         </select></label>}
-        {dimension === "ability_type" && r.rule_version >= 8 && <span className="analysis-hint">{r.ability_taxonomy_versions?.includes("ability-2026.10.29-v3") ? "v3二级包含抗幻觉和抗注入攻击；历史版本按原标签统计。" : "抗幻觉、抗注入攻击暂不细分，请在一级标签中筛选。"}</span>}
+        {dimension === "ability_type" && r.rule_version >= 8 && <span className="analysis-hint">{r.ability_labels?.H1 || r.ability_labels?.I1 ? "抗幻觉、抗注入攻击的二级名称与一级一致。" : "此历史报告的安全题二级标签未记录。"}</span>}
         {dimension === "ability_family" && <button className="btn compact" onClick={() => setDimension("ability_type")}>展开二级能力</button>}
         {dimension === "content_type" && r.rule_version >= 5 && <button className="btn compact" onClick={() => setDimension("content_subtype")}>展开细分题型</button>}
         <label>显示方式<select aria-label="分布显示方式" value={ratio ? "ratio" : "count"} onChange={e => setRatio(e.target.value === "ratio")}>
@@ -227,7 +228,7 @@ export function AnalysisCharts({ report: r, filter }: {
     </article>
     <details className="analysis-advanced">
       <summary>运行异常与轮级质量</summary>
-      <p>运行异常独立于任务完成质量。</p>
+      <p>运行异常独立于答案正确性。</p>
       <div className="analysis-grid">
         <article><h4>运行异常分布 · 点击筛选</h4><p>全部 {r.item_count} 题中，{r.counts.affected_items || 0}题发生过异常，共 {r.counts.events || 0} 次；类别可重叠。</p>
           {!errors.length && <p>未记录到运行异常。</p>}

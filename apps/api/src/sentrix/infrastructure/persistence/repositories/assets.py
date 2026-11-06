@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import datetime
 
+from sentrix.domain.media.capture_time import CaptureTime, restore_capture_timezone
 from sentrix.domain.media.models import (
     Asset,
     AssetStatus,
@@ -22,7 +23,7 @@ from sentrix.infrastructure.persistence.database import Database
 _ASSET_COLUMNS = (
     "id, scope_id, file_name, media_type, path, mime_type, size_bytes, status,"
     " content_sha256, captured_at, gps_latitude, gps_longitude, created_at, updated_at,"
-    " derived_kind, parent_asset_id, source_timestamp_sec"
+    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json"
 )
 
 
@@ -32,6 +33,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 def _row_to_asset(row: sqlite3.Row) -> Asset:
     latitude, longitude = row["gps_latitude"], row["gps_longitude"]
+    capture_time = CaptureTime(**json.loads(row["capture_time_json"]))
     return Asset(
         id=row["id"],
         scope_id=row["scope_id"],
@@ -42,7 +44,8 @@ def _row_to_asset(row: sqlite3.Row) -> Asset:
         size_bytes=row["size_bytes"],
         status=AssetStatus(row["status"]),
         content_sha256=row["content_sha256"] or "",
-        captured_at=_parse_datetime(row["captured_at"]),
+        captured_at=restore_capture_timezone(_parse_datetime(row["captured_at"]), capture_time),
+        capture_time=capture_time,
         captured_location=(
             GpsPoint(latitude, longitude) if latitude is not None and longitude is not None else None
         ),
@@ -73,7 +76,7 @@ class SqliteAssetRepository:
             connection.execute(
                 "INSERT INTO assets (id, scope_id, file_name, media_type, path, mime_type,"
                 " size_bytes, status, content_sha256, captured_at, gps_latitude, gps_longitude,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " created_at, updated_at, capture_time_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     asset.id,
                     asset.scope_id,
@@ -89,6 +92,7 @@ class SqliteAssetRepository:
                     asset.captured_location.longitude if asset.captured_location else None,
                     asset.created_at.isoformat(),
                     asset.updated_at.isoformat(),
+                    json.dumps(dataclasses.asdict(asset.capture_time)),
                 ),
             )
 
@@ -110,7 +114,7 @@ class SqliteAssetRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
-                " ORDER BY COALESCE(captured_at, created_at) DESC LIMIT ?",
+                " ORDER BY capture_sort_key(COALESCE(captured_at, created_at)) DESC, id DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
         return [_row_to_asset(row) for row in rows]

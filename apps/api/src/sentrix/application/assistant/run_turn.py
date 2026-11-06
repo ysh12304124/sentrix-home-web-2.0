@@ -103,7 +103,7 @@ from sentrix.domain.assistant.ports import (
 from sentrix.domain.assistant.profile import DEFAULT_PROFILE, TurnProfile
 from sentrix.domain.assistant.task_state import ACTING, FINALIZING, TaskState, ToolCallRecord
 from sentrix.domain.assistant.tool_policy import MAX_CONSECUTIVE_FAILURES, ToolAction, ToolPolicy
-from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOLS_BY_NAME, ToolSpec
+from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, RETRIEVAL_TOOLS, TOOLS_BY_NAME, ToolSpec
 from sentrix.domain.errors import DomainError
 from sentrix.domain.media.ports import OperationControl
 from sentrix.domain.media.progress import OperationCancelled
@@ -274,7 +274,37 @@ def _tool_result_shape(outcome: ToolOutcome) -> Mapping[str, Any]:
     轨迹的用途恰恰是复盘「模型当时拿到了什么」。``observation`` 本来就是内部投影
     （``ToolOutcome`` 的口径：这一份不发模型），落进 run.json 不增加任何暴露面。
     """
-    return dict(outcome.observation)
+    result = dict(outcome.observation)
+    # Persist only the timestamped ASR snippets actually shown to the model.
+    # This makes audio retrieval auditable without copying visual summaries.
+    preview = outcome.model_visible.get("preview")
+    speech = []
+    if isinstance(preview, (list, tuple)):
+        for row in preview:
+            if not isinstance(row, Mapping):
+                continue
+            segments = row.get("speech_evidence")
+            if not isinstance(segments, (list, tuple)):
+                continue
+            for segment in segments:
+                if not isinstance(segment, Mapping):
+                    continue
+                text = str(segment.get("text") or "").strip()
+                if not text:
+                    continue
+                evidence = {"text": text}
+                for key in ("start_sec", "end_sec", "speaker"):
+                    value = segment.get(key)
+                    if value is not None and value != "":
+                        evidence[key] = value
+                speech.append(evidence)
+                if len(speech) >= 24:
+                    break
+            if len(speech) >= 24:
+                break
+    if speech:
+        result["speech_evidence"] = speech
+    return result
 
 
 def _turn_trace(session: _Session, planned: PlannerResult | None) -> Mapping[str, Any]:
@@ -366,6 +396,32 @@ def _turn_trace(session: _Session, planned: PlannerResult | None) -> Mapping[str
         "delivered": [item.asset_id for item in session.delivered.items],
         "answer_coverage": session.best_coverage,
         "retrieved_candidates": list(state.retrieved_candidates),
+        "retrieval_observations": {
+            "version": 1,
+            "complete": all(
+                "returned_asset_ids" in record.observation
+                for record in state.records
+                if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+            ),
+            "asset_ids": list(
+                dict.fromkeys(
+                    str(asset_id)
+                    for record in state.records
+                    if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+                    for asset_id in record.observation.get("returned_asset_ids", [])
+                )
+            ),
+            "ordered_calls": [
+                {
+                    "tool": record.tool,
+                    "result_set_id": record.observation.get("result_set_id"),
+                    "page": record.observation.get("page"),
+                    "asset_ids": record.observation.get("returned_asset_ids", []),
+                }
+                for record in state.records
+                if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+            ],
+        },
         # **模型这一步看到什么、回答什么。** 只有 ``include_debug`` 时非空；
         # 按发生顺序排列（planner → agent → judge），每条都带当时的 messages 与
         # ``tools``，以及模型原始 content / thought / tool_calls。
@@ -469,6 +525,105 @@ def _drop_oldest_tool_round_trip(messages: Sequence[ChatMessage]) -> list[ChatMe
         if start == protected_start:
             continue
         return list(messages[:start]) + list(messages[end:])
+    return None
+
+
+def _compact_latest_preview_round_trip(messages: Sequence[ChatMessage]) -> list[ChatMessage] | None:
+    """Compact the newest protected preview while preserving handles, times, and speech."""
+    protected = None
+    for start, end in _round_trip_spans(messages):
+        ids = {call.call_id for call in messages[start].tool_calls if call.name in _PROTECTED_PREVIEW_TOOLS}
+        if ids:
+            protected = (start, end, ids)
+    if protected is None:
+        return None
+    start, end, ids = protected
+    for index in range(end - 1, start, -1):
+        message = messages[index]
+        if message.role is not ChatRole.TOOL or message.tool_call_id not in ids:
+            continue
+        try:
+            payload = json.loads(message.content)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("preview"), list):
+            continue
+        try:
+            level = int(payload.get("_context_compaction_level") or 0)
+        except (TypeError, ValueError):
+            level = 0
+        if level >= 4:
+            return None
+        compacted = dict(payload)
+        rows = []
+        for original in payload["preview"]:
+            if not isinstance(original, dict):
+                rows.append(original)
+                continue
+            row = dict(original)
+            if level == 0:
+                summary, hint = row.get("evidence_summary"), row.get("scene_hint")
+                if hint and isinstance(summary, str) and hint in summary:
+                    row.pop("scene_hint", None)
+                row.pop("level", None)
+                for key, value in list(row.items()):
+                    if value is None or value == "" or value == [] or value == {}:
+                        row.pop(key, None)
+                speech = row.get("speech_evidence")
+                if isinstance(speech, list):
+                    row["speech_evidence"] = [
+                        {k: v for k, v in segment.items() if v is not None and v != "" and v != []}
+                        if isinstance(segment, dict)
+                        else segment
+                        for segment in speech
+                    ]
+            elif level in (1, 2):
+                limit = 420 if level == 1 else 160
+                summary = row.get("evidence_summary")
+                if isinstance(summary, str) and len(summary) > limit:
+                    row["evidence_summary"] = summary[:limit] + "…[需完整描述时调用 inspect_photo]"
+            else:
+                # Final safe pass: retain every candidate handle, timestamp and full ASR
+                # transcript, but drop repeated metadata and leave only a short visual
+                # cue. The agent can inspect any retained candidate for full image detail.
+                keep = {
+                    "handle",
+                    "asset_id",
+                    "file_name",
+                    "media_kind",
+                    "source_kind",
+                    "captured_at",
+                    "source_timestamp_sec",
+                    "evidence_summary",
+                    "speech_evidence",
+                }
+                row = {key: value for key, value in row.items() if key in keep}
+                summary = row.get("evidence_summary")
+                if isinstance(summary, str) and len(summary) > 72:
+                    row["evidence_summary"] = summary[:72] + "…[inspect_photo]"
+            rows.append(row)
+        compacted["preview"] = rows
+        compacted.pop("group_photo_rows", None)
+        if level >= 3:
+            compacted["speech_evidence_note"] = (
+                "保留候选帧对应的完整语音转写及时间；需完整视觉细节时调用 inspect_photo。"
+            )
+        compacted["_context_compaction_level"] = level + 1
+        compacted["_context_compaction_note"] = (
+            "上下文压缩说明：空字段已省略，长视觉摘要可能截短；候选handle、时间戳和语音转写保留。"
+            "需完整视觉细节时可调用inspect_photo/read_photo_text。"
+        )
+        content = json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+        if content == message.content:
+            return None
+        result = list(messages)
+        result[index] = ChatMessage(
+            role=message.role,
+            content=content,
+            tool_call_id=message.tool_call_id,
+            tool_calls=message.tool_calls,
+        )
+        return result
     return None
 
 
@@ -1017,7 +1172,9 @@ class RunTurn:
                 while True:
                     compacted = _drop_oldest_tool_round_trip(messages)
                     if compacted is None:
-                        log.warning("提示词超预算，而历史里已经没有可压缩的工具往返: %s", error)
+                        compacted = _compact_latest_preview_round_trip(messages)
+                    if compacted is None:
+                        log.warning("提示词超预算，历史与最新检索结果都已无法安全压缩: %s", error)
                         return self._model_error_stop(session, error)
                     messages = compacted
                     self._publish(
@@ -1824,7 +1981,22 @@ class RunTurn:
         )
 
         if outcome.ok:
-            for evidence_type in TOOLS_BY_NAME[call.name].satisfies:
+            satisfied_types = TOOLS_BY_NAME[call.name].satisfies
+            if call.name == "search_memories":
+                # Retrieval can satisfy spoken-content requirements only when the
+                # returned preview actually contains a transcript. Do not let a
+                # video candidate by itself stand in for audio evidence.
+                preview = outcome.model_visible.get("preview", ())
+                has_speech = isinstance(preview, (list, tuple)) and any(
+                    isinstance(row, Mapping) and row.get("speech_evidence") for row in preview
+                )
+                if not has_speech:
+                    satisfied_types = tuple(
+                        evidence_type
+                        for evidence_type in satisfied_types
+                        if evidence_type is not EvidenceType.SPOKEN_CONTENT
+                    )
+            for evidence_type in satisfied_types:
                 session.ledger.satisfy(evidence_type, call_id=call.call_id)
             self._tool_event(
                 session,

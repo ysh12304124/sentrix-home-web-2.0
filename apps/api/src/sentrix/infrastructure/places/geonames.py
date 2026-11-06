@@ -24,7 +24,7 @@
 
 1. 点存成**三维单位向量**再建 KD-tree。直接在 (lat, lon) 度数上建树在日界线和高纬度
    会给出错误的最近邻；单位向量的欧氏弦长与球面大圆距离单调对应，换算回公里即可。
-2. 一次加载、常驻内存，**逐条解析时不碰磁盘**（设计 §3.3：「导入时计算一次、结果落库，
+2. 流式加载、常驻点索引，**逐条查询时不碰磁盘**（设计 §3.3：「导入时计算一次、结果落库，
    运行时零网络依赖」）。
 3. **半径上限** ``MAX_NEAREST_RADIUS_M``（默认 50 km）。这一条是相对 1.0 的有意偏离，
    见模块底部与 ``s4-deviations.md`` §2 第 3 项。
@@ -36,6 +36,7 @@ import io
 import logging
 import re
 import zipfile
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,6 +78,7 @@ class GeoNamesPoint:
     feature_code: str
     country: str
     population: int
+    admin_codes: tuple[str, ...] = ()
 
 
 def _to_unit(latitude: float, longitude: float) -> tuple[float, float, float]:
@@ -116,8 +118,8 @@ def _pick_member(archive_name: str, members: dict[str, int]) -> str | None:
     return max(members, key=lambda name: members[name])
 
 
-def _read_dump(path: Path) -> str:
-    """读 ``.txt`` 或 ``.zip``，返回 dump 正文。"""
+def _iter_dump_lines(path: Path) -> Iterator[str]:
+    """逐行读取 dump，避免整份解压文本及 splitlines 列表驻留内存。"""
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as archive:
             members = {
@@ -128,11 +130,12 @@ def _read_dump(path: Path) -> str:
             chosen = _pick_member(path.name, members)
             if chosen is None:
                 log.warning("GeoNames 压缩包里没有 .txt 成员: %s", path)
-                return ""
-            log.debug("GeoNames 从 %s 读取成员 %s", path.name, chosen)
+                return
             with archive.open(chosen) as handle:
-                return io.TextIOWrapper(handle, encoding="utf-8", errors="replace").read()
-    return path.read_text(encoding="utf-8", errors="replace")
+                yield from io.TextIOWrapper(handle, encoding="utf-8", errors="replace")
+    else:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            yield from handle
 
 
 def _display_name(name: str, alternates: str) -> str:
@@ -157,7 +160,7 @@ def _display_name(name: str, alternates: str) -> str:
     return match.group(0) if match else name
 
 
-def parse_dump(text: str) -> list[GeoNamesPoint]:
+def _parse_lines(lines: Iterable[str]) -> Iterator[GeoNamesPoint]:
     """按 GeoNames 的 19 列制表符格式解析，只留乡镇/村庄两类特征码。
 
     列位：0 geonameid · 1 name · 2 asciiname · 3 alternatenames · 4 latitude ·
@@ -165,8 +168,7 @@ def parse_dump(text: str) -> list[GeoNamesPoint]:
     列数不足 15 的行直接跳过——截断的下载包会产出这种行，让它进索引比丢一行更糟。
     """
     wanted = TOWNSHIP_FEATURE_CODES | LOCALITY_FEATURE_CODES
-    points: list[GeoNamesPoint] = []
-    for line in text.splitlines():
+    for line in lines:
         if not line:
             continue
         columns = line.split("\t")
@@ -189,17 +191,20 @@ def parse_dump(text: str) -> list[GeoNamesPoint]:
             population = int(columns[14] or 0)
         except ValueError:
             population = 0
-        points.append(
-            GeoNamesPoint(
-                latitude=latitude,
-                longitude=longitude,
-                name=name,
-                feature_code=feature_code,
-                country=(columns[8] or "").strip().upper(),
-                population=population,
-            )
+        yield GeoNamesPoint(
+            latitude=latitude,
+            longitude=longitude,
+            name=name,
+            feature_code=feature_code,
+            country=(columns[8] or "").strip().upper(),
+            population=population,
+            admin_codes=tuple(columns[10:14]),
         )
-    return points
+
+
+def parse_dump(text: str) -> list[GeoNamesPoint]:
+    """解析内存中的小型 dump；运行时文件加载使用流式路径。"""
+    return list(_parse_lines(io.StringIO(text)))
 
 
 class _PointIndex:
@@ -216,7 +221,9 @@ class _PointIndex:
         except ImportError as error:  # pragma: no cover - 依赖缺失时明确降级
             log.warning("numpy/scipy 不可用，GeoNames 最近邻索引降级为空: %s", error)
             return
-        coords = numpy.array([_to_unit(point.latitude, point.longitude) for point in points], dtype="float64")
+        coords = numpy.empty((len(points), 3), dtype="float64")
+        for index, point in enumerate(points):
+            coords[index] = _to_unit(point.latitude, point.longitude)
         self._tree = cKDTree(coords)
 
     def __len__(self) -> int:
@@ -288,17 +295,17 @@ class GeoNamesNearestResolver:
         world: list[GeoNamesPoint] = []
         for path in self._dump_paths():
             try:
-                text = _read_dump(path)
+                for point in _parse_lines(_iter_dump_lines(path)):
+                    if point.feature_code in TOWNSHIP_FEATURE_CODES and point.country == self._home_country:
+                        townships.append(point)
+                    elif point.feature_code in LOCALITY_FEATURE_CODES:
+                        if point.country == self._home_country:
+                            localities.append(point)
+                        else:
+                            world.append(point)
             except (OSError, zipfile.BadZipFile) as error:
                 log.warning("GeoNames 数据读不了，跳过 %s: %s", path, error)
                 continue
-            for point in parse_dump(text):
-                if point.feature_code in TOWNSHIP_FEATURE_CODES:
-                    townships.append(point)
-                elif point.country == self._home_country:
-                    localities.append(point)
-                else:
-                    world.append(point)
             log.info("GeoNames 已载入 %s", path.name)
         self._townships = _PointIndex(townships)
         self._localities = _PointIndex(localities)
@@ -320,25 +327,22 @@ class GeoNamesNearestResolver:
         )
 
     def resolve_nearest(self, gps: GpsPoint) -> NearestPlace | None:
-        """**先国内池，国内有命中就不看国外池。**
-
-        分池这件事是实测逼出来的，不是设计的选择。`cities15000.zip` 里中国城市的
-        主名是罗马字（`Xiaoshan`、`Hangzhou`），而 `CN.zip` 的 `PPL` 是中文名
-        （`大石桥村`）。两个池子混在一起按距离取最近时，坐标为萧山的照片会得到
-        `浙江省杭州市萧山区 · Xiaoshan附近`——名字对，语言不对，而展示层的
-        「附近」正是给用户看的那一句。
-
-        设计 §3.3 的表本来就把两件事分开了：国内 → `ADM4` / `PPL`（CN 记录），
-        国外 → `allCountries` 的 `PPL*`。分池只是把那张表落成代码。
-        """
+        """比较两池实际距离；分池只用于组织数据，不据此推断国家归属。"""
         self._ensure_loaded()
         assert self._townships is not None and self._localities is not None
         assert self._world_localities is not None
 
         domestic = self._resolve_from(gps, self._townships, self._localities)
-        if domestic is not None:
+        foreign = self._resolve_from(gps, None, self._world_localities)
+        if domestic is None:
+            return foreign
+        if foreign is None:
             return domestic
-        return self._resolve_from(gps, None, self._world_localities)
+        domestic_distance = min(
+            d for d in (domestic.distance_m, domestic.township_distance_m) if d is not None
+        )
+        assert foreign.distance_m is not None
+        return domestic if domestic_distance <= foreign.distance_m else foreign
 
     def _resolve_from(
         self,
@@ -357,4 +361,13 @@ class GeoNamesNearestResolver:
         distance = locality_hit[1] if locality_hit else (township_hit[1] if township_hit else None)
         if township and locality and township == locality:
             locality = ""
-        return NearestPlace(township=township, locality=locality, distance_m=distance)
+        return NearestPlace(
+            township=township,
+            locality=locality,
+            distance_m=distance,
+            township_distance_m=township_hit[1] if township_hit else None,
+            township_country=township_hit[0].country if township_hit else "",
+            locality_country=locality_hit[0].country if locality_hit else "",
+            township_admin_codes=township_hit[0].admin_codes if township_hit else (),
+            locality_admin_codes=locality_hit[0].admin_codes if locality_hit else (),
+        )

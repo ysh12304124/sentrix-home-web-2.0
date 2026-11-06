@@ -44,6 +44,8 @@ from sentrix.domain.media.ports import (
     AssetRepository,
     AudioMetadataReader,
     AudioRepository,
+    AudioTranscriber,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -84,6 +86,8 @@ from sentrix.infrastructure.assistant.events import InProcessTurnEventBroker
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel, probe_context_tokens
 from sentrix.infrastructure.build import read_build_revision
 from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
+from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
+from sentrix.infrastructure.media.capture_time import ResolveCaptureTime
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
@@ -95,6 +99,7 @@ from sentrix.infrastructure.media.person_vision import (
 from sentrix.infrastructure.media.person_vision_model import OpenAIPersonVision
 from sentrix.infrastructure.media.photo_inspector import OpenAIPhotoInspector
 from sentrix.infrastructure.media.storage import FileSystemMediaStorage
+from sentrix.infrastructure.media.svd_katna_scene_planner import SVDKatnaScenePlanner
 from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanner
 from sentrix.infrastructure.media.video_keyframes import FfmpegVideoKeyframeExtractor
 from sentrix.infrastructure.media.video_metadata import FfprobeVideoMetadataReader
@@ -177,6 +182,7 @@ class Container:
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
+    capture_time_resolver: CaptureTimeResolver
     preview_encoder: PreviewEncoder
     # 视频三件（S8a）：ffprobe 探测、浏览器预览转码、血缘仓储。三者都是端口声明——
     # 具体实现（子进程 / 子进程 / SQL）全在 infrastructure，见 pyproject 的两条 purity 契约。
@@ -190,6 +196,7 @@ class Container:
     # 音频两件（S8c T521）：ffprobe 探测 + 探测结果落库。**没有转码器**——音频不转码
     # （用户裁决②），浏览器原生放 mp3/wav/m4a/aac/flac/ogg。
     audio_metadata_reader: AudioMetadataReader
+    audio_transcriber: AudioTranscriber | None
     audio_repository: AudioRepository
     # 视觉/人脸向量（memory_vectors）与文本向量（text_vectors）分表，但共用端口。
     # 调用方按用途注入：视觉通道、导入即向量化用 ``vector_repository``；文本召回与
@@ -198,6 +205,7 @@ class Container:
     text_vector_repository: VectorRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
+    cross_modal_embedder: VisualEmbedder | None
     text_embedder: TextEmbedder
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
@@ -279,15 +287,12 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
-        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "window").strip().lower()
-        video_scene_planner = None
-        if video_algorithm == "svd_lowrank":
-            source_root = os.getenv("SENTRIX_SVD_SOURCE_ROOT", "").strip()
-            if not source_root:
-                raise ValueError("SENTRIX_SVD_SOURCE_ROOT is required for svd_lowrank")
-            video_scene_planner = SVDLowRankScenePlanner(
-                Path(source_root), settings.media_dir / "derived" / "svd"
-            )
+        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_katna").strip().lower()
+        video_scene_planner: VideoScenePlanner | None = None
+        if video_algorithm == "svd_katna":
+            video_scene_planner = SVDKatnaScenePlanner(settings.media_dir / "derived" / "svd_katna")
+        elif video_algorithm == "svd_lowrank":
+            video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
         place_aliases = load_place_aliases()
@@ -371,6 +376,7 @@ class Container:
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
+            capture_time_resolver=ResolveCaptureTime(),
             preview_encoder=PillowPreviewEncoder(),
             video_metadata_reader=FfprobeVideoMetadataReader(),
             # 预览转码件落在 ``media_dir/derived/video`` 下：与其余媒体文件同一个根，
@@ -380,11 +386,33 @@ class Container:
             video_scene_planner=video_scene_planner,
             video_repository=SqliteVideoRepository(database),
             audio_metadata_reader=FfprobeAudioMetadataReader(),
+            audio_transcriber=(
+                QwenAudioTranscriber(
+                    settings.qwen_asr_base_url,
+                    settings.qwen_asr_model,
+                    api_key=settings.qwen_asr_api_key,
+                    timeout_s=settings.qwen_asr_timeout_s,
+                )
+                if settings.qwen_asr_base_url.strip()
+                else None
+            ),
             audio_repository=SqliteAudioRepository(database),
             vector_repository=SqliteVectorRepository(database),
             text_vector_repository=SqliteTextVectorRepository(database),
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
+            cross_modal_embedder=(
+                None
+                if not settings.cross_modal_attention_enabled
+                else (
+                    visual_embedder
+                    if settings.embedding_scheme == "legacy"
+                    else ChineseClipSidecarEmbedder(
+                        settings.legacy_clip_url,
+                        timeout_s=settings.legacy_clip_timeout_s,
+                    )
+                )
+            ),
             text_embedder=text_embedder,
             reranker=reranker,
             embedding_health=embedding_health,

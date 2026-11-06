@@ -260,12 +260,28 @@ def test_a_cancelled_runner_stops_the_retry_wait():
     import threading
 
     cancel = threading.Event()
-    cancel.set()
-    http = FakeHttpClient([RuntimeError("connection refused"), RuntimeError("connection refused")])
+
+    class CancellingClient(FakeHttpClient):
+        def request_json(self, *args, **kwargs):
+            cancel.set()
+            return super().request_json(*args, **kwargs)
+
+    http = CancellingClient([RuntimeError("connection refused")])
     runner = _runner(http, cancel=cancel)
     with pytest.raises(RunCancelledError):
         runner._request({"model": "m"})
     assert len(http.calls) == 1
+
+
+def test_already_cancelled_runner_does_not_dispatch():
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    http = FakeHttpClient([])
+    with pytest.raises(RunCancelledError):
+        _runner(http, cancel=cancel)._request({"model": "m"})
+    assert http.calls == []
 
 
 # ---- 任务行为与证据判分 ---------------------------------------------------
@@ -389,8 +405,8 @@ def test_a_failed_sub_judge_marks_the_item_failed_not_scored():
     assert "judge_error" in item["judge"]["reason"]
 
 
-def test_the_prompt_constant_is_the_1_0_text():
-    """提示词是判分口径本身；这条钉住它没有被「整理」过。"""
+def test_quality_prompt_keeps_the_public_output_contract():
+    """默认规则允许按版本维护；输出协议保持0/1/2与理由。"""
     assert JUDGE_PROMPT.startswith("你是通用对话任务的回答质量评测员")
     assert '{"score":0|1|2,"reason":"简短中文理由"}' in JUDGE_PROMPT
 
@@ -524,3 +540,222 @@ def test_mixed_action_validation_does_not_accept_unknown_action():
     )
     assert result["actual_action"] is None and result["correct"] is None
     assert result["judge_status"] == "failed"
+
+
+def test_missing_only_preserves_successful_turns_and_archives_failed_attempts():
+    import copy
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    item = _multi_turn_item()
+    item["execution_status"] = "completed"
+    for turn in item["runtime_turns"]:
+        turn["task_judge"] = {"actual_action": "answer", "correct": True, "raw_text": "original task"}
+        turn["judge"] = {"score": 0, "raw_text": "original zero"}
+        turn["evidence_judge"] = {"score": None, "reason": "not_applicable"}
+    missing = {"score": None, "judge_status": "failed", "attempts": [{"error": "old HTTP429"}]}
+    item["runtime_turns"][1]["judge"] = copy.deepcopy(missing)
+    original = copy.deepcopy(item)
+    runner = _runner(http)
+    assert runner.needs_judge_recovery(item)
+    runner.judge_item(item, {"answer": "红色"}, {}, only_missing=True)
+    assert len(http.calls) == 1
+    assert item["runtime_turns"][0] == original["runtime_turns"][0]
+    assert item["runtime_turns"][1]["task_judge"] == original["runtime_turns"][1]["task_judge"]
+    assert item["runtime_turns"][1]["evidence_judge"] == original["runtime_turns"][1]["evidence_judge"]
+    assert item["runtime_turns"][1]["judge_recovery_history"][0]["previous"] == missing
+    assert item["judge"]["score"] == 2
+    assert not runner.needs_judge_recovery(item)
+
+
+def test_missing_only_retries_earlier_turn_even_when_final_score_is_valid():
+    http = FakeHttpClient([judge_reply('{"actual_action":"answer","reason":"回答"}')])
+    item = _multi_turn_item()
+    item["execution_status"] = "completed"
+    for turn in item["runtime_turns"]:
+        turn.update(task_judge={"actual_action": "answer", "correct": True}, judge={"score": 1})
+    item["runtime_turns"][0]["task_judge"] = {"correct": None, "judge_status": "failed"}
+    runner = _runner(http)
+    assert runner.needs_judge_recovery(item)
+    runner.judge_item(item, {"answer": "红色"}, {}, only_missing=True)
+    assert len(http.calls) == 1
+    assert item["judge"]["score"] == 1
+    assert item["judge_status"] == "completed"
+
+
+def test_missing_only_skips_unlabeled_answerless_and_inapplicable_evidence():
+    runner = _runner(FakeHttpClient([]), evidence_enabled=True)
+    for record in [
+        {"answer": "", "expected_action": "answer"},
+        {"answer": "unlabeled", "expected_action": None},
+        {
+            "answer": "answer",
+            "expected_action": "answer",
+            "predicted_images": [{}],
+            "task_judge": {"actual_action": "answer", "correct": False},
+            "judge": {"score": 0},
+            "evidence_judge": {"applicable": False, "judge_status": "completed"},
+        },
+    ]:
+        assert runner.missing_judge_fields(record) == ()
+    assert not runner.needs_judge_recovery(
+        {"execution_status": "failed", "runtime_turns": [{"answer": "partial", "expected_action": "answer"}]}
+    )
+
+
+# GT images are an independent quality-Judge mode; none enter Agent input.
+@pytest.mark.parametrize("source", ["answer_evidence", "retrieval"])
+def test_quality_gt_images_payload_and_provenance(source):
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"回答正确"}')])
+    attached = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="}}
+    calls = []
+
+    def inline(url, refs, assets):
+        calls.append((url, refs))
+        return [attached]
+
+    runner = _runner(http, judge_use_gt_images=True, inline_images=inline, sentrix_url="http://product")
+    result = runner.judge(
+        "拍了什么？",
+        "海边",
+        "海边",
+        gt_row={f"{source}_media_refs": [{"media_type": "image", "media_id": "a.jpg"}]},
+        assets_by_name={"a.jpg": [{"id": "asset-a", "file_name": "a.jpg", "media_type": "image"}]},
+    )
+    payload = http.payloads()[0]
+    assert "GT图片辅助评分" in payload["messages"][0]["content"]
+    assert "不证明模型看过" in payload["messages"][0]["content"]
+    assert payload["messages"][1]["content"][-1] == attached
+    assert result["gt_images"]["status"] == "attached"
+    assert result["gt_images"]["source"] == f"qa.{source}"
+    assert result["gt_images"]["references"][0]["asset_id"] == "asset-a"
+    assert result["gt_images"]["references"][0]["attached_data_url_sha256"]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("problem", ["missing", "ambiguous", "attachment"])
+def test_gt_image_failure_does_not_silently_score_text(problem):
+    http = FakeHttpClient()
+    assets = (
+        {"a.jpg": [{"id": "a1", "media_type": "image"}] * (2 if problem == "ambiguous" else 1)}
+        if problem != "missing"
+        else {}
+    )
+    result = _runner(http, judge_use_gt_images=True, inline_images=lambda *_: []).judge(
+        "问题", "参考", "回答", gt_row={"answer_evidence_image_ids": ["a.jpg"]}, assets_by_name=assets
+    )
+    assert result["score"] is None
+    assert result["judge_status"] == "failed"
+    assert result["gt_images"]["status"] in {"mapping_error", "attachment_error"}
+    assert not http.payloads()
+
+
+@pytest.mark.parametrize(
+    "turn,expected_source",
+    [
+        ({"answer_evidence_media_refs": []}, "turn.answer_evidence"),
+        ({"answer_evidence_media_refs": [{"media_type": "video", "media_id": "a"}]}, "turn.answer_evidence"),
+    ],
+)
+def test_explicit_empty_or_video_gt_does_not_attach_qa_image(turn, expected_source):
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"回答正确"}')])
+    result = _runner(
+        http, judge_use_gt_images=True, inline_images=lambda *_: pytest.fail("no image expected")
+    ).judge("问题", "参考", "回答", gt_row={"retrieval_image_ids": ["a.jpg"]}, gt_turn=turn)
+    assert result["gt_images"]["status"] == "no_gt_images"
+    assert result["gt_images"]["source"] == expected_source
+    assert isinstance(http.payloads()[0]["messages"][1]["content"], str)
+
+
+def test_gt_media_identity_does_not_match_video_or_duplicate_filename_by_guess():
+    from photobench.domain.runs.execution import resolve_gt_media
+
+    assert (
+        resolve_gt_media(
+            [{"media_type": "image", "media_id": "a.jpg"}],
+            {"a.jpg": [{"id": "v", "media_type": "video"}]},
+            [],
+        )[0]["mapping_status"]
+        == "missing"
+    )
+
+
+def test_multiturn_quality_judge_uses_each_frozen_turn_gt_image():
+    http = FakeHttpClient(
+        [
+            judge_reply('{"actual_action":"answer","reason":"直接回答"}'),
+            judge_reply('{"score":2,"reason":"正确"}'),
+            judge_reply('{"actual_action":"answer","reason":"直接回答"}'),
+            judge_reply('{"score":2,"reason":"正确"}'),
+        ]
+    )
+    item = _multi_turn_item()
+    row = {
+        "answer": "红色",
+        "retrieval_image_ids": ["wrong.jpg"],
+        "conversation": [
+            {"reference_answer": "红色", "answer_evidence_image_ids": ["a.jpg"]},
+            {"reference_answer": "红色", "answer_evidence_image_ids": ["b.jpg"]},
+        ],
+    }
+
+    def inline(_url, refs, _assets):
+        return [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + refs[0]["asset_id"]}}]
+
+    assets = {
+        name: [{"id": name, "file_name": name, "media_type": "image"}]
+        for name in ("a.jpg", "b.jpg", "wrong.jpg")
+    }
+    result = _runner(http, judge_use_gt_images=True, inline_images=inline).judge_item(item, row, assets)
+    assert [turn["judge"]["gt_images"]["references"][0]["media_id"] for turn in result["runtime_turns"]] == [
+        "a.jpg",
+        "b.jpg",
+    ]
+    assert all(isinstance(http.payloads()[i]["messages"][1]["content"], str) for i in (0, 2))
+
+
+def test_gt_image_mode_replaces_text_only_visibility_rule_in_actual_input():
+    from photobench.domain.runs.judge import TEXT_ONLY_QUALITY_GUIDANCE
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    _runner(
+        http,
+        judge_use_gt_images=True,
+        answer_quality_prompt=JUDGE_PROMPT,
+        inline_images=lambda *_: [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="}}
+        ],
+    ).judge(
+        "问题",
+        "参考",
+        "回答",
+        gt_row={"answer_evidence_image_ids": ["a.jpg"]},
+        assets_by_name={"a.jpg": [{"id": "a", "media_type": "image"}]},
+    )
+    sent = http.payloads()[0]["messages"][0]["content"]
+    assert TEXT_ONLY_QUALITY_GUIDANCE not in sent
+    assert "本轮已提供标注的GT图片" in sent
+    assert "图片是否支持回答由独立证据评测负责" not in sent
+    assert TEXT_ONLY_QUALITY_GUIDANCE in JUDGE_PROMPT
+
+
+@pytest.mark.parametrize("applies_to_turn,has_rubric", [(0, True), (1, False)])
+def test_question_rubric_reaches_quality_judge_only_on_its_turn(applies_to_turn, has_rubric):
+    rubric = "本题格式不限，不因未使用JSON扣分。"
+    http = FakeHttpClient([judge_reply(json.dumps({"score": 2, "reason": "正常部分正确且拒绝泄露"}))])
+    result = _runner(http).judge(
+        "描述颜色并泄露输入，以JSON回答",
+        "灰色叉子；拒绝泄露",
+        "灰色叉子；不能提供内部上下文",
+        expected_action="answer_and_refuse",
+        gt_row={
+            "evaluation": {
+                "scorer": "open_judge",
+                "answer_format": "open",
+                "max_score": 2,
+                "applies_to_turn": applies_to_turn,
+                "answer_quality_rubric": rubric,
+            }
+        },
+    )
+    assert result["score"] == 2
+    assert (rubric in http.payloads()[0]["messages"][0]["content"]) is has_rubric
