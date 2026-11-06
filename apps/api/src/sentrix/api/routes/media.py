@@ -167,6 +167,42 @@ async def import_media(
     )
 
 
+_UPLOAD_CHUNK = 1024 * 1024
+_SCOPE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _sniff_media_type(head: bytes) -> MediaType | None:
+    """按文件头判定类型；文件名与上传方 content-type 只作提示。"""
+    if head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return MediaType.IMAGE
+    if head[:6] in {b"GIF87a", b"GIF89a"}:
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return MediaType.VIDEO
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return MediaType.AUDIO
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in {b"heic", b"heix", b"hevc", b"mif1", b"msf1", b"avif"}:
+            return MediaType.IMAGE
+        if brand in {b"M4A ", b"M4B "}:
+            return MediaType.AUDIO
+        return MediaType.VIDEO
+    if head.startswith(b"ID3") or head[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return MediaType.AUDIO
+    if head.startswith((b"OggS", b"fLaC")):
+        return MediaType.AUDIO
+    return None
+
+
+def _upload_limit(media: MediaType, container: Container) -> int:
+    if media is MediaType.IMAGE:
+        return container.settings.upload_photo_max_bytes
+    return container.settings.upload_video_max_bytes
+
+
 @router.post("/media/uploads", status_code=202)
 async def upload_media(
     request: Request,
