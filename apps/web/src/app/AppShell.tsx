@@ -13,6 +13,7 @@ import { NAV_ITEMS } from "./nav";
 import { GuidedTour } from "./GuidedTour";
 import { TOURS } from "./tours";
 import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
+import { UploadsProvider } from "../features/imports/UploadsProvider";
 import { Onboarding } from "./Onboarding";
 import { OverlayProvider } from "./OverlayContext";
 import { useAuth } from "./AuthProvider";
@@ -266,14 +267,16 @@ export function AppShell() {
       </header>
 
       <div className="main-content">
-        <OverlayProvider blocked={overlay !== null || onboardingOpen}>
-          <div
-            className={location.pathname === "/" ? "view-root memory-view" : "view-root"}
-            data-page={current?.id ?? "unknown"}
-          >
-            <Outlet />
-          </div>
-        </OverlayProvider>
+        <UploadsProvider>
+          <OverlayProvider blocked={overlay !== null || onboardingOpen}>
+            <div
+              className={location.pathname === "/" ? "view-root memory-view" : "view-root"}
+              data-page={current?.id ?? "unknown"}
+            >
+              <Outlet />
+            </div>
+          </OverlayProvider>
+        </UploadsProvider>
       </div>
 
       {overlay === "guide" ? (
