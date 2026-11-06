@@ -1,6 +1,6 @@
 # 文本向量迁移：`memory_vectors` → `text_vectors`
 
-适用版本：含 `0015_text_vectors.sql` 的 2.0。设计决策见
+适用版本：含 `0019_text_vectors.sql` 的 2.0。设计决策见
 [ADR 0003](../adr/0003-text-vectors-separate-table.md)。
 
 所有命令从**仓库根**执行。脚本默认 dry-run，**任何写操作都要显式 `--apply`**；
@@ -8,7 +8,7 @@
 默认目标库是 `load_settings().database_path`（通常是 `data/sentrix.db`），可用 `--db` 指定。
 脚本启动时先跑迁移，确保 `0015` 已应用。
 
-合并xy分支后，文本向量使用0015_text_vectors.sql，拍摄时间与地点来源使用
+合并上游分支后，文本向量使用0019_text_vectors.sql，拍摄时间与地点来源使用
 0016_capture_time.sql。已发布xy曾将后者记为0015：执行器核对拍摄时间、地点来源
 列存在且文本向量表不存在后，在同一事务中将旧记录改为0016并执行文本向量迁移，
 原应用时间保留。新库、原main库和原xy库均有升级测试。重复编号或不符合已知结构

@@ -118,36 +118,7 @@ class Database:
             done = connection.execute(
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
-            if done is not None and script.name == "0015_text_vectors.sql":
-                text_table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_vectors'"
-                ).fetchone()
-                if text_table is None:
-                    # 已发布的xy曾用0015记录拍摄时间迁移；main的0015是文本向量。
-                    # 在同一事务内按已知表结构改记编号，再创建文本表。
-                    capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
-                    place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
-                    if (
-                        "capture_time_json" not in capture_columns
-                        or "nearest_evidence_json" not in place_columns
-                    ):
-                        raise MigrationError("0015记录与文本向量/拍摄时间表结构不一致")
-                    connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0015'")
-                    done = None
-            if done is not None and script.name == "0016_video_jobs.sql":
-                video_table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_jobs'"
-                ).fetchone()
-                if video_table is None:
-                    capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
-                    place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
-                    if (
-                        "capture_time_json" not in capture_columns
-                        or "nearest_evidence_json" not in place_columns
-                    ):
-                        raise MigrationError("0016记录与视频任务/拍摄时间表结构不一致")
-                    connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0016'")
-                    done = None
+            done = _reconcile_merged_migration_versions(connection, script.name, done)
             if done is not None:
                 connection.execute("COMMIT")
                 return False
@@ -162,6 +133,74 @@ class Database:
             raise
         finally:
             connection.isolation_level = previous
+
+
+def _reconcile_merged_migration_versions(
+    connection: sqlite3.Connection, script_name: str, done: object | None
+) -> object | None:
+    """Reconcile databases created before the local/upstream migration merge.
+
+    The local audio/document branch and upstream main independently allocated
+    versions 0015--0018.  The merged tree keeps upstream's numbers and moves
+    the local scripts to 0019--0022.  Existing databases are identified by the
+    schema they actually contain, never by a branch name, then their recorded
+    local version is moved before the upstream script is applied.
+    """
+    if done is None:
+        return None
+
+    has_table = lambda name: connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+    columns = lambda table: {
+        row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+    }
+
+    if script_name == "0015_audio_transcriptions.sql":
+        if has_table("audio_transcriptions"):
+            return done
+        if has_table("text_vectors"):
+            connection.execute("UPDATE schema_migrations SET version='0019' WHERE version='0015'")
+            return None
+        # An older xy database recorded capture-time as 0015.
+        if {"capture_time_json"} <= columns("assets") and {"nearest_evidence_json"} <= columns(
+            "asset_places"
+        ):
+            connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0015'")
+            return None
+    if script_name == "0016_video_jobs.sql" and {"capture_time_json"} <= columns("assets"):
+        if has_table("video_jobs"):
+            return done
+        connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0016'")
+        return None
+    if script_name == "0016_video_jobs.sql":
+        if has_table("video_jobs"):
+            return done
+        if "local_speaker_label" in columns("audio_transcript_segments"):
+            connection.execute("UPDATE schema_migrations SET version='0020' WHERE version='0016'")
+            return None
+    if script_name == "0017_video_job_config_hash.sql":
+        if "config_hash" in columns("video_jobs"):
+            return done
+        if "audio_evidence_json" in columns("agent_result_sets"):
+            connection.execute("UPDATE schema_migrations SET version='0021' WHERE version='0017'")
+            return None
+    if script_name == "0018_capture_time.sql":
+        if {"capture_time_json"} <= columns("assets") and {"nearest_evidence_json"} <= columns(
+            "asset_places"
+        ):
+            return done
+        if has_table("documents"):
+            connection.execute("UPDATE schema_migrations SET version='0022' WHERE version='0018'")
+            return None
+    if script_name in {
+        "0015_audio_transcriptions.sql",
+        "0016_video_jobs.sql",
+        "0017_video_job_config_hash.sql",
+        "0018_capture_time.sql",
+    }:
+        raise MigrationError(f"{script_name[:4]}记录与已知迁移表结构不一致")
+    return done
 
 
 def _capture_in_bounds(value: str | None, start: str | None, end: str | None) -> bool:

@@ -122,6 +122,10 @@ class TaskState:
         return sum(1 for record in self.records if record.tool == "search_memories")
 
     @property
+    def document_search_calls(self) -> int:
+        return sum(1 for record in self.records if record.tool == "search_documents")
+
+    @property
     def page_calls(self) -> int:
         """这一轮翻了几次页。
 

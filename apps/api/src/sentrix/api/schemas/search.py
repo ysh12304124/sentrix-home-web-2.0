@@ -5,6 +5,14 @@ from pydantic import BaseModel
 from sentrix.api.schemas.media import AssetSummary
 
 
+class AudioEvidenceExcerpt(BaseModel):
+    start_ms: int
+    end_ms: int
+    text: str
+    is_anchor: bool = False
+    speaker_label: str = ""
+
+
 class SearchHit(BaseModel):
     """一条命中。``asset`` 是可打开的原图本身——产品硬约束：查询必须返回原图。"""
 
@@ -13,6 +21,20 @@ class SearchHit(BaseModel):
     # 通道 -> 该通道里的名次。S2 只有 visual_ann 一条，结构先按六路留好。
     channels: dict[str, int]
     raw_scores: dict[str, float]
+    # 音频/视频音轨文本命中时给播放器定位；仅由其他通道命中时为空。
+    audio_start_ms: int | None = None
+    audio_end_ms: int | None = None
+    # 锚点前后各一段的可读语境。只有 is_anchor=true 的片段参与过向量命中。
+    audio_context: list[AudioEvidenceExcerpt] = []
+
+
+class DirectAudioEvidence(BaseModel):
+    segment_id: str
+    asset_id: str
+    score: float
+    start_ms: int
+    end_ms: int
+    context: list[AudioEvidenceExcerpt] = []
 
 
 class ChannelTrace(BaseModel):
@@ -48,3 +70,5 @@ class SearchResponse(BaseModel):
     # 每个通道的轨迹，顺序与融合的通道顺序一致。
     channel_trace: list[ChannelTrace] = []
     items: list[SearchHit]
+    # 独立 Segment 级音频证据；不与图片 Asset 排名混合。
+    direct_audio: list[DirectAudioEvidence] = []

@@ -40,6 +40,7 @@ from sentrix.domain.retrieval.ports import TextEmbedder, VectorHit, VectorReposi
 # 与写入侧 ``IndexObservationText`` 同一个字面量。两处各写一遍是有代价的，
 # 但它比「从写入用例 import 一个常量」好：召回侧不该依赖写入侧的模块。
 OBSERVATION_SOURCE = "observation"
+AUDIO_SEGMENT_SOURCE = "audio_segment"
 
 log = logging.getLogger("sentrix.retrieval.text_ann")
 
@@ -67,6 +68,9 @@ class TextSearchHit:
     score: float
     channels: Mapping[str, int] = field(default_factory=dict)
     raw_scores: Mapping[str, float] = field(default_factory=dict)
+    # 音频分段命中时保留定位；普通 Observation 命中为 None。
+    start_ms: int | None = None
+    end_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +133,11 @@ class RetrieveTextAnn:
 
         hits = [
             CandidateHit(asset_id=asset_id, channel=CHANNEL, rank=rank, raw_score=score)
-            for rank, (asset_id, score) in enumerate(candidates, start=1)
+            for rank, (asset_id, score, _metadata) in enumerate(candidates, start=1)
         ]
         fused = fuse({CHANNEL: hits}) if hits else []
 
+        metadata_by_asset = {asset_id: metadata for asset_id, _score, metadata in candidates}
         return TextSearchResult(
             hits=tuple(
                 TextSearchHit(
@@ -140,6 +145,8 @@ class RetrieveTextAnn:
                     score=candidate.score,
                     channels=dict(candidate.channels),
                     raw_scores=dict(candidate.raw_scores),
+                    start_ms=_optional_int(metadata_by_asset.get(candidate.asset_id, {}).get("start_ms")),
+                    end_ms=_optional_int(metadata_by_asset.get(candidate.asset_id, {}).get("end_ms")),
                 )
                 for candidate in fused[:limit]
             ),
@@ -155,14 +162,17 @@ class RetrieveTextAnn:
 
     # ---- 召回 ----------------------------------------------------------------
 
-    def _recall(self, scope_id: str | None, query: Sequence[float], fetch: int) -> list[tuple[str, float]]:
+    def _recall(
+        self, scope_id: str | None, query: Sequence[float], fetch: int
+    ) -> list[tuple[str, float, Mapping[str, object]]]:
         """两个空间各查一次，按 ``asset_id`` 取最大相似度，降序返回。
 
         **按 asset 聚合是 1.0 的行为**（``text_ann.py:110-113``）。不聚合的话，
         同一张图被三个 observation 命中就会在融合层拿到三个名次，
         而 RRF 对「同一候选出现多次」没有去重——它的分会被抬成三倍。
         """
-        best: dict[str, float] = {}
+        best: dict[str, tuple[float, Mapping[str, object]]] = {}
+        best_audio_location: dict[str, tuple[float, Mapping[str, object]]] = {}
         unmapped = 0
         for space in SPACES:
             for hit in self._vectors.search_exact(
@@ -175,19 +185,37 @@ class RetrieveTextAnn:
                 # **事件行不是异常。** 写入侧给 ``episodic/event`` 那行的 metadata 按 1.0
                 # 只有 ``observation_id``，它本来就不指向 Asset。每次查询都拿它报一条
                 # warning，会把真正的数据缺口淹掉。
-                if hit.source_type != OBSERVATION_SOURCE:
+                if hit.source_type not in {OBSERVATION_SOURCE, AUDIO_SEGMENT_SOURCE}:
                     continue
                 asset_id = self._asset_of(hit)
                 if asset_id is None:
                     unmapped += 1
                     continue
-                if asset_id not in best or hit.score > best[asset_id]:
-                    best[asset_id] = hit.score
+                if asset_id not in best or hit.score > best[asset_id][0]:
+                    best[asset_id] = (hit.score, dict(hit.metadata))
+                if hit.source_type == AUDIO_SEGMENT_SOURCE and (
+                    asset_id not in best_audio_location or hit.score > best_audio_location[asset_id][0]
+                ):
+                    best_audio_location[asset_id] = (hit.score, dict(hit.metadata))
         if unmapped:
             # **观察行**缺 asset_id 才是异常：命中了却交付不出来，在结果条数上表现为
             # 「少几张图」——最容易没人发现的那种错。
             log.warning("文本召回有 %d 条观察命中缺少 asset_id，已丢弃", unmapped)
-        return sorted(best.items(), key=lambda item: item[1], reverse=True)
+        # 只有音频片段本身是该资产最强的文本证据（允许浮点并列）时才向上交付
+        # 时间锚点。否则一个很弱的音频尾部命中会给视觉/Observation 强命中的资产
+        # 附上一段无关对白，扩展上下文反而污染回答模型。
+        rows: list[tuple[str, float, Mapping[str, object]]] = []
+        for asset_id, (score, _metadata) in best.items():
+            audio = best_audio_location.get(asset_id)
+            audio_metadata: Mapping[str, object] = {}
+            if audio is not None and audio[0] >= score - 1e-9:
+                audio_metadata = audio[1]
+            rows.append((asset_id, score, audio_metadata))
+        return sorted(
+            rows,
+            key=lambda item: item[1],
+            reverse=True,
+        )
 
     @staticmethod
     def _asset_of(hit: VectorHit) -> str | None:
@@ -199,3 +227,12 @@ class RetrieveTextAnn:
         """
         asset_id = hit.metadata.get("asset_id")
         return str(asset_id) if asset_id else None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None

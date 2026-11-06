@@ -303,6 +303,33 @@ SEARCH_EMPTY = ToolOutcome(
     model_visible={"result_set_id": "rs_2", "query": "海边", "page": 1, "preview": [], "has_more": False},
 )
 
+DOCUMENT_SEARCH_OK = ToolOutcome(
+    observation={
+        "result_set_id": "rs_doc_1",
+        "query": "模型如何评价",
+        "total": 1,
+        "has_more": False,
+        "asset_ids": [],
+        "document_asset_ids": ["asset_doc_1"],
+        "chunk_ids": ["chunk_1"],
+    },
+    model_visible={
+        "query": "模型如何评价",
+        "total": 1,
+        "has_more": False,
+        "documents": [
+            {
+                "reference": "document_1",
+                "file_name": "统计建模论文.pdf",
+                "page": "12",
+                "section": "模型评价",
+                "text": "论文使用均方误差评价模型。",
+                "context": [],
+            }
+        ],
+    },
+)
+
 
 # ---- 夹具 -------------------------------------------------------------------
 
@@ -360,6 +387,36 @@ def test_the_full_loop_retrieves_delivers_and_answers(env):
     assert [item["status"] for item in result.requirements] == ["satisfied", "satisfied"]
     assert turns.get(turn_id).status is TurnStatus.COMPLETE
     assert turns.get(turn_id).attachments[0].handle == "photo_1"
+
+
+def test_the_existing_assistant_loop_can_retrieve_documents_and_answer(env):
+    _conversations, _turns, conversation, _db = env
+    model = ScriptedModel(
+        [
+            tool_call("search_documents", "c_doc", query="模型如何评价"),
+            final("论文使用均方误差评价模型（来源：统计建模论文.pdf，第 12 页）。"),
+        ],
+        planner=planner_reply(
+            "document_text",
+            goal="回答论文中的模型评价方法",
+            value_type="description",
+        ),
+    )
+    toolbox = StubToolbox({"search_documents": DOCUMENT_SEARCH_OK})
+    run_turn = build(env, model, toolbox)
+    turn_id = run_turn.start(
+        TurnRequest(conversation_id=conversation.id, question="论文是如何评价模型的？")
+    ).id
+
+    result = run_turn.run(turn_id)
+
+    assert result.status is TurnStatus.COMPLETE
+    assert result.answer == "论文使用均方误差评价模型（来源：统计建模论文.pdf，第 12 页）。"
+    assert toolbox.calls[0] == ("search_documents", {"query": "模型如何评价"})
+    assert "search_documents" in model.tool_sets[0]
+    assert "search_memories" not in model.tool_sets[0]
+    assert result.requirements[0]["status"] == "satisfied"
+    assert "统计建模论文.pdf" in model.calls[-1][-1].content
 
 
 def test_the_answer_is_persisted_as_an_assistant_message(env):

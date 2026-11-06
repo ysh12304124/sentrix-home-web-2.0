@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
+from sentrix.application.documents.search_documents import SearchDocuments, SearchDocumentsRequest
+from sentrix.application.media.speech_context import expand_frame_speech_context
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
 from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
 from sentrix.domain.assistant.evidence_binding import fact_value_type
@@ -171,6 +173,12 @@ def _clamp_limit(value: Any) -> int:
     return min(MAX_SEARCH_LIMIT, max(1, parsed))
 
 
+def _document_page_label(start: int | None, end: int | None) -> str:
+    if start is None:
+        return ""
+    return str(start) if end in {None, start} else f"{start}-{end}"
+
+
 class AssistantToolbox:
     def __init__(
         self,
@@ -186,6 +194,7 @@ class AssistantToolbox:
         person_crops: PersonCropRenderer,
         asset_places: AssetPlaceRepository | None = None,
         events: EventRepository | None = None,
+        documents: SearchDocuments | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._assets = assets
@@ -199,6 +208,9 @@ class AssistantToolbox:
         # Retrieval can find the video from transcript text, but an asset-only preview
         # would otherwise hide the event memory and send spoken-content questions to OCR.
         self._events = events
+        # 文档检索是独立于照片结果集的一条证据链：只给模型可引用的原文、页码和上下文，
+        # 不把 asset_id / chunk_id 泄漏到模型侧。
+        self._documents = documents
         # ``query_photo_people`` 的两条读路径（T122）。两者都是**只读**，
         # 且都只被这一个工具用——不是通用能力。
         self._faces = faces
@@ -219,6 +231,8 @@ class AssistantToolbox:
     ) -> ToolOutcome:
         if name == "search_memories":
             return self._search(arguments, scope_id=scope_id, now=now)
+        if name == "search_documents":
+            return self._search_documents(arguments, scope_id=scope_id)
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -232,6 +246,56 @@ class AssistantToolbox:
         if name == "query_memory_facts":
             return self._facts(arguments, scope_id=scope_id, now=now)
         return _failure("unknown_tool", f"没有名为 {name} 的工具。")
+
+    def _search_documents(self, arguments: Mapping[str, Any], *, scope_id: str) -> ToolOutcome:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return _failure("empty_query", "query 不能为空，请用问题中的文档主题或关键词。")
+        if self._documents is None:
+            return ToolOutcome(
+                observation={"query": query, "total": 0, "document_asset_ids": [], "chunk_ids": []},
+                model_visible={"query": query, "documents": [], "note": "当前文档检索暂不可用。"},
+                blocks=EvidenceType.DOCUMENT_TEXT,
+                failure_reason="document_search_unavailable",
+            )
+
+        hits = self._documents.execute(
+            SearchDocumentsRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
+        )
+        visible: list[dict[str, Any]] = []
+        for index, hit in enumerate(hits, 1):
+            visible.append(
+                {
+                    "reference": f"document_{index}",
+                    "file_name": hit.file_name,
+                    "page": _document_page_label(hit.page_start, hit.page_end),
+                    "section": hit.section_path or "",
+                    "text": hit.text,
+                    "context": [
+                        {
+                            "page": _document_page_label(chunk.page_start, chunk.page_end),
+                            "text": chunk.text,
+                        }
+                        for chunk in hit.context
+                    ],
+                }
+            )
+        return ToolOutcome(
+            observation={
+                "query": query,
+                "total": len(hits),
+                "document_asset_ids": [hit.document_asset_id for hit in hits],
+                "chunk_ids": [hit.chunk_id for hit in hits],
+            },
+            model_visible={
+                "query": query,
+                "total": len(hits),
+                "has_more": False,
+                "documents": visible,
+                **({"note": "没有找到相关文档片段。"} if not hits else {}),
+            },
+            blocks=EvidenceType.DOCUMENT_TEXT if not hits else None,
+        )
 
     # ---- query_memory_facts -------------------------------------------------
 
@@ -526,6 +590,18 @@ class AssistantToolbox:
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
             "evidence_summary": _observation_summary(latest),
+            # 音频检索命中的锚点及其相邻上下文随结果集冻结；给模型的是转写和时间，
+            # 而不是内部 segment id。
+            "audio_evidence": [
+                {
+                    "start_ms": excerpt.start_ms,
+                    "end_ms": excerpt.end_ms,
+                    "text": excerpt.text,
+                    "is_anchor": excerpt.is_anchor,
+                    "speaker": excerpt.local_speaker_label,
+                }
+                for excerpt in entry.audio_evidence
+            ],
             **self._speech_preview(asset),
         }
 
@@ -556,6 +632,14 @@ class AssistantToolbox:
             segments = metadata.get("speech_segments", [])
             if not isinstance(segments, list):
                 segments = []
+            if frame_time is not None:
+                evidence.extend(
+                    expand_frame_speech_context(
+                        segments,
+                        frame_time_sec=float(frame_time),
+                    )
+                )
+                continue
             for segment in segments:
                 if not isinstance(segment, dict):
                     continue
@@ -574,6 +658,7 @@ class AssistantToolbox:
                             "end_sec": end_sec,
                             "text": text[:1000],
                             "speaker": str(segment.get("speaker") or ""),
+                            "is_anchor": True,
                         }
                     )
             if not segments:
@@ -591,7 +676,7 @@ class AssistantToolbox:
         return {
             "speech_evidence": evidence[:12],
             "speech_evidence_note": (
-                "语音证据来自视频 ASR 转写；关键帧仅显示与该帧时间戳重叠的语音片段。"
+                "语音证据来自视频 ASR 转写；关键帧显示时间重叠锚点及其连续相邻片段。"
                 "可直接用于回答说话内容，不要改用图片 OCR。"
             ),
         }

@@ -864,17 +864,35 @@ export interface ImportResponse {
   job_status?: string | null;
 }
 
+/** 文档专用链路的导入结果。 */
+export interface DocumentImportResponse {
+  asset_id: string;
+  deduplicated: boolean;
+  status: string;
+  format: string;
+  revision: number;
+  element_count: number;
+  chunk_count: number;
+  vector_count: number;
+  error?: string;
+}
+
+/** 统一入口明确告诉调用方最终选择了哪条底层链路。 */
+export type UnifiedImportResponse =
+  | { routed_to: "media"; result: ImportResponse }
+  | { routed_to: "document"; result: DocumentImportResponse };
+
 /**
- * 导入一个文件。`POST /api/v1/media/import`。
+ * 导入一个文件。`POST /api/v1/import` 会自动路由到文档或媒体链路。
  *
  * 用 multipart：`file` 是文件本身、`scope_id` 是表单字段。**不要手写 Content-Type**——
  * 浏览器要给 multipart 带上 boundary，手写会把 boundary 弄丢。
  */
-export async function importAsset(file: File, scopeId: string): Promise<ImportResponse> {
+export async function importAsset(file: File, scopeId: string): Promise<UnifiedImportResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("scope_id", scopeId);
-  return request<ImportResponse>("/media/import", { method: "POST", body: form });
+  return request<UnifiedImportResponse>("/import", { method: "POST", body: form });
 }
 
 /** 某个相册范围下的会话列表。`GET /api/v1/assistant/conversations`。 */

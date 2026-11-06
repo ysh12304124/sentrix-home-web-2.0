@@ -20,7 +20,7 @@
 
 ## 决策
 
-在**同一个 SQLite 文件**中新增 `text_vectors` 表（`0015_text_vectors.sql`），
+在**同一个 SQLite 文件**中新增 `text_vectors` 表（`0019_text_vectors.sql`），
 `semantic` / `episodic` 的写入与检索切到这张表；`memory_vectors` 之后只存视觉/人脸行。
 
 - 表结构与 `memory_vectors` 逐列一致，物理主键 `id` + 自然键

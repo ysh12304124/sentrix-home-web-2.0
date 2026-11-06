@@ -66,12 +66,21 @@ class FakeVectors:
         return len(self.by_space.get(space, []))
 
 
-def hit(source_id: str, score: float, *, asset_id: str | None, space: str) -> VectorHit:
+def hit(
+    source_id: str,
+    score: float,
+    *,
+    asset_id: str | None,
+    space: str,
+    source_type: str = "observation",
+    metadata_extra: dict[str, object] | None = None,
+) -> VectorHit:
     metadata = {"asset_id": asset_id} if asset_id else {}
+    metadata.update(metadata_extra or {})
     return VectorHit(
         source_id=source_id,
         scope_id=SCOPE,
-        source_type="observation",
+        source_type=source_type,
         model_name=scheme.TEXT_MODEL,
         score=score,
         metadata=metadata,
@@ -116,6 +125,51 @@ def test_aggregates_by_asset_taking_the_max_score():
 
     assert [item.asset_id for item in result.hits] == ["asset_a", "asset_b"]
     assert result.hits[0].raw_scores[CHANNEL] == pytest.approx(0.91)
+
+
+def test_audio_segment_hit_keeps_its_time_range() -> None:
+    by_space = {
+        scheme.SEMANTIC_SPACE: [
+            hit(
+                "aseg_1",
+                0.9,
+                asset_id="asset_audio",
+                space=scheme.SEMANTIC_SPACE,
+                source_type="audio_segment",
+                metadata_extra={"start_ms": 1200, "end_ms": 3400},
+            )
+        ]
+    }
+    index, _, _ = build(by_space)
+
+    result = index.execute(TextSearchRequest(text="公园散步", scope_id=SCOPE))
+
+    assert result.hits[0].asset_id == "asset_audio"
+    assert result.hits[0].start_ms == 1200
+    assert result.hits[0].end_ms == 3400
+
+
+def test_weaker_audio_hit_does_not_attach_irrelevant_context_to_stronger_observation() -> None:
+    by_space = {
+        scheme.SEMANTIC_SPACE: [
+            hit("obs_1", 0.95, asset_id="asset_video", space=scheme.SEMANTIC_SPACE),
+            hit(
+                "aseg_1",
+                0.40,
+                asset_id="asset_video",
+                space=scheme.SEMANTIC_SPACE,
+                source_type="audio_segment",
+                metadata_extra={"start_ms": 12_000, "end_ms": 15_000},
+            ),
+        ]
+    }
+    index, _, _ = build(by_space)
+
+    result = index.execute(TextSearchRequest(text="红色背包", scope_id=SCOPE))
+
+    assert result.hits[0].asset_id == "asset_video"
+    assert result.hits[0].start_ms is None
+    assert result.hits[0].end_ms is None
 
 
 def test_scores_from_different_spaces_compete_together():

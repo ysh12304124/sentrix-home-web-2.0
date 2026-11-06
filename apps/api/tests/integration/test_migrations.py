@@ -120,13 +120,13 @@ def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
     if baseline == "xy":
         (old_scripts / "0015_capture_time.sql").write_bytes((source / "0018_capture_time.sql").read_bytes())
     elif baseline == "main":
-        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0015_text_vectors.sql").read_bytes())
+        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0019_text_vectors.sql").read_bytes())
     if baseline == "previous_merge":
-        for name in ("0015_text_vectors.sql", "0018_capture_time.sql"):
-            target = name.replace("0018", "0016")
-            (old_scripts / target).write_bytes((source / name).read_bytes())
+        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0019_text_vectors.sql").read_bytes())
+        (old_scripts / "0016_capture_time.sql").write_bytes((source / "0018_capture_time.sql").read_bytes())
     elif baseline == "current_main":
-        for name in ("0015_text_vectors.sql", "0016_video_jobs.sql", "0017_video_job_config_hash.sql"):
+        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0019_text_vectors.sql").read_bytes())
+        for name in ("0016_video_jobs.sql", "0017_video_job_config_hash.sql"):
             (old_scripts / name).write_bytes((source / name).read_bytes())
     path = tmp_path / "t.db"
     old = Database(path, old_scripts)

@@ -137,6 +137,19 @@ class ToolPolicy:
                 ),
             )
 
+        if (
+            call.name == "search_documents"
+            and state.document_search_calls >= state.profile.max_search_calls
+        ):
+            return ToolDecision(
+                action=ToolAction.DENY,
+                code="document_search_call_limit",
+                reason=(
+                    "search_documents 每轮只需调用一次。请基于已返回的原文片段和相邻上下文"
+                    "作答；证据不足时如实说明，不要改词重搜。"
+                ),
+            )
+
         # 翻页额度。**排在工具总预算之前**，与 ``search_memories`` 那条同一个位置与理由：
         # 命中总预算时回的是「别再调工具了」，而这里要说的是「这一份候选你已经看完了」——
         # 两句话让模型做的下一件事不一样。

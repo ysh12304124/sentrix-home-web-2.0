@@ -1,7 +1,7 @@
 """工具契约：名字、描述、参数 schema、能满足哪类证据、贵不贵（``cost_class``）。
 
-S3 上线四个，S6 加了 ``query_memory_facts``（T121）、``query_photo_people``（T122）
-与 ``inspect_photo``（T123），现在七个取证工具 + 一个终止动作（``final_answer``）。
+S3 上线四个，S6 补齐照片与事实工具；文档模态再加入独立的 ``search_documents``，
+所有取证工具共用一个终止动作（``final_answer``）。
 
 对应 1.0 ``agent_runtime/tool_registry.py`` + ``tools.py`` 的注册段（``tools.py:2681``）。
 两处与 1.0 的**结构性差异**：
@@ -129,6 +129,35 @@ SEARCH_MEMORIES = ToolSpec(
         ["query"],
     ),
     satisfies=(EvidenceType.PHOTO_SET, EvidenceType.SPOKEN_CONTENT),
+    required=("query",),
+)
+
+SEARCH_DOCUMENTS = ToolSpec(
+    name="search_documents",
+    brief="检索已导入文档，返回原文片段、相邻上下文、文件名和页码。",
+    description=(
+        "检索当前家庭空间中已经导入的 PDF、DOCX 和 TXT 文档。"
+        "返回与问题最相关的原文片段，并附带同一文档中的相邻上下文、文件名、章节和页码。"
+        "回答必须以这些原文为依据；引用来源时使用文件名和页码，不要输出内部资产 id、"
+        "分块 id 或数据库字段名。一次对话通常只需要调用一次；如果没有命中，应如实说明"
+        "现有文档无法确认，不要改写查询反复搜索。"
+    ),
+    parameters=_object_schema(
+        {
+            "query": {
+                "type": "string",
+                "description": "要在文档正文中查找的问题或关键短语。",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "返回的相关片段数，默认 6、最多 6。",
+                "minimum": 1,
+                "maximum": 6,
+            },
+        },
+        ["query"],
+    ),
+    satisfies=(EvidenceType.DOCUMENT_TEXT,),
     required=("query",),
 )
 
@@ -438,6 +467,7 @@ READ_PHOTO_TEXT = ToolSpec(
 
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     SEARCH_MEMORIES,
+    SEARCH_DOCUMENTS,
     QUERY_MEMORY_FACTS,
     QUERY_PHOTO_PEOPLE,
     INSPECT_PHOTO,
@@ -450,7 +480,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 TOOLS_BY_NAME: Mapping[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
 
 # 能产出一组照片的检索工具。门禁用它判断「有没有检索过」。
-RETRIEVAL_TOOLS = frozenset({"search_memories", "get_result_page"})
+RETRIEVAL_TOOLS = frozenset({"search_memories", "search_documents", "get_result_page"})
 
 
 def openai_tools(specs: Sequence[ToolSpec] = TOOL_SPECS) -> tuple[Mapping[str, Any], ...]:

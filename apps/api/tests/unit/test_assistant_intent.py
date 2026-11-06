@@ -80,6 +80,7 @@ def test_the_prompt_lists_exactly_the_evidence_registry():
         assert f"- {item}" in prompt
     assert planner_evidence_types() == (
         "delivered_photo",
+        "document_text",
         "person_profile",
         "photo_identity",
         "photo_set",
@@ -88,6 +89,14 @@ def test_the_prompt_lists_exactly_the_evidence_registry():
         "visible_text",
         "visual_observation",
     )
+
+
+def test_document_questions_have_a_dedicated_evidence_rule():
+    prompt = build_prompt()
+
+    assert "PDF、DOCX、TXT" in prompt
+    assert "document_text" in prompt
+    assert "纯文档问题不要声明 photo_set / delivered_photo" in prompt
 
 
 def test_delivered_photo_is_declared_by_default_for_real_album_questions():

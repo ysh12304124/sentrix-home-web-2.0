@@ -22,7 +22,7 @@ from sentrix.api.deps import get_container
 from sentrix.api.schemas.media import AssetListResponse, AssetSummary, ImportResponse
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets, ImportRequest, StagedImport
+from sentrix.application.media.import_assets import ImportAssets, ImportRequest, ImportResult, StagedImport
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
 from sentrix.application.media.observe_asset import ObserveAsset
@@ -71,6 +71,23 @@ def to_summary(asset: Asset) -> AssetSummary:
     )
 
 
+def to_import_response(result: ImportResult) -> ImportResponse:
+    """Map a non-video import result for both media and unified upload routes."""
+    return ImportResponse(
+        asset_id=result.asset_id,
+        observation_id=result.observation_id,
+        media_type=result.media_type.value,
+        status=result.status.value,
+        deduplicated=result.deduplicated,
+        indexed=result.indexed,
+        placed=result.placed,
+        event_id=result.event_id,
+        video_probed=result.video_probed,
+        video_scenes=result.video_scenes,
+        audio_probed=result.audio_probed,
+    )
+
+
 @router.post("/media/import", status_code=201)
 async def import_media(
     file: UploadFile = File(...),
@@ -89,6 +106,11 @@ async def import_media(
         defer_processing=False,
     )
     media_type = MediaType.from_upload(request.content_type, request.file_name)
+    if media_type is MediaType.TEXT:
+        raise HTTPException(
+            status_code=400,
+            detail="TXT、DOCX、PDF 请使用 /api/v1/documents/import 或 /api/v1/import",
+        )
     if media_type is MediaType.VIDEO:
         staged = build_import_assets(container, observe=False).stage(replace(request, defer_processing=True))
         asset = (
@@ -148,19 +170,7 @@ async def import_media(
     use_case = build_import_assets(container, observe=False)
     result = use_case.execute(request)
     refresh_memory_graph(container, scope_id)
-    return ImportResponse(
-        asset_id=result.asset_id,
-        observation_id=result.observation_id,
-        media_type=result.media_type.value,
-        status=result.status.value,
-        deduplicated=result.deduplicated,
-        indexed=result.indexed,
-        placed=result.placed,
-        event_id=result.event_id,
-        video_probed=result.video_probed,
-        video_scenes=result.video_scenes,
-        audio_probed=result.audio_probed,
-    )
+    return to_import_response(result)
 
 
 def schedule_video_job(container: Container, job_id: str) -> None:

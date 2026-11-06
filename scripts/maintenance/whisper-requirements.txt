@@ -1,0 +1,4 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+mlx-whisper==0.4.3; platform_system == "Darwin" and platform_machine == "arm64"
+opencc-python-reimplemented==0.1.7

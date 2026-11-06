@@ -4,7 +4,7 @@
  * 版式照 1.0：左边拖放区 + 右侧处理流水线 + 下方导入记录。
  *
  * **批量与失败重试（1.0 `:1536-1587`）**：2.0 没有 1.0 的批量导入端点，所以前端按
- * 每批 20 个并发调用 `POST /media/import`。失败项**留在本次列表里**，可以只重试
+ * 每批 20 个并发调用 `POST /import`。后端自动选择文档或媒体链路；失败项**留在本次列表里**，可以只重试
  * 失败的那些；已经成功的不会被再传一遍。
  *
  * **视频处理是持久后台任务。** 上传接口保存原片和探测结果后返回 `job_id`；任务状态
@@ -30,7 +30,7 @@ import {
   reprocessVideo,
   resumeVideoJob,
   type AssetSummary,
-  type ImportResponse,
+  type UnifiedImportResponse,
   type VideoJobResponse,
 } from "../../shared/api/client";
 import { IMPORT_BATCH_SIZE, runInBatches } from "./batch";
@@ -114,8 +114,14 @@ function videoJobStageStatus(job: VideoJobResponse, stage: VideoJobResponse["sta
 }
 
 /** 把导入响应翻成一行给用户看的话。视频的 `video_scenes` 与图片的 `indexed` 同等重要。 */
-export function describeImportResult(result: ImportResponse): string {
-  if (result.deduplicated) return "已存在，跳过";
+export function describeImportResult(response: UnifiedImportResponse): string {
+  if (response.result.deduplicated) return "已存在，跳过";
+  if (response.routed_to === "document") {
+    const result = response.result;
+    if (result.status === "failed") return result.error || "文档解析失败";
+    return `已解析 ${result.element_count} 个元素 · 建立 ${result.chunk_count} 个文本块 · ${result.vector_count} 个向量`;
+  }
+  const result = response.result;
   const parts: string[] = [];
   if (result.video_probed) parts.push("已读取视频元数据");
   if ((result.video_scenes ?? 0) > 0) parts.push(`已切分 ${result.video_scenes} 个场景`);
@@ -221,8 +227,9 @@ export function ImportsPage() {
   const importOne = useCallback(
     async (entry: ImportEntry): Promise<ImportOutcome> => {
       try {
-        const result = await importAsset(entry.file, scopeId);
-        if (result.job_id) {
+        const response = await importAsset(entry.file, scopeId);
+        const result = response.result;
+        if (response.routed_to === "media" && result.job_id) {
           const initialJob: TrackedVideoJob = {
             job_id: result.job_id,
             asset_id: result.asset_id,
@@ -240,10 +247,13 @@ export function ImportsPage() {
         return {
           ...entry,
           name: entry.file.name,
-          status: result.job_id ? "processing" : "ok",
-          note: result.job_id ? "视频已安全保存，后台正在处理；关闭页面也可以稍后恢复查看" : describeImportResult(result),
+          status: response.routed_to === "media" && result.job_id ? "processing" : "ok",
+          note:
+            response.routed_to === "media" && result.job_id
+              ? "视频已安全保存，后台正在处理；关闭页面也可以稍后恢复查看"
+              : describeImportResult(response),
           assetId: result.asset_id,
-          mediaType: result.media_type,
+          mediaType: response.routed_to === "media" ? response.result.media_type : "document",
         };
       } catch (cause) {
         return outcomeFromError(entry, cause);
@@ -400,7 +410,7 @@ export function ImportsPage() {
       <PageHeader
         kicker="资料入口 / 本地导入"
         title="把资料带回家，剩下的交给本地 AI。"
-        description="选择相册文件夹后，图片和视频会一起上传，并自动读取拍摄时间与地点。"
+        description="图片、视频、音频和文档使用同一个入口，系统会自动选择对应处理链路。"
       />
 
       <section className="import-layout">
@@ -419,7 +429,7 @@ export function ImportsPage() {
               ref={fileInput}
               type="file"
               multiple
-              accept="image/*,.heic,.heif,video/*"
+              accept="image/*,.heic,.heif,video/*,audio/*,.txt,.docx,.pdf"
               onChange={(event) => {
                 upload(Array.from(event.target.files ?? []));
                 // 清空，否则再次选同一个文件不会触发 change。
@@ -438,8 +448,8 @@ export function ImportsPage() {
               }}
             />
             <span className="drop-icon" aria-hidden="true">↓</span>
-            <strong>拖入照片或视频，或选择整个相册文件夹</strong>
-            <small>支持 JPG / HEIC / PNG / MP4 / MOV，自动解析拍摄时间和地点</small>
+            <strong>拖入照片、视频、音频或文档，也可以选择整个文件夹</strong>
+            <small>支持常见图片、视频、音频及 TXT / DOCX / PDF，自动分流处理</small>
             <span className="button primary">选择资料</span>
           </label>
 

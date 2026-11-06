@@ -27,6 +27,8 @@ class DiagnosticsResponse(BaseModel):
     database: str
     embeddings: str
     embeddings_error: str | None = None
+    asr: str
+    asr_error: str | None = None
     runtime_configuration: dict[str, Any]
 
 
@@ -78,15 +80,19 @@ def _diagnostics(request: Request) -> dict[str, str]:
     container = request.app.state.container
     database_ok = container.database_healthy()
     embeddings_ok = container.embedding_health.available
+    asr_ok = container.audio_transcriber.available
     payload = {
-        "status": "ok" if (database_ok and embeddings_ok) else "degraded",
+        "status": "ok" if (database_ok and embeddings_ok and asr_ok) else "degraded",
         "version": __version__,
         "build_revision": container.build_revision,
         "database": "ok" if database_ok else "error",
         "embeddings": "ok" if embeddings_ok else "unavailable",
+        "asr": "ok" if asr_ok else "unavailable",
     }
     if not embeddings_ok:
         # **带上原因。** 只有「不可用」三个字的话，排查要从日志里捞——
         # 而这条路径的整个教训就是「降级必须自己走到人眼前」。
         payload["embeddings_error"] = container.embedding_health.load_error or "sidecar_unreachable"
+    if not asr_ok:
+        payload["asr_error"] = container.audio_transcriber.load_error or "sidecar_unreachable"
     return payload

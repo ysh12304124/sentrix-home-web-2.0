@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
+
 #: 生产固定 6 张：检索上限（``DEFAULT_SEARCH_LIMIT``）也是 6，一次给全，
 #: ``has_more`` 恒为假，翻页工具不会出现。分页代码保留给未来提高检索上限的场景。
 PAGE_SIZE = 6
@@ -33,6 +35,7 @@ class ResultSetEntry:
     # 空串的意思是「这个结果集没有带分级」——老结果集与测试直接造的结果集就是这种，
     # 它与 ``semantic`` 不是一回事：前者是「不知道」，后者是「判过、是相似度命中」。
     evidence_class: str = ""
+    audio_evidence: tuple[AudioEvidenceExcerpt, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,8 @@ class ResultSet:
     # ``get_result_page`` 读的是库里那一份——重算会得到与首次预览不同的分级，
     # 同一张图在第一页是 ``exact``、翻回来变成 ``strong``。
     evidence_classes: Mapping[str, str] = field(default_factory=dict)
+    # 检索当时冻结的音频证据。不能翻页时重查最新转写，否则同一结果集会前后变化。
+    audio_evidence: Mapping[str, tuple[AudioEvidenceExcerpt, ...]] = field(default_factory=dict)
 
     def page(self, page_no: int, page_size: int = PAGE_SIZE) -> ResultSetPage:
         """第 ``page_no`` 页（1-based）。页码越界返回空页，不抛异常。
@@ -79,6 +84,7 @@ class ResultSet:
                 handle=f"photo_{start + index + 1}",
                 asset_id=asset_id,
                 evidence_class=self.evidence_classes.get(asset_id, ""),
+                audio_evidence=self.audio_evidence.get(asset_id, ()),
             )
             for index, asset_id in enumerate(self.asset_ids[start:end])
         )

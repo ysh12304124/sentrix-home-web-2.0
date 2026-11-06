@@ -19,15 +19,18 @@ import { ScopeProvider } from "../../app/ScopeProvider";
 import { ToastProvider } from "../../shared/ui/Toast";
 import { ImportsPage, describeImportResult } from "./ImportsPage";
 
-function okResponse(overrides: Partial<client.ImportResponse> = {}): client.ImportResponse {
+function okResponse(overrides: Partial<client.ImportResponse> = {}): client.UnifiedImportResponse {
   return {
-    asset_id: "asset-1",
-    observation_id: null,
-    media_type: "image",
-    status: "processed",
-    deduplicated: false,
-    indexed: true,
-    ...overrides,
+    routed_to: "media",
+    result: {
+      asset_id: "asset-1",
+      observation_id: null,
+      media_type: "image",
+      status: "processed",
+      deduplicated: false,
+      indexed: true,
+      ...overrides,
+    },
   };
 }
 
@@ -84,6 +87,24 @@ describe("describeImportResult", () => {
 
   it("图片导入成功但没有向量时不谎称已完成索引", () => {
     expect(describeImportResult(okResponse({ indexed: false }))).toBe("已导入，但未写视觉向量");
+  });
+
+  it("文档显示解析、切块和向量数量", () => {
+    expect(
+      describeImportResult({
+        routed_to: "document",
+        result: {
+          asset_id: "doc-1",
+          deduplicated: false,
+          status: "processed",
+          format: "pdf",
+          revision: 1,
+          element_count: 8,
+          chunk_count: 3,
+          vector_count: 3,
+        },
+      }),
+    ).toBe("已解析 8 个元素 · 建立 3 个文本块 · 3 个向量");
   });
 });
 

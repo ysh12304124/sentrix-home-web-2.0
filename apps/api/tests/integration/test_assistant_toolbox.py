@@ -26,8 +26,10 @@ from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import PersonProfile, PersonRelationship
 from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet
+from sentrix.domain.documents.models import DocumentChunk, DocumentSearchHit
 from sentrix.domain.identity.models import ENTITY_STATUS_CONFIRMED, FACE_VALIDITY_VERIFIED
 from sentrix.domain.media.models import Asset, AssetStatus, GpsPoint, MediaType, Observation
+from sentrix.domain.media.transcription import AudioEvidenceExcerpt
 from sentrix.domain.places.aliases import EMPTY_ALIASES
 from sentrix.domain.places.models import (
     AdminArea,
@@ -108,6 +110,38 @@ class StubPeople:
 
     def lookup(self, name: str, scope_id: str) -> PersonProfile | None:
         return self._profiles.get(name)
+
+
+class StubDocuments:
+    def execute(self, request):
+        return (
+            DocumentSearchHit(
+                document_asset_id="asset_document_internal",
+                chunk_id="chunk_internal",
+                file_name="统计建模论文.pdf",
+                text="该研究采用分层抽样，并使用均方误差评价模型。",
+                score=0.9,
+                section_path="3.2 模型评价",
+                page_start=12,
+                page_end=12,
+                source_locator="pdf:page=12",
+                channels=("document_fts",),
+                context=(
+                    DocumentChunk(
+                        id="neighbor_1",
+                        document_asset_id="asset_document_internal",
+                        scope_id=SCOPE,
+                        revision=1,
+                        ordinal=3,
+                        text="前一段介绍了训练集与测试集的划分方法。",
+                        start_element_id="e1",
+                        end_element_id="e1",
+                        page_start=11,
+                        page_end=11,
+                    ),
+                ),
+            ),
+        )
 
 
 @pytest.fixture
@@ -202,6 +236,7 @@ def toolbox(migrations_ready_db, tmp_path):
         person_crops=StubCrops(),
         # preview 的 ``place`` 取自 ``asset_places``（GPS 反解的行政地名）。
         asset_places=places,
+        documents=StubDocuments(),
     )
     return build, result_sets
 
@@ -209,6 +244,30 @@ def toolbox(migrations_ready_db, tmp_path):
 def run(toolbox, name: str, **arguments: object):
     build, _result_sets = toolbox
     return build.execute(name, arguments, scope_id=SCOPE, now=NOW)
+
+
+def test_document_search_returns_citable_text_without_internal_ids(toolbox):
+    outcome = run(toolbox, "search_documents", query="论文如何评价模型")
+
+    assert outcome.ok
+    assert outcome.observation["document_asset_ids"] == ["asset_document_internal"]
+    assert outcome.model_visible["documents"] == [
+        {
+            "reference": "document_1",
+            "file_name": "统计建模论文.pdf",
+            "page": "12",
+            "section": "3.2 模型评价",
+            "text": "该研究采用分层抽样，并使用均方误差评价模型。",
+            "context": [
+                {
+                    "page": "11",
+                    "text": "前一段介绍了训练集与测试集的划分方法。",
+                }
+            ],
+        }
+    ]
+    assert "asset_document_internal" not in str(outcome.model_visible)
+    assert "chunk_internal" not in str(outcome.model_visible)
 
 
 def _seed_plain_assets(db, tmp_path, count: int) -> list[str]:
@@ -624,6 +683,41 @@ def test_the_fused_evidence_class_survives_retrieval(toolbox):
     assert set(stored.evidence_classes) == set(stored.asset_ids)
     # 这个夹具的候选全部来自视觉通道（semantic），所以一条 anchor 都不该有。
     assert set(stored.evidence_classes.values()) == {"semantic"}
+
+
+def test_audio_anchor_and_neighbors_are_visible_after_result_set_round_trip(toolbox):
+    build, result_sets = toolbox
+    result_sets.add(
+        ResultSet(
+            id="rs_audio_context",
+            scope_id=SCOPE,
+            query="在拉面店点了什么",
+            asset_ids=("asset_1",) * PAGE_SIZE + ("asset_0",),
+            created_at=NOW,
+            audio_evidence={
+                "asset_0": (
+                    AudioEvidenceExcerpt(1_000, 2_000, "I ordered", False),
+                    AudioEvidenceExcerpt(2_000, 4_000, "classic tonkotsu ramen", True),
+                    AudioEvidenceExcerpt(4_000, 5_000, "for dinner", False),
+                )
+            },
+        )
+    )
+
+    outcome = build.execute(
+        "get_result_page",
+        {"result_set_id": "rs_audio_context", "page": 2},
+        scope_id=SCOPE,
+        now=NOW,
+    )
+
+    evidence = outcome.model_visible["preview"][0]["audio_evidence"]
+    assert [item["text"] for item in evidence] == [
+        "I ordered",
+        "classic tonkotsu ramen",
+        "for dinner",
+    ]
+    assert [item["is_anchor"] for item in evidence] == [False, True, False]
 
 
 def test_the_preview_keys_are_always_present(toolbox):

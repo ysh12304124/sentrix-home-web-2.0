@@ -226,9 +226,10 @@ UNATTEMPTED_NUDGE_TEMPLATE = (
 
 # ③ 零工具调用却给出了具体数字/金额/年份。
 FABRICATION_NUDGE = (
-    "你的回答给出了具体的数字/金额/年份，但本轮还没有检索相册来核实。"
-    "请先调用 search_memories 检索相关照片（必要时再 read_photo_text / inspect_photo "
-    "查看照片里的文字或细节）；如果相册里确实没有能确认该数字的依据，"
+    "你的回答给出了具体的数字/金额/年份，但本轮还没有检索可用记忆来核实。"
+    "请按问题类型调用 search_memories 检索媒体记忆，或调用 search_documents 检索文档"
+    "（图片问题必要时再 read_photo_text / inspect_photo 查看文字或细节）；如果现有资料里"
+    "确实没有能确认该数字的依据，"
     "请如实说「现有记录无法确认」，不要编造数字。"
 )
 
@@ -474,7 +475,9 @@ MODEL_SERVICE_ANSWER = "模型服务当前不可用，因此这一轮没有开�
 #: ``get_result_page`` 的翻页预览。模型回答问题时必须**至少能看到最新的一页描述**
 #: ——它包含 handle、时间、地点、人物与摘要，是后续 ``inspect_photo`` / 回答的入口。
 #: 把这一轮丢掉，模型就只剩「有结果集但看不见候选」的状态，整道题无法继续。
-_PROTECTED_PREVIEW_TOOLS = frozenset({"search_memories", "get_result_page"})
+_PROTECTED_PREVIEW_TOOLS = frozenset(
+    {"search_memories", "search_documents", "get_result_page"}
+)
 
 
 def _round_trip_spans(messages: Sequence[ChatMessage]) -> list[tuple[int, int]]:
@@ -2201,6 +2204,9 @@ def _tool_status_text(name: str, outcome: ToolOutcome) -> str:
     if name == "search_memories":
         total = int(outcome.observation.get("total") or 0)
         return f"结果集里共有 {total} 张候选照片。" if total else "这次检索没有匹配到照片。"
+    if name == "search_documents":
+        total = int(outcome.observation.get("total") or 0)
+        return f"已找到 {total} 个相关文档片段。" if total else "这次检索没有匹配到文档片段。"
     if name == FINAL_ANSWER_TOOL:
         delivered = int(outcome.observation.get("delivered") or 0)
         return f"已把 {delivered} 张照片交给用户。" if delivered else "已给出回答。"
