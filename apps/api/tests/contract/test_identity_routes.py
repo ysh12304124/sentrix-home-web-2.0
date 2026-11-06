@@ -2,7 +2,7 @@
 
 只跑 HTTP，不碰模型：容器里的检测器与嵌入器是 ``conftest`` 的确定性假件，簇与实例由
 用例自己插进真 SQLite。这里验的是传输层——四审阅端点的 400 / 404 / 409、裁剪端点的
-``thumbnail`` 尺寸与缓存头、以及 ``pending`` 实体在**接口上**叫「待命名成员」。
+``thumbnail`` 尺寸与缓存头、以及 ``pending`` 实体在**接口上**叫「未确认姓名人物」。
 
 **裁决③之后的形状**：领域错误一律走 ``{"code", "message", "detail"}``（``api/errors.py``
 的唯一处理器），不再是 ``HTTPException`` 的 ``{"detail"}``。所以断言里同时钉 **码**与
@@ -163,7 +163,7 @@ def test_a_pending_cluster_is_shown_as_an_unnamed_member(client: TestClient):
 
     cluster = client.get("/api/v1/face-clusters").json()["clusters"][0]
 
-    assert cluster["canonical_name"] == PENDING_CLUSTER_NAME == "待命名成员"
+    assert cluster["canonical_name"] == PENDING_CLUSTER_NAME == "未确认姓名人物"
     assert cluster["family_role"] is None
     assert cluster["entity_status"] == "pending"
     assert cluster["reviewable"] is True
@@ -458,7 +458,7 @@ def test_rename_with_a_blank_name_is_400(identity_client: TestClient):
 def test_renaming_a_pending_candidate_keeps_it_unnamed_on_the_wire(identity_client: TestClient):
     """改名不等于确认这个人（1.0 ``db.py:4459`` 只动 ``name_state``）。
 
-    所以 ``pending`` 的实体改完名字，接口上仍然显示「待命名成员」——界面据此知道这个人
+    所以 ``pending`` 的实体改完名字，接口上仍然显示「未确认姓名人物」——界面据此知道这个人
     还没被认过。这条钉住的是「改名」与「确认」是两件事。
     """
     add_entity(identity_client, "ent_1", name="待确认人物簇 · cluster_1")

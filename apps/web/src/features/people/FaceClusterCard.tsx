@@ -5,7 +5,7 @@ import type {
   PersonPayload,
 } from "../../shared/api/client";
 import { relationChoices } from "./family/membership";
-import { clusterDisplayName } from "./reviewErrors";
+import { clusterDisplayName, publicPersonName } from "./reviewErrors";
 
 /** 1.0 确认框里的那组家庭角色（``app.js:956`` 的 ``<select>``），原样保留。 */
 const FAMILY_ROLES = ["母亲", "父亲", "孩子", "祖父母", "其他家庭成员"];
@@ -215,7 +215,7 @@ export function FaceClusterCard({
               <option value="">暂不建立关系</option>
               {people.map((person) => (
                 <option key={person.id} value={person.id}>
-                  {person.canonical_name}
+                  {publicPersonName(person.canonical_name)}
                 </option>
               ))}
             </select>

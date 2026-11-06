@@ -16,7 +16,7 @@ import {
   type PersonInsightItem,
   type PersonInsightsResponse,
 } from "../../shared/api/client";
-import { describeReviewError } from "./reviewErrors";
+import { describeReviewError, publicPersonName } from "./reviewErrors";
 
 const TIERS: readonly { key: "core" | "common" | "incidental"; label: string }[] = [
   { key: "core", label: "核心人物" },
@@ -109,7 +109,7 @@ export function PersonInsights({ scopeId }: Props) {
                         <header className="cluster-head">
                           <div>
                             <p className="section-kicker">{tier.label}</p>
-                            <strong>{item.display_name}</strong>
+                            <strong>{publicPersonName(item.display_name)}</strong>
                           </div>
                           {portrait?.status === "user_locked" ? (
                             <span className="membership-badge family">已锁定</span>

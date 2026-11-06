@@ -31,6 +31,8 @@ from typing import Any
 
 from sentrix.domain.identity.models import (
     ENTITY_STATUS_CONFIRMED,
+    ENTITY_STATUS_PENDING,
+    PENDING_CLUSTER_NAME,
     PORTRAIT_SOURCE_DETERMINISTIC,
     EntityRecord,
     PersonMomentRecord,
@@ -187,7 +189,13 @@ def compile_portrait_evidence(
     return {
         "person": {
             "id": person.id,
-            "display_name": person.canonical_name or "未命名成员",
+            # pending 实体的 canonical_name 是落库的内部名，不能进提示词：
+            # 模型会把它原样写进画像，最后又回到用户界面。
+            "display_name": (
+                PENDING_CLUSTER_NAME
+                if person.status == ENTITY_STATUS_PENDING or not person.canonical_name
+                else person.canonical_name
+            ),
             "confirmed_name": confirmed_name,
             "confirmed_role": confirmed_role,
             "identity_state": person.identity_state or "clustered",

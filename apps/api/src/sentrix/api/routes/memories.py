@@ -44,7 +44,7 @@ def rotation(
             time_label=item.time_label,
             place_label=item.place_label,
             related_asset_count=item.related_asset_count,
-            poster_url=f"/api/v1/assets/{item.asset_id}/poster"
+            poster_url=f"/api/v1/assets/{item.asset_id}/poster?v=2"
             if item.media_kind == "video"
             else f"/api/v1/assets/{item.asset_id}/preview",
             play_url=f"/api/v1/assets/{item.asset_id}/file" if item.media_kind == "video" else None,

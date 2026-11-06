@@ -2088,6 +2088,29 @@ body {
   font-weight: 700;
 }
 
+.import-first-run {
+  margin: 0 0 14px;
+  padding: 16px 18px;
+  border: 1px solid rgba(47, 107, 69, 0.22);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(204, 245, 110, 0.2), transparent 60%),
+    var(--ex-surface);
+}
+
+.import-first-run strong {
+  display: block;
+  color: var(--ex-ink);
+  font-size: 14px;
+}
+
+.import-first-run p {
+  margin: 6px 0 0;
+  color: var(--ex-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
 .import-overall {
   display: flex;
   flex-direction: column;

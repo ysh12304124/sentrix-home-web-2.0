@@ -1,6 +1,6 @@
 /** 应用入口：认证门 → 用户路由或独立管理台。 */
 
-import { BrowserRouter, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 
 import { AuthProvider, useAuth } from "./app/AuthProvider";
 import { NotAvailable, ROUTES, SHELL } from "./app/router";
@@ -46,6 +46,7 @@ function AuthUnavailable({ message, onRetry }: { message: string; onRetry: () =>
 
 function AppRoutes() {
   const { identity, loading, adminOnly, authError, retry } = useAuth();
+  const location = useLocation();
   if (loading) {
     return <main className="login-screen loading">正在载入…</main>;
   }
@@ -63,6 +64,11 @@ function AppRoutes() {
   }
   if (identity.role === "admin") {
     return <AdminPortNotice />;
+  }
+  // 第一次登录（还没看过引导）先落资料导入页：这时候回忆页必然是空的，
+  // 让用户先看到“怎么添加”比先看到空回忆更有用。老用户仍从回忆页进入。
+  if (identity.onboarding_seen_version === 0 && location.pathname === "/") {
+    return <Navigate to="/imports" replace />;
   }
   return (
     <ScopeProvider>

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 import type { PersonPayload } from "../../shared/api/client";
+import { publicPersonName } from "./reviewErrors";
 
 export interface PersonListProps {
   people: PersonPayload[];
@@ -37,7 +38,7 @@ export function PersonList({ people, busy, onRename }: PersonListProps) {
       {people.map((person) => (
         <li key={person.id} className="person-row">
           <div className="person-head">
-            <strong>{person.canonical_name}</strong>
+            <strong>{publicPersonName(person.canonical_name)}</strong>
             <small>
               {person.family_role ?? "未确认家庭角色"} · {person.aliases.length} 个别名
             </small>
@@ -62,7 +63,7 @@ export function PersonList({ people, busy, onRename }: PersonListProps) {
               disabled={busy}
               onClick={() => {
                 setEditing(person.id);
-                setName(person.canonical_name);
+                setName(publicPersonName(person.canonical_name));
               }}
             >
               改名

@@ -316,14 +316,17 @@ export async function fetchEvent(eventId: string): Promise<TimelineEvent> {
   return request<TimelineEvent>(`/events/${encodeURIComponent(eventId)}`);
 }
 
+/** 海报图版本：关键帧已按 SAR 重新生成，旧 URL 可能被浏览器缓存 24 小时。 */
+const POSTER_VERSION = "2";
+
 /** 事件的代表图/封面。图片与视频都走既有 poster 路由，不下载视频原片。 */
 export function timelinePosterUrl(assetId: string): string {
-  return `${BASE}/assets/${assetId}/poster`;
+  return `${BASE}/assets/${assetId}/poster?v=${POSTER_VERSION}`;
 }
 
 /** 视频封面（已抽关键帧或首帧），用于未播放时的缩略图与播放器 poster。 */
 export function assetPosterUrl(assetId: string): string {
-  return `${BASE}/assets/${assetId}/poster`;
+  return `${BASE}/assets/${assetId}/poster?v=${POSTER_VERSION}`;
 }
 // ---- 助手 -------------------------------------------------------------------
 

@@ -293,16 +293,32 @@ export function ImportsPage() {
       postprocess.state === "running" ||
       postprocess.state === "waiting_retry");
   const showAllCompleteNote = libraryComplete && postprocessComplete && acceptedCount > 0;
+  const showFirstRun =
+    progress !== null &&
+    acceptedCount === 0 &&
+    jobs.length === 0 &&
+    entries.length === 0 &&
+    !showLibraryPhase &&
+    !showPostprocessPhase;
 
   return (
     <>
       <header className="import-head">
         <p className="eyebrow">资料导入</p>
         <h1>把照片和视频交给回忆</h1>
-        <p>
-          上传成功后会继续整理，关闭页面也不会中断。
-        </p>
       </header>
+
+      {showFirstRun ? (
+        <section className="import-first-run" role="status">
+          <div>
+            <strong>你还没有添加资料</strong>
+            <p>
+              把照片或视频拖到下面的区域，也可以点“选择文件”或“选择文件夹”。
+              上传后会先建库，再整理成回忆。
+            </p>
+          </div>
+        </section>
+      ) : null}
       {showLibraryPhase || showPostprocessPhase ? (
         <div className="import-phases">
           {showLibraryPhase ? (
@@ -426,13 +442,6 @@ export function ImportsPage() {
             </label>
           </div>
         </section>
-
-        <div className="import-notice">
-          <div>
-            <strong>上传成功后会继续整理</strong>
-            <p>上传成功后服务器会继续整理；刷新或重新登录都能看到同一批进度。</p>
-          </div>
-        </div>
 
         {error !== "" ? <p role="alert">整理进度读取失败：{error}</p> : null}
 

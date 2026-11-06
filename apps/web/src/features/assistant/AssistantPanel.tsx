@@ -87,7 +87,8 @@ function replayExchanges(
     });
   }
 
-  return exchanges;
+  // 界面要求最新的问答在最上面；后端仍按时间正序返回（分页游标也依赖这个顺序）。
+  return exchanges.reverse();
 }
 
 /**
@@ -187,22 +188,17 @@ export function AssistantPanel({
     setLoadingEarlier(true);
     setHistoryError(null);
     const token = historyToken.current;
-    const beforeHeight = document.documentElement.scrollHeight;
-    const beforeY = window.scrollY;
     try {
       const page = await getConversation(conversationId, historyCursor);
       if (token !== historyToken.current) return;
       const older = replayExchanges(page);
+      // 最新在上：更早的一页接在列表末尾，不会把用户正在看的内容顶走。
       setExchanges((previous) => {
         const keys = new Set(previous.map((item) => item.key));
-        return [...older.filter((item) => !keys.has(item.key)), ...previous];
+        return [...previous, ...older.filter((item) => !keys.has(item.key))];
       });
       setHistoryCursor(page.next_cursor ?? "");
       setHistoryHasMore(page.has_more === true);
-      window.requestAnimationFrame(() => {
-        const grown = document.documentElement.scrollHeight - beforeHeight;
-        window.scrollTo(0, beforeY + Math.max(0, grown));
-      });
     } catch (cause) {
       if (token === historyToken.current) {
         setHistoryError((cause as Error).message);
@@ -282,7 +278,6 @@ export function AssistantPanel({
       const key = `live-${(sequence.current += 1)}`;
       setLive({ conversationId, key });
       setExchanges((previous) => [
-        ...previous,
         {
           key,
           question,
@@ -293,6 +288,7 @@ export function AssistantPanel({
           turnId: "",
           events: [],
         },
+        ...previous,
       ]);
       void ask(conversationId, question);
     },
@@ -373,7 +369,8 @@ export function AssistantPanel({
     runQuestion(question);
   }
 
-  const lastKey = exchanges[exchanges.length - 1]?.key ?? "";
+  // 最新一轮在最上面；“下一页”只挂在它上面，不能挂到列表末尾的旧问题上。
+  const lastKey = exchanges[0]?.key ?? "";
 
   return (
     <section className="assistant">
@@ -406,16 +403,6 @@ export function AssistantPanel({
       {historyLoading ? <p className="assistant-history">正在加载历史消息…</p> : null}
 
       <div className="assistant-log">
-        {historyHasMore ? (
-          <button
-            type="button"
-            className="button ghost assistant-load-earlier"
-            disabled={loadingEarlier}
-            onClick={() => void loadEarlier()}
-          >
-            {loadingEarlier ? "正在加载更早消息…" : "加载更早消息"}
-          </button>
-        ) : null}
         {exchanges.map((exchange) => {
           const liveExchange =
             busy && live !== null && live.key === exchange.key && live.conversationId === conversationId;
@@ -485,6 +472,16 @@ export function AssistantPanel({
             </article>
           );
         })}
+        {historyHasMore ? (
+          <button
+            type="button"
+            className="button ghost assistant-load-earlier"
+            disabled={loadingEarlier}
+            onClick={() => void loadEarlier()}
+          >
+            {loadingEarlier ? "正在加载更早消息…" : "加载更早消息"}
+          </button>
+        ) : null}
       </div>
       {lightbox === null ? null : (
         <Lightbox

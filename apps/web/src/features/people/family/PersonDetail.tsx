@@ -58,7 +58,7 @@ export function PersonDetail({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState(person.display_name);
+  const [name, setName] = useState(personDisplayName(person));
   const [portrait, setPortrait] = useState(person.portrait?.portrait_text ?? "");
   const [predicateIndex, setPredicateIndex] = useState(0);
   const [targetId, setTargetId] = useState(relateTarget ?? "");

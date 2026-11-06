@@ -12,6 +12,7 @@ from pathlib import Path
 from sentrix.domain.media.import_jobs import ImportJobStatus
 from sentrix.domain.media.models import AssetStatus, MediaType
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository, VideoRepository
+from sentrix.domain.media.scenes import VIDEO_SCENE_SOURCE_TYPE
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.memories.rotation import RotationMedia, RotationRepository
 
@@ -86,8 +87,12 @@ class ReadRotation:
                 scope_key, day, tuple(item.media.event_id for item in ordered), now=now
             )
             position = 0
+            # 已经算过全部候选，这一页直接复用；再调一次 _candidates 会把同一批
+            # 事件与观察重新查一遍（4800 份资料时这一跳就是几秒）。
+            media_by_event = {item.media.event_id: item.media for item in candidates}
         else:
             position = cursor if cursor is not None else sequence.position
+            media_by_event = {}
 
         if position >= len(sequence.event_ids):
             # 本轮已放完：刷新时开新一轮，而不是判空。优先排除最近看过的，
@@ -110,10 +115,13 @@ class ReadRotation:
             )
             sequence = self._rotations.sequence_for(scope_key, day) or sequence
             position = 0
+            media_by_event = {item.media.event_id: item.media for item in fresh}
+        elif not media_by_event:
+            media_by_event = {
+                item.media.event_id: item.media
+                for item in self._candidates(scope_id, event_ids=sequence.event_ids)
+            }
 
-        media_by_event = {
-            item.media.event_id: item.media for item in self._candidates(scope_id, event_ids=sequence.event_ids)
-        }
         cards: list[RotationMedia] = []
         index = position
         while index < len(sequence.event_ids) and len(cards) < page_size:
@@ -150,18 +158,65 @@ class ReadRotation:
         self, scope_id: str | None, *, event_ids: tuple[str, ...] | None = None
     ) -> list[_Candidate]:
         wanted = set(event_ids) if event_ids is not None else None
+        # 视频场景事件只是原片的派生切片：它们没有独立的原始素材，代表画面是
+        # kf_0001.jpg。回忆首页只展示原始图片与视频，所以整类跳过。
+        events = [
+            event
+            for event in self._events.list_by_scope(scope_id, limit=10000)
+            if (wanted is None or event.id in wanted)
+            and event.source_type != VIDEO_SCENE_SOURCE_TYPE
+        ]
+        if not events:
+            return []
+
+        # 逐事件、逐观察、逐资产各开一次连接是回忆首屏慢的主因：4800 份资料会有
+        # 上万次 SQLite 连接。这里全部按批取，事件与素材的对应关系在内存里组装。
+        observation_ids_by_event = self._events.observation_ids_many([event.id for event in events])
+        all_observation_ids = [
+            observation_id
+            for ids in observation_ids_by_event.values()
+            for observation_id in ids
+        ]
+        observations = self._observations.get_many(all_observation_ids)
+        assets = self._assets.get_many(
+            [
+                observation.asset_id
+                for observation in observations.values()
+                if observation.asset_id
+            ]
+        )
+        videos_with_derived = self._videos.derived_parent_ids(
+            [
+                asset.id
+                for asset in assets.values()
+                if asset.media_type is MediaType.VIDEO
+            ]
+        )
+        file_ok: dict[str, bool] = {}
         result: list[_Candidate] = []
-        for event in self._events.list_by_scope(scope_id, limit=10000):
-            if wanted is not None and event.id not in wanted:
-                continue
-            media = self._event_media(event)
+        for event in events:
+            media = self._event_media(
+                event,
+                observation_ids_by_event.get(event.id, ()),
+                observations,
+                assets,
+                videos_with_derived,
+                file_ok,
+            )
             if media is None:
                 continue
             result.append(_Candidate(media=media, epoch=media.sort_epoch))
         return result
 
-    def _event_media(self, event) -> RotationMedia | None:
-        observation_ids = self._events.observation_ids(event.id)
+    def _event_media(
+        self,
+        event,
+        observation_ids,
+        observations,
+        assets,
+        videos_with_derived,
+        file_ok,
+    ) -> RotationMedia | None:
         if not observation_ids:
             return None
         photos: list[tuple[float, str, object]] = []
@@ -169,13 +224,20 @@ class ReadRotation:
         related = 0
         midpoint = _midpoint(event.time_start, event.time_end)
         for observation_id in observation_ids:
-            observation = self._observations.get(observation_id)
+            observation = observations.get(observation_id)
             if observation is None:
                 continue
-            asset = self._assets.get(observation.asset_id)
+            asset = assets.get(observation.asset_id)
             if asset is None or asset.status is not AssetStatus.PROCESSED:
                 continue
-            if not Path(asset.path).is_file():
+            # 关键帧/转码件不是用户资料；回忆里只出现原图与原视频。
+            if asset.parent_asset_id is not None:
+                continue
+            exists = file_ok.get(asset.id)
+            if exists is None:
+                exists = Path(asset.path).is_file()
+                file_ok[asset.id] = exists
+            if not exists:
                 continue
             related += 1
             # 与事件中点越近越优先；等距按稳定 ID。缺少拍摄时间时视为与中点重合。
@@ -183,7 +245,7 @@ class ReadRotation:
             distance = abs(captured.timestamp() - midpoint.timestamp())
             if asset.media_type is MediaType.IMAGE:
                 photos.append((distance, asset.id, asset))
-            elif asset.media_type is MediaType.VIDEO and self._videos.list_derived(asset.id):
+            elif asset.media_type is MediaType.VIDEO and asset.id in videos_with_derived:
                 videos.append((distance, asset.id, asset))
         chosen = min(photos, key=lambda item: (item[0], item[1])) if photos else (
             min(videos, key=lambda item: (item[0], item[1])) if videos else None

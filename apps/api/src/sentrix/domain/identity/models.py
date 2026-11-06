@@ -76,8 +76,8 @@ PROPERTY_STATUS_PENDING = "pending"
 REVISION_SOURCE_USER = "user"
 REVISION_SOURCE_USER_RENAME = "user_rename"
 
-# 未命名人物簇对外显示的名字。1.0 ``app.py:1976`` 的字面量，一字不差。
-PENDING_CLUSTER_NAME = "待命名成员"
+# 未命名人物簇对外显示的名字。用户只看到这一句，**不暴露内部 cluster id**。
+PENDING_CLUSTER_NAME = "未确认姓名人物"
 
 # 未命名人物簇**落库**时的内部名与说明（1.0 ``db.py:4639`` 的 ``create_face_cluster``）。
 # 与上面那个不是一回事：``PENDING_CLUSTER_NAME`` 是给用户看的，这两个是存在

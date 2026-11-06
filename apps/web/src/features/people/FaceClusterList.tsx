@@ -100,7 +100,7 @@ export function FaceClusterList({
                       checked={mergeTargetId === id}
                       onChange={() => onChooseMergeTarget(id)}
                     />
-                    {clusterDisplayName(cluster)} · {cluster.member_count} 张样本 · {id}
+                    {clusterDisplayName(cluster)} · {cluster.member_count} 张样本
                   </label>
                 </li>
               );

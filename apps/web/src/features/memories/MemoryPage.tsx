@@ -505,13 +505,31 @@ export function MemoryPage() {
       </div>
 
       {fullscreen ? (
-        <div className="memory-fullscreen" ref={fullscreenRef}>
-          <img
-            className="memory-fullscreen-media"
-            src={posterSrc}
-            alt=""
-            onClick={() => move(1, true)}
-          />
+        <div
+          className={isVideo ? "memory-fullscreen has-video" : "memory-fullscreen"}
+          ref={fullscreenRef}
+        >
+          {isVideo ? (
+            <video
+              className="memory-fullscreen-media"
+              src={card.play_url ?? undefined}
+              poster={posterSrc}
+              controls
+              autoPlay
+              playsInline
+              onError={() => {
+                setFullscreen(false);
+                setVideoError(true);
+              }}
+            />
+          ) : (
+            <img
+              className="memory-fullscreen-media"
+              src={posterSrc}
+              alt={card.title || "回忆画面"}
+              onClick={() => move(1, true)}
+            />
+          )}
           <div className="memory-fullscreen-meta">
             <span>{card.time_label !== "" ? card.time_label : "时间未记录"}</span>
             <span>{card.place_label !== "" ? card.place_label : "地点未记录"}</span>

@@ -74,6 +74,10 @@ class AssetRepository(Protocol):
 
     def get(self, asset_id: str) -> Asset | None: ...
 
+    def get_many(self, asset_ids: Sequence[str]) -> dict[str, Asset]:
+        """按 id 批量取，一次 ``IN``；读侧遍历事件时不能逐条开连接。"""
+        ...
+
     def list_by_scope(self, scope_id: str | None, limit: int) -> Sequence[Asset]:
         """``scope_id`` 为 ``None`` 表示**跨全部相册**（1.0 ``db.py:1514`` 的 ``if scope_id:``）。
 
@@ -91,6 +95,10 @@ class ObservationRepository(Protocol):
     def add(self, observation: Observation) -> None: ...
 
     def get(self, observation_id: str) -> Observation | None: ...
+
+    def get_many(self, observation_ids: Sequence[str]) -> dict[str, Observation]:
+        """按 id 批量取，与 ``AssetRepository.get_many`` 同一条理由。"""
+        ...
 
     def list_by_asset(self, asset_id: str) -> Sequence[Observation]: ...
 
@@ -431,6 +439,14 @@ class VideoRepository(Protocol):
         """没探测过（``metadata_json`` 里没有任何视频键）返回 ``None``。
 
         ``processing_seconds`` 一并读回（缺了就是 ``None``），供 ``GET /videos/{id}`` 暴露。
+        """
+        ...
+
+    def derived_parent_ids(self, parent_asset_ids: Sequence[str]) -> frozenset[str]:
+        """这批源片里哪些已经有派生物；一次 ``IN`` 查完。
+
+        回忆首页只需要判断「视频有没有可用的关键帧」，不需要把派生物整行读出来。
+        逐片调用 ``list_derived`` 会让 533 个视频变成 533 次连接。
         """
         ...
 

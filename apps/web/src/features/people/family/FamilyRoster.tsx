@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 import type { FamilyPerson, FamilyMembershipValue } from "../../../shared/api/client";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { PersonCard } from "./PersonCard";
-import { isNamed, membershipLabel, membershipOf } from "./membership";
+import { isNamed, membershipLabel, membershipOf, personDisplayName } from "./membership";
 
 type Filter = "all" | FamilyMembershipValue;
 
@@ -56,7 +56,7 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
     return sortPeople(people).filter((person) => {
       if (filter !== "all" && membershipOf(person) !== filter) return false;
       if (needle === "") return true;
-      return person.display_name.toLowerCase().includes(needle);
+      return personDisplayName(person).toLowerCase().includes(needle);
     });
   }, [people, query, filter]);
 

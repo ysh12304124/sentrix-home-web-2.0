@@ -30,17 +30,25 @@
 }
 
 .asset-detail-media {
-  display: grid;
-  place-items: center;
-  max-width: min(92vw, 1200px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(92vw, 1200px);
+  max-width: 100%;
   max-height: 58vh;
+  padding: clamp(4px, 1vw, 14px);
+  box-sizing: border-box;
 }
 
 .asset-detail-media img,
 .asset-detail-media video {
-  max-width: min(92vw, 1200px);
+  /* 任意比例的图片/视频都按自身比例装进可用区域，不拉满、不裁切。 */
+  width: auto;
+  height: auto;
+  max-width: 100%;
   max-height: 58vh;
   object-fit: contain;
+  object-position: center;
   border-radius: 8px;
   background: #000;
 }
