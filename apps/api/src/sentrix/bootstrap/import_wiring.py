@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -18,7 +20,7 @@ from sentrix.application.identity.extract_moments import ExtractMoments
 from sentrix.application.identity.family_graph_service import FamilyGraphService
 from sentrix.application.identity.run_insights import RunInsights
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets
+from sentrix.application.media.import_assets import ImportAssets, ImportResult, StagedImport
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
 from sentrix.application.media.observe_asset import ObserveAsset
@@ -32,7 +34,8 @@ from sentrix.application.memories.maintain_facts import MaintainFacts
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
-from sentrix.domain.media.models import Observation
+from sentrix.domain.media.import_jobs import ImportJob
+from sentrix.domain.media.models import AssetStatus, MediaType, Observation
 from sentrix.domain.memories.graph import GraphBuildStats
 from sentrix.runtime.work import import_work
 
@@ -259,6 +262,67 @@ def build_video_scenes(
         checkpoint=checkpoint,
         resume_event_completed=resume_event_completed,
     )
+
+
+def build_video_job_processor(
+    container: Container,
+) -> Callable[[ImportJob, StagedImport], ImportResult]:
+    """让普通网页上传的视频也走 durable ``video_jobs``。
+
+    导入执行器仍保留 ``import_jobs`` 作为上传/UI 的作业壳；视频的探测、ASR、抽帧、
+    场景、事件与记忆阶段交给 ``video_job_stages``。执行器线程在这里等待视频作业跑完，
+    所以上传后看到的仍是同一个导入作业，但断点粒度从“整条作业”细化到八个阶段。
+
+    单视频作业池只有一个 worker（抽帧/ASR 是重活）；等待期间导入作业的心跳由
+    执行器自己的 ``_Heartbeat`` 续租，不会因为等待而丢 lease。
+    """
+    timeout_s = 6 * 3600
+
+    def process(job: ImportJob, staged: StagedImport) -> ImportResult:
+        asset = staged.asset
+        repository = container.video_repository
+        existing = repository.get_job_for_asset(asset.id)
+        if existing is None:
+            from sentrix.api.routes.media import _video_config_hash
+
+            existing = repository.create_job(
+                asset.id,
+                asset.content_sha256 or "",
+                f"vjob_{uuid.uuid4().hex[:16]}",
+                _video_config_hash(container),
+            )
+        video_job_id = str(existing["job_id"])
+        from sentrix.api.routes.media import resume_video_job
+
+        resume_video_job(container, video_job_id)
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            current = repository.get_job(video_job_id)
+            if current is None:
+                raise RuntimeError(f"video job disappeared: {video_job_id}")
+            status = str(current.get("status") or "")
+            if status in {"COMPLETED", "DEGRADED"}:
+                break
+            if status in {"FAILED", "CANCELLED"}:
+                detail = str(current.get("error_message") or current.get("error_code") or status)
+                raise RuntimeError(f"video job {status}: {detail}")
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"video job timeout: {video_job_id}")
+            time.sleep(1.0)
+
+        scenes = len(repository.list_derived(asset.id))
+        return ImportResult(
+            asset_id=asset.id,
+            observation_id=None,
+            media_type=MediaType.VIDEO,
+            status=AssetStatus.PROCESSED,
+            deduplicated=False,
+            video_probed=True,
+            video_scenes=scenes,
+        )
+
+    return process
 
 
 def _build_video_scenes(

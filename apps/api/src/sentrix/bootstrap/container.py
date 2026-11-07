@@ -627,7 +627,11 @@ class Container:
         """体验实例的导入执行器；旧实例返回 None。"""
         if not self.settings.experience_mode:
             return None
-        from sentrix.bootstrap.import_wiring import build_import_assets, build_media_postprocess
+        from sentrix.bootstrap.import_wiring import (
+            build_import_assets,
+            build_media_postprocess,
+            build_video_job_processor,
+        )
         from sentrix.infrastructure.media.import_executor import ImportJobExecutor
 
         return ImportJobExecutor(
@@ -637,6 +641,7 @@ class Container:
             importer_factory=lambda: build_import_assets(self, observe=True),
             dependencies_ready=self.dependencies_ready,
             postprocess=build_media_postprocess(self),
+            video_processor=build_video_job_processor(self),
             workers=self.settings.import_workers,
         )
 

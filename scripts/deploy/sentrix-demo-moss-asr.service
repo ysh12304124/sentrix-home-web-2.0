@@ -1,0 +1,20 @@
+[Unit]
+Description=Sentrix local MOSS ASR sidecar (8106)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asus
+Group=asus
+WorkingDirectory=/home/asus/Github/sentrix-home-web2.0-codex
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=TRANSFORMERS_OFFLINE=1
+ExecStart=/home/asus/miniconda3/envs/sentrix-vllm/bin/python scripts/maintenance/moss_asr_sidecar.py --host 127.0.0.1 --port 8106
+Restart=always
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

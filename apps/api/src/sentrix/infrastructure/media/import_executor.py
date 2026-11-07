@@ -102,6 +102,8 @@ class _InflightJob:
     importer: ImportAssets | None = None
     staged: StagedImport | ImportResult | None = None
     prepared: Future[PreparedImage] | None = None
+    # 视频不走图片 prepare_image：它由 durable video_jobs 链路处理（8 阶段断点）。
+    video: bool = False
     error: JobFailure | None = None
 
 
@@ -121,6 +123,9 @@ class ImportJobExecutor:
         dependencies_ready: Callable[[], tuple[bool, str]],
         # 返回未完成的阶段名；空列表表示整代后处理成功。第二个参数是代际围栏。
         postprocess: Callable[[str, int], list[str]] | None = None,
+        # 视频走 durable video_jobs 时由装配层注入；返回的 ImportResult 只给 UI/作业
+        # 记账用，真正的阶段进度在 video_job_stages 里。
+        video_processor: Callable[[ImportJob, StagedImport], ImportResult] | None = None,
         # 窗口宽度 = 同时在飞的 prepare_image 数。默认读部署配置；显式参数留给测试。
         workers: int | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -131,6 +136,7 @@ class ImportJobExecutor:
         self._importer_factory = importer_factory
         self._dependencies_ready = dependencies_ready
         self._postprocess = postprocess
+        self._video_processor = video_processor
         self._clock = clock
         configured = workers if workers is not None else getattr(settings, "import_workers", 1)
         self._workers = max(1, int(configured))
@@ -257,6 +263,12 @@ class ImportJobExecutor:
                 self._mark(job, "asset_staged", "done")
                 staged = importer.resume(asset)
             item.staged = staged
+            if staged.media_type is MediaType.VIDEO and self._video_processor is not None:
+                # 视频不跑图片 prepare/commit；交给 video_jobs 的 8 阶段断点链路。
+                # 这里仍占住导入作业的 lease/心跳，UI 看到的是同一个 import job。
+                item.video = True
+                self._mark(job, "prepared", "running")
+                return item
             self._mark(job, "prepared", "running")
             item.prepared = pool.submit(importer.prepare_image, staged.asset)
         except JobFailure as error:
@@ -276,18 +288,24 @@ class ImportJobExecutor:
                 return
             if not isinstance(item.staged, StagedImport) or item.importer is None:
                 raise TemporaryFailure("import stage produced no prepared asset")
-            prepared = item.prepared.result() if item.prepared is not None else None
-            if prepared is None:
-                raise TemporaryFailure("image preparation produced no result")
-            self._mark(job, "prepared", "done")
-            if self._jobs.is_cancel_requested(job.id):
-                raise JobCancelled("cancelled before commit")
+            if item.video and self._video_processor is not None:
+                self._mark(job, "prepared", "done")
+                if self._jobs.is_cancel_requested(job.id):
+                    raise JobCancelled("cancelled before video processing")
+                result = self._video_processor(job, item.staged)
+            else:
+                prepared = item.prepared.result() if item.prepared is not None else None
+                if prepared is None:
+                    raise TemporaryFailure("image preparation produced no result")
+                self._mark(job, "prepared", "done")
+                if self._jobs.is_cancel_requested(job.id):
+                    raise JobCancelled("cancelled before commit")
 
-            result = item.importer.finish(item.staged, prepared)
-            if result.video_scene_error:
-                if "no_duration" in result.video_scene_error:
-                    raise InputInvalid(f"video scenes: {result.video_scene_error}")
-                raise TemporaryFailure(f"video scenes: {result.video_scene_error}")
+                result = item.importer.finish(item.staged, prepared)
+                if result.video_scene_error:
+                    if "no_duration" in result.video_scene_error:
+                        raise InputInvalid(f"video scenes: {result.video_scene_error}")
+                    raise TemporaryFailure(f"video scenes: {result.video_scene_error}")
 
             self._record_stages(job, result)
             self._assets.update_status(item.staged.asset.id, AssetStatus.PROCESSED)
@@ -404,16 +422,22 @@ class ImportJobExecutor:
             staged = importer.resume(asset)
 
         self._mark(job, "prepared", "running")
-        prepared = importer.prepare_image(staged.asset)
-        self._mark(job, "prepared", "done")
-        if self._jobs.is_cancel_requested(job.id):
-            raise JobCancelled("cancelled before commit")
+        if staged.media_type is MediaType.VIDEO and self._video_processor is not None:
+            self._mark(job, "prepared", "done")
+            if self._jobs.is_cancel_requested(job.id):
+                raise JobCancelled("cancelled before video processing")
+            result = self._video_processor(job, staged)
+        else:
+            prepared = importer.prepare_image(staged.asset)
+            self._mark(job, "prepared", "done")
+            if self._jobs.is_cancel_requested(job.id):
+                raise JobCancelled("cancelled before commit")
 
-        result = importer.finish(staged, prepared)
-        if result.video_scene_error:
-            if "no_duration" in result.video_scene_error:
-                raise InputInvalid(f"video scenes: {result.video_scene_error}")
-            raise TemporaryFailure(f"video scenes: {result.video_scene_error}")
+            result = importer.finish(staged, prepared)
+            if result.video_scene_error:
+                if "no_duration" in result.video_scene_error:
+                    raise InputInvalid(f"video scenes: {result.video_scene_error}")
+                raise TemporaryFailure(f"video scenes: {result.video_scene_error}")
 
         self._record_stages(job, result)
         self._assets.update_status(staged.asset.id, AssetStatus.PROCESSED)
