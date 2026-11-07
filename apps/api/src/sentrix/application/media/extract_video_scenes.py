@@ -44,6 +44,7 @@ from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
     AudioTranscriber,
+    ObservationRepository,
     TranscriptionSegment,
     VideoKeyframeExtractor,
     VideoRepository,
@@ -54,6 +55,7 @@ from sentrix.domain.memories.events import EventRecord
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.ports import VisualEmbedder
+from sentrix.runtime.work import import_task
 
 # 1.0 建场景事件时的占位地点（``db.py:2407`` 的 ``data.get("place") or "其他或不确定"``）。
 # 地点解析不出结果时事件不该是一行空字符串——那是「不知道」冒充「没有地点」。
@@ -109,6 +111,7 @@ class ExtractVideoScenes:
         # 这一层要的是「把一张已落库的图片走完整条链」，不是导入用例本身
         # （它还要负责去重、落盘、探测）。第二参是 ``forced_event_id``。
         process_image: Callable[[Asset, str], object],
+        observations: ObservationRepository | None = None,
         scene_planner: VideoScenePlanner | None = None,
         transcriber: AudioTranscriber | None = None,
         cross_modal_embedder: VisualEmbedder | None = None,
@@ -131,6 +134,7 @@ class ExtractVideoScenes:
         self._resume_event_completed = max(0, resume_event_completed)
         self._clock = clock
 
+    @import_task
     def execute(
         self,
         source_asset_id: str,
@@ -331,7 +335,12 @@ class ExtractVideoScenes:
             scene_count += 1
             if self._checkpoint is not None:
                 self._checkpoint("EVENT_BUILD", position, len(frame_records), window.index)
-            has_memory = self._has_memory(derived) if self._has_memory is not None else was_existing
+            if self._has_memory is not None:
+                has_memory = self._has_memory(derived)
+            elif self._observations is not None:
+                has_memory = self._frame_complete(derived)
+            else:
+                has_memory = was_existing
             if has_memory:
                 reused += 1
                 memory_completed += 1
@@ -373,6 +382,14 @@ class ExtractVideoScenes:
         )
 
     # ---- 内部 ----------------------------------------------------------------
+
+    def _frame_complete(self, asset: Asset) -> bool:
+        """派生帧只有在观察已落库后才算完成；仅“资产行存在”会在崩溃后漏建记忆。"""
+        if asset.status is not AssetStatus.PROCESSED:
+            return False
+        if self._observations is None:
+            return True
+        return bool(self._observations.list_by_asset(asset.id))
 
     def _ensure_scene_event(
         self,

@@ -36,11 +36,11 @@ function relation(): FamilyRelationship {
     predicate: "父亲",
     object_entity_id: "person_b",
     inverse_predicate: "儿子",
-    source: "model",
-    confidence: 0.8,
+    source: "user_override",
+    confidence: 1,
     evidence_refs: [],
     state: "active",
-    locked: false,
+    locked: true,
     revision: 1,
   };
 }

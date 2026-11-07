@@ -33,7 +33,6 @@ from datetime import UTC, datetime
 
 from sentrix.domain.identity.family import (
     FAMILY_MEMBERSHIPS,
-    FAMILY_PENDING_DISPLAY_NAME,
     FAMILY_SOURCES,
     SOURCE_MODEL,
     SOURCE_USER_OVERRIDE,
@@ -48,7 +47,7 @@ from sentrix.domain.identity.family import (
     FamilyRelationshipRecord,
 )
 from sentrix.domain.identity.family_graph import validate_relationship_pair
-from sentrix.domain.identity.models import ENTITY_STATUS_PENDING
+from sentrix.domain.identity.models import entity_display_name
 from sentrix.domain.identity.ports import EntityRepository
 from sentrix.infrastructure.persistence.database import Database
 
@@ -328,16 +327,11 @@ class SqliteFamilyGraphRepository:
                     count = connection.execute(self._APPEARANCE_SQL, (entity.id,)).fetchone()
                     membership = self.get_effective_membership(owner_scope, entity.id)
                     portrait = self.get_active_portrait(owner_scope, entity.id)
-                    pending = entity.status == ENTITY_STATUS_PENDING
                     people.append(
                         FamilyPersonProjection(
                             id=entity.id,
                             scope_id=owner_scope,
-                            display_name=(
-                                FAMILY_PENDING_DISPLAY_NAME
-                                if pending or not entity.canonical_name
-                                else entity.canonical_name
-                            ),
+                            display_name=entity_display_name(entity),
                             membership=membership,
                             portrait=portrait,
                             avatar_face_instance_id=avatar["id"] if avatar else None,

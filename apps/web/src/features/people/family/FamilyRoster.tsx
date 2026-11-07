@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 import type { FamilyPerson, FamilyMembershipValue } from "../../../shared/api/client";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { PersonCard } from "./PersonCard";
-import { isNamed, membershipLabel, membershipOf } from "./membership";
+import { isNamed, membershipLabel, membershipOf, personDisplayName } from "./membership";
 
 type Filter = "all" | FamilyMembershipValue;
 
@@ -56,9 +56,19 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
     return sortPeople(people).filter((person) => {
       if (filter !== "all" && membershipOf(person) !== filter) return false;
       if (needle === "") return true;
-      return person.display_name.toLowerCase().includes(needle);
+      return personDisplayName(person).toLowerCase().includes(needle);
     });
   }, [people, query, filter]);
+
+  // 默认视图不主动铺开「只出现一两次」的人；搜索或筛选时全部展开，否则搜到了却藏在
+  // 折叠区里等于没搜到。
+  const collapsedMode = query.trim() === "" && filter === "all";
+  const frequent = collapsedMode
+    ? visible.filter((person) => person.appearance_count > 2)
+    : visible;
+  const rare = collapsedMode
+    ? visible.filter((person) => person.appearance_count <= 2)
+    : [];
 
   return (
     <section className="family-roster">
@@ -115,18 +125,39 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
         )
       ) : (
         <>
-          <ul className="person-grid">
-            {visible.map((person) => (
-              <PersonCard
-                key={person.id}
-                person={person}
-                selected={person.id === selectedId}
-                onSelect={onSelect}
-              />
-            ))}
-          </ul>
+          {frequent.length === 0 ? null : (
+            <ul className="person-grid">
+              {frequent.map((person) => (
+                <PersonCard
+                  key={person.id}
+                  person={person}
+                  selected={person.id === selectedId}
+                  onSelect={onSelect}
+                />
+              ))}
+            </ul>
+          )}
+          {rare.length === 0 ? null : (
+            <details className="roster-rare">
+              <summary>
+                出现 2 次及以下的人物 · {rare.length} 人
+                <small>展开查看</small>
+              </summary>
+              <ul className="person-grid">
+                {rare.map((person) => (
+                  <PersonCard
+                    key={person.id}
+                    person={person}
+                    selected={person.id === selectedId}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
           <p className="roster-count">
             共 {people.length} 人
+            {rare.length > 0 ? `，其中 ${rare.length} 人已折叠` : ""}
             {visible.length === people.length ? "" : `，当前显示 ${visible.length} 人`}
           </p>
         </>

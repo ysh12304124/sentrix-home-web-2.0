@@ -34,13 +34,13 @@ interface TimelineCard {
 }
 
 const CARD_LABELS: Record<CardKind, string> = {
-  planning: "规划",
-  thinking: "思考",
-  tool: "工具调用",
-  observation: "观察",
-  inspecting: "精读",
-  recovering: "纠正",
-  final: "收尾",
+  planning: "先想一想",
+  thinking: "正在理解",
+  tool: "查找资料",
+  observation: "看到的内容",
+  inspecting: "仔细查看",
+  recovering: "换个办法",
+  final: "整理回答",
 };
 
 /** 后端的阶段名（`domain/assistant/models.py` 的 `ProgressStage`）→ 卡片类别。 */
@@ -127,35 +127,67 @@ export function buildCards(events: AssistantProgressEvent[]): TimelineCard[] {
   return cards;
 }
 
-/** `tool_result` 的 `payload.result` 是工具的 observation，只挑已有字段做摘要。 */
+/** 只挑用户能理解的结果，不显示内部字段名、结果集 ID 或检索后端。 */
 export function summarizeResult(value: unknown): string[] {
   if (typeof value !== "object" || value === null) return [];
   const data = value as Record<string, unknown>;
   const parts: string[] = [];
-
-  if (typeof data.result_set_id === "string" && data.result_set_id !== "") {
-    parts.push(`结果集 ${data.result_set_id}`);
+  if (typeof data.total === "number") parts.push(`找到 ${data.total} 张相关照片`);
+  if (Array.isArray(data.asset_ids) && data.asset_ids.length > 0) {
+    parts.push(`候选 ${data.asset_ids.length} 张`);
   }
-  if (typeof data.total === "number") parts.push(`共 ${data.total} 张`);
-  if (typeof data.has_more === "boolean") parts.push(data.has_more ? "还有更多" : "已到底");
-  if (Array.isArray(data.asset_ids)) parts.push(`候选 ${data.asset_ids.length} 个`);
-  if (typeof data.delivered === "number") parts.push(`交付 ${data.delivered} 张`);
-  if (typeof data.found === "boolean") parts.push(data.found ? "已找到" : "未找到");
-  if (typeof data.backend === "string" && data.backend !== "") {
-    parts.push(`检索后端 ${data.backend}`);
-  }
-  if (data.degraded === true) parts.push("检索降级");
-  if (typeof data.full_text === "string" && data.full_text !== "") {
-    parts.push(`读到 ${data.full_text.length} 字`);
-  }
-  if (typeof data.observation === "string" && data.observation !== "") {
-    parts.push(data.observation);
-  }
-  if (parts.length === 0) {
-    const keys = Object.keys(data);
-    if (keys.length > 0) parts.push(`返回字段：${keys.join("、")}`);
-  }
+  if (typeof data.delivered === "number") parts.push(`带回 ${data.delivered} 张照片`);
+  if (data.found === true) parts.push("找到了相关内容");
+  if (data.found === false) parts.push("没有找到相关内容");
+  if (typeof data.full_text === "string" && data.full_text !== "") parts.push("读完了这段文字");
   return parts;
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  search: "正在查找相关照片…",
+  search_photos: "正在查找相关照片…",
+  search_memories: "正在查找相关照片…",
+  recall: "正在回忆相关内容…",
+  retrieve: "正在回忆相关内容…",
+  inspect_photo: "正在仔细查看这张照片…",
+  view_photo: "正在仔细查看这张照片…",
+  deliver_photos: "正在挑选要展示的照片…",
+  deliver: "正在挑选要展示的照片…",
+  final_answer: "正在整理回答…",
+};
+
+function toolLabel(tool: string): string {
+  return TOOL_LABELS[tool] ?? "正在处理这一步…";
+}
+
+function terminalLabel(status: string): string {
+  if (status === "complete") return "回答完成。";
+  if (status === "partial") return "回答完成。";
+  if (status === "cancelled") return "已停止回答。";
+  if (status === "blocked") return "这一步被安全规则拦住了。";
+  return "这次没有完成，可以再问一次。";
+}
+
+/** 把一条过程事件翻成日常语言；同一张卡里连续重复的句子只保留一次。 */
+function userStepText(event: AssistantProgressEvent): string {
+  const payload = payloadOf(event);
+  if (event.stage === "action" || event.kind === "model_action") {
+    return toolLabel(stringOf(payload.tool));
+  }
+  if (event.stage === "tool_result") {
+    const summary = summarizeResult(payload.result);
+    return summary.length > 0 ? summary.join("；") : "这一步完成了。";
+  }
+  if (event.kind === "tool_error") return "这一步没有成功，换一种方式继续。";
+  if (event.kind === "guard" || event.kind === "judge") {
+    return payload.hard === true
+      ? "有一项要求暂时无法满足，正在换一种方式。"
+      : "正在检查回答是否符合要求。";
+  }
+  if (event.kind === "terminal") return terminalLabel(stringOf(payload.status));
+  if (event.kind === "plan") return "先把问题拆成几步。";
+  const text = event.text.trim();
+  return text !== "" ? text : "正在继续思考。";
 }
 
 function RequirementList({ requirements }: { requirements: unknown }) {
@@ -168,71 +200,28 @@ function RequirementList({ requirements }: { requirements: unknown }) {
     <ul className="phase-requirements">
       {rows.map((item, index) => (
         <li key={stringOf(item.id) || String(index)}>
-          <span>{stringOf(item.description) || stringOf(item.evidence_type) || "待确认的依据"}</span>
-          <small>{stringOf(item.status)}</small>
-          {stringOf(item.unmet_reason) !== "" ? <em>{stringOf(item.unmet_reason)}</em> : null}
+          <span>{stringOf(item.description) || "需要确认的内容"}</span>
+          <small>
+            {stringOf(item.status) === "satisfied"
+              ? "已找到"
+              : stringOf(item.status) === "unmet"
+                ? "暂时没找到"
+                : "正在确认"}
+          </small>
         </li>
       ))}
     </ul>
   );
 }
 
-function JsonBlock({ value }: { value: unknown }) {
-  let text = "";
-  try {
-    text = JSON.stringify(value, null, 2);
-  } catch {
-    text = "";
-  }
-  if (text === "" || text === "{}") return null;
-  return <pre className="phase-json">{text}</pre>;
-}
-
-function PhaseEvent({ event }: { event: AssistantProgressEvent }) {
+function PhaseEvent({ event, previous }: { event: AssistantProgressEvent; previous: string }) {
   const payload = payloadOf(event);
-  const result = payload.result;
-  const summary = summarizeResult(result);
-
+  const text = userStepText(event);
+  if (text === previous) return null;
   return (
     <div className={`phase-event phase-status-${event.status}`}>
-      <p>{event.text}</p>
+      <p>{text}</p>
       {event.kind === "plan" ? <RequirementList requirements={payload.requirements} /> : null}
-      {event.kind === "model_action" || event.kind === "tool_result" || event.kind === "tool_error" ? (
-        <>
-          {payload.arguments !== undefined ? (
-            <details className="phase-detail">
-              <summary>参数</summary>
-              <JsonBlock value={payload.arguments} />
-            </details>
-          ) : null}
-          {summary.length > 0 ? (
-            <ul className="phase-result">
-              {summary.map((part) => (
-                <li key={part}>{part}</li>
-              ))}
-            </ul>
-          ) : null}
-          {typeof payload.duration_ms === "number" ? (
-            <small className="phase-duration">耗时 {payload.duration_ms} ms</small>
-          ) : null}
-        </>
-      ) : null}
-      {event.kind === "guard" || event.kind === "judge" ? (
-        <div className="phase-guard">
-          {stringOf(payload.code) !== "" ? <span>规则 {stringOf(payload.code)}</span> : null}
-          {payload.hard === true ? <strong>硬性拦截</strong> : null}
-          {stringOf(payload.reason) !== "" ? <span>{stringOf(payload.reason)}</span> : null}
-          {stringOf(payload.evidence) !== "" ? <span>{stringOf(payload.evidence)}</span> : null}
-        </div>
-      ) : null}
-      {event.kind === "terminal" ? (
-        <p className="phase-terminal">
-          {stringOf(payload.status)}
-          {stringOf(payload.termination_reason) !== ""
-            ? ` · ${stringOf(payload.termination_reason)}`
-            : ""}
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -247,22 +236,24 @@ function PhaseEvent({ event }: { event: AssistantProgressEvent }) {
  *
  * 状态着色沿用 1.0 的三态：running（进行中）/ blocked（被拦、报错、取消）/ complete。
  */
-const BLOCKED_STATUSES = new Set(["blocked", "denied", "error", "cancelled", "partial"]);
+const BLOCKED_STATUSES = new Set(["blocked", "denied", "error", "cancelled"]);
 
 function PhaseCard({ card }: { card: TimelineCard }) {
-  const last = card.events[card.events.length - 1];
   const running = card.events.some((event) => event.status === "running");
   const blocked = card.events.some((event) => BLOCKED_STATUSES.has(event.status));
   const state = running ? "running" : blocked ? "blocked" : "complete";
+  let previous = "";
   return (
     <article className={`timeline-card ${state}`}>
       <span className="timeline-dot" aria-hidden="true" />
       <div>
         <strong>{CARD_LABELS[card.kind]}</strong>
-        {last.text ? <p>{last.text}</p> : null}
-        {card.events.map((event) => (
-          <PhaseEvent key={event.step_index} event={event} />
-        ))}
+        {card.events.map((event) => {
+          const current = userStepText(event);
+          const node = <PhaseEvent key={event.step_index} event={event} previous={previous} />;
+          previous = current;
+          return node;
+        })}
       </div>
     </article>
   );
@@ -326,7 +317,7 @@ export function TurnTimeline({
         aria-expanded={open}
         onClick={() => void toggle()}
       >
-        记忆推理{available.length > 0 ? ` · ${available.length} 个节点` : ""}
+        思考过程{available.length > 0 ? ` · ${available.length} 步` : ""}
       </button>
       {open ? (
         <div className="turn-timeline-body">

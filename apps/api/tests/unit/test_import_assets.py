@@ -49,6 +49,9 @@ class FakeObservations:
     def get(self, observation_id):
         return self.rows.get(observation_id)
 
+    def list_by_asset(self, asset_id):
+        return [item for item in self.rows.values() if item.asset_id == asset_id]
+
 
 class FakeStorage:
     def __init__(self) -> None:
@@ -291,6 +294,7 @@ def test_video_probe_failure_is_recorded_not_swallowed():
 
 
 def test_video_without_metadata_keeps_capture_time_unknown():
+    """探测失败时拍摄时间是 **None**，不能拿导入时刻冒充。"""
     clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
     use_case, assets, _ = build_video(
         metadata_reader=FakeVideoMetadata(error="ffprobe: command not found"),
@@ -306,6 +310,7 @@ def test_video_without_metadata_keeps_capture_time_unknown():
 
 
 def test_image_without_exif_keeps_capture_time_unknown():
+    """没有 EXIF 拍摄时间时 ``captured_at`` 是 None；时间线据此显示「未知时间」。"""
     clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
     assets = FakeAssets()
     use_case = ImportAssets(

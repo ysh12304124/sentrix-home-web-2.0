@@ -1,0 +1,25 @@
+[Unit]
+Description=Sentrix experience control plane (LAN login, proxy, feedback, monitoring)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentrix-control
+Group=sentrix-control
+WorkingDirectory=/opt/sentrix/current
+EnvironmentFile=/etc/sentrix/control.env
+ExecStart=/opt/sentrix/current/deploy/experience/run-control.sh
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+# 控制面只写自己的库与反馈截图，读不到用户原件目录。
+ReadWritePaths=/srv/sentrix/control /run/sentrix
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

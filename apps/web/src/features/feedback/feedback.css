@@ -1,0 +1,146 @@
+.feedback-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 17, 15, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+  padding: 20px;
+}
+
+.feedback-panel {
+  width: min(560px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feedback-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.feedback-panel h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.feedback-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.feedback-panel textarea,
+.feedback-panel select {
+  font: inherit;
+  padding: 10px;
+  border: 1px solid var(--line, #dcdcd4);
+  border-radius: 10px;
+}
+
+.feedback-panel button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--green, #2f6f3e);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.feedback-panel button:disabled {
+  opacity: 0.55;
+}
+
+.feedback-hint {
+  font-size: 12px;
+  color: var(--muted, #6b6b62);
+  margin: 0;
+}
+
+.feedback-preview img {
+  max-width: 100%;
+  max-height: 200px;
+  border-radius: 10px;
+}
+
+.feedback-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-history li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line, #dcdcd4);
+  padding-top: 8px;
+  font-size: 13px;
+}
+
+.feedback-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feedback-attach-title {
+  font-size: 13px;
+}
+
+.feedback-drop {
+  border: 1px dashed var(--line, #dcdcd4);
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  color: var(--muted, #6b6b62);
+  cursor: pointer;
+}
+
+.feedback-drop.dragging {
+  border-color: var(--green, #2f6f3e);
+  background: var(--mint, #eef6ef);
+}
+
+.feedback-drop p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.feedback-attach-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feedback-attach-actions span {
+  color: var(--muted, #6b6b62);
+  font-size: 11px;
+}
+
+.feedback-panel button.button.ghost {
+  min-height: 36px;
+  background: var(--soft, #f2f2ec);
+  color: var(--ink, #222);
+}
+
+.feedback-panel button.text-button {
+  min-height: auto;
+  padding: 0;
+  background: transparent;
+  color: var(--green, #2f6f3e);
+  font-size: 12px;
+}

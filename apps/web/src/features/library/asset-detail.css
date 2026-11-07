@@ -3,26 +3,52 @@
 
 .asset-detail {
   overflow-y: auto;
+  /* 顶部栏是 sticky z-index:4；详情必须盖住它，否则右上角关闭会被“退出”截获。 */
+  z-index: 60;
 }
 
 .asset-detail .close {
   position: absolute;
   top: 18px;
   right: 22px;
+  z-index: 2;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid #ffffff8c;
+  border-radius: 999px;
+  background: #0f172ad9;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px #00000059;
+}
+
+.asset-detail .close:hover {
+  background: #0f172a;
+  border-color: #fff;
 }
 
 .asset-detail-media {
-  display: grid;
-  place-items: center;
-  max-width: min(92vw, 1200px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: min(92vw, 1200px);
+  max-width: 100%;
   max-height: 58vh;
+  padding: clamp(4px, 1vw, 14px);
+  box-sizing: border-box;
 }
 
 .asset-detail-media img,
 .asset-detail-media video {
-  max-width: min(92vw, 1200px);
+  /* 任意比例的图片/视频都按自身比例装进可用区域，不拉满、不裁切。 */
+  width: auto;
+  height: auto;
+  max-width: 100%;
   max-height: 58vh;
   object-fit: contain;
+  object-position: center;
   border-radius: 8px;
   background: #000;
 }

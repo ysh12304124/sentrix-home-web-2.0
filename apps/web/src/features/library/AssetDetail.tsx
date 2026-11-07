@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   assetFileUrl,
   assetInlineUrl,
+  assetPosterUrl,
   getVideo,
   type AssetDetailResponse,
   type ObservationPayload,
@@ -31,23 +32,22 @@ const MEDIA_LABEL: Readonly<Record<string, string>> = {
   text: "文本",
 };
 
-/** 只把观察时间与描述带出来；文件本身通过 Observation 里的 asset_id 打开。 */
+const ASSET_STATUS_LABEL: Readonly<Record<string, string>> = {
+  processed: "已整理",
+  processing: "正在整理",
+  queued: "等待整理",
+  failed: "整理失败",
+};
+
+/** 只把整理时间与描述带出来；没有内容时整段省略，不向用户解释内部端点缺口。 */
 function ObservationList({ observations }: { observations: readonly ObservationPayload[] }) {
-  if (observations.length === 0) {
-    return (
-      <p className="asset-detail-note">
-        后端没有按资产返回 Observation 的端点：<code>GET /assets/{"{id}"}</code> 只回
-        AssetSummary，事件侧也只有 <code>GET /events/{"{id}"}</code>（没有按资产反查）。
-        这里不伪造观察记录。
-      </p>
-    );
-  }
+  if (observations.length === 0) return null;
   return (
     <ul className="asset-observations">
       {observations.map((observation) => (
         <li key={observation.id}>
           <div>
-            <strong>{observation.caption || "原始观察证据"}</strong>
+            <strong>{observation.caption || "整理记录"}</strong>
             <small>
               {observation.captured_at ?? "未标注时间"} · {observation.source_type}
             </small>
@@ -118,7 +118,7 @@ export function AssetDetail({
 
   const media = useMemo(() => {
     if (asset.media_type === "image") {
-      return <img src={assetInlineUrl(asset)} alt={asset.file_name} />;
+      return <img src={assetInlineUrl(asset)} alt="资料图片" />;
     }
     if (asset.media_type === "video") {
       return (
@@ -127,8 +127,9 @@ export function AssetDetail({
           controls
           preload="metadata"
           playsInline
+          poster={assetPosterUrl(asset.id)}
           src={assetInlineUrl(asset)}
-          aria-label={asset.file_name}
+          aria-label="视频"
           onLoadedMetadata={(event) => {
             if (initialTimeSec !== null && Number.isFinite(initialTimeSec)) {
               // 命中视频帧时直接停在那一秒，用户不必自己拖动。
@@ -139,7 +140,7 @@ export function AssetDetail({
       );
     }
     if (asset.media_type === "audio") {
-      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label={asset.file_name} />;
+      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label="音频" />;
     }
     if (asset.media_type === "text") {
       return textError !== null ? (
@@ -148,12 +149,14 @@ export function AssetDetail({
         <pre className="asset-text">{textContent ?? "读取文本中…"}</pre>
       );
     }
-    return <p className="asset-detail-note">{asset.file_name}</p>;
+    return <p className="asset-detail-note">这份资料暂时不能直接预览。</p>;
   }, [asset, initialTimeSec, textContent, textError]);
 
   return (
-    <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资产详情">
-      <button type="button" className="close" onClick={onClose}>关闭</button>
+    <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资料详情">
+      <button type="button" className="close" aria-label="关闭资料详情" onClick={onClose}>
+        关闭
+      </button>
       <div className="asset-detail-media">{media}</div>
       {asset.media_type === "video" ? (
         <VideoSpeechTranscript
@@ -168,19 +171,22 @@ export function AssetDetail({
         />
       ) : null}
       <dl>
-        <dt>文件名</dt><dd>{asset.file_name}</dd>
-        <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? asset.media_type}（{asset.mime_type ?? "未知 MIME"}）</dd>
+        <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? "资料"}</dd>
         <dt>拍摄时间</dt><dd>{asset.captured_at ?? "未标注"}</dd>
         <dt>地点</dt>
-        <dd>{asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "无 GPS"}</dd>
+        <dd>{asset.place !== undefined && asset.place !== "" ? asset.place : asset.gps ? `${asset.gps.latitude.toFixed(4)}, ${asset.gps.longitude.toFixed(4)}` : "地点未记录"}</dd>
         {initialTimeSec !== null ? (
           <>
             <dt>命中时间</dt><dd>{initialTimeSec.toFixed(2)} 秒</dd>
           </>
         ) : null}
-        <dt>处理状态</dt><dd>{asset.status}</dd>
-        <dt>Observation</dt>
-        <dd className="asset-detail-observations"><ObservationList observations={observations} /></dd>
+        <dt>整理状态</dt><dd>{ASSET_STATUS_LABEL[asset.status] ?? "状态更新中"}</dd>
+        {observations.length > 0 ? (
+          <>
+            <dt>整理记录</dt>
+            <dd className="asset-detail-observations"><ObservationList observations={observations} /></dd>
+          </>
+        ) : null}
         <dt>原始文件</dt>
         <dd><a href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件</a></dd>
       </dl>

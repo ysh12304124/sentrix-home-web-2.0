@@ -27,6 +27,9 @@ class DiagnosticsResponse(BaseModel):
     database: str
     embeddings: str
     embeddings_error: str | None = None
+    model_generation: str | None = None
+    model_error: str | None = None
+    models_endpoint: str | None = None
     runtime_configuration: dict[str, Any]
 
 
@@ -89,4 +92,10 @@ def _diagnostics(request: Request) -> dict[str, str]:
         # **带上原因。** 只有「不可用」三个字的话，排查要从日志里捞——
         # 而这条路径的整个教训就是「降级必须自己走到人眼前」。
         payload["embeddings_error"] = container.embedding_health.load_error or "sidecar_unreachable"
+    model_ok, model_error = container.model_health.check()
+    model_info = container.model_health.describe()
+    payload["model_generation"] = "ok" if model_ok else "unavailable"
+    if not model_ok:
+        payload["model_error"] = model_error or "generation_unavailable"
+    payload["models_endpoint"] = "ok" if model_info.get("models_ok") else "unavailable"
     return payload

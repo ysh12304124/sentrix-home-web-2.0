@@ -294,7 +294,7 @@ describe("人脸簇审阅页", () => {
     expect(sources).toContain("/api/v1/face-instances/face_1/crop");
     expect(sources).toContain("/api/v1/face-instances/face_2/crop");
     // 孤证簇折在 <details> 里，裁剪图照样要渲染出来
-    expect(screen.getByAltText("未命名 的人脸样本 1").getAttribute("src")).toBe(
+    expect(screen.getByAltText("未确认姓名人物 的人脸样本 1").getAttribute("src")).toBe(
       "/api/v1/face-instances/face_3/crop",
     );
 
@@ -467,7 +467,7 @@ describe("人脸簇审阅页", () => {
 
     render(<PeopleView scopeId="album1" />);
     fireEvent.click(await screen.findByLabelText("选中 待命名成员 用于合并"));
-    fireEvent.click(screen.getByLabelText("选中 未命名 用于合并"));
+    fireEvent.click(screen.getByLabelText("选中 未确认姓名人物 用于合并"));
 
     const bar = await screen.findByRole("region", { name: "合并人物簇" });
     // 没显式选过目标时，默认是先点的那个
@@ -475,7 +475,7 @@ describe("人脸簇审阅页", () => {
       true,
     );
 
-    fireEvent.click(within(bar).getByRole("radio", { name: /未命名/ }));
+    fireEvent.click(within(bar).getByRole("radio", { name: /未确认姓名人物/ }));
     fireEvent.click(within(bar).getByRole("button", { name: "合并人物簇" }));
 
     await waitFor(() => {

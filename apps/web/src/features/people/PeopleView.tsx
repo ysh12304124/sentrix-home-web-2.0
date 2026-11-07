@@ -45,7 +45,15 @@ async function fetchPeopleData(scopeId: string): Promise<PeopleData> {
  * **不重算任何后端规则**：谁可审、是不是孤证都读 ``FaceClusterSummary`` 上的派生布尔；
  * 合并方向由用户在多选里指定，前端不做「哪个更像谁」的推断。
  */
-export function PeopleView({ scopeId }: { scopeId: string }) {
+export function PeopleView({
+  scopeId,
+  onConfirmSubmit,
+  onConfirmResult,
+}: {
+  scopeId: string;
+  onConfirmSubmit?: (clusterId: string) => void;
+  onConfirmResult?: (clusterId: string, ok: boolean) => void;
+}) {
   const [clusters, setClusters] = useState<FaceClusterSummary[]>([]);
   const [people, setPeople] = useState<PersonPayload[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -197,6 +205,7 @@ export function PeopleView({ scopeId }: { scopeId: string }) {
     familyRole: string | null,
     relation: ClusterRelationInput | null,
   ): Promise<boolean> {
+    onConfirmSubmit?.(clusterId);
     return run(async () => {
       const confirmed = await confirmFaceCluster(clusterId, { name, family_role: familyRole });
       if (relation !== null) {
@@ -208,6 +217,9 @@ export function PeopleView({ scopeId }: { scopeId: string }) {
           inversePredicate: relation.inversePredicate,
         });
       }
+    }).then((ok) => {
+      onConfirmResult?.(clusterId, ok);
+      return ok;
     });
   }
 
@@ -216,13 +228,12 @@ export function PeopleView({ scopeId }: { scopeId: string }) {
       <header className="people-head">
         <div>
           <p className="section-kicker">人物</p>
-          <h2>人脸簇审阅</h2>
+          <h2>待确认的人物</h2>
         </div>
-        <span className="result-count">{clusters.length} 个待确认簇</span>
+        <span className="result-count">{clusters.length} 位待确认</span>
       </header>
       <p className="people-lead">
-        这些簇是本机人脸模型自动聚出来的。确认会给它一个身份，拒绝只是不再把它当人看——
-        两种处理都不动原始照片。
+        这些是系统从照片里自动整理出的面孔。确认会给它一个名字；暂时跳过不会改动原始照片。
       </p>
 
       <div className="cluster-actions">
@@ -246,7 +257,7 @@ export function PeopleView({ scopeId }: { scopeId: string }) {
       )}
 
       {!loaded ? (
-        <p className="empty">正在读取待确认的簇…</p>
+        <p className="empty">正在读取待确认的人物…</p>
       ) : (
         <>
           {batchMode && batchSelected.length > 0 ? (

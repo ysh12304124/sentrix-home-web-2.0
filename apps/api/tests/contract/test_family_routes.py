@@ -123,17 +123,16 @@ def test_an_unknown_scope_is_its_own_graph_with_no_people(family_client: TestCli
 def test_only_people_appear_and_the_pending_one_gets_the_family_graph_placeholder(
     family_client: TestClient,
 ) -> None:
-    """只出 person；pending 的用 **「待命名人物」**。
+    """只出 person；pending 的用统一的「未确认姓名人物」。
 
-    定点变异：把占位换成 ``PENDING_CLUSTER_NAME``（「待命名成员」），这条变红——
-    **1.0 两个端点用两个词**，家庭图谱这个用的是「人物」。
+    两个端点过去各叫一个词，现在收成同一句用户文案，避免内部 cluster id 泄漏。
     """
     people = _people(family_client)
 
     assert {item["id"] for item in people} == {"mom", "kid"}
     by_id = {item["id"]: item for item in people}
     assert by_id["mom"]["display_name"] == "妈妈"
-    assert by_id["kid"]["display_name"] == "待命名人物"
+    assert by_id["kid"]["display_name"] == "未确认姓名人物"
     assert by_id["mom"]["membership"] is None
     assert by_id["mom"]["portrait"] is None
 

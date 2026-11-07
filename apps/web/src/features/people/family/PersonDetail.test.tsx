@@ -6,6 +6,7 @@ vi.mock("../../../shared/api/client", async (importOriginal) => {
   return {
     ...actual,
     getPerson: vi.fn(),
+    getPersonPortrait: vi.fn().mockResolvedValue(null),
     getEntityDetail: vi.fn(),
     setEntityProperty: vi.fn(),
   };

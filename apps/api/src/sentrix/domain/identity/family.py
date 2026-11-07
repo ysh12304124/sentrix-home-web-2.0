@@ -44,10 +44,9 @@ STATE_EFFECTIVE = "effective"
 STATE_SUPERSEDED = "superseded"
 STATE_RETRACTED = "retracted"
 
-# 1.0 ``db.py:5677`` 在 ``family_graph_people`` 里硬编码的占位名。**与 ``app.py`` 那处
-# 的「待命名成员」不是同一个串**（``domain/identity/models.py`` 的 ``PENDING_CLUSTER_NAME``）
-# ——1.0 两个端点用两个词，这个端点照搬它自己那个。
-FAMILY_PENDING_DISPLAY_NAME = "待命名人物"
+# 家庭图谱里未命名人物的占位名。与 ``PENDING_CLUSTER_NAME`` 用同一句用户文案：
+# 两个端点过去各叫一个词，用户在同一页看到两个“待命名”没有意义。
+FAMILY_PENDING_DISPLAY_NAME = "未确认姓名人物"
 
 # 1.0 ``family_graph_people`` 的代表照上限（``db.py:5668`` 的 ``LIMIT 3``）。
 REPRESENTATIVE_MEDIA_LIMIT = 3

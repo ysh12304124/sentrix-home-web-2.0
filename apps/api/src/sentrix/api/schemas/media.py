@@ -39,6 +39,8 @@ class AssetSummary(BaseModel):
     status: str
     captured_at: str | None
     gps: dict[str, float] | None
+    # 已解析并格式化的地点；没有地点时为空串。
+    place: str = ""
     # 关键帧血缘（迁移 0010），普通资产为 None。1.0 的 ``/api/assets`` 是
     # ``SELECT * FROM assets``（``db.py:1505``），这几列顺带就回了；2.0 的窄投影漏了
     # 它们，于是 PhotoBench 的关键帧分析（``benchmark_orchestrator.py:5712/5724/5798``）
@@ -50,3 +52,9 @@ class AssetSummary(BaseModel):
 
 class AssetListResponse(BaseModel):
     items: list[AssetSummary]
+    # 分页信封。旧调用方只读 items 仍然可用；新调用方不能用 len(items) 冒充总量。
+    total: int = 0
+    offset: int = 0
+    limit: int = 200
+    # 当前相册范围各媒体类型的真实计数（含 all）。
+    counts: dict[str, int] = {}

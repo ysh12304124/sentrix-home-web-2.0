@@ -83,7 +83,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +113,7 @@ from sentrix.domain.media.ports import (
 from sentrix.domain.places.ports import AssetPlaceIndex
 from sentrix.domain.retrieval.ports import AssetVisualIndexer, LexicalIndex, PreparedVisual
 from sentrix.domain.spaces.ports import SpaceRepository
+from sentrix.runtime.work import import_task
 
 log = logging.getLogger("sentrix.media.import_assets")
 
@@ -122,10 +123,18 @@ class ImportRequest:
     scope_id: str
     file_name: str
     content_type: str | None
-    content: bytes
+    # 接收阶段已确认并持久化的类型；优先于扩展名/MIME 推断。
+    media_type: MediaType | None = None
+    content: bytes = b""
     # ``True`` 只完成资产落盘/登记，把关键帧与记忆构建留给显式流水线阶段。
     # 默认 False，保证既有单张导入与 ``POST /imports`` 的外部行为不变。
     defer_processing: bool = False
+    # 已落盘的原件：上传走 move（原子改名），目录导入走 copy（不破坏用户原文件）。
+    source_path: Path | None = None
+    source_move: bool = False
+    # 接收阶段已确定的稳定 ID 与哈希；缺失时才在 stage() 里计算。
+    asset_id: str | None = None
+    content_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +174,8 @@ class ImportResult:
     # 本次导入的音频有没有真的走过 ffprobe（S8c T521）。与 ``video_probed`` 同一条
     # 理由：「音频收下了但什么都没发生」必须在响应上看得见。音频以外一律 False。
     audio_probed: bool = False
+    # 视频场景抽取失败时不是只写日志：执行器据此把作业标成需要关注/重试。
+    video_scene_error: str = ""
     # 应用层内部的细分耗时；旧响应不读取它，新流水线端点会汇总后显式返回。
     timings: dict[str, float] = field(default_factory=dict)
     timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -233,6 +244,14 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class ImportAssets:
     def __init__(
         self,
@@ -268,6 +287,10 @@ class ImportAssets:
         # 关键帧挂到场景事件上的那条路（S8b T513）。**没有它就不能强制归属**：
         # 关键帧的观察属于它那一秒的源片场景，按 6 小时窗去折进某张照片的事件是错的。
         event_attacher: Callable[[str, Observation], None] | None = None,
+        # 重放幂等：某条观察已经属于哪个事件；命中就直接复用，不再跑候选打分。
+        observation_event: Callable[[str], str | None] | None = None,
+        # 重放幂等：该资产已经登记过的人脸实例；非空就整段跳过登记。
+        face_manifest: Callable[[str], Sequence[object]] | None = None,
         # 抽帧链（S8b T511–T513）。入参是源片 id，返回**建起来的场景数**。
         # 不传就退化成「只入库、不建场景」——正是 S8a 的行为，测试与不需要视频
         # 场景的调用方都不必构造它。
@@ -285,6 +308,8 @@ class ImportAssets:
         self._audio_metadata = audio_metadata
         self._audio_repository = audio_repository
         self._event_attacher = event_attacher
+        self._observation_event = observation_event
+        self._face_manifest = face_manifest
         self._video_scene_extractor = video_scene_extractor
         self._visual_indexer = visual_indexer
         self._place_indexer = place_indexer
@@ -298,6 +323,7 @@ class ImportAssets:
         self._spaces = spaces
         self._clock = clock
 
+    @import_task
     def execute(self, request: ImportRequest) -> ImportResult:
         """一次完整导入：落库 + 推理 + 写库。**行为与拆分前逐字一致。**
 
@@ -323,11 +349,25 @@ class ImportAssets:
         # 放在去重判断**之前**——去重命中同样是一条「这个 scope 被用到了」的证据。
         self._ensure_space(request.scope_id)
 
-        content_sha256 = hashlib.sha256(request.content).hexdigest()
-        media_type = MediaType.from_upload(request.content_type, request.file_name)
+        source_size = (
+            request.source_path.stat().st_size
+            if request.source_path is not None
+            else len(request.content)
+        )
+        content_sha256 = request.content_sha256 or (
+            _sha256_file(request.source_path)
+            if request.source_path is not None
+            else hashlib.sha256(request.content).hexdigest()
+        )
+        media_type = request.media_type or MediaType.from_upload(
+            request.content_type, request.file_name
+        )
 
         existing = self._assets.find_by_hash(request.scope_id, content_sha256)
         if existing is not None:
+            # 上传件已在接收阶段落盘；去重命中后不再需要那份原件。
+            if request.source_move and request.source_path is not None:
+                request.source_path.unlink(missing_ok=True)
             return ImportResult(
                 asset_id=existing.id,
                 observation_id=None,
@@ -339,8 +379,17 @@ class ImportAssets:
                 placed=False if request.defer_processing else self._index_place(existing),
             )
 
-        asset_id = _new_id("asset")
-        stored_path = self._storage.store(asset_id, request.file_name, request.content)
+        asset_id = request.asset_id or _new_id("asset")
+        if request.source_path is None:
+            stored_path = self._storage.store(asset_id, request.file_name, request.content)
+        elif request.source_move:
+            stored_path = self._storage.move_from_path(
+                asset_id, request.file_name, request.source_path
+            )
+        else:
+            stored_path = self._storage.copy_from_path(
+                asset_id, request.file_name, request.source_path
+            )
 
         captured_at, gps, device = (None, None, None)
         if media_type is MediaType.IMAGE:
@@ -383,10 +432,15 @@ class ImportAssets:
         # content-type：上传方常常给不出具体类型（curl / 整册导入是
         # ``application/octet-stream``），而音频不转码、交出去的就是原文件，
         # 类型错了浏览器没有第二次机会。S8a 的验收在视频 ``?original=1`` 上见过同一现象。
+        declared_mime = request.content_type
+        if not declared_mime and request.file_name:
+            import mimetypes
+
+            declared_mime = mimetypes.guess_type(request.file_name)[0]
         mime_type = (
-            audio_mime_type(request.file_name, request.content_type)
+            audio_mime_type(request.file_name, declared_mime)
             if media_type is MediaType.AUDIO
-            else request.content_type
+            else declared_mime
         )
 
         source = "exif" if media_type is MediaType.IMAGE else "unknown"
@@ -404,6 +458,8 @@ class ImportAssets:
         if self._resolve_capture_time is not None:
             captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
         now = self._clock()
+        # 拍摄时间读不出来就保持 None，不能拿导入时刻冒充。main 的
+        # ``ResolveCaptureTime`` 已负责保留原始偏移/未知时区语义，这里不再二次归一化。
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -411,7 +467,7 @@ class ImportAssets:
             media_type=media_type,
             path=str(stored_path),
             mime_type=mime_type,
-            size_bytes=len(request.content),
+            size_bytes=source_size,
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
             captured_at=captured_at,
@@ -436,6 +492,7 @@ class ImportAssets:
             video_started=video_started,
         )
 
+    @import_task
     def finish(self, staged: StagedImport, prepared: PreparedImage) -> ImportResult:
         """后半段（**串行、且必须按整册的扫描顺序**）：图片流水线 → 抽帧 → 汇总。
 
@@ -492,6 +549,12 @@ class ImportAssets:
             text_rows=processed.text_rows,
             video_probed=staged.video_probe is not None and staged.video_probe.metadata is not None,
             video_scenes=video_scenes.scene_count,
+            video_scene_error=(
+                video_scenes.reason
+                if staged.media_type is MediaType.VIDEO
+                and video_scenes.reason not in {"", "not_a_video"}
+                else ""
+            ),
             audio_probed=staged.audio_probe is not None and staged.audio_probe.metadata is not None,
             timings={
                 "source_memory_prepare": round(prepared.inference_seconds, 3),
@@ -505,6 +568,7 @@ class ImportAssets:
             },
         )
 
+    @import_task
     def resume(self, asset: Asset) -> StagedImport:
         """把已由“仅导入资产”阶段登记的源资产恢复成可处理账本。
 
@@ -523,6 +587,7 @@ class ImportAssets:
             video_started=self._clock() if video_probe is not None else None,
         )
 
+    @import_task
     def prepare_image(self, asset: Asset) -> PreparedImage:
         """跑完这张图需要的**全部模型推理**，**不碰任何仓储**。
 
@@ -560,17 +625,26 @@ class ImportAssets:
         placed = self._index_place(asset)
         indexed = self._index_visual(asset, prepared)
 
-        observation = Observation(
-            id=_new_id("obs"),
-            scope_id=asset.scope_id,
-            asset_id=asset.id,
-            source_type="import",
-            captured_at=asset.captured_at,
-            confidence=0.0,
-            created_at=now,
-            updated_at=now,
+        # **重放必须复用观察 ID。** 观察一旦插入，后段任一步失败重跑时若再生成
+        # ``obs_*``，文本向量、词项、实体关联都会跟着多一套；事件归属也会再建一个。
+        reused = sorted(
+            self._observations.list_by_asset(asset.id),
+            key=lambda item: (item.created_at, item.id),
         )
-        self._observations.add(observation)
+        if reused:
+            observation = reused[0]
+        else:
+            observation = Observation(
+                id=_new_id("obs"),
+                scope_id=asset.scope_id,
+                asset_id=asset.id,
+                source_type="import",
+                captured_at=asset.captured_at,
+                confidence=0.0,
+                created_at=now,
+                updated_at=now,
+            )
+            self._observations.add(observation)
 
         observation = self._observe(asset, observation, prepared) or observation
         faces = self._enroll_faces(asset, observation, prepared)
@@ -759,6 +833,9 @@ class ImportAssets:
         """
         if self._face_enroller is None or prepared.faces is None:
             return 0
+        if self._face_manifest is not None and self._face_manifest(asset.id):
+            # 已登记过：重放不重复建实例与提及。
+            return 0
         return self._face_enroller.commit(asset.id, observation.id, prepared.faces)
 
     def _assign_event(self, observation: Observation, forced_event_id: str | None) -> str | None:
@@ -771,6 +848,10 @@ class ImportAssets:
                 raise RuntimeError("forced_event_id 需要 event_attacher 协作者")
             self._event_attacher(forced_event_id, observation)
             return forced_event_id
+        if self._observation_event is not None:
+            existing = self._observation_event(observation.id)
+            if existing is not None:
+                return existing
         if self._event_assigner is None:
             return None
         return self._event_assigner(observation)

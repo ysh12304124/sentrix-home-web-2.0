@@ -35,6 +35,7 @@ from sentrix.domain.identity.models import (
     EntityRecord,
     PersonMomentRecord,
     RelationshipRecord,
+    entity_display_name,
 )
 from sentrix.domain.identity.moments import SENSITIVE_TERMS
 
@@ -187,7 +188,9 @@ def compile_portrait_evidence(
     return {
         "person": {
             "id": person.id,
-            "display_name": person.canonical_name or "未命名成员",
+            # 内部簇名不能进提示词：模型会把它原样写进画像，最后又回到用户界面。
+            # 改名后的 pending 人物有真名可用，走统一判据。
+            "display_name": entity_display_name(person),
             "confirmed_name": confirmed_name,
             "confirmed_role": confirmed_role,
             "identity_state": person.identity_state or "clustered",

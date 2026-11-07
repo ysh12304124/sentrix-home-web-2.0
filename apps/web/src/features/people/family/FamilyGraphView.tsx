@@ -31,9 +31,10 @@ import {
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { describeReviewError } from "../reviewErrors";
 import {
-  dedupeRelationships,
+  confirmedRelationships,
   fitTransform,
   graphLayout,
+  isConfirmedRelationship,
   layoutBounds,
   nearestNodeId,
   NODE_RADIUS,
@@ -107,9 +108,24 @@ export function FamilyGraphView({
   const onSelectRef = useRef(onSelect);
   const onRelateRef = useRef(onRelate);
 
+  // 只画用户确认过的边；模型推断与角色补边不进图谱。
+  const confirmedRows = useMemo(
+    () => relationships.filter(isConfirmedRelationship),
+    [relationships],
+  );
+  const edges = useMemo(() => confirmedRelationships(relationships), [relationships]);
+  // 没有已确认关系的人也不进图——图谱是「已确认的家庭结构」，不是人物总表。
+  const graphPeople = useMemo(() => {
+    const ids = new Set<string>();
+    for (const edge of edges) {
+      ids.add(edge.subject_entity_id);
+      ids.add(edge.object_entity_id);
+    }
+    return people.filter((person) => ids.has(person.id));
+  }, [edges, people]);
   const layout = useMemo(
-    () => graphLayout(people, relationships, size.width, size.height),
-    [people, relationships, size],
+    () => graphLayout(graphPeople, confirmedRows, size.width, size.height),
+    [confirmedRows, graphPeople, size],
   );
   const layoutRef = useRef(layout);
   const sizeRef = useRef(size);
@@ -125,23 +141,15 @@ export function FamilyGraphView({
     onRelateRef.current = onRelate;
   });
 
-  const edges = useMemo(
-    () =>
-      dedupeRelationships(relationships).filter(
-        (edge) => layout.has(edge.subject_entity_id) && layout.has(edge.object_entity_id),
-      ),
-    [relationships, layout],
-  );
-
   const hits = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (needle === "") return null;
     return new Set(
-      people
+      graphPeople
         .filter((person) => personDisplayName(person).toLowerCase().includes(needle))
         .map((person) => person.id),
     );
-  }, [people, query]);
+  }, [graphPeople, query]);
 
   const applyTransform = useCallback(() => {
     const { k, x, y } = transformRef.current;
@@ -305,9 +313,13 @@ export function FamilyGraphView({
       <EmptyState
         symbol="◎"
         title="还没有可以成图的人"
-        description="跑一次家庭图谱推断后，人物与关系会画在这里；待归类的人也会保留一个位置。"
+        description="确认人物并建立关系后，家庭关系会画在这里。"
       />
     );
+  }
+
+  if (confirmedRows.length === 0) {
+    return <p className="empty graph-empty">当前无已确认关系</p>;
   }
 
   return (
@@ -387,7 +399,7 @@ export function FamilyGraphView({
               <PreviewLine preview={relatePreview} layout={layout} />
             )}
 
-            {people.map((person) => {
+            {graphPeople.map((person) => {
               const point = layout.get(person.id);
               if (point === undefined) return null;
               const membership = membershipOf(person);
@@ -427,7 +439,7 @@ export function FamilyGraphView({
         <span className="legend-item friend">朋友</span>
         <span className="legend-item unknown">待归类（虚线圈，单独一行）</span>
         <span className="legend-count">
-          {people.length} 人 · {edges.length} 条关系
+          {graphPeople.length} 人 · {edges.length} 条已确认关系
         </span>
       </div>
 

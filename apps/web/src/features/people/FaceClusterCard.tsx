@@ -5,7 +5,7 @@ import type {
   PersonPayload,
 } from "../../shared/api/client";
 import { relationChoices } from "./family/membership";
-import { clusterDisplayName } from "./reviewErrors";
+import { clusterDisplayName, publicPersonName } from "./reviewErrors";
 
 /** 1.0 确认框里的那组家庭角色（``app.js:956`` 的 ``<select>``），原样保留。 */
 const FAMILY_ROLES = ["母亲", "父亲", "孩子", "祖父母", "其他家庭成员"];
@@ -109,7 +109,7 @@ export function FaceClusterCard({
               disabled={cluster.entity_id === null}
               onChange={() => onToggleBatch(cluster.id)}
               aria-label={`选中 ${label} 用于批量确认`}
-              title={cluster.entity_id === null ? "这个簇还没有可确认的人物实体" : undefined}
+              title={cluster.entity_id === null ? "这位还没有可确认的身份" : undefined}
             />
             批量确认
           </label>
@@ -162,7 +162,7 @@ export function FaceClusterCard({
 
       {splitFace === null ? null : (
         <div className="cluster-split">
-          <span>已在这簇里点中 1 张脸</span>
+          <span>已选中 1 张脸</span>
           <button
             type="button"
             disabled={busy}
@@ -171,7 +171,7 @@ export function FaceClusterCard({
               setSplitFace(null);
             }}
           >
-            拆分为新簇
+            拆分为新人物
           </button>
           <button type="button" onClick={() => setSplitFace(null)}>
             取消
@@ -215,7 +215,7 @@ export function FaceClusterCard({
               <option value="">暂不建立关系</option>
               {people.map((person) => (
                 <option key={person.id} value={person.id}>
-                  {person.canonical_name}
+                  {publicPersonName(person.canonical_name)}
                 </option>
               ))}
             </select>

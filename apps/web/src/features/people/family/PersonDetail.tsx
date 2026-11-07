@@ -9,24 +9,23 @@
  * 由页面传进来，避免在这里再拉一遍接口）。
  */
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import {
   deleteFamilyRelationship,
-  deliveredPhotoUrl,
+  deliveredPhotoThumbUrl,
   getPerson,
+  getPersonPortrait,
   putFamilyRelationship,
   renamePerson,
   setEntityProperty,
   setFamilyMembership,
-  setFamilyPortrait,
   type FamilyMembershipValue,
   type FamilyPerson,
   type FamilyRelationship,
 } from "../../../shared/api/client";
 import { describeReviewError } from "../reviewErrors";
-import { PersonEvidence } from "../PersonEvidence";
-import { dedupeRelationships } from "./graphLayout";
+import { confirmedRelationships } from "./graphLayout";
 import {
   membershipLabel,
   membershipOf,
@@ -58,19 +57,42 @@ export function PersonDetail({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState(person.display_name);
-  const [portrait, setPortrait] = useState(person.portrait?.portrait_text ?? "");
+  const [name, setName] = useState(personDisplayName(person));
+  // 人物画像来自「人物介绍」那套画像表；没有时显示「无」，不回退到家庭侧的手写介绍。
+  const [portraitText, setPortraitText] = useState<string | null>(null);
+  const [aliases, setAliases] = useState<string[]>([]);
   const [predicateIndex, setPredicateIndex] = useState(0);
   const [targetId, setTargetId] = useState(relateTarget ?? "");
   const [aliasesOpen, setAliasesOpen] = useState(false);
   const [aliasesLoading, setAliasesLoading] = useState(false);
   const [aliasText, setAliasText] = useState("");
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
 
   const others = people.filter((item) => item.id !== person.id);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPortraitText(null);
+    setAliases([]);
+    void getPerson(person.id)
+      .then((detail) => {
+        if (!cancelled) setAliases(detail.entity.aliases);
+      })
+      .catch(() => undefined);
+    void getPersonPortrait(person.id)
+      .then((portrait) => {
+        if (!cancelled) setPortraitText((portrait?.portrait_text ?? "").trim());
+      })
+      .catch(() => {
+        if (!cancelled) setPortraitText("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [person.id]);
+
   // 一对人只留一条边（与服务端给的正反两行、多种关系归并成同一形状），再只挑碰这个人的。
-  const edges = dedupeRelationships(relationships)
+  // 只保留用户确认过的边；模型推断的关系不在详情里冒充已确认事实。
+  const edges = confirmedRelationships(relationships)
     .filter(
       (edge) => edge.subject_entity_id === person.id || edge.object_entity_id === person.id,
     )
@@ -101,7 +123,10 @@ export function PersonDetail({
 
   function submitRename(event: FormEvent) {
     event.preventDefault();
-    void run(() => renamePerson(person.id, name));
+    void run(async () => {
+      const result = await renamePerson(person.id, name);
+      setAliases(result.aliases);
+    });
   }
 
   /**
@@ -127,17 +152,13 @@ export function PersonDetail({
 
   function submitAliases(event: FormEvent) {
     event.preventDefault();
-    const aliases = splitAliases(aliasText);
+    const next = splitAliases(aliasText);
     void run(async () => {
       // `PATCH /people/{id}/name` 只收 name；别名是通用实体属性，走属性写入。
-      await setEntityProperty(person.id, "aliases", aliases);
+      await setEntityProperty(person.id, "aliases", next);
+      setAliases(next);
       setAliasesOpen(false);
     });
-  }
-
-  function submitPortrait(event: FormEvent) {
-    event.preventDefault();
-    void run(() => setFamilyPortrait(person.id, person.scope_id, portrait));
   }
 
   function submitRelation(event: FormEvent) {
@@ -217,6 +238,10 @@ export function PersonDetail({
           </button>
         )}
 
+        {aliases.length === 0 ? null : (
+          <p className="detail-aliases">别名：{aliases.join("、")}</p>
+        )}
+
         <label className="detail-field">
           家庭归属
           <select
@@ -234,34 +259,18 @@ export function PersonDetail({
             ))}
           </select>
         </label>
-        <form className="detail-form" onSubmit={submitPortrait}>
-          <label>
-            家庭画像
-            <textarea
-              rows={3}
-              value={portrait}
-              placeholder="这个人在家庭里的角色、习惯、常在一起的场景…"
-              onChange={(event) => setPortrait(event.target.value)}
-            />
-          </label>
-          {/* 后端对空画像文本是硬 400（`routes/family.py` 的 `_required`）。与其让用户
-              撞上一条「请改一下填写的内容再试」——他想做的就是清空，没有东西可改——
-              不如在这里挡住，并把原因写在他看得见的地方。**清空画像后端目前不支持。** */}
-          <button
-            type="submit"
-            className="button ghost small"
-            disabled={busy || portrait.trim() === ""}
-            title={portrait.trim() === "" ? "画像不能为空" : undefined}
-          >
-            保存画像
-          </button>
-        </form>
+        <div className="detail-field">
+          人物画像
+          <p className="detail-portrait">
+            {portraitText === null ? "正在读取…" : portraitText === "" ? "无" : portraitText}
+          </p>
+        </div>
       </section>
 
       <section className="detail-section">
         <h3>关系</h3>
         {edges.length === 0 ? (
-          <p className="detail-empty">还没有已记录的关系。</p>
+          <p className="detail-empty">当前无已确认关系。</p>
         ) : (
           <ul className="detail-relations">
             {edges.map((edge) => (
@@ -325,37 +334,19 @@ export function PersonDetail({
       </section>
 
       <section className="detail-section">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <h3>证据</h3>
-          <button
-            type="button"
-            className="button ghost small"
-            onClick={() => setEvidenceOpen(true)}
-          >
-            人脸样本与事件
-          </button>
-        </div>
+        <h3>照片</h3>
         {person.representative_media.length === 0 ? (
           <p className="detail-empty">还没有代表照片。</p>
         ) : (
           <ul className="detail-media">
             {person.representative_media.map((media) => (
               <li key={media.id}>
-                <img src={deliveredPhotoUrl(media.id, media.file_name)} alt={media.file_name} loading="lazy" />
-                <small>{media.file_name}</small>
+                <img src={deliveredPhotoThumbUrl(media.id)} alt="人物照片" loading="lazy" />
               </li>
             ))}
           </ul>
         )}
       </section>
-
-      {evidenceOpen ? (
-        <PersonEvidence
-          personId={person.id}
-          personName={personDisplayName(person)}
-          onClose={() => setEvidenceOpen(false)}
-        />
-      ) : null}
     </aside>
   );
 }

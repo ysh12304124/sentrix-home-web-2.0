@@ -56,6 +56,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from photobench.application.deploy.service import SentrixModelSwitch
+from photobench.domain.deploy.ports import (
+    BENCHMARK_GATEWAY_TOKEN_ENV,
+    BENCHMARK_GATEWAY_UPSTREAM_ENV,
+    BENCHMARK_GATEWAY_URL_ENV,
+)
 from photobench.application.run_execution.gpu_sampler import PHASE_LABELS, GpuSampler
 from photobench.application.run_execution.import_progress import import_with_progress
 from photobench.application.run_execution.judge import InlineImages, JudgeRunner
@@ -1019,9 +1024,9 @@ class RunExecution:
             if not isinstance(effective, dict):
                 raise RuntimeError("Sentrix did not report effective runtime configuration")
             mismatches = []
-            if str(effective.get("vlm_base_url", "")).rstrip("/") != str(expected["model_base_url"]).rstrip(
-                "/"
-            ):
+            observed_vlm = str(effective.get("vlm_base_url", ""))
+            expected_vlm = str(expected["model_base_url"])
+            if not _same_model_endpoint(observed_vlm, expected_vlm):
                 mismatches.append("vlm_base_url")
             embedding = expected.get("embedding") or {}
             mode = embedding.get("mode")
@@ -2900,6 +2905,21 @@ def _parse_sse_line(line: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return chunk if isinstance(chunk, dict) else None
+
+
+def _same_model_endpoint(observed: str, expected: str) -> bool:
+    """产品端点的两种合法形态：直连本轮模型，或指向控制入口而入口上游就是本轮模型。
+
+    只对同机共享模型成立；评测换到远端/其他模型时，入口变量不参与，仍按原值逐字比较。
+    """
+    if observed.rstrip("/") == expected.rstrip("/"):
+        return True
+    gateway = os.getenv(BENCHMARK_GATEWAY_URL_ENV, "").strip().rstrip("/")
+    upstream = os.getenv(BENCHMARK_GATEWAY_UPSTREAM_ENV, "").strip().rstrip("/")
+    token = os.getenv(BENCHMARK_GATEWAY_TOKEN_ENV, "").strip()
+    if not (gateway and upstream and token):
+        return False
+    return observed.rstrip("/") == gateway and expected.rstrip("/") == upstream
 
 
 __all__ = [

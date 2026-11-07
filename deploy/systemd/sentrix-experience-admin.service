@@ -1,0 +1,23 @@
+[Unit]
+Description=Sentrix experience independent admin console
+After=network-online.target sentrix-experience-control.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentrix-control
+Group=sentrix-control
+WorkingDirectory=/opt/sentrix/current
+EnvironmentFile=/etc/sentrix/admin.env
+ExecStart=/opt/sentrix/current/.venv/bin/python -m uvicorn --factory sentrix.control.main:create_app --host 0.0.0.0 --port 8220 --app-dir /opt/sentrix/current/apps/api/src
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=300
+StartLimitBurst=30
+ReadWritePaths=/srv/sentrix/control
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

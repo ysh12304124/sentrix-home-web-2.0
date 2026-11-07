@@ -1,0 +1,25 @@
+[Unit]
+Description=Sentrix experience user API (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentrix-%i
+Group=sentrix-%i
+WorkingDirectory=/opt/sentrix/current
+EnvironmentFile=/etc/sentrix/user-%i.env
+ExecStart=/opt/sentrix/current/deploy/experience/run-user-api.sh %i
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=5
+# 每名用户只能写自己的数据根；发行目录只读。
+ReadWritePaths=/srv/sentrix/users/%i
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

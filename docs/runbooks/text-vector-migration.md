@@ -1,6 +1,6 @@
 # 文本向量迁移：`memory_vectors` → `text_vectors`
 
-适用版本：含 `0015_text_vectors.sql` 的 2.0。设计决策见
+适用版本：含 `0024_text_vectors.sql` 的 2.0。设计决策见
 [ADR 0003](../adr/0003-text-vectors-separate-table.md)。
 
 所有命令从**仓库根**执行。脚本默认 dry-run，**任何写操作都要显式 `--apply`**；

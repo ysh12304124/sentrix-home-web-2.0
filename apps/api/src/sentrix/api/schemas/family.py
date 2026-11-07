@@ -86,8 +86,8 @@ class FamilyRepresentativeMedia(BaseModel):
 
 
 class FamilyPersonPayload(BaseModel):
-    """``people[]`` 的一项。``display_name`` 的占位是 **「待命名人物」**（1.0 这个端点
-    里的原词，与 ``app.py`` 那处的「待命名成员」不是一个串）。"""
+    """``people[]`` 的一项。``display_name`` 的占位统一为 **「未确认姓名人物」**，
+    任何端点都不把落库的内部 cluster id 带给用户。"""
 
     id: str
     scope_id: str

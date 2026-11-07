@@ -76,8 +76,8 @@ PROPERTY_STATUS_PENDING = "pending"
 REVISION_SOURCE_USER = "user"
 REVISION_SOURCE_USER_RENAME = "user_rename"
 
-# 未命名人物簇对外显示的名字。1.0 ``app.py:1976`` 的字面量，一字不差。
-PENDING_CLUSTER_NAME = "待命名成员"
+# 未命名人物簇对外显示的名字。用户只看到这一句，**不暴露内部 cluster id**。
+PENDING_CLUSTER_NAME = "未确认姓名人物"
 
 # 未命名人物簇**落库**时的内部名与说明（1.0 ``db.py:4639`` 的 ``create_face_cluster``）。
 # 与上面那个不是一回事：``PENDING_CLUSTER_NAME`` 是给用户看的，这两个是存在
@@ -271,6 +271,32 @@ class EntityRecord:
     name_state: str
     created_at: datetime | None
     updated_at: datetime | None
+
+
+# ``rename_person`` 在改名时把这一列转成 ``confirmed``；``status`` 仍是 ``pending``，
+# 因为「改名」不等于「确认这个人是谁」。读侧判断「有没有可展示的名字」必须看它，
+# 只看 ``status`` 会让刚改完名的人物继续显示占位串。
+NAME_STATE_CONFIRMED = "confirmed"
+
+
+def is_pending_cluster_name(value: str | None) -> bool:
+    """落库的内部簇名（``待确认人物簇 · cluster-x``）不是用户可读的名字。"""
+    return (value or "").strip().startswith(PENDING_CLUSTER_NAME_PREFIX)
+
+
+def entity_display_name(entity: EntityRecord) -> str:
+    """用户可见的人物名。
+
+    ``pending`` 实体只有在用户还没命名过时才用占位串。``rename_person`` 只把
+    ``name_state`` 转成 ``confirmed``，不改 ``status``（改名不等于确认），所以判据
+    必须同时看这两列；否则改完名页面上仍是「未确认姓名人物」。
+    """
+    name = (entity.canonical_name or "").strip()
+    if not name or is_pending_cluster_name(name):
+        return PENDING_CLUSTER_NAME
+    if entity.status == ENTITY_STATUS_PENDING and entity.name_state != NAME_STATE_CONFIRMED:
+        return PENDING_CLUSTER_NAME
+    return name
 
 
 @dataclass(frozen=True, slots=True)

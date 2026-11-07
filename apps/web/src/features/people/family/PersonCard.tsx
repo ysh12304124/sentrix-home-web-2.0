@@ -31,7 +31,7 @@ export function PersonCard({ person, selected, onSelect }: Props) {
         <span className={`membership-badge ${membership}`}>{membershipLabel(membership)}</span>
         <small className="person-card-meta">
           出现 {person.appearance_count} 次
-          {person.portrait === null ? "" : " · 有画像"}
+          {person.portrait === null ? "" : " · 有介绍"}
         </small>
       </button>
     </li>

@@ -176,7 +176,7 @@ def test_list_clusters_honours_include_in_people(faces: SqliteFaceRepository, se
 
 
 def test_pending_cluster_is_displayed_as_an_unnamed_member(faces: SqliteFaceRepository, seeded_db: Database):
-    """``pending`` 簇对外只叫「待命名成员」，而且不许带家庭角色。
+    """``pending`` 簇对外只叫「未确认姓名人物」，而且不许带家庭角色。
 
     1.0 在 HTTP 层做的这件事（``app.py:1976``）：库里那一行 ``canonical_name`` 是
     「待确认人物簇 · cluster-3」，直接展示出去用户看到的是内部 id。角色同理——
@@ -189,7 +189,7 @@ def test_pending_cluster_is_displayed_as_an_unnamed_member(faces: SqliteFaceRepo
 
     by_id = {cluster.id: cluster for cluster in faces.list_clusters()}
 
-    assert PENDING_CLUSTER_NAME == "待命名成员"
+    assert PENDING_CLUSTER_NAME == "未确认姓名人物"
     assert by_id["clu_1"].canonical_name == PENDING_CLUSTER_NAME
     assert by_id["clu_1"].family_role is None
     assert by_id["clu_2"].canonical_name == "妈妈"

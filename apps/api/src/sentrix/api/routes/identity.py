@@ -90,13 +90,13 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_PENDING,
     ENTITY_TYPE_PERSON,
     ENTITY_TYPE_PLACE,
-    PENDING_CLUSTER_NAME,
     PENDING_SUMMARY_DISPLAY,
     EntityDecoration,
     EntityPropertyRecord,
     EntityRecord,
     FaceClusterRecord,
     FaceInstanceRecord,
+    entity_display_name,
 )
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 
@@ -212,7 +212,9 @@ def _person_payload(container: Container, entity: EntityRecord) -> PersonPayload
     return PersonPayload(
         id=entity.id,
         scope_id=entity.scope_id,
-        canonical_name=PENDING_CLUSTER_NAME if pending else entity.canonical_name,
+        # 改名只把 name_state 转 confirmed，不改 status；只看 status 会把刚改完名的
+        # 人物继续显示成占位串。
+        canonical_name=entity_display_name(entity),
         status=entity.status,
         family_role=None if pending else entity.family_role,
         summary=PENDING_SUMMARY_DISPLAY if pending else entity.summary,
@@ -392,7 +394,8 @@ def _entity_summary(
     single_sample: bool | None = None
     private: bool | None = None
     if entity.entity_type == ENTITY_TYPE_PERSON and entity.status == ENTITY_STATUS_PENDING:
-        canonical_name = PENDING_CLUSTER_NAME
+        # 改名后的 pending 人物已经有可展示名（name_state=confirmed），不能再换成占位串。
+        canonical_name = entity_display_name(entity)
         family_role = None
         summary = PENDING_SUMMARY_DISPLAY
     if entity.entity_type == ENTITY_TYPE_PERSON:
@@ -502,7 +505,8 @@ def _entity_detail_payload(detail: EntityDetail, container: Container) -> Entity
         # 而同仓库的 ``/api/people/{id}/profile``（``app.py:1545-1549``）与
         # ``/evidence``（``:1561-1565``）两处都改了。**三处不一致是 1.0 的原样**，
         # 照搬——顺手「统一」会让这个端点的 ``summary`` 从落库原文变成展示文案。
-        canonical_name = PENDING_CLUSTER_NAME
+        # 名字同样走统一判据：改名过的人物不该退回占位串。
+        canonical_name = entity_display_name(entity)
     return EntityDetailResponse(
         entity=EntityDetailEntity(
             id=entity.id,

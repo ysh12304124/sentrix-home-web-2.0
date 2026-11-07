@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     api_port: int = 8191
     api_host: str = "0.0.0.0"
 
+    # 体验实例由控制面独占转发；内部令牌未设置时保持旧 8191/PhotoBench 语义不变。
+    require_internal_token: bool = False
+    internal_token: str = ""
+    experience_mode: bool = False
+
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
     # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
@@ -174,6 +179,19 @@ class Settings(BaseSettings):
     # （``app.py:366`` 的 ``effective_workers``，11.78 秒/张；2.0 串行时 49.1 秒/张）。
     # **提交永远串行**，与这个数无关——事件的归属顺序是语义的一部分。
     album_workers: int = 4
+
+    # 体验入口逐文件导入的在飞窗口：多个作业的 prepare_image 同时请求主模型，
+    # 单用户也能吃满 8100 的多个槽位。提交仍按认领顺序串行（事件归属是语义的一部分）。
+    # 取 4 是因为生产 8100 是 --parallel 4；调小等于主动让出槽位，调大会在网关排队。
+    import_workers: int = Field(default=4, ge=1, le=16)
+
+    # 体验入口的持久上传（任务 4/5）。配额按用户原件计，派生预览与向量另计。
+    upload_quota_bytes: int = 20 * 1024**3
+    upload_photo_max_bytes: int = 250 * 1024**2
+    upload_video_max_bytes: int = 2 * 1024**3
+    upload_min_free_bytes: int = 100 * 1024**3
+    upload_max_inflight: int = 2
+    upload_cleanup_grace_s: int = 3600
 
     def model_post_init(self, _context: Any, /) -> None:  # noqa: D105
         self.data_dir = self.data_dir.expanduser().resolve()

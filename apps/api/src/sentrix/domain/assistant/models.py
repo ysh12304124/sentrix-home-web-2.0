@@ -21,6 +21,10 @@ class ChatRole(StrEnum):
     TOOL = "tool"
 
 
+class TurnIdempotencyConflict(RuntimeError):
+    """同一个幂等键被用于不同的正文。"""
+
+
 class TurnStatus(StrEnum):
     """回合的状态。
 
@@ -261,6 +265,17 @@ class TurnRecord:
     # ``agent2_trace`` / ``debug_trace`` 三处投影。键名不在这里定死——这一格是
     # 「助手知道的一切」的载体，投影是评测侧的事。
     trace: Mapping[str, Any] = field(default_factory=dict)
+    # 同回合恢复（任务 6）。``execution_state`` 表达 queued/recovering/waiting_dependency/
+    # retry_scheduled，业务终态仍只看 ``status``。
+    idempotency_key: str = ""
+    execution_state: str = ""
+    attempt_no: int = 0
+    failure_count: int = 0
+    lease_expires_at: datetime | None = None
+    fence: int = 0
+    waiting_reason: str = ""
+    next_retry_at: datetime | None = None
+    cancel_requested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
