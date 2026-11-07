@@ -27,7 +27,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from photobench.domain.runs.analysis import judge_score_for_summary
+from photobench.domain.evaluation.contract import evaluation_summary
+from photobench.domain.runs.analysis import judge_bucket_for_summary
 
 #: 判关键帧的字面量，与 ``keyframe_analysis`` 同一个（1.0 ``:6014``）。
 KEYFRAME_KIND = "video_keyframe"
@@ -182,7 +183,7 @@ def memory_effectiveness(
     answer_effective = sum(1 for item in items if str(item.get("agent_status") or "").lower() == "complete")
     judge_counts = {"2": 0, "1": 0, "0": 0, "unjudged": 0}
     for item in items:
-        score = judge_score_for_summary(item.get("judge"))
+        score = judge_bucket_for_summary(item.get("judge"))
         if score in {0, 1, 2}:
             judge_counts[str(score)] += 1
         else:
@@ -302,12 +303,12 @@ def memory_effectiveness(
             eligible += 1
             if hit:
                 hit_items += 1
-            score = judge_score_for_summary(item.get("judge"))
-            if score not in {0, 1, 2}:
+            score = judge_bucket_for_summary(item.get("judge"))
+            if score is None:
                 matrix["unjudged"] += 1
                 continue
             prefix = "hit" if hit else "miss"
-            suffix = {2: "correct", 1: "partial", 0: "incorrect"}[score]
+            suffix = "correct" if score == 2 else "incorrect" if score == 0 else "partial"
             matrix[f"{prefix}_{suffix}"] += 1
         return {
             "eligible": eligible,
@@ -445,7 +446,7 @@ def memory_effectiveness(
         },
     ]
 
-    wrong_ids = {id(item) for item in items if judge_score_for_summary(item.get("judge")) == 0}
+    wrong_ids = {id(item) for item in items if judge_bucket_for_summary(item.get("judge")) == 0}
     wrong_total = len(wrong_ids)
     memory_miss_wrong = 0
     memory_hit_wrong = 0
@@ -602,7 +603,7 @@ def memory_effectiveness(
         ineffective = 0
         unjudged = 0
         for item in candidates:
-            score = judge_score_for_summary(item.get("judge"))
+            score = judge_bucket_for_summary(item.get("judge"))
             if score in {1, 2}:
                 effective += 1
             elif score == 0:
@@ -641,7 +642,7 @@ def memory_effectiveness(
         ineffective = 0
         unjudged = 0
         for item in candidates:
-            score = judge_score_for_summary(item.get("judge"))
+            score = judge_bucket_for_summary(item.get("judge"))
             if score in {1, 2}:
                 effective += 1
             elif score == 0:
@@ -711,6 +712,11 @@ def memory_effectiveness(
             "requirement_status_counts": requirement_counts,
             "answer_status_complete": answer_effective,
             "answer_correctness": {
+                **(
+                    {"evaluation_summary": evaluation_summary(items)}
+                    if any(item.get("evaluation") for item in items)
+                    else {}
+                ),
                 "correct": judge_counts["2"],
                 "partial": judge_counts["1"],
                 "incorrect": judge_counts["0"],

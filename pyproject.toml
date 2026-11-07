@@ -13,6 +13,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # 判分口径。**把这条豁免钉在一个文件上，而不是全局**。
 "apps/photobench/src/photobench/domain/runs/judge.py" = ["E501"]
 
+# Pinned upstream evaluator: retain algorithm bodies; prompts are versioned text.
+"apps/photobench/src/photobench/domain/evaluation/atm/*.py" = ["SIM", "F841"]
+"apps/photobench/src/photobench/domain/evaluation/prompts.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 # photobench 是**另一个发行包**（apps/photobench），不是 sentrix 的子包：设计文档
 # §145 定死「PhotoBench 不得读取主产品 Python 内部模块」。两个都是本仓库的一等包。
@@ -34,7 +38,7 @@ files = ["apps/api/src/sentrix", "apps/photobench/src", "scripts"]
 # 第三方包缺 stub / py.typed 是环境事实，不是本仓库代码的问题：集中在配置里表达，
 # 而不是在每个 import 上散落 # type: ignore——那会把「这里真的有问题」也一起静音。
 [[tool.mypy.overrides]]
-module = ["pillow_heif", "yaml", "cn_clip", "cn_clip.*"]
+module = ["pillow_heif", "yaml", "cn_clip", "cn_clip.*", "Katna", "Katna.*"]
 ignore_missing_imports = true
 
 # 地点解析的两个第三方包都没有 py.typed，也没有可用的独立 stub（scipy 有 scipy-stubs，

@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes
@@ -160,7 +160,10 @@ def test_a_keyframe_is_an_image_asset_whose_observation_lands_in_its_scene_event
         assert frame_asset is not None
         assert frame_asset.media_type is MediaType.IMAGE
         # 拍摄时间继承源片并往前挪 source_timestamp_sec（1.0 processor.py:186）。
-        assert frame_asset.captured_at == source.captured_at + timedelta(seconds=frame.source_timestamp_sec)
+        # 源片没有拍摄时间时，关键帧同样未知，不继承导入时刻。
+        assert source.captured_at is None
+        assert frame_asset.captured_at is None
+        assert frame_asset.capture_time == source.capture_time
         observation_ids = harness.events.observation_ids(scene.id)
         assert len(observation_ids) == 1
         attached = harness.observations.get(observation_ids[0])

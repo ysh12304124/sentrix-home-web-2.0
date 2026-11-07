@@ -347,9 +347,18 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `TelemetryProvider` | `:88` | `gpu_stats/process_memory/kv_cache/system_memory` |
 | `SentrixProcess` | `domain/deploy/ports.py:55` | `running_endpoint/restart` |
 | `RunStore` | `domain/results/ports.py:26` | 运行索引读写 |
-| `RunResultWriter` | `:65` | `run.json/results.jsonl/gpu_samples.jsonl` 写面 |
+| `RunResultWriter` | `domain/results/ports.py` | `write_snapshot/write_telemetry_view/reset_gpu_samples/append_gpu_sample/save_reviews`；运行快照、实时遥测视图、采样原始记录及人工评审写面 |
 | `ConfigStore` | `domain/config/ports.py:27` | 评测配置读写 |
 | `SecretEnvStore` | `:51` | 密钥环境变量 |
+
+`RunResultWriter.write_telemetry_view(run_id, view)` 由 application 层的运行执行服务调用，
+由 `infrastructure/results/store.py` 的 `FileResultWriter` 实现。它在运行目录锁内将
+小型视图写入临时文件，再原子替换 `telemetry-live.json`，供读取端展示实时遥测；
+视图包含 `run_id/started_at/telemetry_live/gpu_metrics/llama_server_args`。
+该写入独立于包含全部答题记录的 `write_snapshot`，不改写 `run.json/results.jsonl`；
+完整采样原始记录仍由 `append_gpu_sample` 写入 `gpu_samples.jsonl`。
+非法运行 ID 抛出 `KeyError`，文件系统错误向调用方传播；写入失败时清理临时文件，
+不生成虚假采样或成功状态。
 
 ---
 
@@ -1305,8 +1314,9 @@ relabeled as physically deduplicated totals. See photobench-metrics-contract.md.
 
 `AnalysisBackend`保留现有方法，新增`view(job_id, filters, page, page_size)`与`evidence(job_id, index)`。
 view统一范围统计与分页；evidence读取报告的不可变快照。不存在返回KeyError，状态/快照不可用返回ValueError，API映射沿既有错误契约。
-AI业务提示词与抽样/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
+AI业务提示词与输入预算/引用校验位于domain，HTTP及持久化位于infrastructure，仍由bootstrap装配既有AnalysisBackend。
 新增API/OpenAPI和前端类型同步，详见[错误分析接口](photobench-error-analysis.md)。
+2026-11-02：单次AI分析删除max_cases，范围直接固定全部待分析题；续分析复用有效诊断，汇总全量分组归纳并保存各组输入/输出与引用链。
 
 ### 2026-10-29 阶段计时只读展示
 
@@ -1333,3 +1343,22 @@ AI业务提示词与抽样/引用校验位于domain，HTTP及持久化位于infr
   问答正文仍在各自 `SENTRIX_DATA_DIR`。systemd 管进程生死，应用不拉起或重启模型。
 - 旁路：未接入控制入口的 8100 消费者在面板标为“未纳入调度”；在有编号的实测
   旁路清零前，不能宣称问答优先级生效。
+
+### 2026-11-01 PhotoBench完整证据AI对比
+
+`AnalysisBackend`签名保持；既有`submit`新增`ai_compare`任务kind，响应新增独立AIComparisonReport。
+bootstrap向FileAnalysisBackend注入现有AlbumSource，图片读取复用media_file的精确路径及失败语义，未在用例层构造适配器。
+领域负责配对/提示词/命题引用校验，基础设施负责逐题完整输入冻结、GT图片字节与HTTP/部分结果持久化。
+请求增加model_role=judge|main、comparison_filter=all|score_changed；新UI共用filter/run范围，默认filter/Judge。
+旧compare/ai及selection请求兼容历史入口，原产物和原评分保持。完整输入不裁剪，4xx/5xx/网络错误均不自动重试；
+缺少必需GT图时该题失败并记录，不悄悄切换文本请求。详细边界见[错误分析契约](photobench-error-analysis.md)。
+
+### 2026-11-02 单次AI分析GT图片
+
+AnalysisBackend提交单次AI任务时调用freeze_side(..., side="gt", include_raw=False)，只冻结GT清单/字节与来源，不另复制原始item。AlbumSource读取精确typed引用；ai_worker校验SHA后发送多模态请求。DiagnosisReport.case增图片清单与证据缺口；OpenAPI/前端/导出同步。提示词与证据版本7使原冻结图片解析结果失效；续任务复用原冻结字节。声明图片不可用时单题失败，HTTP图片不支持不降级；真实图片能力需用户手动运行验收。详见错误分析接口文档。
+
+GT图片解析：单次与双次分析共用comparison_inputs，按Judge的typed media_key在指定相册manifest.photos中唯一匹配，再由AlbumSource.media_file校验路径。GT逻辑前缀不作文件目录；重名、缺失及路径穿越不匹配。图片记录dataset_path与SHA。全部逐题无有效诊断时任务失败且不请求汇总；UI直接显示图片、模型请求或输出校验失败原因。双次对比提示词版本3，单次版本7，旧任务须重新生成，不改历史。
+
+AI比较证据响应：AnalysisBackend.evidence支持ai_compare，返回job_id/index/sides；sides的left/right分别包含对比时冻结的index/source/item/qa/gt_images/evidence_locations，引用路径来自原pair-evidence。缺配对404、尚未生成证据400；原rules响应不变。ComparisonEvidenceSnapshot/ComparisonEvidenceSide纳入GET证据端点OpenAPI联合类型。comparison_evidence_ids提供嵌套调用稳定ID，NodeRecord供单次和双次轨迹共用，前端新comparison/ComparisonJourney/ComparisonFindings分别负责类型对齐、双轨迹、引用结论展示。
+
+AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=html)返回ValueError（API沿既有错误映射返回400）。JSON/CSV及其他报告导出不变。AI辅助分析区默认折叠。

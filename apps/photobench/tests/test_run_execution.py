@@ -28,12 +28,25 @@ from fakes_execution import (
 )
 
 from photobench.application.deploy.service import SentrixModelSwitch
-from photobench.application.run_execution.service import RunExecution, RunRequest
+from photobench.application.run_execution.service import RunExecution, RunRequest, freeze_runtime_request
 from photobench.application.run_execution.state import RunState
 from photobench.domain.runs.execution import RunCancelledError
 
 ALBUM = "album-x"
 QA_SET = "qa-1"
+
+
+@pytest.mark.parametrize("product_revision", ["product-release", "", None])
+def test_runtime_freezes_product_revision_separately_from_benchmark_revision(product_revision):
+    connection = {"product_build_revision": product_revision}
+    request = freeze_runtime_request(_request(), connection, "benchmark-release")
+    assert request.runtime_snapshot is not None
+    assert request.runtime_snapshot.build_revision == "benchmark-release"
+    assert request.runtime_snapshot.connection()["required_build_revision"] == (
+        product_revision or "benchmark-release"
+    )
+    connection["product_build_revision"] = "later-product"
+    assert request.runtime_snapshot.connection()["product_build_revision"] == product_revision
 
 
 def _manifest() -> dict[str, Any]:
@@ -524,6 +537,8 @@ def test_a_directory_that_loses_files_is_not_silently_ignored():
     assert phase["status"] == "partial"
     assert phase["failed_count"] == 1
     assert phase["error_details"][0]["sample_id"] == "b.jpg"
+    assert state["run_valid"] is False
+    assert state["summary"]["run_valid"] is False
     assert state["status"] == "completed_with_errors"
 
 
@@ -535,7 +550,7 @@ def test_processing_requires_two_consecutive_zero_pending_snapshots():
     调用次数上可区分。
     """
     client = FakeSentrixClient(
-        asset_polls=[[], []],
+        asset_polls=[_assets(), _assets()],
         turns={"turn_1": [_completed_turn()]},
         import_result={"imported": 2, "events": 1, "summarized": 1, "failures": []},
     )
@@ -566,8 +581,18 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
             "lexical_terms": 8,
             "video_scenes": 3,
             "summarized": 1,
+            "timing_spans": [
+                {
+                    "stage": "media_processing",
+                    "status": "completed",
+                    "started_at": "2026-10-30T00:00:00Z",
+                    "finished_at": "2026-10-30T00:00:06Z",
+                    "elapsed_seconds": 6.0,
+                }
+            ],
             "timings": {
                 "source_memory_prepare": 10.0,
+                "source_memory_prepare_wall": 6.0,
                 "source_memory_commit": 2.0,
                 "video_keyframe_extraction": 4.0,
                 "video_keyframe_memory": 12.0,
@@ -590,6 +615,16 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
     assert photo["pipeline_seconds"] == 0.0
     assert photo["scanned_count"] == 2
     assert photo["timings"]["asset_import"] == 1.2
+    assert pipeline["timing_spans"] == [
+        {
+            "stage": "media_processing",
+            "status": "completed",
+            "started_at": "2026-10-30T00:00:00Z",
+            "finished_at": "2026-10-30T00:00:06Z",
+            "elapsed_seconds": 6.0,
+        }
+    ]
+    assert pipeline["timings"]["source_memory_prepare_wall"] == 6.0
     assert pipeline["keyframe_extraction_seconds"] == 4.0
     assert pipeline["keyframe_memory_seconds"] == 12.0
     assert pipeline["graph_build_seconds"] == 0.4
@@ -732,13 +767,8 @@ class _TickingTime:
         return "20260101-000000"
 
 
-def test_a_scope_with_no_assets_is_partial_not_a_silent_success():
-    """导入之后 scope 里没有资产 → 相位压 partial，而不是「处理完了，0 张」。
-
-    1.0 的判据是「这一轮一张都没收进来」（``:2913``）；2.0 的导入会报 ``deduplicated``，
-    所以换成本条更准的判据（scope 里到底有没有资产）——**它同时覆盖了 1.0 那条的用场**：
-    在空相册上把题全问一遍，产出的是一份全错的 run.json，而那正是这条要拦的事。
-    """
+def test_a_scope_with_no_assets_stops_before_answering():
+    """去重回执也需有实际资产；空相册终止构建并保留处理阶段诊断。"""
     client = FakeSentrixClient(
         asset_polls=[[]],
         turns={"turn_1": [_completed_turn()]},
@@ -747,10 +777,40 @@ def test_a_scope_with_no_assets_is_partial_not_a_silent_success():
     execution, _client, _writer, _lifecycle, _albums = _execution(client=client)
     state = execution.execute(_request())
     phase = state["phases"]["pipeline_processing"]
-    assert phase["status"] == "partial"
+    assert phase["status"] == "failed"
     assert phase["progress"]["total"] == 0
     assert phase["error_details"][0]["error_type"] == "empty_import"
-    assert state["status"] == "completed_with_errors"
+    assert state["status"] == "failed"
+    assert state["failed_phase"] == "pipeline_processing"
+    assert "qa_eval" not in state["phases"]
+    assert "start_turn" not in client.call_names()
+
+
+@pytest.mark.parametrize("explicit_pipeline", [False, True])
+def test_all_media_import_failures_preserve_errors_and_never_call_agent_or_judge(
+    monkeypatch, explicit_pipeline
+):
+    failures = [{"file_name": name, "reason": "No module named 'tzfpy'"} for name in ("a.jpg", "b.jpg")]
+    client = FakeSentrixClient(
+        explicit_pipeline=explicit_pipeline,
+        asset_polls=[[]],
+        import_result={"imported": 0, "deduplicated": 0, "failures": failures},
+    )
+    execution, *_ = _execution(client=client)
+
+    def forbidden(*_, **__):
+        pytest.fail("An empty import must stop before Agent or Judge requests")
+
+    monkeypatch.setattr(execution, "_phase_qa_eval", forbidden)
+    monkeypatch.setattr(execution, "_build_judge", lambda *_: SimpleNamespace(judge_item=forbidden))
+    state = execution.execute(_request())
+    assert state["status"] == "failed"
+    assert state["failed_phase"] == "pipeline_processing"
+    assert state["phases"]["photo_import"]["failed_count"] == 2
+    assert state["phases"]["photo_import"]["error_details"][0]["reason"] == "No module named 'tzfpy'"
+    assert state["phases"]["pipeline_processing"]["error_details"][0]["error_type"] == "empty_import"
+    assert "qa_eval" not in state["phases"]
+    assert "start_turn" not in client.call_names()
 
 
 def test_the_stall_detector_ignores_status_flapping_inside_the_pending_set(
@@ -1102,10 +1162,12 @@ def test_a_failed_item_is_skipped_for_the_judge_and_a_good_one_is_pending():
     assert state["items"][0]["judge"] == {"score": None, "reason": "pending_judge"}
 
 
-def test_run_valid_requires_every_question_to_complete():
+def test_run_valid_requires_judging_as_well_as_execution():
     execution, _client, _writer, _lifecycle, _albums = _execution()
     state = execution.execute(_request())
-    assert state["run_valid"] is True
+    assert state["items"][0]["execution_status"] == "completed"
+    assert state["items"][0]["judge_status"] == "pending"
+    assert state["run_valid"] is state["summary"]["run_valid"] is False
     assert state["qa_count"] == 1
 
 
@@ -1144,6 +1206,14 @@ def test_without_a_manager_the_model_is_never_started_or_stopped():
     """
     execution, _client, _writer, lifecycle, _albums = _execution()
     state = execution.execute(_request())
+    assert "start" not in lifecycle.call_names()
+    assert "stop" not in lifecycle.call_names()
+    assert state["phases"]["model_deploy"]["manager_status"] == "not_applicable"
+
+
+def test_explicit_current_model_reuse_never_calls_manager_start_or_stop():
+    execution, _client, _writer, lifecycle, _albums = _execution()
+    state = execution.execute(_request(model_profile="__current__", manager_url="http://manager:8500"))
     assert "start" not in lifecycle.call_names()
     assert "stop" not in lifecycle.call_names()
     assert state["phases"]["model_deploy"]["manager_status"] == "not_applicable"
@@ -1693,6 +1763,17 @@ def test_frozen_configuration_is_verified_before_import_or_qa(mismatch):
     assert "import_album" not in execution.client.call_names()
 
 
+def test_prepare_commits_pending_state_without_background_work():
+    execution, client, writer, *_ = _execution()
+    state = execution.prepare(_request())
+    assert writer.last_state()["run_id"] == "run_test"
+    assert writer.last_state()["status"] == "pending"
+    assert not state.writer_pending()
+    assert client.calls == []
+    assert execution.prepare(_request()) is state
+    assert len(writer.snapshots) == 1
+
+
 def test_cancel_before_execute_is_retained_and_makes_no_product_calls():
     execution, client, *_ = _execution()
     execution.cancel(source="queued_cancel")
@@ -1977,3 +2058,135 @@ def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(mo
             for worker in execution._background_threads:
                 worker.join(timeout=2)
     assert not any(worker.is_alive() for worker in execution._background_threads)
+
+
+def test_resume_recovers_missing_judges_without_reexecuting_prior_agents(monkeypatch):
+    import copy
+
+    from fakes_execution import FakeHttpClient
+
+    from photobench.application.run_execution.judge import JudgeRunner
+
+    keys = ["zero", "old-failed", "missing-a", "missing-b", "missing-c", "new"]
+    rows = [{"qa_id": key, "answer": "ref"} for key in keys]
+    execution, _, _, _, _ = _execution(albums=FakeAlbums(manifest=_manifest(), qa_rows=rows))
+    runner = JudgeRunner(http=FakeHttpClient([]), judge_url="fake", judge_model="fake")
+    scored = []
+    monkeypatch.setattr(runner, "judge", lambda question, *a, **kw: scored.append(question) or {"score": 2})
+    monkeypatch.setattr(
+        runner, "judge_task_action", lambda *a, **kw: {"actual_action": "answer", "correct": True}
+    )
+    monkeypatch.setattr(execution, "_judge", runner)
+    prior = [
+        {
+            "qa_id": key,
+            "execution_status": "completed",
+            "answer": key,
+            "judge_status": "completed" if key == "zero" else "failed",
+            "runtime_turns": [
+                {
+                    "message": key,
+                    "answer": key,
+                    "expected_action": "answer",
+                    "task_judge": {"actual_action": "answer", "correct": True},
+                    "judge": {"score": 0 if key == "zero" else None},
+                    "evidence_judge": {"reason": "not_applicable", "score": None},
+                }
+            ],
+        }
+        for key in keys[:-1]
+        if key != "old-failed"
+    ]
+    prior.insert(
+        1,
+        {"qa_id": "old-failed", "execution_status": "failed", "judge_status": "skipped", "error": "original"},
+    )
+    before = copy.deepcopy(prior)
+    called = []
+
+    def evaluate(row, *_):
+        called.append(row["qa_id"])
+        return {
+            "qa_id": row["qa_id"],
+            "execution_status": "completed",
+            "answer": "new",
+            "runtime_turns": [{"message": "new", "answer": "new", "expected_action": "answer"}],
+        }
+
+    monkeypatch.setattr(execution, "_evaluate_one", evaluate)
+    state = RunState({"scope_id": "s", "album_id": ALBUM, "qa_snapshot": {"rows": rows}})
+    execution._phase_qa_eval(state, _request(prior_items=prior, repair_missing_judges=True))
+    assert called == ["new"]
+    assert sorted(scored) == ["missing-a", "missing-b", "missing-c", "new"]
+    assert prior == before
+    assert state.data["items"][0] == before[0]
+    assert state.data["items"][1] == before[1]
+    assert len(state.data["items"]) == 6
+    assert state.data["phases"]["qa_eval"]["judge_completed"] == 5
+    assert state.data["run_valid"] is False  # inherited execution failure remains visible
+
+
+def test_resume_keeps_inherited_answers_when_preflight_fails(monkeypatch):
+    import copy
+
+    execution, client, *_ = _execution()
+    prior = [
+        {
+            "qa_id": "q1",
+            "answer": "original",
+            "execution_status": "completed",
+            "judge_status": "failed",
+            "runtime_turns": [{"answer": "original"}],
+        }
+    ]
+    before = copy.deepcopy(prior)
+    monkeypatch.setattr(
+        execution,
+        "_sync_sentrix_endpoint",
+        lambda _: (_ for _ in ()).throw(RuntimeError("configuration mismatch")),
+    )
+    state = execution.execute(
+        _request(
+            mode="reuse",
+            scope_id="original-scope",
+            prior_items=prior,
+            resume_context={
+                "resumed_from": "original-run",
+                "source_input_integrity": {"qa_sha256": "original-r2"},
+            },
+        )
+    )
+    assert state["status"] == "failed"
+    assert state["items"] == before
+    assert state["resume_context"]["resumed_from"] == "original-run"
+    assert state["input_integrity"]["qa_sha256"] == "original-r2"
+    assert not any(name in {"start_turn", "seed_person", "import_directory"} for name in client.call_names())
+
+
+def test_completed_judging_does_not_make_partial_import_valid(monkeypatch):
+    client = FakeSentrixClient(
+        asset_polls=_polls(_assets()),
+        turns={"turn_1": [_completed_turn()]},
+        import_result={
+            "imported": 1,
+            "deduplicated": 0,
+            "events": 1,
+            "summarized": 1,
+            "failures": [{"file_name": "b.jpg", "reason": "pipeline failed"}],
+        },
+    )
+    execution, *_ = _execution(client=client)
+    monkeypatch.setattr(
+        execution, "_evaluate_one", lambda row, *_: {"qa_id": row["qa_id"], "execution_status": "completed"}
+    )
+    monkeypatch.setattr(
+        execution,
+        "_build_judge",
+        lambda *_: SimpleNamespace(
+            judge_item=lambda item, *_: {**item, "judge_status": "completed", "judge": {"score": 2}}
+        ),
+    )
+    state = execution.execute(_request())
+    assert state["items"][0]["judge_status"] == "completed"
+    assert state["status"] == "completed_with_errors"
+    assert state["run_valid"] is state["summary"]["run_valid"] is False

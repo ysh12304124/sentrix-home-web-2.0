@@ -513,6 +513,7 @@ def test_apple_scoped_model_workers_deduplicate_shared_roles(monkeypatch):
 
     monkeypatch.setattr(apple, "_process_identity", lambda pid: pid * 100)
     monkeypatch.setattr(apple, "_resident_group", lambda group: resident_observation(group, 200))
+    monkeypatch.setattr(apple, "_phys_footprint_group", lambda group: resident_observation(group, 200))
     data = provider._augment()
     assert data["product_stack_memory_mib"] == 200
     assert data["memory_observations"]["model"]["pids"] == [1, 2]
@@ -589,7 +590,7 @@ def test_jetson_and_nvidia_memory_remains_available_without_device_source(monkey
     def fail(*a, **k):
         raise OSError("GPU driver unavailable")
 
-    monkeypatch.setattr(nvidia, "_query", fail)
+    monkeypatch.setattr(nvidia, "_gpu_processes", fail)
     monkeypatch.setattr(
         providers,
         "_augment_host_process_memory",
@@ -599,6 +600,7 @@ def test_jetson_and_nvidia_memory_remains_available_without_device_source(monkey
     assert result["status"] == "available"
     assert result["data"]["model_process_system_memory_used_mib"] == 20
     assert result["data"]["process_memory_used_mib"] is None
+    assert result["data"]["memory_observations"]["gpu_process"]["status"] == "unavailable"
 
 
 def test_linux_memory_never_substitutes_memfree_for_memavailable(monkeypatch):

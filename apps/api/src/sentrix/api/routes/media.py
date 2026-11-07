@@ -31,8 +31,6 @@ from sentrix.bootstrap.import_wiring import (
     build_video_scenes,
     refresh_memory_graph,
 )
-from sentrix.domain.media.ports import TranscriptionSegment
-from sentrix.domain.media.scenes import SceneWindow
 from sentrix.domain.media.import_jobs import (
     IdempotencyConflict,
     ImportJob,
@@ -40,6 +38,8 @@ from sentrix.domain.media.import_jobs import (
     UploadQuotaExceeded,
 )
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
+from sentrix.domain.media.ports import TranscriptionSegment
+from sentrix.domain.media.scenes import SceneWindow
 
 router = APIRouter(tags=["media"])
 log = logging.getLogger("sentrix.api.media")

@@ -101,7 +101,7 @@ it("质量环形图覆盖缺分并保持轮级筛选", () => {
 it("v2题型按得分和执行问题下钻，图表同样带上标签条件", () => {
   const filter = vi.fn();
   render(<TagAnalysis report={report()} filter={filter} />);
-  fireEvent.click(screen.getByLabelText("信息获取与感知 未完成（0分）"));
+  fireEvent.click(screen.getByLabelText("信息获取与感知 错误（0分）"));
   expect(filter).toHaveBeenLastCalledWith({
     ability_family: "P",
     ability_type: "",
@@ -189,7 +189,7 @@ it("矩阵同时筛选标签与具体问题，并提供可访问数值表", () =
   );
   expect(screen.getByText("查看矩阵数值")).toBeTruthy();
 });
-it("特殊题无二级能力，轮级与题级得分独立", () => {
+it("旧报告缺失安全二级标签时提示来源，轮级与题级得分独立", () => {
   const filter = vi.fn();
   const r = report();
   r.turn_groups = {
@@ -199,27 +199,27 @@ it("特殊题无二级能力，轮级与题级得分独立", () => {
     ability_type: r.groups.ability_type,
   };
   render(<TagAnalysis report={r} filter={filter} unit="turn" />);
-  fireEvent.click(screen.getByLabelText("信息获取与感知 满分（2分）"));
+  fireEvent.click(screen.getByLabelText("信息获取与感知 正确（2分）"));
   expect(filter).toHaveBeenLastCalledWith(
     expect.objectContaining({ content_unit: "turn", score: "2" }),
   );
   fireEvent.change(screen.getByLabelText("标签分析分组"), {
     target: { value: "ability_type" },
   });
-  expect(screen.getByText(/抗幻觉、抗注入及普通澄清轮无二级能力/)).toBeTruthy();
+  expect(screen.getByText(/此历史报告的安全题二级标签未记录/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "视觉内容理解" })).toBeTruthy();
 });
 
-it("v3安全二级同名展示并按H1/I1筛选", () => {
+it.each(["ability-2026.10.28-v2", "ability-2026.10.29-v3"])("%s安全二级同名展示并按H1/I1筛选", (version) => {
   const filter = vi.fn();
   const r = report({
-    ability_taxonomy_versions: ["ability-2026.10.29-v3"],
+    ability_taxonomy_versions: [version],
     ability_labels: {H: "抗幻觉", H1: "抗幻觉", I: "抗注入攻击", I1: "抗注入攻击"},
     groups: {ability_type: [{value: "H1", total: 130}, {value: "I1", total: 18}]},
   });
   render(<TagAnalysis report={r} filter={filter} unit="qa" />);
   fireEvent.change(screen.getByLabelText("标签分析分组"), {target: {value: "ability_type"}});
-  expect(screen.getByText(/v3二级包含抗幻觉和抗注入攻击/)).toBeTruthy();
+  expect(screen.getByText(/抗幻觉、抗注入攻击的二级名称与一级一致/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", {name: "抗幻觉"}));
   expect(filter).toHaveBeenLastCalledWith(expect.objectContaining({ability_type: "H1"}));
   fireEvent.click(screen.getByRole("button", {name: "抗注入攻击"}));

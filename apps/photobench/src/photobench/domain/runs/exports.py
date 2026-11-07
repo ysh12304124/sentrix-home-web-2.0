@@ -27,7 +27,11 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from photobench.domain.runs.analysis import judge_score_for_summary, retrieval_metric_projection
+from photobench.domain.runs.analysis import (
+    judge_bucket_for_summary,
+    judge_score_for_summary,
+    retrieval_metric_projection,
+)
 
 #: 1.0 ``:6530`` 的 ``retrieval`` 子对象取的字段清单，顺序照抄。
 _RETRIEVAL_FIELDS = (
@@ -110,7 +114,7 @@ def export_traces(
     items_out: list[dict[str, Any]] = []
     for item in state.get("items") or []:
         item_score = judge_score_for_summary(item.get("judge"))
-        if include is not None and item_score not in include:
+        if include is not None and judge_bucket_for_summary(item.get("judge")) not in include:
             continue
         if min_score is not None and (item_score is None or item_score < min_score):
             continue
@@ -166,7 +170,16 @@ def export_traces(
                 "qa_id": item.get("qa_id"),
                 "question": item.get("question"),
                 "planner": planner,
+                "judge": item.get("judge"),
+                "scoring_profile": state.get("selected_scoring_profile"),
+                "scoring_batch": state.get("selected_scoring_batch"),
+                "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
                 "final_trace": final_trace,
+                **(
+                    {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
+                    if item.get("evaluation")
+                    else {}
+                ),
             }
         )
     return items_out
@@ -198,7 +211,7 @@ def export_sft(
     samples: list[dict[str, Any]] = []
     for item in state.get("items") or []:
         if include is not None:
-            if judge_score_for_summary(item.get("judge")) not in include:
+            if judge_bucket_for_summary(item.get("judge")) not in include:
                 continue
         elif min_score is not None:
             item_score = judge_score_for_summary(item.get("judge"))
@@ -276,6 +289,11 @@ def export_sft(
                 "expected_action": item.get("expected_action"),
                 "answer": item.get("answer"),
                 "judge": item.get("judge"),
+                **(
+                    {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
+                    if item.get("evaluation")
+                    else {}
+                ),
                 "task_judge": item.get("task_judge"),
                 "retrieval": {key: item.get(key) for key in _RETRIEVAL_FIELDS},
                 "agent_status": item.get("agent_status"),
@@ -291,6 +309,9 @@ def export_sft(
         )
     return {
         "run_id": state.get("run_id"),
+        "scoring_profile": state.get("selected_scoring_profile"),
+        "scoring_batch": state.get("selected_scoring_batch"),
+        "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
         "count": len(samples),
         "item_count": len(items_out),
         "items": items_out,

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from sentrix.domain.media.models import GpsPoint
 from sentrix.domain.places.models import (
@@ -19,7 +22,7 @@ from sentrix.infrastructure.persistence.database import Database
 _COLUMNS = (
     "asset_id, admin_province, admin_city, admin_district, nearest_township,"
     " nearest_locality, nearest_distance_m, precision, source, confidence,"
-    " gps_latitude, gps_longitude"
+    " gps_latitude, gps_longitude, nearest_evidence_json"
 )
 
 
@@ -33,6 +36,7 @@ def _row_to_place(row: sqlite3.Row) -> Place:
             township=row["nearest_township"],
             locality=row["nearest_locality"],
             distance_m=row["nearest_distance_m"],
+            **_nearest_evidence(row["nearest_evidence_json"]),
         ),
         precision=PlacePrecision(row["precision"]),
         source=PlaceSource(row["source"]),
@@ -50,8 +54,9 @@ class SqliteAssetPlaceRepository:
             connection.execute(
                 "INSERT INTO asset_places (asset_id, scope_id, admin_province, admin_city,"
                 " admin_district, nearest_township, nearest_locality, nearest_distance_m,"
-                " precision, source, confidence, gps_latitude, gps_longitude, resolved_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " precision, source, confidence, gps_latitude, gps_longitude,"
+                " resolved_at, nearest_evidence_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(asset_id) DO UPDATE SET"
                 " scope_id = excluded.scope_id,"
                 " admin_province = excluded.admin_province,"
@@ -65,7 +70,8 @@ class SqliteAssetPlaceRepository:
                 " confidence = excluded.confidence,"
                 " gps_latitude = excluded.gps_latitude,"
                 " gps_longitude = excluded.gps_longitude,"
-                " resolved_at = excluded.resolved_at",
+                " resolved_at = excluded.resolved_at,"
+                " nearest_evidence_json = excluded.nearest_evidence_json",
                 (
                     asset_id,
                     scope_id,
@@ -81,6 +87,13 @@ class SqliteAssetPlaceRepository:
                     gps.latitude if gps else None,
                     gps.longitude if gps else None,
                     datetime.now(UTC).isoformat(),
+                    json.dumps(
+                        {
+                            k: v
+                            for k, v in asdict(place.nearest).items()
+                            if k not in {"township", "locality", "distance_m"}
+                        }
+                    ),
                 ),
             )
 
@@ -119,3 +132,11 @@ class SqliteAssetPlaceRepository:
             else:
                 row = connection.execute("SELECT COUNT(*) AS n FROM asset_places").fetchone()
         return int(row["n"]) if row else 0
+
+
+def _nearest_evidence(text: str) -> dict[str, Any]:
+    data = json.loads(text)
+    for key in ("township_admin_codes", "locality_admin_codes"):
+        if key in data:
+            data[key] = tuple(data[key])
+    return cast(dict[str, Any], data)

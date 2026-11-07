@@ -276,9 +276,7 @@ def keyframe_analysis(
     def keyframes_in(values: Sequence[Any]) -> set[str]:
         return asset_ids(values) & keyframe_ids
 
-    def parents_in(
-        values: Sequence[Any], trace_parent_hints: Mapping[str, str] | None = None
-    ) -> set[str]:
+    def parents_in(values: Sequence[Any], trace_parent_hints: Mapping[str, str] | None = None) -> set[str]:
         result = set()
         for asset_id in keyframes_in(values):
             parent = parent_by_keyframe.get(asset_id) or (trace_parent_hints or {}).get(asset_id)
@@ -337,9 +335,7 @@ def keyframe_analysis(
             continue
         gt_ids = asset_ids(refs(item, "gt_media"))
         gt_video_ids = {asset_id for asset_id in gt_ids if asset_id in source_video_ids}
-        candidate_values = refs(item, "retrieved_candidate_media") or refs(
-            item, "retrieved_candidate_images"
-        )
+        candidate_values = refs(item, "retrieved_candidate_media") or refs(item, "retrieved_candidate_images")
         # A video QA can expose the frames actually read only in tool previews. Union
         # these with the explicit candidate list and let keyframes_in() dedupe by id.
         trace_keyframes = observed_keyframe_refs(item)
@@ -494,7 +490,9 @@ def keyframe_analysis(
             "event_context_count": len(observed_event_ids),
         },
         "definitions": {
-            "candidate_precision": "检索候选与工具轨迹实际读取的去重关键帧中，其 parent video 与本题 GT 视频一致的比例",
+            "candidate_precision": (
+                "检索候选与工具轨迹实际读取的去重关键帧中，其 parent video 与本题 GT 视频一致的比例"
+            ),
             "video_parent_recall": "GT 源视频中，被检索候选或工具轨迹实际读取关键帧指向的比例",
             "answer_quality_delta": "带关键帧候选题与不带关键帧候选题的 Judge 均分差；不是因果结论",
             "temporal": "根据关键帧 source_timestamp_sec 统计采样间隔和覆盖跨度",

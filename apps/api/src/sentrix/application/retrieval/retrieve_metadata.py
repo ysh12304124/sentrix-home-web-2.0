@@ -1,33 +1,15 @@
-"""元数据召回用例：结构化条件（时间窗 / 媒体类型 / 地点）的确定性候选。
-
-对应 1.0 ``backend/retrieval/metadata.py`` 的 ``MetadataRetriever.retrieve``。
-
-它是**唯一一个在没有正向结构化条件时返回空的通道**（1.0 ``metadata.py:28-31``，
-原文注释保留在下面）。理由是它同时充当「硬预筛的候选全集」：把 scope 内每一个 asset
-都当 anchor 回传，会让一个纯语义查询的融合结果被插入顺序污染——1.0 在 R2 之前就是
-让 Kernel 逐个走完全部 asset，这条通道只是把那趟遍历写出来。
-
-三处与 1.0 的差异：
-
-1. **地点预筛用 ``Place`` 而不是解析 JSON**。1.0 ``metadata.py:59-67`` 拿到
-   ``metadata_json`` 后只处理 dict，而 ``MemoryStore`` 返回的是 **JSON 字符串**，
-   于是 ``geo`` 恒为 falsy → 「没有 geocode」→ 放行，纯地点查询把整个 scope 灌进来。
-   见 ``s4-deviations.md`` §1.3 第 16 项。
-2. **「没解析出地点」不等于「地点不匹配」**。前者由调用方显式选择放行或剔除，
-   不再藏在一个布尔值里。
-3. **召回上限是常量**，不是 ``SENTRIX_METADATA_RECALL_LIMIT`` 环境变量
-   （1.0 ``metadata.py:36-37`` 的默认值就是 200）。见 ``s4-deviations.md`` §2.5。
-"""
+"""元数据锚点召回：只有已知拍摄时间、媒体类型和确定行政归属能支持相应条件。未知时间/GPS不作为该条件的确定命中，仍可经语义通道召回。"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
+from sentrix.domain.media.capture_time import within_time_bounds
 from sentrix.domain.media.models import Asset, MediaType
 from sentrix.domain.media.ports import AssetRepository
 from sentrix.domain.places.aliases import PlaceAliases
-from sentrix.domain.places.matching import place_text_matches
+from sentrix.domain.places.matching import place_admin_matches
 from sentrix.domain.places.models import Place
 from sentrix.domain.places.ports import AssetPlaceRepository
 from sentrix.domain.retrieval.models import CandidateHit
@@ -119,29 +101,14 @@ class RetrieveMetadata:
         return hits
 
     def _place_ok(self, place: str, asset: Asset, resolved: Place | None) -> bool:
-        """地点约束的放行规则。
-
-        「解析出了地点」→ 按三条确定性规则匹配；
-        「本该有地点但没解析出来」→ 交给 ``recognize_place`` 决定（S4 里为真时**剔除**，
-        因为「有 GPS 却解析不出」意味着坐标在数据覆盖之外，拿它去支持一个地点查询是猜）；
-        「本来就没有 GPS」→ 放行。1.0 对这三种情况一视同仁地放行，这才是它把整个
-        scope 灌进 metadata 通道的根因。
-        """
+        """GPS解析缺失或仅有附近点时，不建立地点锚点。"""
         if resolved is not None:
-            return place_text_matches(place, resolved, self._aliases)
-        return not self._recognize_place(asset.id)
+            return place_admin_matches(place, resolved, self._aliases)
+        return False
 
 
 def _within(bounds: tuple[datetime, datetime], captured_at: datetime | None) -> bool:
-    """1.0 ``metadata.py:50-53``：**拍摄时间未知的行放行**。
-
-    这条很反直觉但必须保留：`captured_at` 为空是导入时的常见状态，把它当「不匹配」
-    会让时间窗查询把一大批本该出现的照片排除掉。1.0 的写法就是
-    ``if captured is not None and not (start <= captured < end): continue``。
-    """
-    if captured_at is None:
-        return True
-    return bounds[0] <= captured_at < bounds[1]
+    return within_time_bounds(bounds, captured_at) is True
 
 
 __all__ = ["ASSET_SCAN_LIMIT", "CHANNEL", "METADATA_RECALL_LIMIT", "RetrieveMetadata"]

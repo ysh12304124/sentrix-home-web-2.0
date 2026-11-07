@@ -89,16 +89,20 @@ export function QaBrowserView({ sentrixUrl = "", manifests = [], onOpenMedia }: 
         onRefresh={qa.loadQaBrowser}
       />
 
-      <div className="qa-browser-toolbar">
-        <label>内容大类<select aria-label="内容大类" value={qa.qaTask} onChange={e => { qa.setQaTask(e.target.value); qa.setQaSubtype(""); }}>
+      <div className="qa-browser-toolbar qa-browser-filters">
+        <label><span>评分题型</span><select aria-label="评分题型" value={qa.qaEvaluation} onChange={e => qa.setQaEvaluation(e.target.value)}>
+          <option value="">全部评分题型</option>
+          <option value="choice">选择题</option><option value="media_list">列表召回</option><option value="open">开放回答</option>
+        </select></label>
+        <label><span>内容大类</span><select aria-label="内容大类" value={qa.qaTask} onChange={e => { qa.setQaTask(e.target.value); qa.setQaSubtype(""); }}>
           <option value="">全部大类</option>
           {[...new Set(qaBrowserItems.map(x => x.task_type).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
         </select></label>
-        <label>细分题型<select aria-label="细分题型" value={qa.qaSubtype} onChange={e => qa.setQaSubtype(e.target.value)}>
+        <label><span>细分题型</span><select aria-label="细分题型" value={qa.qaSubtype} onChange={e => qa.setQaSubtype(e.target.value)}>
           <option value="">全部小类</option>
           {[...new Set(qaBrowserItems.filter(x => !qa.qaTask || x.task_type === qa.qaTask).map(x => x.question_type).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
         </select></label>
-        <label>行为预期<select aria-label="行为预期" value={qa.qaAction} onChange={e => qa.setQaAction(e.target.value)}>
+        <label><span>行为预期</span><select aria-label="行为预期" value={qa.qaAction} onChange={e => qa.setQaAction(e.target.value)}>
           <option value="">全部行为</option>
           {[...new Set(qaBrowserItems.map(x => x.expected_action).filter(Boolean))].map(x => <option key={x} value={x}>{taxonomyLabel(x)}</option>)}
         </select></label>

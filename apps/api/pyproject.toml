@@ -29,6 +29,7 @@ dependencies = [
     # 三维单位向量上。1.0 没有这一层；scipy 也不是 1.0 的依赖之外的额外负担——
     # 1.0 venv 里本来就有 scipy 1.15.3（reverse_geocoder 用它）。
     "scipy>=1.15,<2",
+    "tzfpy[tzdata]==2.1.2",
     # 人脸链路（S5b）。三个包在 153 上是**试装验证过的**（见 s5-deviations 第 55/56/111 条）：
     # onnxruntime-gpu 的 CUDA EP 只有先预载 cu13 运行库才起得来，否则**静默退化成 CPU**；
     # insightface 依赖未加约束的 ``onnxruntime``（CPU 版），两个发行包共用同一个

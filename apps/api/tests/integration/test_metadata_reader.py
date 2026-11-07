@@ -93,3 +93,28 @@ def test_device_prefers_model_over_make(tmp_path):
     _, _, device = PillowMetadataReader().read(path)
 
     assert device == "iPhone 12"
+
+
+def test_nested_capture_ifd_preserves_original_offset_across_midnight(tmp_path):
+    from datetime import timedelta
+
+    path = tmp_path / "nested.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[306] = "2024:01:02 01:00:00"
+    exif[34665] = {36867: "2024:01:01 23:30:00", 36881: "-05:00", 36880: "+08:00"}
+    image.save(path, format="JPEG", exif=exif)
+    captured_at, _, _ = PillowMetadataReader().read(path)
+    assert captured_at.isoformat() == "2024-01-01T23:30:00-05:00"
+    assert captured_at.utcoffset() == timedelta(hours=-5)
+
+
+def test_original_without_offset_does_not_borrow_modified_timezone(tmp_path):
+    path = tmp_path / "unknown-zone.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[34665] = {36867: "2024:01:01 23:30:00", 36880: "+08:00"}
+    image.save(path, format="JPEG", exif=exif)
+    captured_at, _, _ = PillowMetadataReader().read(path)
+    assert captured_at == datetime(2024, 1, 1, 23, 30)
+    assert captured_at.tzinfo is None

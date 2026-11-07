@@ -179,6 +179,21 @@ describe("记忆面板接线（P2 / 1.0 :3147）", () => {
 
 // 1.0 `:2758` / `:2761-2765`：init 发现 running/pending 的 run 就自动选中并开轮询。
 describe("init() 的自动选中（1.0 :2758 / :2761-2765）", () => {
+  it('原测评已结束且仅补评运行时，自动读取详情并刷新列表中的补评进度', async () => {
+    const fallback=mockApi.getMockImplementation()!;
+    mockApi.mockImplementation((path:string) => {
+      if(path.startsWith('/runs?')) return Promise.resolve({runs:[{run_id:'scoringRun',status:'completed_with_errors',rejudge:{status:'running',completed:0,total:1104}}],page:1,pages:1,page_size:20,total:1,active_count:0});
+      if(path.startsWith('/runs/scoringRun?include_history=')) return Promise.resolve({run_id:'scoringRun',status:'completed_with_errors',mode:'reuse',rejudge:{status:'running',completed:25,total:1104},summary:{}});
+      if(path.startsWith('/runs/scoringRun/items')) return Promise.resolve({items:[],page:1,total:0,pages:1});
+      return fallback(path);
+    });
+    render(<App/>);
+    await waitFor(()=>expect(mockApi.mock.calls.some(([path])=>path==='/runs/scoringRun?include_history=true')).toBe(true));
+    await waitFor(()=>expect(screen.getByTestId('runs-view').textContent).toContain('补评运行中'));
+    await waitFor(()=>expect(screen.getByTestId('runs-view').textContent).toContain('最近评分'));
+    await waitFor(()=>expect(screen.getByTestId('runs-view').textContent).toContain('25/1104'));
+    expect(mockApi.mock.calls.filter(([path])=>String(path).startsWith('/runs?')).length).toBeGreaterThan(1);
+  });
   it("列表里有 running run：自动选中并拉它的详情", async () => {
     mockApi.mockImplementation((path: string) => {
       if (path === "/config") return Promise.resolve(CONFIG);
@@ -240,4 +255,22 @@ describe("停止全部", () => {
     expect(await screen.findByText("停止未确认：connection lost")).toBeTruthy();
     expect(screen.queryByText("已停止，后台任务已退出")).toBeNull();
   });
+});
+
+it("取消成功但刷新失败时保留停止结果，并说明读取错误", async () => {
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const fallback = mockApi.getMockImplementation()!;
+  let stopped = false;
+  mockApi.mockImplementation((path: string) => {
+    if (path === "/cancel-active") { stopped = true; return Promise.resolve({ cancelled: ["r"] }); }
+    if (path === "/active-work/cleanup") return Promise.resolve({ cleanup_status: "stopped" });
+    if (stopped && path.startsWith("/runs?")) return Promise.reject(new Error("read unavailable"));
+    return fallback(path);
+  });
+  render(<App />);
+  await screen.findByTestId("runs-view");
+  fireEvent.click(screen.getByRole("button", { name: /停止全部/ }));
+  expect(await screen.findByText("已停止，后台任务已退出")).toBeTruthy();
+  expect(await screen.findByText("停止请求已处理，刷新评测记录失败：read unavailable")).toBeTruthy();
+  expect(screen.queryByText(/停止未确认/)).toBeNull();
 });

@@ -1,3 +1,4 @@
+import { PROFILE_LABELS } from "../../lib/scoring.ts";
 import { useEffect, useRef, useState } from "react";
 import { api, BASE, post } from "../../api/client.ts";
 import type {
@@ -6,11 +7,9 @@ import type {
   AnalysisFilters,
   AnalysisJob,
   AnalysisView,
-  ComparisonReport,
   DiagnosisReport,
 } from "../../api/analysis.ts";
 import { activeAnalysis } from "../../api/analysis.ts";
-import { ComparisonPicker } from "./ComparisonPicker.tsx";
 import {
   analysisValue,
   displayWithLabels,
@@ -23,6 +22,7 @@ import {
   AnalysisFiltersBar,
   type AnalysisTab,
 } from "./AnalysisWorkspace.tsx";
+import { ScoringResults } from "../../components/ScoringResults.tsx";
 import { AnalysisAI } from "./AnalysisAI.tsx";
 import { DebugTracePanel } from "../qa/DebugTracePanel.tsx";
 import type { RunItemDetail } from "../../api/types.ts";
@@ -149,15 +149,11 @@ function CaseCard({
   abilityLabels,
   focusRef,
   jobId,
-  selected,
-  toggle,
 }: {
   c: AnalysisCase;
   abilityLabels: Record<string, string>;
   focusRef?: string;
   jobId: string;
-  selected: boolean;
-  toggle: () => void;
 }) {
   const [showAllEvents, setShowAllEvents] = useState(false);
   const matchedEvents = c.matched_event_ids
@@ -173,15 +169,8 @@ function CaseCard({
   return (
     <details className="analysis-case" id={`analysis-i${c.index}:case`}>
       <summary>
-        <input
-          aria-label={`选择 ${c.qa_id}`}
-          type="checkbox"
-          checked={selected}
-          onClick={(e) => e.stopPropagation()}
-          onChange={toggle}
-        />{" "}
         <span className={`analysis-outcome outcome-${c.score ?? "None"}`}>
-          {scoreLabel(c.score)}
+          {c.evaluation_result ? String(c.evaluation_result.score ?? "未评分") + "/" + String(c.evaluation_result.max_score) : scoreLabel(c.score)}
         </span>{" "}
         {c.question || c.qa_id || c.index}
         <small>
@@ -202,6 +191,11 @@ function CaseCard({
       <p>{c.reference_answer || "未记录"}</p>
       <h5>{c.turns.length > 1 ? "最终回答" : "模型回答"}</h5>
       <p>{c.answer || "未记录"}</p>
+      {c.scoring_evidence && <details>
+        <summary>题型评分与扣分依据 · {displayLabel(c.dimensions.scoring_question_type || "unknown")}</summary>
+        <p>本次评分标准、批次、判分理由及已保存的媒体集合差异；缺失记录见判断限制。</p>
+        <pre>{pretty(c.scoring_evidence)}</pre>
+      </details>}
       {c.text_truncated && <p>当前为截短摘要，完整内容可读取原始轨迹。</p>}
       <p>
         数据缺口：{c.missing.map(displayLabel).join("、") || "未发现"}
@@ -279,37 +273,29 @@ function CaseCard({
     </details>
   );
 }
-function Exports({
-  job,
-  filters = {},
-}: {
-  job: AnalysisJob<unknown>;
-  filters?: AnalysisFilters;
-}) {
+function HtmlExport({ job }: { job: AnalysisJob<unknown> }) {
   return (
-    <span className="analysis-toolbar">
-      {["html", "json", "csv"].map((format) => (
-        <a
-          className="btn compact"
-          key={format}
-          href={`${BASE}/analyses/${job.job_id}/export?${new URLSearchParams({ ...filters, format })}`}
-          download
-        >
-          导出 {format.toUpperCase()}
-        </a>
-      ))}
-    </span>
+    <a
+      className="btn compact"
+      href={`${BASE}/analyses/${job.job_id}/export?format=html`}
+      title="导出全部题目，在 HTML 中筛选查看"
+      download
+    >
+      导出 HTML
+    </a>
   );
 }
 
 export function ErrorAnalysisPanel({
   runId,
   terminal,
+  scoringProfile: initialProfile = '', scoringBatch = '',
 }: {
   runId: string;
   terminal: boolean;
+  scoringProfile?:string; scoringBatch?:string;
 }) {
-  const [viewJob, setViewJob] = useState("");
+  const [scoringProfile, setScoringProfile] = useState(initialProfile);
   const [open, setOpen] = useState(false),
     [job, setJob] = useState<AnalysisJob | null>(null),
     [error, setError] = useState("");
@@ -325,12 +311,9 @@ export function ErrorAnalysisPanel({
     ),
     [page, setPage] = useState(1);
   const [data, setData] = useState<AnalysisView | null>(null);
-  const caseHeading = useRef<HTMLHeadingElement>(null);
+  const caseHeading = useRef<HTMLElement>(null);
+  const [casesOpen, setCasesOpen] = useState(false);
   const [casesLoading, setCasesLoading] = useState(false);
-  const [preparingOther, setPreparingOther] = useState<AnalysisJob | null>(
-    null,
-  );
-  const [selected, setSelected] = useState<number[]>([]);
   useEffect(() => {
     const back = () => {
       setFilters(
@@ -359,14 +342,10 @@ export function ErrorAnalysisPanel({
       target.scrollIntoView({ block: "center" });
     }
   }, [focusRef, casesLoading, data]);
-  const [ai, setAi] = useState<AnalysisJob<DiagnosisReport> | null>(null),
-    [compare, setCompare] = useState<AnalysisJob<ComparisonReport> | null>(
-      null,
-    );
-  const [otherRun, setOtherRun] = useState(""),
-    [pending, setPending] = useState(false),
-    [history, setHistory] = useState<AnalysisJob<unknown>[]>([]),
-    [cp, setCp] = useState(1);
+  const [ai, setAi] = useState<AnalysisJob<DiagnosisReport> | null>(null);
+  const [pending, setPending] = useState(false);
+  const aiRevision = useRef(0);
+  const [savedAiError, setSavedAiError] = useState("");
   useEffect(() => {
     if (!open) return;
     let alive = true;
@@ -375,7 +354,7 @@ export function ErrorAnalysisPanel({
     const load = async () => {
       try {
         const x = await api<AnalysisJob>(
-          viewJob ? `/analyses/${viewJob}` : runPath(runId),
+          runPath(runId)+(scoringProfile ? '?' + new URLSearchParams({scoring_profile:scoringProfile,scoring_batch:scoringBatch}) : ''),
           {
             signal: abort.signal,
           },
@@ -396,7 +375,7 @@ export function ErrorAnalysisPanel({
       abort.abort();
       window.clearTimeout(timer);
     };
-  }, [open, runId, tick, viewJob]);
+  }, [open, runId, tick, scoringProfile, scoringBatch]);
   useEffect(() => {
     if (!open || job?.status !== "completed" || !job.job_id) return;
     let alive = true;
@@ -425,7 +404,7 @@ export function ErrorAnalysisPanel({
     };
   }, [open, job?.status, job?.job_id, filters, page]);
   useEffect(() => {
-    if (!open || (!activeAnalysis(ai) && !activeAnalysis(compare))) return;
+    if (!open || !activeAnalysis(ai)) return;
     let alive = true;
     const poll = async () => {
       try {
@@ -435,12 +414,7 @@ export function ErrorAnalysisPanel({
           );
           if (alive) setAi(x);
         }
-        if (activeAnalysis(compare)) {
-          const x = await api<AnalysisJob<ComparisonReport>>(
-            `/analyses/${compare?.job_id}`,
-          );
-          if (alive) setCompare(x);
-        }
+
       } catch (e) {
         if (alive) setError(String(e));
       }
@@ -450,61 +424,34 @@ export function ErrorAnalysisPanel({
       alive = false;
       window.clearInterval(timer);
     };
-  }, [open, ai, compare]);
+  }, [open, ai]);
   useEffect(() => {
-    setSelected([]);
+    setCasesOpen(false);
     setAi(null);
-    setCompare(null);
-    setPreparingOther(null);
   }, [job?.job_id]);
   useEffect(() => {
-    if (!open || !preparingOther?.job_id) return;
-    let alive = true;
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const other = await api<AnalysisJob>(
-            `/analyses/${preparingOther.job_id}`,
-          );
-          if (!alive) return;
-          if (other.status === "completed" && !other.stale) {
-            const result = await post<AnalysisJob<ComparisonReport>>(
-              runPath(runId),
-              {
-                kind: "compare",
-                left_job: job?.job_id,
-                right_job: other.job_id,
-              },
-            );
-            if (alive) {
-              setCompare(result);
-              setPreparingOther(null);
-              setCp(1);
-            }
-          } else if (activeAnalysis(other)) setPreparingOther(other);
-          else {
-            setError(
-              `对比运行的报告${status[other.status] || other.status}，请重试。${other.error || ""}`,
-            );
-            setPreparingOther(null);
-          }
-        } catch (e) {
-          if (alive) {
-            setError(String(e));
-            setPreparingOther(null);
-          }
-        }
-      })();
-    }, 1500);
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [open, preparingOther, job?.job_id, runId]);
+    if (!open || !job?.job_id || job.run_id !== runId) return;
+    const abort = new AbortController();
+    const revision = aiRevision.current;
+    setSavedAiError("");
+    void (async () => {
+      const history = await api<AnalysisJob<DiagnosisReport>[]>(
+        `/runs/${encodeURIComponent(runId)}/analyses`, { signal: abort.signal },
+      );
+      const saved = history.find((entry) => entry.kind === "ai" &&
+        entry.options?.parent_job === job.job_id);
+      if (!saved?.job_id) return;
+      const result = await api<AnalysisJob<DiagnosisReport>>(
+        `/analyses/${saved.job_id}`, { signal: abort.signal },
+      );
+      if (!abort.signal.aborted && revision === aiRevision.current) setAi(result);
+    })().catch((e) => {
+      if (!abort.signal.aborted) setSavedAiError(`已有 AI 分析读取失败：${String(e)}`);
+    });
+    return () => abort.abort();
+  }, [open, runId, job?.job_id, job?.run_id]);
   const r =
     job?.status === "completed" ? data?.summary || job.report : undefined;
-  const displayLabel = (value: string) =>
-    displayWithLabels(value, r ? reportAbilityLabels(r) : {});
   function filter(v: AnalysisFilters, replace = false) {
     setFilters((old) => {
       const next = Object.fromEntries(
@@ -523,7 +470,7 @@ export function ErrorAnalysisPanel({
       return next;
     });
     setPage(1);
-    setSelected([]);
+    setCasesOpen(true);
     setCasesLoading(true);
   }
   function browseCases(value: AnalysisFilters) {
@@ -566,40 +513,9 @@ export function ErrorAnalysisPanel({
   }
   const generate = () =>
     act(async () => {
-      setViewJob("");
-      setJob(await post(runPath(runId), { kind: "rules" }));
-      setSelected([]);
-      setPage(1);
-      setTick((x) => x + 1);
-    });
-  const compareRuns = () =>
-    act(async () => {
-      if (!otherRun || otherRun === runId) return;
-      let other = await api<AnalysisJob>(runPath(otherRun));
-      if (!other.job_id || other.status !== "completed" || other.stale) {
-        if (!activeAnalysis(other) || other.stale)
-          other = await post(runPath(otherRun), { kind: "rules" });
-        setPreparingOther(other);
-        return;
-      }
-      setCompare(
-        await post(runPath(runId), {
-          kind: "compare",
-          left_job: job?.job_id,
-          right_job: other.job_id,
-        }),
-      );
-      setCp(1);
-    });
-  const openHistory = (h: AnalysisJob<unknown>) =>
-    act(async () => {
-      if (h.kind === "rules") {
-        setViewJob(h.job_id || "");
-        setSelected([]);
+      setJob(await post(runPath(runId), { kind: "rules", ...(scoringProfile ? {scoring_profile:scoringProfile,scoring_batch:scoringBatch} : {}) }));
         setPage(1);
-        setJob(await api(`/analyses/${h.job_id}`));
-      } else if (h.kind === "ai") setAi(await api(`/analyses/${h.job_id}`));
-      else setCompare(await api(`/analyses/${h.job_id}`));
+      setTick((x) => x + 1);
     });
   return (
     <section className="analysis-panel">
@@ -613,6 +529,7 @@ export function ErrorAnalysisPanel({
       {open && (
         <>
           <div className="analysis-toolbar">
+            <label>分析标准 <select aria-label="错误分析评分标准" value={scoringProfile} onChange={e => {setScoringProfile(e.target.value);setJob(null);setData(null);setError('');setPage(1);}}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
             <b>{status[job?.status || ""] || "读取分析状态…"}</b>
             {activeAnalysis(job) && <span>已处理 {job?.processed} 题</span>}
             <button
@@ -635,18 +552,9 @@ export function ErrorAnalysisPanel({
                 取消分析
               </button>
             )}
-            <button
-              className="btn compact"
-              onClick={() =>
-                void act(async () =>
-                  setHistory(
-                    await api(`/runs/${encodeURIComponent(runId)}/analyses`),
-                  ),
-                )
-              }
-            >
-              历史分析任务
-            </button>
+            {job?.status === "completed" && job.job_id && (
+              <HtmlExport job={job} />
+            )}
           </div>
           {!terminal && <p>测评和采样退出后自动分析；历史运行可手动生成。</p>}
           {job?.stale && (
@@ -656,33 +564,6 @@ export function ErrorAnalysisPanel({
             <p className="error" role="alert">
               {error || job?.error}
             </p>
-          )}
-          {history.length > 0 && (
-            <details open>
-              <summary>历史任务（旧报告保留来源）</summary>
-              {history.map((h) => (
-                <p key={h.job_id}>
-                  <button
-                    className="btn compact"
-                    onClick={() => void openHistory(h)}
-                  >
-                    {
-                      (
-                        {
-                          rules: "统计报告",
-                          compare: "逐题对比",
-                          ai: "AI分析",
-                        } as Record<string, string>
-                      )[h.kind || ""]
-                    }{" "}
-                    · {status[h.status] || h.status} ·{" "}
-                    {h.created_at
-                      ? new Date(h.created_at * 1000).toLocaleString()
-                      : h.job_id}
-                  </button>
-                </p>
-              ))}
-            </details>
           )}
           {r && (
             <>
@@ -695,8 +576,9 @@ export function ErrorAnalysisPanel({
                   />
                   <p className="analysis-hint">
                     当前范围 {data.total}/{job?.report?.item_count} 题 ·
-                    所有统计与导出沿用当前筛选
+                    页面统计沿用当前筛选；导出 HTML 包含全部题目，可在文件内筛选
                   </p>
+                  {r.source.scoring_summary != null && <ScoringResults summary={{scoring:{profiles:{[String(r.source.scoring_profile)]:r.source.scoring_summary}}}} />}
                   <AnalysisWorkspace
                     data={data}
                     tab={tab}
@@ -704,15 +586,16 @@ export function ErrorAnalysisPanel({
                     filter={browseCases}
                     unit={filters.content_unit}
                   />
+                  {savedAiError && <p role="alert">{savedAiError}</p>}
                   <AnalysisAI
+                    scoringProfile={scoringProfile}
                     runId={runId}
                     jobId={job!.job_id!}
                     stale={!!job?.stale}
                     filters={filters}
                     total={data.total}
-                    selected={selected}
                     ai={ai}
-                    setAi={setAi}
+                    setAi={(value) => { aiRevision.current += 1; setAi(value); }}
                     navigate={navigate}
                   />
                 </>
@@ -728,233 +611,59 @@ export function ErrorAnalysisPanel({
                   来源 {r.result_fingerprint} · 规则 {r.rule_version}
                 </p>
               </details>
-              <h3
-                ref={caseHeading}
-                tabIndex={-1}
-                className="analysis-case-heading"
+              <details
+                className="analysis-case-list"
+                open={casesOpen}
+                onToggle={(event) => setCasesOpen(event.currentTarget.open)}
               >
-                题目列表
-              </h3>
-              <div className="analysis-toolbar">
-                {job && <Exports job={job} filters={filters} />}
-                <button
-                  className="btn compact"
-                  disabled={casesLoading || !data?.items.length}
-                  onClick={() =>
-                    setSelected((old) => [
-                      ...new Set([
-                        ...old,
-                        ...(data?.items.map((c) => c.index) || []),
-                      ]),
-                    ])
-                  }
+                <summary
+                  ref={caseHeading}
+                  className="analysis-case-heading"
                 >
-                  全选本页
-                </button>
-                <button className="btn compact" onClick={() => setSelected([])}>
-                  清空选择
-                </button>
-              </div>
-              <p role="status">
-                {casesLoading
-                  ? "正在读取筛选结果…"
-                  : `筛选命中 ${data?.total || 0}题 · 第${page}页`}{" "}
-                · 已选择 {selected.length} 题
-              </p>
-              {casesLoading ? null : !data?.total ? (
-                <p>没有符合当前条件的题目。可清空筛选查看全部。</p>
-              ) : (
-                data!.items.map((c) => (
-                  <CaseCard
-                    focusRef={focusRef}
-                    abilityLabels={reportAbilityLabels(r!)}
-                    key={`${job?.job_id}-${c.index}`}
-                    c={c}
-                    jobId={job!.job_id!}
-                    selected={selected.includes(c.index)}
-                    toggle={() => {
-                      if (pending) return;
-                      if (selected.includes(c.index))
-                        setSelected(selected.filter((i) => i !== c.index));
-                      else setSelected([...selected, c.index]);
-                    }}
-                  />
-                ))
-              )}
-              <div className="analysis-toolbar">
-                <button
-                  className="btn compact"
-                  disabled={casesLoading || page <= 1}
-                  onClick={() => setPage(page - 1)}
-                >
-                  上一页
-                </button>
-                <button
-                  className="btn compact"
-                  disabled={casesLoading || page * 20 >= (data?.total || 0)}
-                  onClick={() => setPage(page + 1)}
-                >
-                  下一页
-                </button>
-              </div>
-              <h3>两轮逐题对比</h3>
-              <p>选择另一轮，与本轮逐题比较。</p>
-              <ComparisonPicker
-                runId={runId}
-                value={otherRun}
-                onChange={setOtherRun}
-                disabled={
-                  pending || !!preparingOther || activeAnalysis(compare)
-                }
-              />
-              <div className="analysis-toolbar">
-                <button
-                  className="btn compact"
-                  disabled={
-                    pending ||
-                    !!job?.stale ||
-                    !otherRun ||
-                    !!preparingOther ||
-                    activeAnalysis(compare)
-                  }
-                  onClick={() => void compareRuns()}
-                >
-                  创建对比报告
-                </button>
-                {preparingOther && (
-                  <>
-                    <span role="status">
-                      正在准备所选运行的规则报告：
-                      {status[preparingOther.status] || preparingOther.status}
-                      ，完成后自动对比。
-                    </span>
-                    <button
-                      className="btn compact"
-                      onClick={() => setPreparingOther(null)}
-                    >
-                      停止等待
-                    </button>
-                  </>
+                  题目列表
+                  <span className="analysis-hint"> · {data?.total || 0} 题</span>
+                </summary>
+                <p role="status">
+                  {casesLoading
+                    ? "正在读取筛选结果…"
+                    : `筛选命中 ${data?.total || 0}题 · 第${page}页`}{" "}
+                </p>
+                {casesLoading ? null : !data?.total ? (
+                  <p>没有符合当前条件的题目。可清空筛选查看全部。</p>
+                ) : (
+                  data!.items.map((c) => (
+                    <CaseCard
+                      focusRef={focusRef}
+                      abilityLabels={reportAbilityLabels(r!)}
+                      key={`${job?.job_id}-${c.index}`}
+                      c={c}
+                      jobId={job!.job_id!}
+
+                    />
+                  ))
                 )}
-              </div>
+                <div className="analysis-toolbar">
+            <label>分析标准 <select aria-label="错误分析评分标准" value={scoringProfile} onChange={e => {setScoringProfile(e.target.value);setJob(null);setData(null);setError('');setPage(1);}}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
+                  <button
+                    className="btn compact"
+                    disabled={casesLoading || page <= 1}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    className="btn compact"
+                    disabled={casesLoading || page * 20 >= (data?.total || 0)}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              </details>
+
             </>
           )}
-          {compare && (
-            <section>
-              <h4>逐题对比 · {status[compare.status]}</h4>
-              {compare.error && <p role="alert">{compare.error}</p>}
-              {compare.stale && <p>来源已过期</p>}
-              {activeAnalysis(compare) && (
-                <button
-                  className="btn compact"
-                  onClick={() =>
-                    void act(async () =>
-                      setCompare(
-                        await post(`/analyses/${compare.job_id}/cancel`, {}),
-                      ),
-                    )
-                  }
-                >
-                  取消对比
-                </button>
-              )}
-              {compare.report && (
-                <>
-                  <p>
-                    {compare.report.comparable
-                      ? `另一轮相对本轮：改善 ${compare.report.quality_changes?.improved || 0} 题，退步 ${compare.report.quality_changes?.regressed || 0} 题，持平 ${compare.report.quality_changes?.unchanged || 0} 题，缺分等无法判定 ${compare.report.quality_changes?.unknown || 0} 题。`
-                      : "配置不具可比性，仅并排展示事实，不给出版本提升结论。"}
-                  </p>
-                  <p>
-                    配置差异：
-                    {compare.report.differences.map(displayLabel).join("、") ||
-                      "未发现已记录差异"}
-                    ；定义一致 {compare.report.pairing_counts.paired || 0}
-                    题，定义变化 {compare.report.pairing_counts.changed || 0}
-                    题，未匹配 {compare.report.pairing_counts.unmatched || 0}
-                    题；重复/空ID：
-                    {compare.report.duplicates.join("、") || "无"}
-                  </p>
-                  <p>{compare.report.note}</p>
-                  <p>
-                    未记录的关键配置：
-                    {compare.report.missing_configuration
-                      .map(displayLabel)
-                      .join("、") || "无"}
-                  </p>
-                  <Exports job={compare} />
-                  <details>
-                    <summary>来源与配置</summary>
-                    <pre>{pretty(compare.report.sources)}</pre>
-                  </details>
-                  {compare.report.rows
-                    .slice((cp - 1) * 20, cp * 20)
-                    .map((row) => (
-                      <details key={row.qa_id}>
-                        <summary>
-                          {row.qa_id} · {displayLabel(row.pairing)} ·{" "}
-                          {displayLabel(row.quality_change)} · 分数变化{" "}
-                          {row.score_delta ?? "未知"}
-                        </summary>
-                        <p>
-                          参考答案变化 {row.gt_changed ? "有" : "无"}
-                          ；执行状态变化 {row.execution_changed ? "有" : "无"}
-                          ；新增异常 {row.errors_added.join("、") || "无"}
-                          ；消失异常 {row.errors_removed.join("、") || "无"}
-                        </p>
-                        <div className="analysis-grid">
-                          {[
-                            ["本轮（基准）", row.left],
-                            ["所选另一轮", row.right],
-                          ].map(([label, entry]) => {
-                            const c = entry as AnalysisCase | null;
-                            return (
-                              <article key={String(label)}>
-                                <h5>{String(label)}</h5>
-                                {c ? (
-                                  <>
-                                    <p>{c.question}</p>
-                                    <p>
-                                      {scoreLabel(c.score)} ·{" "}
-                                      {displayLabel(c.execution)} ·{" "}
-                                      {c.events.length}次异常
-                                    </p>
-                                    <h5>模型回答</h5>
-                                    <p>{c.answer || "未记录"}</p>
-                                    <h5>参考答案</h5>
-                                    <p>{c.reference_answer || "未记录"}</p>
-                                    <details>
-                                      <summary>完整案例数据</summary>
-                                      <pre>{pretty(c)}</pre>
-                                    </details>
-                                  </>
-                                ) : (
-                                  <p>此轮未匹配到该题。</p>
-                                )}
-                              </article>
-                            );
-                          })}
-                        </div>
-                      </details>
-                    ))}
-                  <button
-                    className="btn compact"
-                    disabled={cp <= 1}
-                    onClick={() => setCp(cp - 1)}
-                  >
-                    对比上一页
-                  </button>
-                  <button
-                    className="btn compact"
-                    disabled={cp * 20 >= compare.report.rows.length}
-                    onClick={() => setCp(cp + 1)}
-                  >
-                    对比下一页
-                  </button>
-                </>
-              )}
-            </section>
-          )}
+
         </>
       )}
     </section>

@@ -86,3 +86,11 @@ it("调用方取消会终止底层请求且不重试，也不误报超时", asyn
   await expect(result).rejects.toMatchObject({ name: "AbortError", message: "请求已取消" });
   expect(fetchStub).toHaveBeenCalledTimes(1);
 });
+
+
+it("保留HTTP状态供已接受任务的初始化阶段识别404，GET404不重试", async () => {
+  const fetchStub = vi.fn().mockResolvedValue(jsonResponse(404, { error: "'new-run'" }));
+  vi.stubGlobal("fetch", fetchStub);
+  await expect(api("/runs/new-run")).rejects.toMatchObject({ status: 404, message: "'new-run'" });
+  expect(fetchStub).toHaveBeenCalledTimes(1);
+});

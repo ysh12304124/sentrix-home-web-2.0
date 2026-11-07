@@ -283,8 +283,9 @@ def test_spawn_priority_cancellation_restart_staleness_and_raw_preservation(tmp_
         assert backend.work()[0]["status"] == "queued"
         backend.cancel(j["job_id"])
         assert backend.get(j["job_id"])["status"] == "cancelled"
-        busy.clear()
         j = backend.submit("r", "rules", {})
+        assert backend.result(j["job_id"])["status"] == "queued"
+        busy.clear()
         done = await_job(backend, j["job_id"])
         assert done["status"] == "completed", done
         assert done["worker_pid"] != __import__("os").getpid()
@@ -431,6 +432,15 @@ def test_ai_requires_known_refs_provider_explicit_selection_and_never_sends_secr
                 }
             ],
             "missing_evidence": [],
+            "diagnosis": {
+                "error_types": ["unknown"],
+                "summary": "diagnosis",
+                "cause": "pending verification",
+                "certainty": "unknown",
+                "next_step": "check the failed request",
+                "limitations": "",
+                "evidence_refs": ["i0:case"],
+            },
         }
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(answer)}}]})
 
@@ -441,6 +451,16 @@ def test_ai_requires_known_refs_provider_explicit_selection_and_never_sends_secr
     for i in range(2):
         target = tmp_path / f"ai{i}"
         target.mkdir()
+        (target / "gt").mkdir()
+        (target / "gt" / "input-0.json").write_text(
+            json.dumps(
+                {
+                    "index": 0,
+                    "gt_images": [],
+                    "missing_evidence": ["gt_references_not_recorded"],
+                }
+            )
+        )
         job = {
             "job_id": str(i) * 32,
             "kind": "ai",
@@ -595,7 +615,7 @@ def test_task_aliases_merge_before_counting_and_filters_exports_share_the_catego
     cases = [case_from_item(row, i) for i, row in enumerate(raw)]
     r = report(cases)
     assert raw == before
-    assert r["rule_version"] == 10
+    assert r["rule_version"] == 13
     media, behavior = r["groups"]["content_type"]
     assert media == {
         "value": "T1_retrieve_media",
@@ -688,6 +708,7 @@ def test_content_behavior_and_scenarios_have_separate_denominators_and_preserve_
         "benchmark_group",
         "content_type",
         "content_subtype",
+        "scoring_question_type",
         "difficulty",
         "answerability",
         "media_type",
@@ -709,8 +730,8 @@ def test_content_behavior_and_scenarios_have_separate_denominators_and_preserve_
     assert not matches(cases[1], {"test_scenario": "prompt_injection", "expected_action": "answer"})
     assert matches(cases[0], {"score": "0", "behavior_result": "correct"})
     html = export_report(r, cases, "html", {})
-    assert "行为判断" not in html and "按得分看内容题型" in html
-    assert "未标注内容题型" in html and "回答行为（按对话轮）" in html
+    assert "行为判断" not in html and "各得分的题目主要属于哪些类别" in html
+    assert "数据覆盖与分析边界" not in html and "回答行为：预期与实际" in html
     assert "behavior_turns" in export_report(r, cases, "csv", {})
 
 
@@ -747,3 +768,18 @@ def test_failed_or_missing_behavior_judge_does_not_become_valid_from_residual_fi
     assert r["denominators"]["behavior_missing"] == 1
     assert r["behavior_groups"][0]["missing"] == 1
     assert matches(c, {"behavior_result": "missing"})
+
+
+def test_html_mixed_scales_mean_uses_continuous_raw_score_and_legacy_normalization():
+    from photobench.domain.evaluation.contract import VERSION, result_record
+
+    definition = {"version": VERSION, "scorer": "media_set", "answer_format": "media_list", "max_score": 1}
+    cases = []
+    for index, score in enumerate((0.25, 1)):
+        result = result_record(definition, score)
+        cases.append(case_from_item(item(qa_id=f"typed-{index}", evaluation=definition, judge=result), index))
+    cases.append(case_from_item(item(qa_id="legacy", judge={"score": 1}), 2))
+    output = export_report(report(cases), cases, "html", {})
+    assert "平均答案正确性<strong>58.3%</strong>" in output
+    assert "新版评分覆盖 2 / 2 题" in output
+    assert "归一化平均分 62.5%" in output

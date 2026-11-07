@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from sentrix.domain.media.capture_time import CaptureTime
 from sentrix.domain.media.models import (
     Asset,
     AssetStatus,
@@ -617,3 +618,9 @@ class OperationControl(Protocol):
     def finish(self, operation_id: str) -> None:
         """Acknowledge worker exit, never just a cancellation request."""
         ...
+
+
+class CaptureTimeResolver(Protocol):
+    def __call__(
+        self, value: datetime | None, gps: GpsPoint | None, source: str
+    ) -> tuple[datetime | None, CaptureTime]: ...

@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/client.ts", () => ({ api: vi.fn(), post: vi.fn() }));
@@ -18,21 +18,29 @@ function runDetail(overrides: Partial<Run> = {}): Run {
   return { run_id: "r1", item_count: 3, status: "done", ...overrides };
 }
 
-function mount(activeRunId: string | null = "r1") {
+function mount(activeRunId: string | null = "r1", judgeConfig = {}) {
   const ref: ActiveRunIdRef = { current: activeRunId };
   const hook = renderHook(() =>
-    useRunDetail({ activeRunId, activeRunIdRef: ref, setError: () => {} }),
+    useRunDetail({ activeRunId, activeRunIdRef: ref, judgeConfig, setError: () => {} }),
   );
   return { ...hook, ref };
 }
 
 beforeEach(() => {
   apiMock.mockReset();
+  apiMock.mockResolvedValue({});
   postMock.mockReset();
+  postMock.mockResolvedValue({qa_count:7,turn_count:8,subscore_count:8,profiles:{photobench_open_v1:8}});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+it('can mount over LAN HTTP without crypto.randomUUID', () => {
+  vi.stubGlobal('crypto', {getRandomValues: crypto.getRandomValues.bind(crypto)});
+  expect(() => mount(null)).not.toThrow();
 });
 
 describe("loadActiveRun 的并发关系（1.0 :2310-2332）", () => {
@@ -223,7 +231,7 @@ describe("exportTraces / exportSftTraces（1.0 :2567 / backup :1401）", () => {
 });
 
 describe("canRejudge / rejudgePercent（1.0 :365-374）", () => {
-  it("可重评：有 item_count + 非 running + 提示词非空", () => {
+  it("可重评：有答卷且后端预览确认评分目标", async () => {
     const { result } = mount("r1");
     act(() => {
       result.current.setActiveRun(
@@ -231,7 +239,7 @@ describe("canRejudge / rejudgePercent（1.0 :365-374）", () => {
       );
       result.current.setRejudgePrompt("你是 judge");
     });
-    expect(result.current.canRejudge).toBe(true);
+    await waitFor(() => expect(result.current.canRejudge).toBe(true));
     expect(result.current.rejudgePercent).toBe(25);
   });
 
@@ -265,29 +273,17 @@ describe("canRejudge / rejudgePercent（1.0 :365-374）", () => {
     expect(result.current.canRejudge).toBe(false);
   });
 
-  it("requestRejudge 只置「待确认动作」，confirmRejudge 才 POST", async () => {
-    postMock.mockResolvedValue({});
+  it("requestRejudge冻结预览配置，confirmRejudge才启动评分", async () => {
     apiMock.mockImplementation(async () => runDetail());
-    const { result } = mount("r1");
-    act(() => {
-      result.current.setActiveRun(runDetail({ item_count: 7, status: "done" }));
-      result.current.setRejudgePrompt("p");
-    });
-
-    act(() => {
-      result.current.requestRejudge();
-    });
-    expect(result.current.rejudgeConfirmation?.message).toContain("7 条 Agent 回答");
+    const { result } = mount("r1", {judge_url:"u",judge_model:"m"});
+    act(() => {result.current.setActiveRun(runDetail());result.current.setRejudgePrompt("p");});
+    await waitFor(() => expect(result.current.canRejudge).toBe(true));
+    postMock.mockClear();
+    act(() => {result.current.requestRejudge();});
+    expect(result.current.rejudgeConfirmation?.message).toContain("7 题、8 轮、8 项");
     expect(postMock).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await result.current.confirmRejudge({ judge_url: " u ", judge_model: "m" });
-    });
-    expect(result.current.rejudgeConfirmation).toBeNull();
-    expect(postMock).toHaveBeenCalledWith(
-      "/runs/r1/rejudge",
-      expect.objectContaining({ judge_url: "u", judge_model: "m", system_prompt: "p" }),
-    );
+    await act(async () => {await result.current.confirmRejudge();});
+    expect(postMock).toHaveBeenCalledWith("/runs/r1/rejudge",expect.objectContaining({judge_url:"u",judge_model:"m",scoring_configs:{photobench_open_v1:{use_gt_images:false,gt_metadata_mode:'image_metadata_v1',prompts:{answer_quality:"p"}}}}));
   });
 });
 
@@ -375,7 +371,7 @@ it("定期重读全程控制曲线点数，终态自动补齐", async () => {
   apiMock.mockResolvedValueOnce(runDetail({ status: "completed", history_mode: "checkpoint" }))
     .mockResolvedValueOnce(runDetail({ status: "completed", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 20 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
-  expect(apiMock.mock.calls.slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
+  expect(apiMock.mock.calls.filter(([path]) => !path.endsWith("/recovery-plan")).slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 0 }, { t: 20 }]);
 });
 
@@ -386,7 +382,7 @@ it("后台暂停错过窗口时补读全程，切换测评不会混入旧曲线"
   apiMock.mockResolvedValueOnce(runDetail({ status: "running", history_mode: "checkpoint", telemetry_live: { history: [{ t: 200 }, { t: 300 }] } }))
     .mockResolvedValueOnce(runDetail({ status: "running", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 300 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
-  expect(apiMock.mock.calls.slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
+  expect(apiMock.mock.calls.filter(([path]) => !path.endsWith("/recovery-plan")).slice(-2).map(([path]) => path)).toEqual(["/runs/r1?include_history=false", "/runs/r1?include_history=true"]);
   ref.current = "r2";
   apiMock.mockResolvedValueOnce(runDetail({ run_id: "r2", status: "running", history_mode: "full", telemetry_live: { history: [{ t: 50 }, { t: 60 }] } }));
   await act(async () => { await result.current.loadActiveRun(); });
@@ -414,4 +410,40 @@ it("切换测评后迟到的旧详情不会覆盖新测评或污染后续历史�
   await act(async () => { await result.current.loadActiveRun(); });
   expect(apiMock.mock.calls.at(-1)?.[0]).toBe("/runs/r2?include_history=false");
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 100 }, { t: 200 }, { t: 201 }]);
+});
+
+it("确认时使用冻结范围、分标准GT和提示词，重复确认只发一次", async () => {
+  apiMock.mockResolvedValue(runDetail());
+  const {result}=mount("r1",{judge_model:"old-model"});
+  await act(async()=>{await result.current.loadActiveRun();result.current.setRejudgePrompt("original");});
+  act(()=>{result.current.setRejudgeScope("failed");result.current.setScoring({...result.current.scoring,configs:{...result.current.scoring.configs,photobench_open_v1:{use_gt_images:true,use_gt_metadata:false}}});});
+  await waitFor(()=>expect(result.current.canRejudge).toBe(true));
+  postMock.mockClear();
+  act(()=>{result.current.requestRejudge();});
+  act(()=>{result.current.setRejudgeScope("all");result.current.setRejudgePrompt("changed");});
+  await act(async()=>{await Promise.all([result.current.confirmRejudge(),result.current.confirmRejudge()]);});
+  const requests=postMock.mock.calls.filter(([path])=>path.endsWith('/rejudge'));
+  expect(requests).toHaveLength(1);
+  expect(requests[0][1]).toEqual(expect.objectContaining({scope:"failed",judge_model:"old-model",scoring_configs:{photobench_open_v1:{use_gt_images:true,gt_metadata_mode:'image_metadata_v1',prompts:{answer_quality:"original"}}}}));
+});
+
+it("切换任务后不能把旧确认提交给新任务", async()=>{
+  apiMock.mockResolvedValue(runDetail());
+  const {result,ref}=mount();
+  await act(async()=>{await result.current.loadActiveRun(); result.current.setRejudgePrompt("p");});
+  act(()=>{result.current.requestRejudge();});
+  ref.current="r2";
+  await act(async()=>{await result.current.confirmRejudge();});
+  expect(postMock).not.toHaveBeenCalled();
+});
+
+
+it('defaults a new profile run to its first collected standard and preserves manual selection', async () => {
+  apiMock.mockImplementation(async (url:string) => url.includes('?include_history=') ? runDetail({scoring_batches:[{batch_id:'o',profile_id:'photobench_open_v1'},{batch_id:'a',profile_id:'atm_qs_v1'}]}) : {});
+  const {result}=mount();
+  await act(async () => {await result.current.loadActiveRun();});
+  await waitFor(() => expect(result.current.readProfile).toBe('photobench_open_v1'));
+  act(()=>result.current.setReadProfile('atm_qs_v1'));
+  await act(async () => {await result.current.loadActiveRun();});
+  expect(result.current.readProfile).toBe('atm_qs_v1');
 });

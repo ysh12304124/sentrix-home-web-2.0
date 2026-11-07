@@ -38,6 +38,7 @@ from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
+from photobench.domain.evaluation.profile_view import profile_state
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunRevisions, RunStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
@@ -287,11 +288,31 @@ class RunReports:
         return report
 
     def export_traces(
-        self, run_id: str, *, scores: Sequence[int] | None = None, min_score: int | None = None
+        self,
+        run_id: str,
+        *,
+        scores: Sequence[int] | None = None,
+        min_score: int | None = None,
+        scoring_profile: str = "",
+        scoring_batch: str = "",
     ) -> list[dict[str, Any]]:
-        return exports.export_traces(self._state(run_id), scores=scores, min_score=min_score)
+        return exports.export_traces(
+            profile_state(self._state(run_id), scoring_profile, scoring_batch),
+            scores=scores,
+            min_score=min_score,
+        )
 
     def export_sft(
-        self, run_id: str, *, scores: Sequence[int] | None = None, min_score: int | None = None
+        self,
+        run_id: str,
+        *,
+        scores: Sequence[int] | None = None,
+        min_score: int | None = None,
+        scoring_profile: str = "",
+        scoring_batch: str = "",
     ) -> dict[str, Any]:
-        return exports.export_sft(self._state(run_id), scores=scores, min_score=min_score)
+        return exports.export_sft(
+            profile_state(self._state(run_id), scoring_profile, scoring_batch),
+            scores=scores,
+            min_score=min_score,
+        )

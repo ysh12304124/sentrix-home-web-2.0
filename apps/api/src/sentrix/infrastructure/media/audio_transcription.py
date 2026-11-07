@@ -120,7 +120,7 @@ def _native_segments(items: list[dict[str, object]], offset: float) -> list[Tran
     result: list[TranscriptionSegment] = []
     for item in items:
         try:
-            start, end = float(item["start"]) + offset, float(item["end"]) + offset
+            start, end = float(str(item["start"])) + offset, float(str(item["end"])) + offset
             text = _clean_transcript(str(item.get("text") or ""))
         except (KeyError, TypeError, ValueError):
             continue

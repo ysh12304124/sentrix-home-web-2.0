@@ -34,6 +34,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
 from sentrix.domain.media.models import GpsPoint
 
 # 1.0 ``db.py:1967``：候选只在这条时间窗内的活动事件里找。6 小时是硬窗，
@@ -296,14 +297,15 @@ def within_candidate_window(anchor_at: datetime | None, event_at: datetime | Non
     """1.0 ``db.py:1967``：时间差超过 6 小时的活动事件连打分都不打。"""
     if anchor_at is None or event_at is None:
         return True
-    return abs((_as_utc(anchor_at) - _as_utc(event_at)).total_seconds()) <= (
-        CANDIDATE_WINDOW_HOURS * 3600
-    )
+    if (anchor_at.utcoffset() is None) != (event_at.utcoffset() is None):
+        # 未知偏移无法和绝对时刻比较；保留为不同事件，不猜测时区。
+        return False
+    return abs(elapsed_seconds(anchor_at, event_at)) <= CANDIDATE_WINDOW_HOURS * 3600
 
 
 def _time_score(anchor_at: datetime | None, event_at: datetime | None) -> float:
-    if anchor_at and event_at:
-        minutes = abs((_as_utc(anchor_at) - _as_utc(event_at)).total_seconds()) / 60.0
+    if anchor_at and event_at and (anchor_at.utcoffset() is None) == (event_at.utcoffset() is None):
+        minutes = abs(elapsed_seconds(anchor_at, event_at)) / 60.0
         return _decay(minutes, TIME_DECAY_MINUTES)
     return MISSING_TIME_SCORE
 
@@ -444,7 +446,7 @@ def rank_candidates(
         scored,
         key=lambda item: (
             -item[1].total,
-            _descending_text(item[0].time_start.isoformat() if item[0].time_start else ""),
+            _descending_text(time_sort_key(item[0].time_start)),
             item[0].event_id,
         ),
     )

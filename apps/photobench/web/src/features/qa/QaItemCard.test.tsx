@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RunItemDetail } from "../../api/types.ts";
@@ -122,4 +122,45 @@ it('已召回但未交付的GT不误标为检索未召回', () => {
     gt_media:[{media_type:'image',media_id:'candidate.jpg',file_name:'candidate.jpg',matched:false}]});
   expect(screen.getByText('· 未交付')).toBeTruthy();
   expect(screen.queryByText('· 未召回')).toBeNull();
+});
+
+
+it('shows both standards together, including valid zero and a separate failed score', () => {
+  const props={summary:{index:0,question:'双评分',profile_scores:{photobench_open_v1:{score:2,status:'completed'},atm_qs_v1:{score:0,status:'completed'}}},detail:undefined,loading:false,open:false,albumId:'a',modelLabel:'m',activeRejudge:null,onToggle:()=>{},onOpenImage:()=>{},onOpenJudgeInput:()=>{}};
+  const {rerender}=render(<QaItemCard {...props}/>);
+  expect(screen.getByText('开放式 2/2 分')).toBeTruthy();
+  expect(screen.getByText('QS 0.0%')).toBeTruthy();
+  expect(screen.queryByText('未评分')).toBeNull();
+  rerender(<QaItemCard {...props} summary={{...props.summary,profile_scores:{photobench_open_v1:{status:'failed'},atm_qs_v1:{score:1,status:'completed'}}}}/>);
+  expect(screen.getByText('开放式 评分失败')).toBeTruthy();
+  expect(screen.getByText('QS 100.0%')).toBeTruthy();
+});
+
+
+it("开放式视图同时显示独立QS匹配，正确项与真实匹配项只渲染一组", () => {
+  renderCard({index:0, question:"合影人数", evaluation:{answer_format:"choice", correct_option:"A", options:[
+    {id:"A", text:"2张，3人和4人"}, {id:"B", text:"2张，3人和5人"}]},
+    evaluation_result:{scorer:"answer_quality", profile_id:"photobench_open_v1", score:2, max_score:2, normalized_score:1},
+    choice_matching_result:{scorer:"choice", profile_id:"atm_qs_v1", batch_id:"qs-new", turn_index:0, score:1, max_score:1,
+      matched_option:"A", comparisons:[{option_id:"A", matches:true, reason:"人数一致"},{option_id:"B", matches:false, reason:"人数不同"}]}});
+  const matching=screen.getByRole("region",{name:"选项语义匹配"});
+  expect(within(matching).getByText(/匹配正确 · QS 1\/1 分/)).toBeTruthy();
+  expect(within(matching).getByText(/Judge匹配：A · 正确选项：A/)).toBeTruthy();
+  expect(screen.getAllByText("2张，3人和4人")).toHaveLength(1);
+  expect(within(matching).getByText("人数一致")).toBeTruthy();
+  expect(screen.getByText(/主分 2\/2/)).toBeTruthy();
+  expect(screen.queryByText(/未记录.*比较|未记录匹配结果/)).toBeNull();
+});
+
+it("QS视图不重复渲染匹配面板，错选与正确项分别标注", () => {
+  const matching={scorer:"choice", profile_id:"atm_qs_v1", batch_id:"selected-old", turn_index:1, score:0, max_score:1,
+    matched_option:"B", comparisons:[{option_id:"A", matches:false},{option_id:"B", matches:true}]};
+  renderCard({index:0, evaluation:{answer_format:"choice", correct_option:"A", options:[{id:"A",text:"正确内容"},{id:"B",text:"错误内容"}]},
+    evaluation_result:matching, choice_matching_result:matching});
+  expect(screen.getAllByRole("region",{name:"选项语义匹配"})).toHaveLength(1);
+  const wrong=screen.getByText("错误内容").closest("li")!;
+  expect(within(wrong).getByText("匹配")).toBeTruthy();
+  expect(within(wrong).queryByText("正确项")).toBeNull();
+  expect(screen.getByText(/匹配错误 · QS 0\/1 分/)).toBeTruthy();
+  expect(screen.getByText(/评分批次 selected-old/)).toBeTruthy();
 });

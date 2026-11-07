@@ -57,30 +57,10 @@ def test_asset_is_immutable():
         asset.status = AssetStatus.PROCESSED  # type: ignore[misc]
 
 
-def test_video_captured_datetime_is_naive_so_it_can_be_compared_with_event_times():
-    """带偏移的 ffprobe 时间必须落成 **naive**，否则事件归属那条路会抛 TypeError。
-
-    2026-10-07 实测：`album3-max-video10` 的 **10 个视频全部导入失败**，reason 全是
-    ``can't subtract offset-naive and offset-aware datetimes``。链条是：ffprobe 报
-    ``2017-09-27T03:36:15.000000Z`` → ``normalized_datetime`` 换成 ``+00:00`` →
-    ``fromisoformat`` 给出 **aware** → 拿去减 ``events.time_start``（照片那条路来自
-    EXIF，是 **naive**）→ 炸。**照片从不出错，只有视频会**，而 ``photo_import`` 只记
-    ``partial``、整轮评测照常 ``run_valid=true``。
-
-    1.0 同一个视频存的是 ``2017-09-27 11:36:15``（UTC+8 本地、无时区），这里照做。
-
-    三层断言缺一不可：只看「naive」放得过「把时间点丢了」的实现；只看「时间点对」
-    放得过「仍然 aware」的实现——而后者正是这次的 bug。
-    """
+def test_video_captured_datetime_preserves_original_offset():
     value = VideoMetadata(captured_at="2017-09-27T03:36:15.000000+00:00").captured_datetime()
-
-    assert value is not None
-    assert value.tzinfo is None, "必须 naive，否则减 events.time_start 会抛 TypeError"
-    # 时间点没丢：转回 UTC 应等于原始的 UTC 时刻（本地化不等于移动时刻）。
-    assert value.astimezone(UTC) == datetime(2017, 9, 27, 3, 36, 15, tzinfo=UTC)
-    # 修复要保证的事：能与事件那条路的 naive 时间相减。
-    # 11:36:15 - 10:00:00 = 1h36m15s = 5775 秒
-    assert abs((value - datetime(2017, 9, 27, 10, 0, 0)).total_seconds()) == 5775
+    assert value == datetime(2017, 9, 27, 3, 36, 15, tzinfo=UTC)
+    assert value.utcoffset().total_seconds() == 0
 
 
 def test_a_naive_exif_time_is_left_alone():

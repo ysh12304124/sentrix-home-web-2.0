@@ -284,11 +284,34 @@ export interface RejudgeTask {
   rejudge_id?: string;
   total?: number;
   completed?: number;
+  failed?: number;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  error_details?: {sample_id?: string; reason?: string; profile_id?: string; turn_index?: number}[];
+  results?: {sample_id?: string; status?: string; profile_id?: string; turn_index?: number; score?: number | null; max_score?: number}[];
   [key: string]: unknown;
 }
 
 /** 一条 run。字段来自 `/api/v1/runs` 实测响应（2026-10-06，8771）。 */
+export interface ExecutionVersion extends RejudgeTask {
+  execution_id: string;
+  run_id: string;
+  kind: string;
+  source_run_id?: string;
+  inherited_count?: number;
+  answer_count?: number;
+  qa_count?: number;
+  turn_count?: number;
+  build_revision?: string;
+  batch_ids?: string[];
+}
+
 export interface Run {
+  source_run_id?: string;
+  task_id?: string;
+  task_run_ids?: string[];
+  execution_versions?: ExecutionVersion[];
   read_revision?: string | null;
   history_mode?: "full" | "checkpoint" | null;
   persistence?: { status?: string; error?: string } | null;
@@ -326,6 +349,7 @@ export interface Run {
   summary?: RunSummary;
   phases?: RunPhases;
   rejudge?: RejudgeTask | null;
+  rejudge_history?: RejudgeTask[];
   /** 详情响应的可选内嵌条目；`effectiveRunSummary` 会读它（`App.vue:430`）。 */
   items?: RunItemSummary[];
   [key: string]: unknown;
@@ -383,6 +407,7 @@ export interface TaskJudge {
 
 /** 一行逐题摘要（`/api/v1/runs/{id}/items` 的 `items[]`）。 */
 export interface RunItemSummary {
+  profile_scores?: Record<string, Judge>;
   display_question?: string;
   conversation_turn_count?: number;
   conversation_context_mode?: string;

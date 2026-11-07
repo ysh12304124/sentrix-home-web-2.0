@@ -1,3 +1,4 @@
+import { defaultScoring, scoringPayload } from './lib/scoring.ts';
 import type { ActiveWorkStatus } from "./api/types.ts";
 /**
  * PhotoBench 前端的组合层（组合根）。
@@ -96,9 +97,11 @@ export function App({ initialLoading = false }: AppProps) {
     resetQaState: () => qaRef.current?.resetQaState(),
     // 1.0 `:2770`：`/judge-prompts` 失败或缺 default 时的兜底。
     judgePromptFallback: configApi.config?.judge_prompt || "",
+    judgeConfig: {judge_url:configApi.judgeUrl.trim(),judge_model:configApi.judgeModel.trim(),
+      judge_provider_id:configApi.judgeProviderId, ...(configApi.judgeApiKeyDirty ? {judge_api_key:configApi.judgeApiKey}: {})},
   });
   /** 逐题状态唯一实例；`QaResults` 与记忆面板共享（见文件头 1）。 */
-  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge });
+  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge, scoringQuery:runs.readQuery });
   qaRef.current = qa;
 
   const [selectedAlbum, setSelectedAlbum] = useState("album3-14");
@@ -132,6 +135,7 @@ export function App({ initialLoading = false }: AppProps) {
     onDirty: configApi.markConnectionConfigDirty,
   });
 
+  const [startScoring, setStartScoring] = useState(defaultScoring);
   const [deleteScopeAfterRun, setDeleteScopeAfterRun] = useState(false);
   const [suiteRunning, setSuiteRunning] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxTarget | null>(null);
@@ -199,7 +203,7 @@ export function App({ initialLoading = false }: AppProps) {
       return;
     }
     autoSelected.current = true;
-    const current = runs.runs.find((run) => ["running", "pending"].includes(String(run.status)));
+    const current = runs.runs.find((run) => ["running", "pending"].includes(String(run.status)) || run.rejudge?.status === 'running');
     if (!current) return;
     runs.selectRun(current);
     runs.startPolling();
@@ -262,6 +266,8 @@ export function App({ initialLoading = false }: AppProps) {
         sentrix_url: configApi.sentrixUrl.trim(),
         judge_url: configApi.judgeUrl.trim(),
         judge_model: configApi.judgeModel.trim(),
+        ...scoringPayload(startScoring, runs.promptDrafts),
+        task_system_prompt:runs.promptDrafts.task_decision || undefined, evidence_system_prompt:runs.promptDrafts.evidence || undefined,
         judge_provider_id: configApi.judgeProviderId,
         ...(configApi.judgeApiKeyDirty ? { judge_api_key: configApi.judgeApiKey } : {}),
         vllm_target_id: configApi.vllmTargetId,
@@ -276,7 +282,7 @@ export function App({ initialLoading = false }: AppProps) {
       // 1.0 :2682-2683：选中新 run。`useRuns` 没暴露 `setActiveRunId`，`selectRun` 是等价入口。
       await runs.loadRuns(1);
       const runId = result.run_ids?.[0];
-      if (runId) runs.selectRun({ run_id: runId });
+      if (runId) runs.selectRun({ run_id: runId, status: "pending" });
       runs.startPolling();
     } catch (e) {
       configApi.setError((e as Error).message);
@@ -290,6 +296,8 @@ export function App({ initialLoading = false }: AppProps) {
   const stopSuite = async () => {
     if (stopping || !window.confirm("确定停止全部测评、重判和内存画像任务？正在执行的调用需要完成清理。")) return;
     setStopping(true);
+    configApi.setError("");
+    runs.setError("");
     setStopStatus("正在发送取消请求…");
     try {
       const result = await api<{ errors?: Record<string, string> }>("/cancel-active", { method: "POST", body: "{}" });
@@ -297,11 +305,14 @@ export function App({ initialLoading = false }: AppProps) {
       const status = await api<ActiveWorkStatus>("/active-work/cleanup", { method: "POST", body: "{}" });
       setWorkBusy(status.cleanup_status !== "stopped");
       setStopStatus(status.cleanup_status === "stopped" ? "已停止，后台任务已退出" : "已请求取消，正在等待后台任务退出；清理完成前禁止新建任务");
-      await runs.loadRuns();
-      await runs.loadActiveRun();
+      try {
+        await runs.loadRuns();
+        await runs.loadActiveRun();
+      } catch (error) {
+        runs.setError(`停止请求已处理，刷新评测记录失败：${(error as Error).message || "请重新选择任务"}`);
+      }
     } catch (error) {
       setStopStatus("停止未确认：" + (error as Error).message);
-      configApi.setError((error as Error).message);
     } finally {
       setStopping(false);
     }
@@ -387,6 +398,10 @@ export function App({ initialLoading = false }: AppProps) {
               album={{ selectedAlbum, setSelectedAlbum, selectedQa, setSelectedQa }}
               start={{
                 ...startInput,
+                scoring: startScoring, onScoringChange: setStartScoring,
+                prompts:{judgePromptKinds:runs.judgePromptKinds,activePromptKind:runs.activePromptKind,
+                  onSwitchPromptKind:runs.switchPromptKind,rejudgePrompt:runs.rejudgePrompt,onRejudgePromptChange:runs.setRejudgePrompt,
+                  judgeModel:configApi.judgeModel,onSavePrompt:()=> {void configApi.saveJudgePrompt(runs.activePromptKind,runs.rejudgePrompt);},onResetPrompt:runs.resetJudgePrompt},
                 deleteScopeAfterRun,
                 onDeleteScopeAfterRunChange: setDeleteScopeAfterRun,
                 onStart: () => {
@@ -428,6 +443,8 @@ export function App({ initialLoading = false }: AppProps) {
             <QaResults
               activeRun={runs.activeRun}
               qa={qa}
+              readProfile={runs.readProfile}
+              onReadProfileChange={value => {runs.setReadProfile(value);runs.setReadBatch('');}}
               resultRef={runs.runDetailRef}
               onOpenMedia={setLightbox}
             />

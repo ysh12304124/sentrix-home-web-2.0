@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -26,13 +27,13 @@ def _unit_rows(values: Sequence[Sequence[float]]) -> np.ndarray:
     if array.ndim != 2 or not array.shape[0] or not array.shape[1]:
         return np.empty((0, 0), dtype=np.float32)
     norms = np.linalg.norm(array, axis=1, keepdims=True)
-    return array / np.maximum(norms, 1e-12)
+    return cast(np.ndarray, array / np.maximum(norms, 1e-12))
 
 
 def _softmax(values: np.ndarray, axis: int) -> np.ndarray:
     shifted = values - np.max(values, axis=axis, keepdims=True)
     exp = np.exp(np.clip(shifted, -80.0, 0.0))
-    return exp / np.maximum(exp.sum(axis=axis, keepdims=True), 1e-12)
+    return cast(np.ndarray, exp / np.maximum(exp.sum(axis=axis, keepdims=True), 1e-12))
 
 
 def bidirectional_cross_modal_attention(

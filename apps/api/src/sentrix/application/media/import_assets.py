@@ -89,20 +89,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
+from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
-from sentrix.domain.media.models import (
-    Asset,
-    AssetStatus,
-    MediaType,
-    Observation,
-    normalize_captured_datetime,
-)
+from sentrix.domain.media.capture_time import CaptureTime
+from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetObserver,
     AssetRepository,
     AudioMetadataReader,
     AudioProbe,
     AudioRepository,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -263,6 +260,7 @@ class ImportAssets:
         observations: ObservationRepository,
         storage: MediaStorage,
         metadata: MetadataReader,
+        resolve_capture_time: CaptureTimeResolver | None = None,
         visual_indexer: AssetVisualIndexer | None = None,
         place_indexer: AssetPlaceIndex | None = None,
         observer: AssetObserver | None = None,
@@ -303,6 +301,7 @@ class ImportAssets:
         self._observations = observations
         self._storage = storage
         self._metadata = metadata
+        self._resolve_capture_time = resolve_capture_time
         self._video_metadata = video_metadata
         self._video_transcoder = video_transcoder
         self._video_repository = video_repository
@@ -350,7 +349,11 @@ class ImportAssets:
         # 放在去重判断**之前**——去重命中同样是一条「这个 scope 被用到了」的证据。
         self._ensure_space(request.scope_id)
 
-        source_size = request.source_path.stat().st_size if request.source_path is not None else len(request.content)
+        source_size = (
+            request.source_path.stat().st_size
+            if request.source_path is not None
+            else len(request.content)
+        )
         content_sha256 = request.content_sha256 or (
             _sha256_file(request.source_path)
             if request.source_path is not None
@@ -440,11 +443,23 @@ class ImportAssets:
             else declared_mime
         )
 
+        source = "exif" if media_type is MediaType.IMAGE else "unknown"
+        if video_probe is not None and video_probe.metadata is not None:
+            source = video_probe.metadata.creation_source or "video_metadata"
+        if audio_probe is not None and audio_probe.metadata is not None:
+            source = audio_probe.metadata.creation_source or "audio_metadata"
+        provenance = CaptureTime(
+            captured_at.isoformat() if captured_at else "",
+            source if captured_at else "unknown",
+            status=("offset_only" if captured_at.utcoffset() is not None else "timezone_unknown")
+            if captured_at
+            else "unknown",
+        )
+        if self._resolve_capture_time is not None:
+            captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
         now = self._clock()
-        # **拍摄时间读不出来就保持 None，不能拿导入时刻冒充。** 上传时间是用户按下
-        # 「上传」的时间，不是这张照片被拍下的时间；吞成 now 会让时间线把文件归到
-        # 今天，用户看到的是一个假日期。时间线的「未知时间」分组只认 NULL。
-        captured_at = normalize_captured_datetime(captured_at)
+        # 拍摄时间读不出来就保持 None，不能拿导入时刻冒充。main 的
+        # ``ResolveCaptureTime`` 已负责保留原始偏移/未知时区语义，这里不再二次归一化。
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -456,6 +471,7 @@ class ImportAssets:
             status=AssetStatus.QUEUED if request.defer_processing else AssetStatus.PROCESSED,
             content_sha256=content_sha256,
             captured_at=captured_at,
+            capture_time=provenance,
             captured_location=gps,
             created_at=now,
             updated_at=now,
@@ -487,12 +503,17 @@ class ImportAssets:
         total_started = time.perf_counter()
         asset = staged.asset
         commit_started = time.perf_counter()
-        processed = self.commit_image(asset, prepared)
+        with stage_span("source_memory_commit", asset.id):
+            processed = self.commit_image(asset, prepared)
         memory_commit_seconds = time.perf_counter() - commit_started
         commit_finished = time.perf_counter()
         # 场景抽取排在图片流水线**之后**：它自己会再建一批资产与观察（关键帧），
         # 先跑会把派生物的数混进「这次导入」的结果里。
-        video_scenes = self._extract_video_scenes(asset)
+        if asset.media_type is MediaType.VIDEO:
+            with stage_span("video_total", asset.id):
+                video_scenes = self._extract_video_scenes(asset)
+        else:
+            video_scenes = self._extract_video_scenes(asset)
         if (
             staged.media_type is MediaType.VIDEO
             and video_scenes.timings
@@ -606,7 +627,10 @@ class ImportAssets:
 
         # **重放必须复用观察 ID。** 观察一旦插入，后段任一步失败重跑时若再生成
         # ``obs_*``，文本向量、词项、实体关联都会跟着多一套；事件归属也会再建一个。
-        reused = sorted(self._observations.list_by_asset(asset.id), key=lambda item: (item.created_at, item.id))
+        reused = sorted(
+            self._observations.list_by_asset(asset.id),
+            key=lambda item: (item.created_at, item.id),
+        )
         if reused:
             observation = reused[0]
         else:

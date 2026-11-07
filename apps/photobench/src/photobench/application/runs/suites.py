@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -46,6 +47,7 @@ from photobench.application.config.service import (
 )
 from photobench.application.run_execution.gpu_sampler import GpuSampler
 from photobench.application.run_execution.judge import InlineImages, JudgeRunner
+from photobench.application.run_execution.profile_scoring import prepare_batches
 from photobench.application.run_execution.service import (
     JudgeSettings,
     RunExecution,
@@ -53,15 +55,28 @@ from photobench.application.run_execution.service import (
     freeze_runtime_request,
 )
 from photobench.application.runs.index import RunIndex
+from photobench.application.runs.scoring import preview as scoring_preview
+from photobench.application.runs.scoring import run_scoring
 from photobench.config import default_import_timeout
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
 from photobench.domain.errors import InvalidRequestError
+from photobench.domain.evaluation.contract import scoring_options
+from photobench.domain.evaluation.profiles import (
+    LABELS,
+    profile_configs,
+    scoring_targets,
+    summarize_batches,
+    uses_readable_metadata,
+)
+from photobench.domain.evaluation.prompts import evaluation_prompts as default_evaluation_prompts
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter, RunStore
 from photobench.domain.runs import analysis
 from photobench.domain.runs.analysis import now_iso
-from photobench.domain.runs.execution import RunCancelledError, safe_slug
+from photobench.domain.runs.execution import RunCancelledError, index_assets_by_name, safe_slug
+from photobench.domain.runs.judge import judge_chat_url
+from photobench.domain.runs.judge_recovery import RECOVERY_SCOPES, recovery_fields
 from photobench.domain.runtime.ports import LifecycleProvider, RunRuntimeSnapshot, TelemetryProvider
 from photobench.domain.sentrix.ports import CancellableOperations, SentrixClient
 
@@ -219,18 +234,39 @@ class RunSuites:
         except KeyError:
             return None
 
+    @staticmethod
+    def _gt_image_option(payload: Mapping[str, Any], default: bool = False) -> bool:
+        value = payload.get("judge_use_gt_images", default)
+        if not isinstance(value, bool):
+            raise InvalidRequestError("judge_use_gt_images must be a boolean")
+        return value
+
     def _judge_settings(self, payload: Mapping[str, Any]) -> JudgeSettings:
         """1.0 ``start_suite`` 的 judge 解析（``:7330``）：请求体 > provider 解析出的值。"""
         custom = self._config.load_custom_judge_prompts()
         provider_id = str(payload.get("judge_provider_id") or self._config.judge_provider_id)
         _, provider_url, provider_model, provider_key = self._config.resolve_judge_provider(provider_id)
         return JudgeSettings(
+            judge_provider_id=provider_id,
             judge_url=str(payload.get("judge_url") or provider_url).rstrip("/"),
             judge_model=str(payload.get("judge_model") or provider_model),
             judge_api_key=str(payload.get("judge_api_key") or provider_key),
             answer_quality_prompt=custom.get("answer_quality"),
-            task_judge_prompt=custom.get("task_decision"),
-            evidence_judge_prompt=custom.get("evidence"),
+            task_judge_prompt=payload.get("task_system_prompt") or custom.get("task_decision"),
+            evidence_judge_prompt=payload.get("evidence_system_prompt") or custom.get("evidence"),
+            judge_use_gt_images=self._gt_image_option(payload),
+        )
+
+    def _frozen_judge_settings(self, frozen: Mapping[str, Any]) -> JudgeSettings:
+        provider_id, url, _, _ = self._config.resolve_judge_provider(frozen.get("provider_id"))
+        if frozen.get("url") and judge_chat_url(str(frozen["url"])) != judge_chat_url(url):
+            raise InvalidRequestError("原Judge地址与当前供应商配置不同，请恢复原供应商地址，或新建评分批次")
+        return self._judge_settings(
+            {
+                "judge_provider_id": provider_id,
+                "judge_url": frozen.get("url"),
+                "judge_model": frozen.get("model"),
+            }
         )
 
     # ---- start_suite --------------------------------------------------------
@@ -275,6 +311,18 @@ class RunSuites:
             model_base_url = self._config.model_base_url
         sentrix_url = str(payload.get("sentrix_url") or self._config.sentrix_url)
         judge = JudgeSettings() if mode == "build" else self._judge_settings(payload)
+        try:
+            configs = (
+                profile_configs(
+                    payload.get("scoring_profiles"),
+                    payload.get("scoring_configs"),
+                    self._config.load_custom_judge_prompts(),
+                )
+                if mode != "build"
+                else {}
+            )
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
         self._require_inactive()
         deps = _SuiteDeps(
             sentrix_url=sentrix_url,
@@ -338,19 +386,25 @@ class RunSuites:
                     # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
                     scope_id=existing_scope_id,
                     runtime_framework=deps.runtime_framework,
+                    judge_provider_id=deps.judge.judge_provider_id,
                     judge_url=deps.judge.judge_url,
                     judge_model=deps.judge.judge_model,
                     judge_api_key=deps.judge.judge_api_key,
+                    scoring_configs=configs,
+                    evaluation_options=scoring_options(payload.get("evaluation_options")),
                     judge_prompts={
                         "answer_quality": deps.judge.answer_quality_prompt,
                         "task_decision": deps.judge.task_judge_prompt,
                         "evidence": deps.judge.evidence_judge_prompt,
                     },
                     evidence_judge_enabled=deps.judge.evidence_enabled,
+                    judge_use_gt_images=deps.judge.judge_use_gt_images,
                 )
                 request = freeze_runtime_request(request, connection, self._build_revision)
                 requests[run_id] = request
-                self._active[run_id] = self._new_execution(request)
+                execution = self._new_execution(request)
+                execution.prepare(request)
+                self._active[run_id] = execution
                 created.append(run_id)
 
         def _run_sequentially() -> None:
@@ -384,7 +438,7 @@ class RunSuites:
 
     # ---- resume -------------------------------------------------------------
 
-    def resume_run(self, run_id: str) -> dict[str, Any]:
+    def resume_run(self, run_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """``POST /api/runs/{id}/resume``（1.0 ``resume_run`` ``:7488``）。
 
         **与 ``reuse`` 共用同一块地基**：两者都是「绑到一个已经存在的 scope 上、
@@ -395,10 +449,20 @@ class RunSuites:
         这也正是取消掉的题必须标 ``scheduled`` 而不能标 ``failed`` 的原因——
         标 failed 的话它们会被当成「已跑完」，续跑时永远跳过（2026-10-15 改的）。
 
-        2.0 此前直接回 501（``api/routes/suites.py``），理由是「scope 由导入内部 ensure，
-        没有复用已存在 scope 这条路」。那条理由随 ``mode=reuse`` 一起消失了。
+        同时按轮次补缺失的 Judge 结果，成功子评分和失败尝试保留。
+        ``product_build_revision`` 可显式选择已配置的产品版本；原版本来源存入
+        ``resume_context``，运行前仍须通过产品配置与版本核验。
         """
         self._require_inactive()
+        payload = payload or {}
+        repair_missing = payload.get("repair_missing_judges", True)
+        if not isinstance(repair_missing, bool):
+            raise InvalidRequestError("repair_missing_judges must be a boolean")
+        target_revision = str(payload.get("product_build_revision") or "").strip()
+        if target_revision and target_revision != self._config.public_runtime_connection_config().get(
+            "product_build_revision"
+        ):
+            raise InvalidRequestError("resume product_build_revision must match the configured product build")
         try:
             saved = self._store.load_state(run_id)
         except KeyError as exc:
@@ -446,11 +510,30 @@ class RunSuites:
             if isinstance(item, dict)
             and str(item.get("execution_status") or "") not in {"scheduled", "running"}
         )
+        prior_ids = [str(item.get("qa_id")) for item in prior_items]
+        frozen_ids = {str(row.get("qa_id")) for row in snapshot["rows"]}
+        if len(prior_ids) != len(set(prior_ids)) or not set(prior_ids) <= frozen_ids:
+            raise InvalidRequestError("saved results do not uniquely match the frozen QA snapshot")
         model_profile = str(saved.get("model_profile") or "")
         new_run_id = (
             f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
             f"{safe_slug(model_profile)}-resume-{uuid.uuid4().hex[:6]}"
         )
+        frozen_batches = saved.get("scoring_batches") or []
+        primary = next(
+            (b for b in frozen_batches if b["batch_id"] in (saved.get("primary_scoring_batch_ids") or [])),
+            None,
+        )
+        frozen_judge = (
+            primary["judge"]
+            if primary
+            else {
+                "provider_id": saved.get("judge_provider_id"),
+                "url": saved.get("judge_url"),
+                "model": saved.get("judge_model"),
+            }
+        )
+        resumed_judge = self._frozen_judge_settings(frozen_judge)
         request = RunRequest(
             album_id=album_id,
             qa_set=qa_set,
@@ -463,9 +546,45 @@ class RunSuites:
             mode="reuse",
             scope_id=scope_id,
             runtime_framework=str(saved.get("runtime_framework") or ""),
-            judge_url=str(saved.get("judge_url") or ""),
-            judge_model=str(saved.get("judge_model") or ""),
+            judge_url=resumed_judge.judge_url,
+            judge_model=resumed_judge.judge_model,
+            judge_provider_id=resumed_judge.judge_provider_id,
+            judge_api_key=resumed_judge.judge_api_key,
+            judge_prompts=copy.deepcopy(saved.get("judge_prompts") or {}),
             prior_items=prior_items,
+            scoring_configs=saved.get("scoring_configs") or {},
+            prior_scoring={
+                k: copy.deepcopy(saved[k])
+                for k in (
+                    "gt_metadata_snapshot",
+                    "scoring_batches",
+                    "scoring_results",
+                    "scoring_summaries",
+                    "diagnostic_results",
+                    "primary_scoring_batch_ids",
+                )
+                if k in saved
+            },
+            repair_missing_judges=repair_missing and not bool(saved.get("scoring_profiles")),
+            evaluation_options=scoring_options(saved.get("evaluation_options")),
+            evaluation_prompts=saved.get("evaluation_prompts") or default_evaluation_prompts(),
+            judge_use_gt_images=self._gt_image_option(payload, bool(saved.get("judge_use_gt_images"))),
+            evidence_judge_enabled=bool(saved.get("evidence_judge_enabled")),
+            resume_context={
+                "resumed_from": run_id,
+                "source_status": status,
+                "source_build_revision": saved.get("build_revision"),
+                "source_runtime_snapshot": saved.get("runtime_snapshot"),
+                "source_input_integrity": saved.get("input_integrity"),
+                "qa_definition_sha256": snapshot["definition_sha256"],
+                "inherited_qa_ids": [item.get("qa_id") for item in prior_items],
+                "repair_missing_judges": repair_missing,
+                "selected_product_build_revision": target_revision or None,
+                "source_judge_use_gt_images": saved.get("judge_use_gt_images"),
+                "selected_judge_use_gt_images": self._gt_image_option(
+                    payload, bool(saved.get("judge_use_gt_images"))
+                ),
+            },
             frozen_qa_snapshot=snapshot,
         )
         prior_snapshot = saved.get("runtime_snapshot")
@@ -478,9 +597,11 @@ class RunSuites:
             # A resumed run is a new execution/build, with the original dependency/budget facts.
             inherited = dict(
                 prior_snapshot,
-                required_build_revision=self._build_revision
-                if self._build_revision != "development"
-                else None,
+                product_build_revision=target_revision or prior_snapshot.get("product_build_revision"),
+                required_build_revision=target_revision
+                or prior_snapshot.get("product_build_revision")
+                or prior_snapshot.get("required_build_revision")
+                or (self._build_revision if self._build_revision != "development" else None),
             )
             request = replace(
                 request,
@@ -501,7 +622,10 @@ class RunSuites:
                 self._build_revision,
             )
         with self._lock:
-            self._active[new_run_id] = self._new_execution(request)
+            self._require_inactive()
+            execution = self._new_execution(request)
+            execution.prepare(request)
+            self._active[new_run_id] = execution
 
         def _run_resumed() -> None:
             try:
@@ -521,6 +645,7 @@ class RunSuites:
             "scope_id": scope_id,
             # 带回来的题数——调用方据此判断续跑到底省了多少。
             "resumed_items": len(prior_items),
+            "repair_missing_judges": repair_missing,
         }
 
     # ---- 取消 / 删除 --------------------------------------------------------
@@ -759,6 +884,299 @@ class RunSuites:
             )
         return targets
 
+    @staticmethod
+    def _recovery_selection(
+        state: Mapping[str, Any], scope: str
+    ) -> dict[tuple[int, int | None], tuple[str, ...]]:
+        definitions = {str(row["qa_id"]): row for row in (state.get("qa_snapshot") or {}).get("rows") or []}
+        selected: dict[tuple[int, int | None], tuple[str, ...]] = {}
+        for index, turn_index in RunSuites._rejudge_targets(state.get("items") or []):
+            item = state["items"][index]
+            if item.get("execution_status") in {"failed", "scheduled", "running"}:
+                continue
+            record = item["runtime_turns"][turn_index] if turn_index is not None else item
+            row = definitions.get(str(item.get("qa_id")), item)
+            turns = row.get("conversation") or []
+            gt = turns[turn_index] if turn_index is not None and turn_index < len(turns) else row
+            fields = recovery_fields(
+                {
+                    **record,
+                    "expected_action": gt.get(
+                        "expected_action", record.get("expected_action", row.get("expected_action"))
+                    ),
+                },
+                scope,
+                evidence=bool(state.get("evidence_judge_enabled")) and scope != "all",
+            )
+            if fields:
+                selected[index, turn_index] = fields
+        return selected
+
+    def recovery_plan(self, run_id: str) -> dict[str, Any]:
+        state = self._state_if_exists(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        rows = (state.get("qa_snapshot") or {}).get("rows") or []
+        done = {
+            str(item.get("qa_id"))
+            for item in state.get("items") or []
+            if item.get("execution_status") not in {"scheduled", "running"}
+        }
+        remaining = sum(str(row.get("qa_id")) not in done for row in rows)
+        counts = {}
+        for scope in sorted(RECOVERY_SCOPES):
+            fields = self._recovery_selection(state, scope)
+            counts[scope] = {
+                "qa_count": len({key[0] for key in fields}),
+                "turn_count": len(fields),
+                "subscore_count": sum(map(len, fields.values())),
+            }
+        source_runtime = state.get("runtime_snapshot") or {}
+        old_revision = source_runtime.get("product_build_revision") or source_runtime.get(
+            "required_build_revision"
+        )
+        current_revision = self._config.public_runtime_connection_config().get("product_build_revision")
+        return {
+            "run_id": run_id,
+            "inherited_qa_count": len(done),
+            "remaining_qa_count": remaining,
+            "can_resume": bool(
+                remaining
+                and state.get("scope_id")
+                and state.get("status") in {"failed", "cancelled", "interrupted", "completed_with_errors"}
+            ),
+            "scope_id": state.get("scope_id"),
+            "scoring": counts,
+            "frozen_scoring_profiles": state.get("scoring_profiles") or [],
+            "scoring_profiles": {
+                profile: {
+                    "batch_id": batch.get("batch_id") if batch else None,
+                    "pending": len(scoring_targets(state, batch, "missing")) if batch else None,
+                    "status": "available" if batch else "not_collected",
+                }
+                for profile in LABELS
+                for batch in [
+                    next(
+                        (
+                            b
+                            for b in reversed(state.get("scoring_batches") or [])
+                            if b["profile_id"] == profile
+                        ),
+                        None,
+                    )
+                ]
+            },
+            "source_product_build_revision": old_revision,
+            "current_product_build_revision": current_revision,
+            "product_version_changed": old_revision != current_revision,
+            "judge_use_gt_images": bool(state.get("judge_use_gt_images")),
+        }
+
+    def _profile_request(
+        self, state: dict[str, Any], payload: Mapping[str, Any]
+    ) -> tuple[list[dict[str, Any]], JudgeSettings, str, list[str] | None]:
+        snapshot = state.get("qa_snapshot") or {}
+        if not snapshot or snapshot.get("definition_sha256") != qa_fingerprint(snapshot.get("rows")):
+            raise InvalidRequestError("原测评冻结QA快照校验失败，不能评分")
+        scope = str(payload.get("scope") or "missing")
+        if scope not in RECOVERY_SCOPES:
+            raise InvalidRequestError("Unknown scoring scope")
+        custom = self._config.load_custom_judge_prompts()
+        resume_ids = payload.get("resume_batch_ids")
+        if resume_ids is not None:
+            if (
+                not isinstance(resume_ids, list)
+                or not resume_ids
+                or any(not isinstance(v, str) for v in resume_ids)
+                or len(set(resume_ids)) != len(resume_ids)
+            ):
+                raise InvalidRequestError("请选择要续评的批次")
+            batches = [b for b in state.get("scoring_batches") or [] if b["batch_id"] in resume_ids]
+            if len(batches) != len(resume_ids) or len({b["profile_id"] for b in batches}) != len(batches):
+                raise InvalidRequestError("每套标准只能续评一个已有批次")
+            if (
+                len(
+                    {(b["judge"]["url"], b["judge"]["model"], b["judge"].get("provider_id")) for b in batches}
+                )
+                != 1
+            ):
+                raise InvalidRequestError("Judge配置不同的批次请分别续评")
+            if any(b["qa_definition_sha256"] != snapshot["definition_sha256"] for b in batches):
+                raise InvalidRequestError("评分批次与原题库快照不一致")
+            frozen = batches[0]["judge"]
+            judge = self._frozen_judge_settings(frozen)
+            configs = {b["profile_id"]: b["config"] for b in batches}
+        else:
+            batches = []
+            judge = self._judge_settings(payload)
+        try:
+            if resume_ids is None:
+                configs = profile_configs(
+                    payload.get("scoring_profiles"), payload.get("scoring_configs"), custom
+                )
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        if any(
+            c["use_gt_images"] or (c["use_gt_metadata"] and not uses_readable_metadata(c))
+            for c in configs.values()
+        ) and str(state.get("sentrix_url") or "").rstrip("/") != self._config.sentrix_url.rstrip("/"):
+            raise InvalidRequestError("GT辅助评分需先将产品连接指向原测评服务")
+        if not judge.judge_url or not judge.judge_model:
+            raise InvalidRequestError("请选择有效的Judge配置")
+        diagnostics = {
+            "task_decision": payload.get("task_system_prompt") or judge.task_judge_prompt,
+            "evidence": payload.get("evidence_system_prompt") or judge.evidence_judge_prompt,
+            "evidence_enabled": bool(state.get("evidence_judge_enabled")),
+        }
+        metadata_snapshot = None
+        if resume_ids is None and any(uses_readable_metadata(c) for c in configs.values()):
+            try:
+                metadata_snapshot = self._albums.gt_metadata_snapshot(str(state["album_id"]))
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+        batches = batches or prepare_batches(
+            state,
+            configs,
+            {
+                "url": judge.judge_url,
+                "model": judge.judge_model,
+                "provider_id": judge.judge_provider_id,
+                "diagnostics": diagnostics,
+            },
+            scope,
+            str(payload.get("batch_nonce") or ""),
+            metadata_snapshot=metadata_snapshot,
+        )
+        qa_ids = payload.get("qa_ids")
+        if qa_ids is not None:
+            valid = {str(row["qa_id"]) for row in snapshot["rows"]}
+            if not isinstance(qa_ids, list) or not qa_ids or any(q not in valid for q in qa_ids):
+                raise InvalidRequestError("qa_ids必须包含冻结题库中的题目ID")
+        return batches, judge, scope, qa_ids
+
+    def preview_profile_scoring(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        saved = self._state_if_exists(run_id)
+        if saved is None:
+            raise KeyError(run_id)
+        state = copy.deepcopy(saved)
+        batches, _, scope, qa_ids = self._profile_request(state, payload)
+        return {
+            **scoring_preview(state, batches, scope, qa_ids),
+            "batch_ids": [b["batch_id"] for b in batches],
+        }
+
+    def start_profile_scoring(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._require_inactive()
+            state = self._state_if_exists(run_id)
+            if state is None:
+                raise KeyError(run_id)
+            if state.get("status") in DIRTY_STATUSES:
+                raise InvalidRequestError("测评仍在运行，暂不能补评")
+            batches, settings, scope, qa_ids = self._profile_request(state, payload)
+            selected = scoring_preview(state, batches, scope, qa_ids)
+            if not selected["subscore_count"]:
+                state["scoring_summaries"] = summarize_batches(state)
+                self._writer.write_snapshot(run_id, state)
+                self._index.upsert(analysis.run_list_entry(state))
+                return {"run_id": run_id, "status": "completed", "total": 0, **selected}
+            rejudge_id = "scoring-" + uuid.uuid4().hex
+            if (state.get("rejudge") or {}).get("rejudge_id"):
+                state.setdefault("rejudge_history", []).append(copy.deepcopy(state["rejudge"]))
+            state["rejudge"] = {
+                "rejudge_id": rejudge_id,
+                "task_type": "scoring",
+                "source_run_id": run_id,
+                "status": "running",
+                "started_at": now_iso(),
+                "scope": scope,
+                "completed": 0,
+                "failed": 0,
+                "results": [],
+                "error_details": [],
+                "total": selected["subscore_count"],
+                "batch_ids": [b["batch_id"] for b in batches],
+                "unit": "scoring_item",
+                **selected,
+            }
+            self._writer.write_snapshot(run_id, state)
+            self._index.upsert(analysis.run_list_entry(state))
+            cancel = threading.Event()
+            self._reservations[rejudge_id] = cancel
+        lock = threading.RLock()
+
+        def checkpoint() -> None:
+            with lock:
+                self._writer.write_snapshot(run_id, state)
+
+        def worker() -> None:
+            try:
+                runner = JudgeRunner(
+                    http=self._http,
+                    cancel=cancel,
+                    judge_url=settings.judge_url,
+                    judge_model=settings.judge_model,
+                    judge_api_key=settings.judge_api_key,
+                    sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
+                    inline_images=self._inline_images,
+                )
+                assets = {}
+                if any(
+                    b["config"]["use_gt_images"]
+                    or (b["config"]["use_gt_metadata"] and not uses_readable_metadata(b["config"]))
+                    or b["diagnostics"].get("evidence_enabled")
+                    for b in batches
+                ):
+                    assets = index_assets_by_name(
+                        self._sentrix.list_assets(scope_id=str(state.get("scope_id") or ""), limit=1000)
+                    )
+                run_scoring(
+                    state, batches, scope, runner, assets, checkpoint, cancel, lock=lock, qa_ids=qa_ids
+                )
+            except Exception as exc:
+                with lock:
+                    state["rejudge"].update(status="failed", error=str(exc), finished_at=now_iso())
+                checkpoint()
+            finally:
+                with lock:
+                    state["summary"] = analysis.effective_summary(state)
+                    checkpoint()
+                    self._index.upsert(analysis.run_list_entry(state))
+                with self._lock:
+                    self._auxiliary.pop(rejudge_id, None)
+                if self._on_finished is not None:
+                    self._on_finished(run_id)
+
+        thread = threading.Thread(target=worker, name=rejudge_id, daemon=True)
+        with self._lock:
+            self._auxiliary[rejudge_id] = (thread, cancel)
+            try:
+                thread.start()
+            except Exception as exc:
+                self._auxiliary.pop(rejudge_id, None)
+                state["rejudge"].update(status="failed", error=str(exc), finished_at=now_iso())
+                checkpoint()
+                raise
+            finally:
+                self._reservations.pop(rejudge_id, None)
+        return {
+            "run_id": run_id,
+            "rejudge_id": rejudge_id,
+            "status": "running",
+            "total": selected["subscore_count"],
+            **selected,
+        }
+
+    @staticmethod
+    def _finish_pending_rejudge(state: dict[str, Any], rejudge_id: str, status: str, reason: str) -> None:
+        for item in state.get("items") or []:
+            for record in [item, *(item.get("runtime_turns") or [])]:
+                for field in ("judge", "task_judge", "evidence_judge"):
+                    result = record.get(field) or {}
+                    if result.get("rejudge_id") == rejudge_id and result.get("status") == "pending":
+                        result.update(status=status, reason=reason)
+                        item["judge_status"] = status
+
     def start_rejudge(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """``POST /api/runs/{id}/rejudge``（1.0 ``start_rejudge`` ``:7061``）。
 
@@ -766,6 +1184,12 @@ class RunSuites:
         换一个 judge 模型/提示词重新打分。这也意味着它必须**归档旧分数**
         （``judge_history``），否则「改一个字看看分数怎么变」就变成不可逆的。
         """
+        if "scoring_profiles" in payload or "resume_batch_ids" in payload:
+            return self.start_profile_scoring(run_id, payload)
+        scope = str(payload.get("scope") or "all")
+        if scope not in RECOVERY_SCOPES:
+            raise InvalidRequestError("scope must be missing, failed, unscored, needs_review or all")
+        use_gt_images = self._gt_image_option(payload)
         system_prompt = str(payload.get("system_prompt") or "").strip()
         if not system_prompt:
             raise InvalidRequestError("system_prompt is required")
@@ -793,10 +1217,20 @@ class RunSuites:
                 raise InvalidRequestError("cannot rejudge while the benchmark run is active")
             if (state.get("rejudge") or {}).get("status") == "running":
                 raise InvalidRequestError("rejudge is already running")
-            targets = self._rejudge_targets(state.get("items") or [])
+            evaluation_options = scoring_options(
+                payload.get("evaluation_options", state.get("evaluation_options"))
+            )
+            selection = self._recovery_selection(state, scope)
+            targets = list(selection)
             if not targets:
                 raise InvalidRequestError("run has no completed agent answers to rejudge")
             snapshot = state.get("qa_snapshot") or {}
+            if use_gt_images and str(state.get("sentrix_url") or self._config.sentrix_url).rstrip(
+                "/"
+            ) != self._config.sentrix_url.rstrip("/"):
+                raise InvalidRequestError("GT图片评分需先将产品连接配置指向原测评服务")
+            if use_gt_images and not snapshot:
+                raise InvalidRequestError("GT图片评分需要原测评冻结QA快照")
             definitions = {str(row["qa_id"]): row for row in snapshot.get("rows") or []}
             if snapshot and snapshot.get("definition_sha256") != qa_fingerprint(snapshot.get("rows")):
                 raise InvalidRequestError("原测评QA快照校验失败，不能重评分")
@@ -818,6 +1252,8 @@ class RunSuites:
                 state.setdefault("rejudge_history", []).append(previous)
             state["rejudge"] = {
                 "rejudge_id": rejudge_id,
+                "evaluation_options": evaluation_options,
+                "evaluation_prompts": default_evaluation_prompts(),
                 "status": "running",
                 "started_at": now_iso(),
                 "finished_at": None,
@@ -825,32 +1261,52 @@ class RunSuites:
                 "completed": 0,
                 "failed": 0,
                 "unit": "conversation_turn",
+                "scope": scope,
+                "judge_use_gt_images": use_gt_images,
+                "qa_count": len({index for index, _ in targets}),
                 "judge_model": judge_model,
                 "judge_url": judge_url,
                 "current_item_index": None,
                 "current_turn_index": None,
             }
-            for index in sorted({item_index for item_index, _ in targets}):
+            for (index, turn_index), fields in selection.items():
                 item = state["items"][index]
                 item["judge_status"] = "pending"
-                for record in [item, *(item.get("runtime_turns") or [])]:
-                    for field in ("judge", "task_judge", "evidence_judge"):
-                        prior = record.get(field)
-                        if prior:
-                            record.setdefault(f"{field}_history", []).append(
-                                {"archived_at": now_iso(), field: prior}
-                            )
-                    record["judge"] = {
-                        "score": None,
-                        "reason": "",
-                        "status": "pending",
-                        "rejudge_id": rejudge_id,
-                    }
-                    record["task_judge"] = {"status": "pending", "rejudge_id": rejudge_id}
+                record = item["runtime_turns"][turn_index] if turn_index is not None else item
+                for field in fields:
+                    prior = record.get(field)
+                    if prior:
+                        record.setdefault(f"{field}_history", []).append(
+                            {"archived_at": now_iso(), field: copy.deepcopy(prior)}
+                        )
+                    record[field] = {"score": None, "status": "pending", "rejudge_id": rejudge_id}
+                if scope == "all":
+                    if record.get("evidence_judge"):
+                        record.setdefault("evidence_judge_history", []).append(
+                            {
+                                "archived_at": now_iso(),
+                                "evidence_judge": copy.deepcopy(record["evidence_judge"]),
+                            }
+                        )
                     record["evidence_judge"] = {"score": None, "reason": "not_applicable"}
-                item["task_judges"] = [turn["task_judge"] for turn in item.get("runtime_turns") or []]
+            for index in sorted({index for index, _ in targets}):
+                item = state["items"][index]
+                if item.get("runtime_turns"):
+                    # Archive the public last-turn projection before synchronizing it.
+                    for field in ("judge", "task_judge", "evidence_judge"):
+                        if (index, len(item["runtime_turns"]) - 1) in selection and (
+                            field in selection[index, len(item["runtime_turns"]) - 1]
+                            or (scope == "all" and field == "evidence_judge")
+                        ):
+                            if item.get(field):
+                                item.setdefault(f"{field}_history", []).append(
+                                    {"archived_at": now_iso(), field: copy.deepcopy(item[field])}
+                                )
+                            item[field] = item["runtime_turns"][-1].get(field) or {}
+                    item["task_judges"] = [turn.get("task_judge") or {} for turn in item["runtime_turns"]]
             state["summary"] = analysis.effective_summary(state)
             self._writer.write_snapshot(run_id, state)
+            self._index.upsert(analysis.run_list_entry(state))
             cancel_event = threading.Event()
             self._reservations[rejudge_id] = cancel_event
 
@@ -903,9 +1359,12 @@ class RunSuites:
                 turns[: turn_index + 1] if turn_index is not None else None,
                 record.get("agent_status") or item.get("agent_status"),
                 record.get("termination_reason") or item.get("termination_reason") or "",
+                definition,
+                definition_turns[turn_index] if turn_index is not None and definition_turns else {},
+                copy.deepcopy(record),
             )
 
-        def _judge_one(payload: tuple[Any, ...]) -> tuple[int, int | None, dict[str, Any], dict[str, Any]]:
+        def _judge_one(payload: tuple[Any, ...]) -> dict[str, dict[str, Any]]:
             (
                 index,
                 turn_index,
@@ -919,35 +1378,55 @@ class RunSuites:
                 conversation,
                 agent_status,
                 termination,
+                definition,
+                gt,
+                record,
             ) = payload
             if cancel_event.is_set():
                 raise RunCancelledError("rejudge cancelled")
-            judge_result = runner.judge(
-                message,
-                reference,
-                answer,
-                expected_action=expected,
-                task_type=task_type,
-                question_type=question_type,
-                answerability=answerability,
-                conversation=conversation,
-            )
+            results: dict[str, dict[str, Any]] = {}
+            fields = selection[index, turn_index]
+            if "judge" in fields:
+                results["judge"] = runner.judge(
+                    message,
+                    reference,
+                    answer,
+                    expected_action=expected,
+                    task_type=task_type,
+                    question_type=question_type,
+                    answerability=answerability,
+                    conversation=conversation,
+                    gt_row=definition,
+                    gt_turn=gt,
+                    assets_by_name=assets_by_name,
+                )
             # 任务行为判分跟着一起重判（1.0 ``:7200`` 的两个 future）——只重判
             # 回答质量会让 ``task_judges`` 停在上一次的结论上，而界面上它们
             # 看起来是同一批次的产物。
-            task_result = runner.judge_task_action(
-                message,
-                answer,
-                expected,
-                agent_status,
-                termination,
-                task_type=task_type,
-                question_type=question_type,
-                answerability=answerability,
-                reference=reference,
-                conversation=conversation,
-            )
-            return index, turn_index, judge_result, task_result
+            if "task_judge" in fields:
+                results["task_judge"] = runner.judge_task_action(
+                    message,
+                    answer,
+                    expected,
+                    agent_status,
+                    termination,
+                    task_type=task_type,
+                    question_type=question_type,
+                    answerability=answerability,
+                    reference=reference,
+                    conversation=conversation,
+                )
+            if "evidence_judge" in fields:
+                results["evidence_judge"] = runner.judge_evidence(
+                    message,
+                    answer,
+                    record.get("predicted_images") or [],
+                    assets_by_name,
+                    conversation=conversation,
+                )
+            return results
+
+        assets_by_name: dict[str, list[dict[str, Any]]] = {}
 
         def _run_rejudge() -> None:
             nonlocal runner
@@ -963,13 +1442,26 @@ class RunSuites:
                     evidence_judge_prompt=evidence_prompt,
                     sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
                     inline_images=self._inline_images,
+                    judge_use_gt_images=use_gt_images,
+                    evaluation_options=evaluation_options,
+                    evaluation_prompts=state["rejudge"]["evaluation_prompts"],
                 )
+                if (
+                    use_gt_images
+                    or any("evidence_judge" in fields for fields in selection.values())
+                    or any(bool(r.get("evaluation")) for r in definitions.values())
+                ):
+                    assets_by_name.update(
+                        index_assets_by_name(
+                            self._sentrix.list_assets(scope_id=str(state.get("scope_id") or ""), limit=1000)
+                        )
+                    )
                 concurrency = max(1, min(8, int(state.get("qa_concurrency") or 4)))
                 prepared = [_payload(index, turn_index) for index, turn_index in targets]
                 with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
                     queue = iter(prepared)
                     futures: dict[
-                        concurrent.futures.Future[tuple[int, int | None, dict[str, Any], dict[str, Any]]],
+                        concurrent.futures.Future[dict[str, dict[str, Any]]],
                         tuple[Any, ...],
                     ] = {}
                     completed = 0
@@ -997,50 +1489,55 @@ class RunSuites:
                             continue
                         completed += 1
                         fill_slots()
-                        current = self._state_if_exists(run_id)
-                        if current is None:
-                            return
+                        current = state
                         index, turn_index = int(payload[0]), payload[1]
                         try:
-                            _, _, judge_result, task_result = future.result()
-                        except Exception as exc:  # noqa: BLE001
-                            # **单条失败不拖垮整轮**：串行版里一个异常会直接让整个
-                            # rejudge 记 failed，而 561 条里挂一条不该是这个结局。
-                            judge_result = {
-                                "score": None,
-                                "reason": f"judge_error: {exc}",
-                                "status": "failed",
+                            results = future.result()
+                        except Exception as exc:
+                            results = {
+                                field: {
+                                    "score": None,
+                                    "correct": None,
+                                    "judge_status": "failed",
+                                    "reason": f"judge_error: {exc}",
+                                }
+                                for field in selection[index, turn_index]
                             }
-                            task_result = {
-                                "actual_action": None,
-                                "correct": None,
-                                "reason": f"judge_error: {exc}",
-                            }
-                        item = (current.get("items") or [])[index]
+                        item = current["items"][index]
                         turns = item.get("runtime_turns") or []
                         record = turns[turn_index] if turn_index is not None else item
-                        judge_result["ground_truth_source"] = gt_source
-                        judge_result["qa_definition_sha256"] = snapshot.get("definition_sha256")
-                        judge_result["judged_at"] = now_iso()
-                        judge_result["rejudge_id"] = rejudge_id
-                        judge_result["status"] = (
-                            "completed" if judge_result.get("score") in {0, 1, 2} else "failed"
-                        )
-                        record["judge"] = judge_result
-                        task_result["ground_truth_source"] = gt_source
-                        task_result["qa_definition_sha256"] = snapshot.get("definition_sha256")
-                        record["task_judge"] = task_result
+                        for field, result in results.items():
+                            result.update(
+                                ground_truth_source=gt_source,
+                                qa_definition_sha256=snapshot.get("definition_sha256"),
+                                judged_at=now_iso(),
+                                rejudge_id=rejudge_id,
+                            )
+                            result["status"] = (
+                                "completed" if JudgeRunner._valid_result(result, field) else "failed"
+                            )
+                            if field in record:
+                                record.setdefault("scoring_history", []).append(
+                                    {
+                                        "field": field,
+                                        "previous": copy.deepcopy(record[field]),
+                                        "rejudge_id": rejudge_id,
+                                    }
+                                )
+                            record[field] = result
                         if turns:
                             item["judge"] = turns[-1].get("judge") or {}
                             item["task_judges"] = [turn.get("task_judge") or {} for turn in turns]
                             item["task_judge"] = turns[-1].get("task_judge") or {}
-                            # **证据判分不重判**：它要按 asset_id 取回图片字节，而那条路径依赖
-                            # 一个活着的 2.0（1.0 在 ``:7226`` 现取资产表）。``EVIDENCE_JUDGE``
-                            # 默认关；这里如实把它标成 not_applicable 而不是留一个上次的值。
-                            item["evidence_judge"] = {"score": None, "reason": "not_applicable"}
+                            item["evidence_judge"] = turns[-1].get("evidence_judge") or {
+                                "score": None,
+                                "reason": "not_applicable",
+                            }
+                        final_judge = item.get("judge") or {}
+                        if final_judge.get("scorer"):
+                            item["evaluation_result"] = copy.deepcopy(final_judge)
                         else:
-                            item["judge"] = record.get("judge") or {}
-                            item["task_judge"] = record.get("task_judge") or {}
+                            item.pop("evaluation_result", None)
                         # Current scoring state follows every judged turn; execution history stays unchanged.
                         records = turns or [item]
                         qualities = [entry.get("judge") or {} for entry in records]
@@ -1050,11 +1547,18 @@ class RunSuites:
                             if any(value.get("status") == "pending" for value in qualities)
                             else "failed"
                             if any(value.get("status") == "failed" for value in qualities)
-                            or any(value.get("judge_status") == "failed" for value in tasks)
+                            or any(
+                                value.get("judge_status") == "failed" or value.get("status") == "failed"
+                                for value in tasks
+                            )
+                            or any(
+                                (entry.get("evidence_judge") or {}).get("status") == "failed"
+                                for entry in records
+                            )
                             else "completed"
                         )
                         current["rejudge"]["completed"] = completed
-                        if judge_result.get("score") not in {0, 1, 2}:
+                        if any(result.get("status") == "failed" for result in results.values()):
                             current["rejudge"]["failed"] += 1
                         current["summary"] = analysis.effective_summary(current)
                         self._writer.write_snapshot(run_id, current)
@@ -1066,18 +1570,9 @@ class RunSuites:
                         final["rejudge"].get("completed") or 0
                     )
                     if cancel_event.is_set():
-                        for item in final.get("items") or []:
-                            for record in [item, *(item.get("runtime_turns") or [])]:
-                                current_judge = record.get("judge") or {}
-                                if (
-                                    current_judge.get("rejudge_id") == rejudge_id
-                                    and current_judge.get("status") == "pending"
-                                ):
-                                    item["judge_status"] = "cancelled"
-                                    current_judge.update(
-                                        status="cancelled",
-                                        reason="rejudge cancelled before scoring completed",
-                                    )
+                        self._finish_pending_rejudge(
+                            final, rejudge_id, "cancelled", "rejudge cancelled before scoring completed"
+                        )
                     final["summary"] = analysis.effective_summary(final)
                     self._writer.write_snapshot(run_id, final)
                     self._index.upsert(analysis.run_list_entry(final))
@@ -1087,7 +1582,9 @@ class RunSuites:
                     failed.setdefault("rejudge", {})["status"] = "failed"
                     failed["rejudge"]["finished_at"] = now_iso()
                     failed["rejudge"]["error"] = str(exc)
+                    self._finish_pending_rejudge(failed, rejudge_id, "failed", str(exc))
                     self._writer.write_snapshot(run_id, failed)
+                    self._index.upsert(analysis.run_list_entry(failed))
 
         def rejudge_worker() -> None:
             try:
@@ -1106,13 +1603,10 @@ class RunSuites:
             except Exception as error:
                 self._auxiliary.pop(rejudge_id, None)
                 state["rejudge"].update(status="failed", finished_at=now_iso(), error=str(error))
-                for item in state.get("items") or []:
-                    for record in [item, *(item.get("runtime_turns") or [])]:
-                        if (record.get("judge") or {}).get("rejudge_id") == rejudge_id:
-                            record["judge"].update(status="failed", score=None, reason="worker_start_failed")
-                            item["judge_status"] = "failed"
+                self._finish_pending_rejudge(state, rejudge_id, "failed", "worker_start_failed")
                 state["summary"] = analysis.effective_summary(state)
                 self._writer.write_snapshot(run_id, state)
+                self._index.upsert(analysis.run_list_entry(state))
                 raise
             finally:
                 self._reservations.pop(rejudge_id, None)

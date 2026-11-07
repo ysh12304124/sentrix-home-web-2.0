@@ -7,12 +7,16 @@ export const dimensions: Record<string, string> = {
   benchmark_group: "测试分组",
   content_type: "内容题型",
   content_subtype: "细分题型",
+  scoring_question_type: "ATM原生题型",
   difficulty: "难度",
   answerability: "可回答性",
   media_type: "媒体类型",
   conversation_type: "对话形式",
 };
 const labels: Record<string, string> = {
+  number: "ATM数值题",
+  list_recall: "ATM列表题",
+  open_end: "ATM开放题",
   T1_retrieve_media: "媒体检索",
   T1_media_retrieval: "媒体检索",
   T2_fact_qa: "事实问答",
@@ -125,11 +129,21 @@ export const reportAbilityLabels = (report: {
     ? abilityVersionLabels("ability-2026.10.28-v1")
     : report.ability_labels || {};
 export const scores = [
-  { value: "2", label: "满分（2分）", short: "满分", color: "#287c65" },
-  { value: "1", label: "部分完成（1分）", short: "部分完成", color: "#ba8527" },
-  { value: "0", label: "未完成（0分）", short: "未完成", color: "#c35550" },
+  { value: "2", label: "正确（2分）", short: "正确", color: "#287c65" },
+  { value: "1", label: "部分正确（1分）", short: "部分正确", color: "#ba8527" },
+  { value: "0", label: "错误（0分）", short: "错误", color: "#c35550" },
   { value: "None", label: "未评分", short: "未评分", color: "#929baa" },
 ];
+export function scoreChoices(report: {evaluation_summary?: unknown; counts?: Record<string, number>}, unit = "qa") {
+  const summary = report.evaluation_summary as {count?: number; scales?: string[]; by_type?: Record<string, unknown>} | undefined;
+  if (!summary?.count) return scores;
+  const hasMedia = !!(summary.by_type?.media_list || summary.by_type?.list_recall);
+  const partial = summary.scales?.includes("2") || hasMedia || !!report.counts?.[unit === "turn" ? "turn_score_1" : "score_1"];
+  return scores.filter(s => s.value !== "1" || partial).map(s => ({...s,
+    label: s.value === "1" && hasMedia ? "部分正确／集合未满分" : s.short,
+    short: s.value === "1" && hasMedia ? "集合未满分" : s.short,
+  }));
+}
 export const scoreLabel = (score: number | null) =>
   scores.find((x) => x.value === String(score ?? "None"))!.label;
 export const percent = (n: number, valid: number) =>

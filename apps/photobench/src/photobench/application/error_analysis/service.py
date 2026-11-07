@@ -35,13 +35,37 @@ class ErrorAnalysis:
                 "scope",
                 "mode",
                 "filters",
-                "max_cases",
                 "resume_job",
                 "summary_only",
+                "model_role",
+                "comparison_filter",
+                "scoring_profile",
+                "scoring_batch",
             )
             if k in payload
         }
-        if kind == "ai":
+        if kind in {"ai", "ai_compare"} and payload.get("model_role"):
+            role = str(payload["model_role"])
+            if role == "judge":
+                secret = {
+                    "provider_id": "judge",
+                    "url": self.config.judge_url,
+                    "model": self.config.judge_model,
+                    "key": self.config.judge_api_key,
+                }
+            elif role == "main":
+                secret = {
+                    "provider_id": "main",
+                    "url": self.config.model_base_url,
+                    "model": self.config.public_runtime_connection_config().get("endpoint_model", ""),
+                    "key": "",
+                }
+            else:
+                raise ValueError("model_role must be judge or main")
+            if not secret["url"]:
+                raise ValueError("所选分析模型未配置连接地址")
+            options["secret"] = secret
+        elif kind in {"ai", "ai_compare"}:
             provider = str(payload.get("provider_id") or "")
             if not provider or provider not in self.config.judge_providers:
                 raise ValueError("select an analysis provider explicitly")

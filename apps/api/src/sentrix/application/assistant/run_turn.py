@@ -104,7 +104,7 @@ from sentrix.domain.assistant.ports import (
 from sentrix.domain.assistant.profile import DEFAULT_PROFILE, TurnProfile
 from sentrix.domain.assistant.task_state import ACTING, FINALIZING, TaskState, ToolCallRecord
 from sentrix.domain.assistant.tool_policy import MAX_CONSECUTIVE_FAILURES, ToolAction, ToolPolicy
-from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOLS_BY_NAME, ToolSpec
+from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, RETRIEVAL_TOOLS, TOOLS_BY_NAME, ToolSpec
 from sentrix.domain.errors import DomainError
 from sentrix.domain.media.ports import OperationControl
 from sentrix.domain.media.progress import OperationCancelled
@@ -397,6 +397,32 @@ def _turn_trace(session: _Session, planned: PlannerResult | None) -> Mapping[str
         "delivered": [item.asset_id for item in session.delivered.items],
         "answer_coverage": session.best_coverage,
         "retrieved_candidates": list(state.retrieved_candidates),
+        "retrieval_observations": {
+            "version": 1,
+            "complete": all(
+                "returned_asset_ids" in record.observation
+                for record in state.records
+                if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+            ),
+            "asset_ids": list(
+                dict.fromkeys(
+                    str(asset_id)
+                    for record in state.records
+                    if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+                    for asset_id in record.observation.get("returned_asset_ids", [])
+                )
+            ),
+            "ordered_calls": [
+                {
+                    "tool": record.tool,
+                    "result_set_id": record.observation.get("result_set_id"),
+                    "page": record.observation.get("page"),
+                    "asset_ids": record.observation.get("returned_asset_ids", []),
+                }
+                for record in state.records
+                if record.status == "ok" and record.tool in RETRIEVAL_TOOLS
+            ],
+        },
         # **模型这一步看到什么、回答什么。** 只有 ``include_debug`` 时非空；
         # 按发生顺序排列（planner → agent → judge），每条都带当时的 messages 与
         # ``tools``，以及模型原始 content / thought / tool_calls。
@@ -503,7 +529,6 @@ def _drop_oldest_tool_round_trip(messages: Sequence[ChatMessage]) -> list[ChatMe
     return None
 
 
-
 def _compact_latest_preview_round_trip(messages: Sequence[ChatMessage]) -> list[ChatMessage] | None:
     """Compact the newest protected preview while preserving handles, times, and speech."""
     protected = None
@@ -548,8 +573,10 @@ def _compact_latest_preview_round_trip(messages: Sequence[ChatMessage]) -> list[
                 speech = row.get("speech_evidence")
                 if isinstance(speech, list):
                     row["speech_evidence"] = [
-                        {k:v for k,v in segment.items() if v is not None and v != "" and v != []}
-                        if isinstance(segment, dict) else segment for segment in speech
+                        {k: v for k, v in segment.items() if v is not None and v != "" and v != []}
+                        if isinstance(segment, dict)
+                        else segment
+                        for segment in speech
                     ]
             elif level in (1, 2):
                 limit = 420 if level == 1 else 160
@@ -561,8 +588,14 @@ def _compact_latest_preview_round_trip(messages: Sequence[ChatMessage]) -> list[
                 # transcript, but drop repeated metadata and leave only a short visual
                 # cue. The agent can inspect any retained candidate for full image detail.
                 keep = {
-                    "handle", "asset_id", "file_name", "media_kind", "source_kind",
-                    "captured_at", "source_timestamp_sec", "evidence_summary",
+                    "handle",
+                    "asset_id",
+                    "file_name",
+                    "media_kind",
+                    "source_kind",
+                    "captured_at",
+                    "source_timestamp_sec",
+                    "evidence_summary",
                     "speech_evidence",
                 }
                 row = {key: value for key, value in row.items() if key in keep}
@@ -586,11 +619,14 @@ def _compact_latest_preview_round_trip(messages: Sequence[ChatMessage]) -> list[
             return None
         result = list(messages)
         result[index] = ChatMessage(
-            role=message.role, content=content, tool_call_id=message.tool_call_id,
+            role=message.role,
+            content=content,
+            tool_call_id=message.tool_call_id,
             tool_calls=message.tool_calls,
         )
         return result
     return None
+
 
 def _page_available(state: TaskState) -> bool:
     """翻页工具最多出现一次：结果集超过一页，且本回合还没有成功翻过页。

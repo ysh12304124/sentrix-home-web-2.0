@@ -157,3 +157,19 @@ it("redraws a fresh chart when development StrictMode replays effects", () => {
   expect(charts.instances[0].dispose).toHaveBeenCalledOnce();
   expect(charts.instances[1].setOption).toHaveBeenCalledOnce();
 });
+
+it("rebinds the chart after a temporary history without two samples replaces its canvas", () => {
+  const view = render(<TelemetryCard run={run()} />);
+  const original = view.getByRole("img", { name: "内存与显存占用趋势" });
+  const sparse = run();
+  sparse.telemetry_live!.history = [];
+  sparse.phases = {};
+  view.rerender(<TelemetryCard run={sparse} />);
+  expect(original.isConnected).toBe(false);
+  expect(charts.instances[0].dispose).toHaveBeenCalledOnce();
+  view.rerender(<TelemetryCard run={run()} />);
+  const replacement = view.getByRole("img", { name: "内存与显存占用趋势" });
+  expect(replacement).not.toBe(original);
+  expect(charts.init).toHaveBeenLastCalledWith(replacement);
+  expect(charts.instances[1].setOption).toHaveBeenCalledOnce();
+});

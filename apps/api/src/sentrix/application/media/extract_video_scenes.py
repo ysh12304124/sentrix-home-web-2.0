@@ -30,7 +30,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sentrix.application.media.cross_modal_attention import (
@@ -38,6 +38,8 @@ from sentrix.application.media.cross_modal_attention import (
     bidirectional_cross_modal_attention,
 )
 from sentrix.application.media.stage_spans import StageSpans
+from sentrix.application.media.stage_timing import stage_span
+from sentrix.domain.media.capture_time import offset_capture
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import (
     AssetRepository,
@@ -152,13 +154,14 @@ class ExtractVideoScenes:
         probe = self._video_repository.probe(source_asset_id)
         duration = (probe.metadata.duration_sec if probe and probe.metadata else 0.0) or 0.0
         planning_started = time.perf_counter()
-        windows = planned_windows or (
-            self._scene_planner(Path(asset.path), asset.id, duration)
-            if self._scene_planner is not None
-            else plan_scenes(duration)
-        )
-        if on_scene_plan is not None and planned_windows is None:
-            on_scene_plan(windows)
+        with stage_span("video_scene_planning", asset.id):
+            windows = planned_windows or (
+                self._scene_planner(Path(asset.path), asset.id, duration)
+                if self._scene_planner is not None
+                else plan_scenes(duration)
+            )
+            if on_scene_plan is not None and planned_windows is None:
+                on_scene_plan(windows)
         planning_finished = time.perf_counter()
         planning_seconds = planning_finished - planning_started
         planner_stage_timings: dict[str, float] = {}
@@ -246,22 +249,24 @@ class ExtractVideoScenes:
                         self._checkpoint("FRAME_SAMPLE_VSD", position, len(windows), window.index)
                     continue
             extract_started = time.perf_counter()
-            frame = self._keyframes.extract(
-                Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
-            )
+            with stage_span("video_keyframe_extraction", asset.id):
+                frame = self._keyframes.extract(
+                    Path(asset.path), asset.id, window.index, window.keyframe_timestamp_sec
+                )
             finished = time.perf_counter()
             keyframe_extract_seconds += finished - extract_started
             spans.include({"keyframe_extraction": (extract_started, finished)})
             asset_write_started = time.perf_counter()
-            derived = self._derived_asset(asset, frame, window)
-            self._video_repository.add_derived(
-                parent_asset_id=asset.id,
-                asset=derived,
-                derived_kind=KEYFRAME_DERIVED_KIND,
-                source_timestamp_sec=window.keyframe_timestamp_sec,
-                source_frame_index=window.index,
-                source_scene_index=window.index,
-            )
+            with stage_span("video_keyframe_asset_write", asset.id):
+                derived = self._derived_asset(asset, frame, window)
+                self._video_repository.add_derived(
+                    parent_asset_id=asset.id,
+                    asset=derived,
+                    derived_kind=KEYFRAME_DERIVED_KIND,
+                    source_timestamp_sec=window.keyframe_timestamp_sec,
+                    source_frame_index=window.index,
+                    source_scene_index=window.index,
+                )
             finished = time.perf_counter()
             keyframe_asset_write_seconds += finished - asset_write_started
             spans.include({"keyframe_asset_write": (asset_write_started, finished)})
@@ -318,11 +323,12 @@ class ExtractVideoScenes:
                 window.index,
                 (_format_scene_transcript(overlapping), overlapping),
             )
-            event = (
-                existing_events[window.index]
-                if position <= self._resume_event_completed and window.index in existing_events
-                else self._ensure_scene_event(asset, window, place_text, transcript, event_segments)
-            )
+            with stage_span("video_scene_write", asset.id):
+                event = (
+                    existing_events[window.index]
+                    if position <= self._resume_event_completed and window.index in existing_events
+                    else self._ensure_scene_event(asset, window, place_text, transcript, event_segments)
+                )
             finished = time.perf_counter()
             scene_write_seconds += finished - scene_started
             spans.include({"scene_write": (scene_started, finished)})
@@ -344,7 +350,8 @@ class ExtractVideoScenes:
             memory_started = time.perf_counter()
             if self._checkpoint is not None:
                 self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
-            self._process_image(derived, event.id)
+            with stage_span("video_keyframe_memory", asset.id):
+                self._process_image(derived, event.id)
             finished = time.perf_counter()
             keyframe_memory_seconds += finished - memory_started
             spans.include({"keyframe_memory": (memory_started, finished)})
@@ -435,6 +442,7 @@ class ExtractVideoScenes:
             content_sha256=_sha256(frame),
             captured_at=_offset(source.captured_at, window.keyframe_timestamp_sec),
             captured_location=source.captured_location,
+            capture_time=source.capture_time,
             created_at=now,
             updated_at=now,
         )
@@ -444,7 +452,7 @@ def _offset(captured_at: datetime | None, seconds: float) -> datetime | None:
     """拍摄时间加原片内偏移。源片没有拍摄时间时返回 ``None``——不拿导入时刻冒充。"""
     if captured_at is None:
         return None
-    return captured_at + timedelta(seconds=float(seconds))
+    return offset_capture(captured_at, float(seconds))
 
 
 def _scene_transcript(segments: tuple[TranscriptionSegment, ...], start: float, end: float) -> str:

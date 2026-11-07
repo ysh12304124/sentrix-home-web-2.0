@@ -48,10 +48,8 @@ def test_a_successful_probe_lands_the_metadata_on_the_asset(client: TestClient):
     body = import_audio(client).json()
 
     summary = client.get(f"/api/v1/assets/{body['asset_id']}").json()
-    # 时刻仍是本地 14:55:56（creationdate 的本地时区写法被尊重，没有转成 UTC 的
-    # 06:55）；但 tzinfo 在落库时去掉了 —— 与 1.0 同口径，也避免与 EXIF 那条路的
-    # naive 时间相减时抛 TypeError（见 domain/media/models.py 的 _captured_datetime）。
-    assert summary["captured_at"] == "2026-08-02T14:55:56"
+    # 保留原始偏移，拍摄时刻不依赖服务器TZ。
+    assert summary["captured_at"] == "2026-08-02T14:55:56+08:00"
     assert summary["gps"] == {"latitude": 22.4846, "longitude": 114.5438}
 
     container = client.app.state.container

@@ -235,7 +235,26 @@ def settings(tmp_path, monkeypatch) -> Settings:
 
 
 @pytest.fixture
-def isolated_app(settings):
+def fake_embedding_startup(monkeypatch):
+    """离线应用夹具的启动探测；真实探测行为由模型适配器测试覆盖。"""
+    # Startup checks must use the same deterministic embedding boundary as this fixture.
+    monkeypatch.setattr(
+        "sentrix.infrastructure.models.wemm.WeMMSidecarEmbedder.smoke_test", lambda self: (True, "")
+    )
+    monkeypatch.setattr(
+        "sentrix.infrastructure.models.legacy.LegacyEmbeddingHealthProbe.smoke_test", lambda self: (True, "")
+    )
+
+
+@pytest.fixture(autouse=True)
+def contract_embedding_startup(request):
+    """HTTP 契约用例在替换模型前先隔离启动探测。"""
+    if request.path.parent.name == "contract":
+        request.getfixturevalue("fake_embedding_startup")
+
+
+@pytest.fixture
+def isolated_app(settings, fake_embedding_startup):
     """装配好的应用，但将外部模型与人脸推理换成确定性假件。
 
     Container 是 frozen dataclass，用 dataclasses.replace 换掉适配器，
@@ -268,6 +287,9 @@ def isolated_app(settings):
         # 抽帧同理：真实现起 ffmpeg。这里给的是「每个场景一张真 JPEG」的假件，
         # 所以契约测试能走完整条「导入视频 → 场景成型 → 关键帧落库」的链。
         video_keyframe_extractor=FakeVideoKeyframeExtractor(),
+        video_scene_planner=None,
+        audio_transcriber=None,
+        cross_modal_embedder=None,
     )
     return app
 

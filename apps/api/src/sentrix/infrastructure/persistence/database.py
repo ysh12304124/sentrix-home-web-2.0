@@ -12,9 +12,14 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 
+from sentrix.domain.media.capture_time import time_sort_key, within_time_bounds
+
 BUSY_TIMEOUT_MS = 30_000
+_connection_locks: dict[Path, threading.RLock] = {}
+_connection_locks_guard = threading.Lock()
 
 
 class MigrationError(RuntimeError):
@@ -36,23 +41,23 @@ class Database:
     def __init__(self, path: Path, migrations_dir: Path) -> None:
         self.path = Path(path)
         self.migrations_dir = Path(migrations_dir)
-        # 串行化所有连接：``sqlite3.connect`` 每次新建连接、用完即关，高并发下几十个
-        # 线程同时 open/close 同一个 WAL 数据库会在 SQLite 的 ``findReusableFd``
-        # （unix 层全局 mutex）上互相死锁（qa_eval 阶段实测 41 线程全卡在这里）。
-        # 一把进程级锁让同一时刻只有一个连接存活，代价是 DB 访问串行——但
-        # ``qa_concurrency=1`` 的并发需求本来就很低，串行几乎无感知。
-        #
-        # **必须是 RLock。** 仓储里存在「外层 connect 内再调另一个仓储方法」的
-        # 组合查询（例如家庭图谱的 people 循环里再读 membership/portrait）；普通
-        # Lock 会让同一线程在嵌套 connect 处永久自锁，整个 API 随后所有 DB 访问
-        # 都排队，最终连事件循环都被 upload 的同步 DB 调用卡死。
-        self._connect_lock = threading.RLock()
+        # 同一文件的实例共享连接锁，避免并发切换WAL及SQLite文件句柄竞争。
+        # 图谱/家庭图谱会在同一线程嵌套读取，因此连接锁必须是可重入的 RLock。
+        with _connection_locks_guard:
+            self._connect_lock = _connection_locks.setdefault(self.path.resolve(), threading.RLock())
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         with self._connect_lock:
             connection = sqlite3.connect(self.path)
             connection.row_factory = sqlite3.Row
+            connection.create_function(
+                "capture_sort_key",
+                1,
+                lambda value: time_sort_key(datetime.fromisoformat(value) if value else None),
+                deterministic=True,
+            )
+            connection.create_function("capture_in_bounds", 3, _capture_in_bounds, deterministic=True)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             try:
@@ -71,7 +76,10 @@ class Database:
         scripts = sorted(self.migrations_dir.glob("*.sql"))
         if not scripts:
             raise MigrationError(f"迁移目录里没有任何 .sql: {self.migrations_dir}")
-        return [(script.stem.split("_", 1)[0], script) for script in scripts]
+        versions = [(script.stem.split("_", 1)[0], script) for script in scripts]
+        if len({version for version, _ in versions}) != len(versions):
+            raise MigrationError("迁移版本号重复")
+        return versions
 
     def applied_versions(self) -> set[str]:
         with self.connect() as connection:
@@ -95,6 +103,19 @@ class Database:
         return applied
 
     @staticmethod
+    def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _column_exists(connection: sqlite3.Connection, table: str, column: str) -> bool:
+        return column in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+    @staticmethod
     def _apply(connection: sqlite3.Connection, script: Path, version: str) -> bool:
         """一个迁移一个事务，且「读已应用集合」也在同一事务里。
 
@@ -110,12 +131,126 @@ class Database:
             done = connection.execute(
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
+            record_version = version
+            # 本分支与 main 在 0015–0018 使用了不同的迁移编号。main 的数据库里
+            # 同名版本号已经被别的迁移占用，但本分支的表/列还没建：不能跳过，也
+            # 不能覆盖原版本号，只能执行后用带后缀的版本记录。
+            if (
+                done is not None
+                and script.name == "0015_import_jobs.sql"
+                and not Database._table_exists(connection, "import_jobs")
+            ):
+                done, record_version = None, "0015_import_jobs"
+            if (
+                done is not None
+                and script.name == "0016_import_replay_keys.sql"
+                and not Database._table_exists(connection, "scope_postprocess")
+            ):
+                done, record_version = None, "0016_import_replay_keys"
+            if (
+                done is not None
+                and script.name == "0017_turn_recovery.sql"
+                and not Database._column_exists(connection, "agent_turns", "idempotency_key")
+            ):
+                done, record_version = None, "0017_turn_recovery"
+            if (
+                done is not None
+                and script.name == "0018_memory_rotation.sql"
+                and not Database._table_exists(connection, "memory_rotation_sequences")
+            ):
+                done, record_version = None, "0018_memory_rotation"
+            if (
+                done is not None
+                and script.name == "0019_import_control.sql"
+                and not Database._column_exists(connection, "import_jobs", "cancel_requested")
+            ):
+                done, record_version = None, "0019_import_control"
+            if done is not None and script.name == "0015_text_vectors.sql":
+                text_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_vectors'"
+                ).fetchone()
+                if text_table is None:
+                    # 已发布的xy曾用0015记录拍摄时间迁移；main的0015是文本向量。
+                    # 在同一事务内按已知表结构改记编号，再创建文本表。
+                    capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
+                    place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
+                    if (
+                        "capture_time_json" not in capture_columns
+                        or "nearest_evidence_json" not in place_columns
+                    ):
+                        raise MigrationError("0015记录与文本向量/拍摄时间表结构不一致")
+                    connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0015'")
+                    done = None
+            if done is not None and script.name == "0016_video_jobs.sql":
+                video_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_jobs'"
+                ).fetchone()
+                if video_table is None:
+                    capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
+                    place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
+                    if (
+                        "capture_time_json" not in capture_columns
+                        or "nearest_evidence_json" not in place_columns
+                    ):
+                        raise MigrationError("0016记录与视频任务/拍摄时间表结构不一致")
+                    connection.execute("UPDATE schema_migrations SET version='0018' WHERE version='0016'")
+                    done = None
+            if (
+                done is None
+                and script.name == "0024_text_vectors.sql"
+                and Database._table_exists(connection, "text_vectors")
+            ):
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                )
+                connection.execute("COMMIT")
+                return True
+            if (
+                done is None
+                and script.name == "0025_video_jobs.sql"
+                and Database._table_exists(connection, "video_jobs")
+            ):
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                )
+                connection.execute("COMMIT")
+                return True
+            if (
+                done is None
+                and script.name == "0026_video_job_config_hash.sql"
+                and Database._column_exists(connection, "video_jobs", "config_hash")
+            ):
+                connection.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                )
+                connection.execute("COMMIT")
+                return True
+            if done is None and script.name == "0027_capture_time.sql":
+                # main 用 0018 记录同一组列，本分支从 0027 起接。跨分支升级时
+                # 列已经存在就只补版本记录，绝不重复 ALTER。
+                capture_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(assets)")
+                }
+                place_columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(asset_places)")
+                }
+                if (
+                    "capture_time_json" in capture_columns
+                    and "nearest_evidence_json" in place_columns
+                ):
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                    )
+                    connection.execute("COMMIT")
+                    return True
             if done is not None:
                 connection.execute("COMMIT")
                 return False
             for statement in _statements(script.read_text(encoding="utf-8")):
                 connection.execute(statement)
-            connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+            connection.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?)", (record_version,)
+            )
             connection.execute("COMMIT")
             return True
         except BaseException:
@@ -124,3 +259,19 @@ class Database:
             raise
         finally:
             connection.isolation_level = previous
+
+
+def _capture_in_bounds(value: str | None, start: str | None, end: str | None) -> bool:
+    if not value:
+        return False
+    moment = datetime.fromisoformat(value)
+    bound = datetime.fromisoformat(start or end or "0001-01-01")
+    if start and end:
+        return (
+            within_time_bounds((datetime.fromisoformat(start), datetime.fromisoformat(end)), moment) is True
+        )
+    if bound.utcoffset() is None:
+        moment = moment.replace(tzinfo=None)
+    elif moment.utcoffset() is None:
+        return False
+    return moment >= bound if start else moment < bound

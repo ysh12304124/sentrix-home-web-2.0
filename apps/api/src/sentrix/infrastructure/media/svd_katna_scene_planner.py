@@ -12,12 +12,22 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import cv2
 import numpy as np
 from Katna.image_selector import ImageSelector
 
 from sentrix.domain.media.scenes import SceneWindow
+
+
+class FrameCandidate(TypedDict):
+    frame_index: int
+    timestamp_sec: float
+    image: np.ndarray
+    candidate_index: NotRequired[int]
+    endpoint_anchor: NotRequired[bool]
+
 
 SAMPLE_FPS = 10.0
 SVD_ENERGY_THRESHOLD = 0.50
@@ -92,21 +102,25 @@ def _sample_video(
         if (last_frame.shape[1], last_frame.shape[0]) != (width, height):
             last_frame = cv2.resize(last_frame, (width, height), interpolation=cv2.INTER_AREA)
         frames.append((actual_last_timestamp, last_frame))
-    return frames, {
-        "source_fps": source_fps,
-        "duration_sec": duration,
-        "decoded_frame_count": index,
-        "sampled_frame_count": len(frames) - int(tail_added),
-        "tail_anchor_added": tail_added,
-        "source_last_frame_timestamp_sec": actual_last_timestamp,
-        "source_resolution": [source_width, source_height],
-        "algorithm_resolution": [width, height],
-    }, time.perf_counter() - started
+    return (
+        frames,
+        {
+            "source_fps": source_fps,
+            "duration_sec": duration,
+            "decoded_frame_count": index,
+            "sampled_frame_count": len(frames) - int(tail_added),
+            "tail_anchor_added": tail_added,
+            "source_last_frame_timestamp_sec": actual_last_timestamp,
+            "source_resolution": [source_width, source_height],
+            "algorithm_resolution": [width, height],
+        },
+        time.perf_counter() - started,
+    )
 
 
 def _deduplicate(
     frames: list[tuple[float, np.ndarray]],
-) -> tuple[list[dict[str, object]], dict[str, object]]:
+) -> tuple[list[FrameCandidate], dict[str, object]]:
     features = np.vstack([_feature(image) for _, image in frames]).astype(np.float64)
     centered = features - features.mean(axis=0, keepdims=True)
     left, singular_values, right = np.linalg.svd(centered, full_matrices=False)
@@ -134,7 +148,7 @@ def _deduplicate(
     if len(frames) > 1:
         kept.append(len(frames) - 1)
 
-    candidates = [
+    candidates: list[FrameCandidate] = [
         {"frame_index": index, "timestamp_sec": frames[index][0], "image": frames[index][1]} for index in kept
     ]
     return candidates, {
@@ -146,13 +160,13 @@ def _deduplicate(
     }
 
 
-def _katna_select(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+def _katna_select(candidates: list[FrameCandidate]) -> list[FrameCandidate]:
     if len(candidates) <= 1:
         return list(candidates)
     selected_images = ImageSelector(n_processes=1).select_best_frames(
         [item["image"] for item in candidates], min(KATNA_FRAME_BUDGET, len(candidates))
     )
-    selected: list[dict[str, object]] = []
+    selected: list[FrameCandidate] = []
     thumbs = [_thumbnail(item["image"]) for item in candidates]
     for image in selected_images:
         target = _thumbnail(image)
@@ -162,9 +176,9 @@ def _katna_select(candidates: list[dict[str, object]]) -> list[dict[str, object]
     return selected
 
 
-def _scene_windows(selected: list[dict[str, object]], duration_sec: float) -> tuple[SceneWindow, ...]:
+def _scene_windows(selected: list[FrameCandidate], duration_sec: float) -> tuple[SceneWindow, ...]:
     ordered = sorted(selected, key=lambda item: float(item["timestamp_sec"]))
-    unique: list[dict[str, object]] = []
+    unique: list[FrameCandidate] = []
     for item in ordered:
         if unique and abs(float(item["timestamp_sec"]) - float(unique[-1]["timestamp_sec"])) < 1e-6:
             continue
@@ -274,8 +288,4 @@ class SVDKatnaScenePlanner:
             return {}
         if not isinstance(timings, dict):
             return {}
-        return {
-            str(key): float(value)
-            for key, value in timings.items()
-            if isinstance(value, (int, float))
-        }
+        return {str(key): float(value) for key, value in timings.items() if isinstance(value, (int, float))}

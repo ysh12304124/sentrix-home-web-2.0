@@ -11,9 +11,8 @@
 photobench.application.run_execution.judge -> PIL (l.421)``——**惰性 import 也照样算**，
 import-linter 看的是 AST 里的 import 节点，不是运行时机。
 
-**PIL 是惰性 import 的**（1.0 也这样）：没有 Pillow 时整段静默跳过全部图片，
-``_judge_evidence`` 于是走「有召回图但一张都没附上」那条 → ``image_attachment_error``
-（score 为 ``None``，不是 0）。这条与 1.0 逐字相同。
+PIL 惰性导入。可选的召回图片读取失败时跳过该图；标有
+``require_attachment=True`` 的GT图片向上抛出实际错误，由评分记录保存。
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.http.ports import JsonHttpClient
+from photobench.domain.sentrix.ports import API_PREFIX
 
 #: 1.0 ``:1549`` 的 ``max_dimension``。不设上限会把提示词撑爆。
 JUDGE_IMAGE_MAX_DIMENSION = 896
@@ -43,6 +43,7 @@ def inline_judge_images(
     单张失败只跳过它自己（1.0 的 ``except Exception: continue``）——一张取不回来的图
     不该让整次证据判分变成错误。asset_id 走 ``quote(safe="")``（与 ``SentrixClient``
     同一条口径：路径参数里斜杠会切段）。
+    必需的GT附件通过 ``require_attachment=True`` 保留失败原因。
     """
     assets_by_id = {
         str(asset["id"]): asset for assets in assets_by_name.values() for asset in assets if asset.get("id")
@@ -57,7 +58,7 @@ def inline_judge_images(
             from PIL import Image
 
             image_bytes = http.request_bytes(
-                f"{sentrix_url.rstrip('/')}/api/assets/{quote(asset_id, safe='')}/file", timeout=60
+                f"{sentrix_url.rstrip('/')}{API_PREFIX}/assets/{quote(asset_id, safe='')}/file", timeout=60
             )
             with Image.open(io.BytesIO(image_bytes)) as source:
                 resized = source.convert("RGB")
@@ -72,7 +73,9 @@ def inline_judge_images(
                     },
                 }
             )
-        except Exception:  # noqa: BLE001 —— 1.0 如此
+        except Exception:  # noqa: BLE001 —— evidence may omit an unavailable image
+            if image.get("require_attachment") is True:
+                raise  # Frozen GT failures must retain the actual HTTP/decode error.
             continue
     return content
 

@@ -375,6 +375,8 @@ def test_run_list_entry_drops_none_fields_and_keeps_the_summary_subset():
     assert entry["rejudge"] == {"status": "running", "completed": 1, "total": 2}
     assert entry["summary"]["answer_quality_mean"] == 2.0
     assert "items" not in entry
+    state["summary"] = {"evaluation_summary": {"count": 2, "mean": 0.25}}
+    assert analysis.run_list_entry(state)["summary"]["evaluation_summary"]["mean"] == 0.25
 
 
 def test_item_summary_counts_ground_truth_media():

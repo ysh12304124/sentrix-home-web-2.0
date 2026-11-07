@@ -51,7 +51,10 @@ def test_every_tool_declares_the_evidence_it_satisfies():
     2.0 用它驱动账本——「工具调用不等于证据」这条纪律（``requirement_completion.py:63``）
     在 2.0 的落点就是这张显式的绑定表。
     """
-    assert TOOLS_BY_NAME["search_memories"].satisfies == (EvidenceType.PHOTO_SET,)
+    assert TOOLS_BY_NAME["search_memories"].satisfies == (
+        EvidenceType.PHOTO_SET,
+        EvidenceType.SPOKEN_CONTENT,
+    )
     assert TOOLS_BY_NAME["final_answer"].satisfies == (EvidenceType.DELIVERED_PHOTO,)
     assert TOOLS_BY_NAME["get_person_profile"].satisfies == (EvidenceType.PERSON_PROFILE,)
 

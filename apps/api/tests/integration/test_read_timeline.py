@@ -120,7 +120,9 @@ def test_two_photos_on_one_day_form_one_event(timeline: ReadTimeline, repos, mig
 
     assert [day.date for day in result.days] == ["2017-10-05"]
     assert [event.id for event in result.days[0].events] == ["evt_1"]
-    assert [item.asset_id for item in result.days[0].events[0].photos] == ["asset_1", "asset_2"]
+    detail = timeline.get_event("evt_1")
+    assert detail is not None
+    assert [item.asset_id for item in detail.photos] == ["asset_1", "asset_2"]
 
 
 def test_two_days_form_two_groups(timeline: ReadTimeline, repos, migrations_ready_db):
@@ -142,9 +144,9 @@ def test_photos_carry_the_backend_computed_place_display(timeline: ReadTimeline,
     make_event(events, event_id="evt_1", when=DAY_ONE, place="浙江省杭州市萧山区", district="萧山区")
     events.attach("evt_1", photo(repos, index=1, captured_at=DAY_ONE, place=place()))
 
-    item = timeline.execute(scope_id="album1").days[0].events[0]
-
-    assert item.photos[0].place == "浙江省杭州市萧山区 · 赵州镇大石桥村附近"
+    item = timeline.get_event("evt_1")
+    assert item is not None
+    assert item.photos[0].place == "浙江省杭州市萧山区 · 赵州镇 / 大石桥村附近"
     assert item.place == "浙江省杭州市萧山区"
     assert item.admin_district == "萧山区"
 
@@ -156,8 +158,8 @@ def test_photo_without_a_resolved_place_has_an_empty_display_not_a_guess(
     make_event(events, event_id="evt_1", when=DAY_ONE, place="", district="")
     events.attach("evt_1", photo(repos, index=1, captured_at=DAY_ONE, place=None))
 
-    item = timeline.execute(scope_id="album1").days[0].events[0]
-
+    item = timeline.get_event("evt_1")
+    assert item is not None
     assert item.photos[0].place == ""
 
 

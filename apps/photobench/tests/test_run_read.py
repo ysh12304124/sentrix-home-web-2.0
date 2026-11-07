@@ -449,3 +449,66 @@ def test_a_running_run_is_not_served_from_a_stale_cache(results: Path):
     _write(results, "run-b", _state("run-b", status="completed"))
     assert reader.get_run("run-b")["status"] == "completed"  # 第二次必须看到新状态
     assert reader.get_run("run-b")["status"] == "completed"  # 终态之后走缓存
+
+
+def test_read_reconciles_saved_validity_without_changing_history(tmp_path: Path):
+    original = _state("partial", run_valid=True, phases={"pipeline_processing": {"status": "partial"}})
+    _write(tmp_path, "partial", original)
+    result = _read_runs(tmp_path).get_run("partial")
+    assert result["run_valid"] is False
+    assert result["summary"]["run_valid"] is False
+    assert json.loads((tmp_path / "partial/run.json").read_text()) == original
+
+
+def test_atm_type_filters_distinguish_number_and_open_answers(tmp_path: Path):
+    items = [
+        {
+            "qa_id": source,
+            "execution_status": "completed",
+            "judge_status": "completed",
+            "evaluation": {"source_qtype": source, "answer_format": fmt},
+        }
+        for source, fmt in [("number", "open"), ("open_end", "open"), ("list_recall", "media_list")]
+    ]
+    _write(tmp_path, "atm", _state("atm", items=items, qa_count=3))
+    reader = _read_runs(tmp_path)
+    for source in ["number", "open_end", "list_recall"]:
+        result = reader.get_run_items("atm", evaluation_type=source)
+        assert [item["qa_id"] for item in result["items"]] == [source]
+    assert reader.get_run_items("atm", evaluation_type="open")["total"] == 0
+
+
+def test_committed_list_inherits_typed_score_from_same_snapshot(tmp_path: Path):
+    from photobench.infrastructure.results.store import read_entry
+
+    evaluation = {"count": 10, "mean": 0.2666666667}
+    run = tmp_path / "typed"
+    run.mkdir()
+    metadata = {
+        "entry": {"run_id": "typed", "summary": {"answer_quality_mean": 0.533}},
+        "overview": {"summary": {"evaluation_summary": evaluation}},
+    }
+    (run / "metadata.json").write_text(json.dumps(metadata))
+    original = (run / "metadata.json").read_bytes()
+    assert read_entry(run)["summary"]["evaluation_summary"] == evaluation
+    assert (run / "metadata.json").read_bytes() == original
+
+
+def test_legacy_overview_adapts_scoring_and_media_without_rewriting_snapshot(tmp_path: Path):
+    state = _state("legacy")
+    media = {"media_type": "video", "media_id": "v1", "asset_id": "a1"}
+    state["items"][0].update(
+        retrieval_media_refs=[media],
+        retrieved_candidate_media=[media],
+        retrieved_candidate_asset_ids=["a1"],
+    )
+    _write(tmp_path, "legacy", state)
+    run = tmp_path / "legacy"
+    (run / "metadata.json").write_text(json.dumps({"overview": {"run_id": "legacy", "summary": {}}}))
+    originals = {p.name: p.read_bytes() for p in run.iterdir() if p.is_file()}
+    overview = FileRunStore(tmp_path).load_overview("legacy")
+    assert overview["summary"]["legacy_scoring_label"] == "历史混合评分"
+    assert overview["summary"]["scoring"]["profiles"]["atm_qs_v1"]["status"] == "not_collected"
+    assert overview["summary"]["media_ranking"]["recall_at_5"] == 1
+    assert overview["summary"]["media_ranking"]["included"] == 1
+    assert all((run / name).read_bytes() == data for name, data in originals.items())

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 from typing import Any
 
 import pytest
@@ -81,6 +82,42 @@ def test_persist_without_a_writer_is_a_noop():
     state.persist(wait=True)
     state.start_persist_writer()
     state.stop_persist_writer()
+
+
+def test_requests_queued_behind_a_mutation_share_its_committed_snapshot():
+    waiting = threading.Event()
+    mutex = threading.RLock()
+    writes = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name.startswith("persist-"):
+                waiting.set()
+            mutex.acquire()
+
+        def __exit__(self, *args):
+            mutex.release()
+
+    class Writer:
+        def write_snapshot(self, run_id, snapshot):
+            writes.append(snapshot)
+
+    state = RunState({"value": 1}, run_id="r", writer=Writer(), debounce=0)
+    state._lock = ObservedLock()
+    with mutex:
+        state.start_persist_writer()
+        state.persist()
+        assert waiting.wait(1)
+        state.data["value"] = 2
+        state.persist()
+    try:
+        with state._persist_condition:
+            assert state._persist_condition.wait_for(lambda: state._persist_written >= 2, timeout=2)
+        assert writes == [{"value": 2}]
+        state.data["value"] = 3
+        assert writes == [{"value": 2}]
+    finally:
+        state.stop_persist_writer()
 
 
 def test_stop_persist_writer_flushes_the_last_requested_snapshot():

@@ -12,9 +12,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from sentrix.domain.media.models import Asset, DerivedAsset, VideoMetadata
@@ -280,7 +281,7 @@ class SqliteVideoRepository:
                 (json.dumps(payload, ensure_ascii=False), asset_id),
             )
 
-    def save_processing_timings(self, asset_id: str, timings: dict[str, float]) -> None:
+    def save_processing_timings(self, asset_id: str, timings: Mapping[str, float]) -> None:
         """Persist measured keyframe stages without replacing other video metadata."""
         with self._database.connect() as connection, connection:
             row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
@@ -314,6 +315,7 @@ class SqliteVideoRepository:
         if not any(key in payload for key in _VIDEO_KEYS):
             return None
         seconds = payload.get(_PROCESSING_SECONDS_KEY)
+        processing_timings = payload.get(_PROCESSING_TIMINGS_KEY)
         return VideoProbe(
             metadata=_metadata_from_payload(payload.get(_VIDEO_METADATA_KEY)),
             browser_preview_path=str(payload.get(_PREVIEW_PATH_KEY) or ""),
@@ -323,10 +325,10 @@ class SqliteVideoRepository:
             processing_seconds=float(seconds) if isinstance(seconds, (int, float)) else None,
             processing_timings={
                 str(key): float(value)
-                for key, value in (payload.get(_PROCESSING_TIMINGS_KEY) or {}).items()
+                for key, value in processing_timings.items()
                 if isinstance(value, (int, float))
             }
-            if isinstance(payload.get(_PROCESSING_TIMINGS_KEY), dict)
+            if isinstance(processing_timings, dict)
             else {},
         )
 
@@ -386,8 +388,8 @@ class SqliteVideoRepository:
                 "INSERT INTO assets (id, scope_id, file_name, media_type, path, mime_type,"
                 " size_bytes, status, content_sha256, captured_at, gps_latitude, gps_longitude,"
                 " created_at, updated_at, parent_asset_id, derived_kind, source_timestamp_sec,"
-                " source_frame_index, source_scene_index)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " source_frame_index, source_scene_index, capture_time_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     asset.id,
                     asset.scope_id,
@@ -408,6 +410,7 @@ class SqliteVideoRepository:
                     float(source_timestamp_sec),
                     int(source_frame_index),
                     int(source_scene_index),
+                    json.dumps(dataclasses.asdict(asset.capture_time)),
                 ),
             )
 

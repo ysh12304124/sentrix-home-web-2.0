@@ -5,8 +5,10 @@ import { EXECUTION_PHASES } from "../../lib/constants.ts";
 import { phaseErrorDetails, phaseErrorSummary, phaseSummary } from "../../lib/details.ts";
 import { phaseElapsed, pipelineDuration, pipelineTimingView } from "../../lib/pipelineTiming.ts";
 import type { PipelineTimingGroup } from "../../lib/pipelineTiming.ts";
+import { qaProgress } from "../../lib/qaProgress.ts";
 import { statusLabel } from "../../lib/format.ts";
 import { pipelineProgressView } from "../../lib/pipelineProgress.ts";
+import { ScoringTaskLogs } from "./ScoringTaskLogs.tsx";
 
 /** 1.0 `App.vue:2195-2198`。 */
 function phasePercent(phase: Phase | undefined): number {
@@ -36,6 +38,12 @@ const importStageLabels: Record<string, string> = {
   person_insights: "生成人物画像", completed: "处理结束",
 };
 
+const reuseSkippedPhases: Record<string, string> = {
+  identity_seed: "使用相册已有身份，不重复预置。",
+  photo_import: "使用相册已有照片和视频，不重复导入。",
+  pipeline_processing: "使用相册已有处理结果，不重复运行流水线。",
+};
+
 function elapsedSeconds(start: unknown, end: number): string {
   const time = typeof start === "string" ? Date.parse(start) : NaN;
   return Number.isFinite(time) && Number.isFinite(end)
@@ -56,6 +64,20 @@ function TimingTable({ group }: { group: PipelineTimingGroup }) {
 }
 
 export function PhaseList({ activeRun }: PhaseListProps) {
+  const tasks = [...(activeRun.rejudge_history ?? []), ...(activeRun.rejudge ? [activeRun.rejudge] : [])]
+    .filter(task => task.rejudge_id || task.status);
+  if (!tasks.length) return <InitialExecutionPhases activeRun={activeRun} />;
+  return <>
+    <ScoringTaskLogs key={activeRun.run_id} tasks={tasks} />
+    <details className="initial-execution-log" key={`${activeRun.run_id}-original`}>
+      <summary>首次测评执行记录 · {statusLabel(activeRun.status)}</summary>
+      <InitialExecutionPhases activeRun={activeRun} />
+    </details>
+  </>;
+}
+
+export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
+  const qa = qaProgress(activeRun);
   const [now, setNow] = useState(() => Date.now());
   const terminal = ["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status ?? "");
   const running = !terminal && Object.values(activeRun.phases ?? {}).some((phase) => phase?.status === "running");
@@ -68,14 +90,20 @@ export function PhaseList({ activeRun }: PhaseListProps) {
     <>
       <h3>Pipeline 执行阶段</h3>
       {activeRun.mode === "build" ? <p>仅构建记忆空间；QA、Judge 和评分有效性不适用。</p> : null}
+      {activeRun.mode === "reuse" ? <p className="phase-mode-note">复用相册测评 · 连接已有相册，跳过身份预置、媒体导入和流水线处理。</p> : null}
       <div className="phase-list execution-phase-list">
         {EXECUTION_PHASES.filter((p) => activeRun.mode !== "build" || p.key !== "qa_eval").map((phaseDef, index) => {
           const phase = activeRun.phases?.[phaseDef.key];
+          const reuse = activeRun.mode === "reuse";
+          // 复用模式不生成这三个阶段；保留历史中确实执行过的阶段及其错误。
+          const skipped = phase?.status === "skipped" || (reuse && !!reuseSkippedPhases[phaseDef.key] && (!phase || phase.status === "pending"));
+          const label = reuse && phaseDef.key === "scope_setup" ? "连接已有相册"
+            : reuse && phaseDef.key === "model_deploy" ? "模型连接" : phaseDef.label;
           const start = typeof phase?.started_at === "string" ? Date.parse(phase.started_at) : NaN;
           const displayPhase = !terminal && phase?.status === "running" && Number.isFinite(start)
             ? { ...phase, total_seconds: Math.max(0, (now - start) / 1000) } : phase;
           const legacyImport = activeRun.phases?.photo_import;
-          const processingDetails = phaseDef.key === "pipeline_processing" &&
+          const processingDetails = !skipped && phaseDef.key === "pipeline_processing" &&
             legacyImport?.execution_mode !== "explicit" && legacyImport?.progress?.current_directory
             ? legacyImport : undefined;
           const progress = processingDetails?.progress ?? phase?.progress;
@@ -86,22 +114,24 @@ export function PhaseList({ activeRun }: PhaseListProps) {
           const displayImport = !terminal && legacyImport?.status === "running" && typeof legacyImport.started_at === "string"
             ? { ...legacyImport, total_seconds: Math.max(0, (now - Date.parse(legacyImport.started_at)) / 1000) }
             : legacyImport;
-          const flow = phaseDef.key === "pipeline_processing" ? pipelineProgressView(activeRun, now) : null;
+          const flow = !skipped && phaseDef.key === "pipeline_processing" ? pipelineProgressView(activeRun, now) : null;
           const timing = flow ? pipelineTimingView(displayPhase, displayImport) : null;
           const clock = flow ? phaseElapsed(flow.combined ? displayImport : displayPhase) : null;
-          const status = flow?.status ?? phase?.status ?? "pending";
+          const status = skipped ? "skipped" : flow?.status ?? phase?.status ?? "pending";
           return (
-            <article className={phaseDef.key === "pipeline_processing" ? "phase-card pipeline-phase-card" : "phase-card"} key={phaseDef.key}>
+            <article className={`phase-card${phaseDef.key === "pipeline_processing" ? " pipeline-phase-card" : ""}${skipped ? " phase-skipped" : ""}`} key={phaseDef.key}>
               <div className="phase-title">
                 <div className="phase-name">
                   <span className="phase-step">{index + 1}</span>
-                  <b>{phaseDef.label}</b>
+                  <b>{label}</b>
                 </div>
                 <span className={"phase-status " + status}>
-                  {statusLabel(status)}
+                  {skipped ? "跳过" : statusLabel(status)}
                 </span>
               </div>
-              {flow ? <div className="pipeline-overall">
+              {skipped ? <p className="phase-summary">{reuse ? reuseSkippedPhases[phaseDef.key] : "本次任务未执行此阶段。"}</p>
+                : reuse && phaseDef.key === "scope_setup" ? <p className="phase-summary">使用已有相册，不创建新相册。</p>
+                : flow ? <div className="pipeline-overall">
                 <div className="pipeline-overall-heading">
                   <b>{flow.label}</b>
                   <span>{clock?.seconds != null ? `${flow.combined ? "合并请求" : clock.label} ${pipelineDuration(clock.seconds)}` : ""}
@@ -123,7 +153,15 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                 <summary><span>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count, true)}</span><span className="phase-import-toggle">登记明细</span></summary>
                 <p>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
                 <p>文件登记、去重、元数据读取与预览准备；媒体处理见流水线。</p>
-              </details> : <p className="phase-summary">{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>}
+              </details> : phaseDef.key === "qa_eval" ? <div className="phase-summary">
+                {qa.copiedAnswers ? <><p>复用答卷 {qa.agentRatio} · 有效评分 {qa.validRatio}</p>
+                  <p className="muted small">阶段日志来自源任务，源任务答题 {qa.sourceAgentRatio}。</p></>
+                  : activeRun.rejudge ? <p>首次答题进度 {String(phase?.progress?.completed ?? "未记录")}/{String(phase?.progress?.total ?? activeRun.qa_count ?? "—")}</p>
+                  : <p>答题已执行 {qa.agentRatio} · {qa.judgeEnabled ? `有效评分 ${qa.validRatio}` : "Judge 未配置"}</p>}
+                {!activeRun.rejudge && qa.judgeEnabled && qa.attempted !== null ? <p className="muted small">
+                  评分尝试已结束 {qa.attemptedRatio}（含失败）{qa.skipped ? ` · 未进入评分 ${qa.skipped} 题` : ""}
+                </p> : null}
+              </div> : <p className="phase-summary">{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>}
               {errors.length > 0 ? (
                 <details className="phase-errors">
                   <summary>{phaseErrorSummary(phase)}</summary>
@@ -145,7 +183,7 @@ export function PhaseList({ activeRun }: PhaseListProps) {
                   {errors.length > 20 ? <p>仅展示前 20 条，完整记录已保存在 run.json。</p> : null}
                 </details>
               ) : null}
-              {phaseDef.key === "photo_import" && phase?.status === "running" && phase?.progress ? (
+              {!skipped && phaseDef.key === "photo_import" && phase?.status === "running" && phase?.progress ? (
                 <div className="phase-bar">
                   <div className="phase-bar-fill" style={{ width: `${phasePercent(phase)}%` }} />
                 </div>

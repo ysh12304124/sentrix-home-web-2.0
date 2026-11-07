@@ -13,28 +13,35 @@ router = APIRouter(tags=["error-analysis"])
 
 
 class AnalysisRequest(BaseModel):
-    kind: Literal["rules", "compare", "ai"] = "rules"
+    scoring_profile: Literal["", "photobench_open_v1", "atm_qs_v1"] = ""
+    scoring_batch: str = ""
+    kind: Literal["rules", "compare", "ai", "ai_compare"] = "rules"
+    comparison_filter: Literal["all", "score_changed"] = "all"
     parent_job: str | None = None
     left_job: str | None = None
     right_job: str | None = None
     indices: list[int] = Field(default_factory=list, max_length=5000)
     provider_id: str | None = None
+    model_role: Literal["judge", "main"] | None = None
     mode: Literal["overview", "cases"] = "cases"
     scope: Literal["run", "filter", "selection"] = "selection"
     filters: dict[str, str] = Field(default_factory=dict)
-    max_cases: int = Field(12, ge=1, le=100)
     resume_job: str | None = None
     summary_only: bool = False
 
     @model_validator(mode="after")
     def validate_options(self) -> AnalysisRequest:
-        if self.kind == "compare" and not (self.left_job and self.right_job):
+        if self.kind in {"compare", "ai_compare"} and not (self.left_job and self.right_job):
             raise ValueError("left_job and right_job are required")
         if self.kind == "ai" and not (
-            self.parent_job and self.provider_id and (self.indices or self.scope != "selection")
+            self.parent_job
+            and (self.provider_id or self.model_role)
+            and (self.indices or self.scope != "selection")
         ):
             raise ValueError("parent_job, provider_id and selected indices are required")
-        if self.kind == "ai":
+        if self.kind == "ai_compare" and (not self.model_role or self.scope not in {"run", "filter"}):
+            raise ValueError("AI comparison requires model_role and run/filter scope")
+        if self.kind in {"ai", "ai_compare"}:
             self.filters = {
                 k: str(v)
                 for k, v in AnalysisQuery.model_validate(self.filters).conditions().items()
@@ -171,9 +178,26 @@ class DiagnosisReport(BaseModel):
     stage: str = "cases"
     prompt_version: str | None = None
     configuration_fingerprint: str | None = None
-    sample_indices: list[int] = Field(default_factory=list)
     summary_status: str | None = None
     summary_error: str | None = None
+
+
+class AIComparisonReport(BaseModel):
+    schema_version: int
+    model: str
+    model_role: str
+    prompt_version: str
+    scope: dict[str, Any]
+    sources: dict[str, Any]
+    requested: int
+    cases: list[dict[str, Any]]
+    coverage: dict[str, int]
+    requests: list[dict[str, Any]]
+    overview: dict[str, Any] | None = None
+    summary_status: str
+    summary_error: str | None = None
+    stage: str = "cases"
+    note: str
 
 
 class EvidenceSnapshot(BaseModel):
@@ -182,6 +206,21 @@ class EvidenceSnapshot(BaseModel):
     index: int
     result_fingerprint: str
     item: dict[str, Any]
+
+
+class ComparisonEvidenceSide(BaseModel):
+    index: int
+    source: dict[str, Any]
+    item: dict[str, Any]
+    qa: dict[str, Any] | None
+    gt_images: list[dict[str, Any]]
+    evidence_locations: dict[str, str]
+
+
+class ComparisonEvidenceSnapshot(BaseModel):
+    job_id: str
+    index: int
+    sides: dict[Literal["left", "right"], ComparisonEvidenceSide]
 
 
 class CasePage(BaseModel):
@@ -199,7 +238,7 @@ class AnalysisJob(BaseModel):
     kind: str | None = None
     processed: int = 0
     stale: bool = False
-    report: AnalysisReport | ComparisonReport | DiagnosisReport | None = None
+    report: AnalysisReport | ComparisonReport | DiagnosisReport | AIComparisonReport | None = None
 
 
 class AnalysisQuery(BaseModel):
@@ -232,6 +271,7 @@ class AnalysisQuery(BaseModel):
     benchmark_group: str = ""
     content_type: str = ""
     content_subtype: str = ""
+    scoring_question_type: str = ""
     test_scenario: str = ""
     tool_name: str = ""
     issue_kind: str = ""
@@ -251,8 +291,19 @@ def create(request: Request, run_id: str, payload: AnalysisRequest) -> dict[str,
 
 
 @router.get("/runs/{run_id}/analysis", response_model=AnalysisJob, response_model_exclude_none=True)
-def latest(request: Request, run_id: str) -> dict[str, Any]:
-    return get_container(request).analysis_backend.latest(run_id)
+def latest(
+    request: Request, run_id: str, scoring_profile: str = "", scoring_batch: str = ""
+) -> dict[str, Any]:
+    backend = get_container(request).analysis_backend
+    for job in backend.history(run_id):
+        options = job.get("options") or {}
+        if (
+            job.get("kind") == "rules"
+            and options.get("scoring_profile", "") == scoring_profile
+            and options.get("scoring_batch", "") == scoring_batch
+        ):
+            return backend.result(job["job_id"])
+    return {"status": "not_generated"}
 
 
 @router.get("/runs/{run_id}/analyses", response_model=list[AnalysisJob], response_model_exclude_none=True)
@@ -322,7 +373,9 @@ def view(request: Request, job_id: str, query: Annotated[AnalysisQuery, Query()]
     )
 
 
-@router.get("/analyses/{job_id}/evidence/{index}", response_model=EvidenceSnapshot)
+@router.get(
+    "/analyses/{job_id}/evidence/{index}", response_model=EvidenceSnapshot | ComparisonEvidenceSnapshot
+)
 def evidence(request: Request, job_id: str, index: int) -> dict[str, Any]:
     return get_container(request).analysis_backend.evidence(job_id, index)
 

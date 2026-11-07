@@ -128,6 +128,16 @@ export function scoreClass(score: unknown): string {
   return score === 2 ? "score-2" : score === 1 ? "score-1" : score === 0 ? "score-0" : "score-none";
 }
 
+/** 按本题量表显示颜色，旧题默认满分 2。 */
+export function judgeScoreClass(item: unknown): string {
+  const judge = dict(dict(item).judge);
+  const score = judge.score;
+  const max = judge.scorer ? judge.max_score : 2;
+  if (judge.judge_status === "needs_review" || judge.consistency_status === "inconsistent") return "score-none";
+  if (typeof score !== "number" || !Number.isFinite(score) || typeof max !== "number" || max <= 0) return "score-none";
+  return score === max ? "score-2" : score > 0 && score < max ? "score-1" : score === 0 ? "score-0" : "score-none";
+}
+
 /** 1.0 `:338` —— 映射未命中时回**原值**（不是 `unknown`）。 */
 export function statusLabel(status: unknown): string {
   const labels: Record<string, string> = {
@@ -251,12 +261,18 @@ export function judgeRoundState(item: unknown, task: unknown): string {
 /** 1.0 `:750-758` —— 同样把 `activeRejudge` 显式化为 `task`。 */
 export function judgeScoreLabel(item: unknown, task: unknown): string {
   const judge = dict(dict(item).judge);
+  if (judge.judge_status === "needs_review") return "题目待复核";
   if (judge.consistency_status === "inconsistent") return "评分异常";
   const state = judgeRoundState(item, task);
   if (state === "pending") return "待重新评分";
   if (state === "running") return "评分中";
   if (state === "failed") return "评分失败";
   if (state === "interrupted") return "本轮未完成";
+  if (judge.scorer && typeof judge.score === "number") {
+    if (judge.answer_format === "media_list") return '列表得分 ' + judge.score.toFixed(3) + '/' + judge.max_score;
+    const label = judge.score === judge.max_score ? "正确" : judge.score === 0 ? "错误" : "部分正确";
+    return label + '（' + judge.score + '/' + judge.max_score + '）';
+  }
   return judge.score == null ? "未评分" : `${String(judge.score)}分`;
 }
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sentrix.domain.media.capture_time import time_sort_key
 from sentrix.domain.media.models import MediaType
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository
 from sentrix.domain.memories.events import EventRecord
@@ -313,7 +314,7 @@ class ReadTimeline:
 
         result: dict[str, list[str]] = {}
         for event_id in event_ids:
-            ordered: list[tuple[datetime, str]] = []
+            ordered: list[tuple[str, str]] = []
             for observation_id in observation_ids_by_event.get(event_id, ()):
                 observation = observations.get(observation_id)
                 if observation is None:
@@ -321,7 +322,9 @@ class ReadTimeline:
                 asset = assets.get(observation.asset_id)
                 if asset is None:
                     continue
-                ordered.append((asset.captured_at or asset.created_at, asset.id))
+                ordered.append(
+                    (time_sort_key(asset.captured_at or asset.created_at), asset.id)
+                )
             ordered.sort(key=lambda item: (item[0], item[1]))
             result[event_id] = list(dict.fromkeys(asset_id for _, asset_id in ordered))
         return result

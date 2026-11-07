@@ -8,25 +8,24 @@
  * `#runs-region` 上而不是另造一层包装节点——1.0 没有那层节点，多一个会偏离 DOM。
  *
  */
-import type { RefObject } from "react";
+import { qaProgress } from "../../lib/qaProgress.ts";
+import { OPEN_PROFILE, PROFILE_LABELS } from '../../lib/scoring.ts';
+import { type RefObject } from "react";
 
 import type { Run } from "../../api/types.ts";
 import type { RunPageState } from "../../hooks/useRuns.ts";
-import { albumName, duration, fmtDate, fmtPct, modelName, statusLabel } from "../../lib/format.ts";
+import { albumName, duration, fmtDate, fmtPct, modelName } from "../../lib/format.ts";
 import { modeBadgeClass, modeLabel } from "../../lib/qaBrowser.ts";
+import { RunTaskStatus } from "./RunTaskStatus.tsx";
 
-/** A sample completes after a valid Judge score; Agent and Judge attempt counts are not substitutes. */
 function RunProgress({ run }: { run: Run }) {
-  const phase = run.phases?.qa_eval;
-  const progress = phase?.progress;
-  if (run.mode === "build" || progress?.judge_concurrency === 0) return <span className="muted">—</span>;
-  const count = (value: unknown): number | null =>
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-  const completed = count(run.summary?.judge_valid_count);
-  const total = run.qa_count === null ? null :
-    count(run.qa_count) ?? count(run.summary?.total) ?? count(progress?.total) ?? count(progress?.judge_total) ?? count(phase?.judge_total);
-  const label = completed === null && total === null ? "—" : `${completed ?? "—"}/${total ?? "—"}`;
-  return <span className="run-progress-count" aria-label={`评分完成 ${label}`}>{label}</span>;
+  const progress = qaProgress(run);
+  const showOriginal = progress.applicable && progress.judgeEnabled;
+  if (!showOriginal) return <span className="muted">—</span>;
+  return <div className="run-progress-count">
+    {showOriginal && progress.agent !== null ? <div>{progress.copiedAnswers ? "答卷" : "答题"} <span>{progress.agentRatio}</span></div> : null}
+    {showOriginal && <div aria-label={`有效评分 ${progress.validRatio}`}>评分 <span>{progress.validRatio}</span></div>}
+  </div>;
 }
 
 export interface RunsTableProps {
@@ -86,41 +85,51 @@ export function RunsTable({
             <tr>
               <th>模型</th>
               <th>相册</th>
-              <th>开始时间</th>
-              <th>耗时</th>
+              <th>最近答题</th>
+              <th>本次耗时</th>
               <th>状态</th>
-              <th>进度</th>
+              <th>累计题数</th>
               <th>媒体召回率</th>
-              <th>质量均分</th>
+              <th>答案得分</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {runs.map((run) => (
+
               <tr
                 key={run.run_id}
-                className={"run-row" + (activeRunId === run.run_id ? " selected" : "")}
+                className={"run-row" + (activeRunId === run.run_id || run.task_run_ids?.includes(activeRunId || "") ? " selected" : "")}
                 onClick={() => onSelectRun(run)}
               >
                 <td>
                   <b>{modelName(run)}</b>
                   <span className={"mode-badge " + modeBadgeClass(run.mode)}>{modeLabel(run.mode)}</span>
+                  {run.execution_versions && <small className="muted">{run.execution_versions.length} 次执行</small>}
                 </td>
                 <td className="muted small">{albumName(run)}</td>
                 <td className="muted small">{fmtDate(run.started_at)}</td>
                 <td className="muted small">{duration(run)}</td>
                 <td>
-                  <span className={"phase-status " + (run.status || "")}>{statusLabel(run.status)}</span>
+                  <RunTaskStatus run={run} />
                 </td>
                 <td><RunProgress run={run} /></td>
                 <td>
-                  {fmtPct(
-                    run.summary?.media_retrieval_recall_macro ??
-                      run.summary?.retrieval_recall_macro ??
-                      run.summary?.retrieval_recall_mean,
+                  {run.summary?.media_retrieval_recall_macro == null && run.summary?.retrieval_recall_macro == null && run.summary?.retrieval_recall_mean == null ? "未运行采集" : fmtPct(
+                    run.summary?.media_retrieval_recall_macro ?? run.summary?.retrieval_recall_macro ?? run.summary?.retrieval_recall_mean,
                   )}
                 </td>
-                <td>{run.summary?.answer_quality_mean ?? "-"}</td>
+                <td className='run-scoring-cell'>
+                  {Object.entries(PROFILE_LABELS).map(([profile,label]) => {
+                    const scoring=run.summary?.scoring as {profiles?:Record<string,{total_score?:number|null;scored_mean?:number|null;normalized_mean?:number|null;scored?:number;total?:number;status?:string}>}|undefined;
+                    const result=scoring?.profiles?.[profile];
+                    const score=profile === OPEN_PROFILE
+                      ? typeof result?.scored_mean === 'number' ? result.scored_mean.toFixed(2)+' / 2.00 分' : '—'
+                      : fmtPct(result?.total_score ?? result?.normalized_mean);
+                    return <div className="run-score-line" key={profile}><span title={label}>{profile === OPEN_PROFILE ? '开放式0/1/2' : label}</span><span>{!result || result.status==='not_collected' ? '未运行采集' : result.total_score == null ? '均值 '+score+'（未完成）' : score}{result?.scored != null ? ' · '+result.scored+'/'+result.total : ''}</span></div>;
+                  })}
+
+                </td>
                 <td>
                   <button
                     className="btn danger compact"
@@ -133,6 +142,7 @@ export function RunsTable({
                   </button>
                 </td>
               </tr>
+
             ))}
           </tbody>
         </table>

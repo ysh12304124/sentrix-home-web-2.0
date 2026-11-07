@@ -29,7 +29,7 @@ import dataclasses
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -427,6 +427,8 @@ class AssistantToolbox:
             "total": page.total,
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
+            "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            "page": page.page,
         }
         if extra:
             observation.update(extra)
@@ -479,6 +481,7 @@ class AssistantToolbox:
         asset = self._assets.get(entry.asset_id)
         observations = self._observations.list_by_asset(entry.asset_id)
         latest = observations[0] if observations else None
+        location = self._asset_places.get(entry.asset_id) if self._asset_places is not None else None
         return {
             "handle": entry.handle,
             "file_name": asset.file_name if asset else "",
@@ -493,6 +496,15 @@ class AssistantToolbox:
             # 带进上下文，而回答一个问题只需要前者。
             "source_kind": (asset.derived_kind if asset and asset.derived_kind else "photo"),
             "captured_at": asset.captured_at.isoformat() if asset and asset.captured_at else "",
+            "capture_time": asdict(asset.capture_time) if asset else {},
+            "location_evidence": {
+                "gps": asdict(asset.captured_location) if asset and asset.captured_location else None,
+                "admin": asdict(location.admin) if location else {},
+                "nearby": asdict(location.nearest) if location else {},
+                "source": location.source.value if location else "unknown",
+                "precision": location.precision.value if location else "unknown",
+                "nearby_is_containment": False,
+            },
             "level": _LEVEL_BY_EVIDENCE_CLASS.get(entry.evidence_class, ""),
             # **地点取 GPS 反解，不取 VLM 的场景描述。** 1.0 的 preview ``place``
             # 就是反地理编码出来的地名（``_short_place_label``，``tools.py:1862``

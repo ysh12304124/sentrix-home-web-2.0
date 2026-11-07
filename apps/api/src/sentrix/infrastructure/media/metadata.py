@@ -73,7 +73,9 @@ def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
     if not raw:
         return None
     text = _text(raw)
-    offset = _text(tags.get(OFFSET_TIME_ORIGINAL_TAG) or tags.get(OFFSET_TIME_TAG) or "")
+    # 有 DateTimeOriginal 时优先用它的 offset；否则退回通用 offset。
+    offset_tag = OFFSET_TIME_ORIGINAL_TAG if tags.get(DATETIME_ORIGINAL_TAG) else OFFSET_TIME_TAG
+    offset = _text(tags.get(offset_tag) or "")
     # EXIF 的 offset 写作 "+0800"，strptime 的 %z 接受 "+08:00" 也接受 "+0800"，直接拼接即可
     if offset.startswith(("+", "-")) and len(offset) >= 5:
         text = f"{text}{offset}"
@@ -96,6 +98,14 @@ class PillowMetadataReader:
             with Image.open(path) as image:
                 exif = image.getexif()
                 tags = {key: value for key, value in exif.items()}
+                # Original capture time and its offset belong to the Exif IFD.
+                try:
+                    capture_tags = exif.get_ifd(ExifTags.IFD.Exif) or {}
+                except (KeyError, TypeError, ValueError, OSError):
+                    capture_tags = {}
+                for tag in (DATETIME_ORIGINAL_TAG, OFFSET_TIME_ORIGINAL_TAG, OFFSET_TIME_TAG):
+                    if tag in capture_tags:
+                        tags[tag] = capture_tags[tag]
                 try:
                     # Exif 子 IFD 才是 DateTimeOriginal / OffsetTimeOriginal 的家。
                     # 顶层优先，子 IFD 补缺；只取顶层会把这些文件当成「没有拍摄时间」。

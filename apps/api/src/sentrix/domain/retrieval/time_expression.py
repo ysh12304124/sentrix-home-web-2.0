@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # 范围两端的连接词。1.0 的字面量。
 _RANGE_SEPARATORS = "[-~至到]"
@@ -42,6 +43,15 @@ _PURE_YEAR = re.compile(r"((?:19|20)\d{2})\s*年?")
 def parse_time_expression(value: str | None) -> tuple[datetime, datetime] | None:
     """时间表达 → 左闭右开区间；认不出来返回 ``None``。"""
     cleaned = str(value or "").strip()
+    # 显式查询时区写作 2018-04-01[Asia/Shanghai]；省略时按媒体当地日历。
+    zone_suffix = re.fullmatch(r"(.*?)\[([A-Za-z_]+(?:/[A-Za-z_+\-]+)+|UTC)\]", cleaned)
+    if zone_suffix:
+        bounds = parse_time_expression(zone_suffix.group(1))
+        try:
+            zone = ZoneInfo(zone_suffix.group(2))
+        except ZoneInfoNotFoundError:
+            return None
+        return (bounds[0].replace(tzinfo=zone), bounds[1].replace(tzinfo=zone)) if bounds else None
 
     month_range = _MONTH_RANGE.fullmatch(cleaned)
     if month_range:

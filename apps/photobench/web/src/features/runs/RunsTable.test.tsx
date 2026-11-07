@@ -52,13 +52,33 @@ function renderTable(runs: Run[], page: Partial<RunPageState> = {}, handlers?: P
 }
 
 describe("状态列（1.0 :3023-3025）", () => {
+  it("隔离小样按保存答卷显示数量", () => {
+    renderTable([run({source_run_id: 'full', qa_count: 3, item_count: 3,
+      summary: {judge_valid_count: 3},
+      phases: {qa_eval: {progress: {agent_completed: 487, total: 487}}}})]);
+    expect(screen.getAllByText('3/3')[0]?.parentElement?.textContent).toBe('答卷 3/3');
+    expect(screen.queryByText('487/3')).toBeNull();
+  });
+  it('原测评结束后仍显示补评运行状态和独立评分项目数量', () => {
+    renderTable([run({status:'completed_with_errors',qa_count:487,summary:{completed:487,judge_valid_count:487},phases:{qa_eval:{progress:{completed:487,total:487}}},rejudge:{status:'running',completed:25,total:1104}})]);
+    expect(screen.getByText('补评运行中')).toBeTruthy();
+    expect(screen.getByText('最近评分 · 25/1104 项')).toBeTruthy();
+    expect(screen.getAllByRole('row')).toHaveLength(2);
+    expect(screen.getAllByText('487/487')).toHaveLength(2);
+  });
+  it('本轮补评成功在同一行展示，旧错误留在日志版本', () => {
+    renderTable([run({status:'completed_with_errors',rejudge:{rejudge_id:'new',status:'completed',completed:10,total:10,failed:0}})]);
+    expect(screen.getByText('补评完成')).toBeTruthy();
+    expect(screen.queryByText('完成但有错误')).toBeNull();
+    expect(screen.getAllByRole('row')).toHaveLength(2);
+  });
   it("按完成有效评分的样本数计算，不使用Agent完成数或Judge尝试结束数", () => {
     renderTable([run({ qa_count: 487, summary: { completed: 69, judge_valid_count: 68 }, phases: { qa_eval: {
       agent_completed: 71, judge_completed: 70, judge_total: 487,
       progress: { judge_completed: 72, judge_total: 486, completed: 69, total: 487 },
     } } })]);
     const label = screen.getByText("68/487");
-    expect(screen.getByRole("columnheader", { name: "进度" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "累计题数" })).toBeTruthy();
     expect(label.hasAttribute("title")).toBe(false);
     expect(label.parentElement?.hasAttribute("title")).toBe(false);
     expect(screen.queryByRole("progressbar")).toBeNull();
@@ -68,7 +88,7 @@ describe("状态列（1.0 :3023-3025）", () => {
     renderTable([run({ qa_count: 487, summary: { completed: 487, judge_valid_count: 484 },
       phases: { qa_eval: { progress: { completed: 487, total: 487 } } } })]);
     expect(screen.getByText("484/487")).toBeTruthy();
-    expect(screen.queryByText("487/487")).toBeNull();
+    expect(screen.getByText("487/487").parentElement?.textContent).toBe("答题 487/487");
   });
 
   it("0和未知值如实显示，评分失败不当作完成，异常计数不截断", () => {
@@ -179,4 +199,31 @@ it("评分缺失以完成但有错误显示，保留实际评分数", () => {
   expect(screen.getByText("完成但有错误")).toBeTruthy();
   expect(screen.getByText("9/10")).toBeTruthy();
   expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+it("旧混合评分不混进两套标准，未运行标准明确标记", () => {
+  renderTable([run({summary: {answer_quality_mean: 0.533, evaluation_summary: {count: 10, mean: 0.2666666667}}}),
+    run({run_id: "old", summary: {answer_quality_mean: 1.5}})]);
+  expect(screen.getByRole("columnheader", {name: "答案得分"})).toBeTruthy();
+  expect(screen.queryByText("26.7%")).toBeNull();
+  expect(screen.queryByText("1.5 / 2")).toBeNull();
+  expect(screen.getAllByText("未运行采集")).toHaveLength(6);
+  expect(screen.queryByText("0.533")).toBeNull();
+});
+
+it('双标准列表与详情一致：开放式2分制，QS百分比', () => {
+  renderTable([run({scoring_profiles:['photobench_open_v1','atm_qs_v1'],summary:{scoring:{profiles:{
+    photobench_open_v1:{status:'incomplete',scored:163,total:487,scored_mean:1.288,normalized_mean:.644,total_score:null},
+    atm_qs_v1:{status:'completed',scored:487,total:487,scored_mean:.75,normalized_mean:.75,total_score:.75},
+  }}}})]);
+  expect(screen.getByText('均值 1.29 / 2.00 分（未完成） · 163/487')).toBeTruthy();
+  expect(screen.getByText('75.0% · 487/487')).toBeTruthy();
+  expect(screen.queryByText(/64.4%/)).toBeNull();
+});
+
+it('列表开放式合法零分保留两位小数', () => {
+  renderTable([run({scoring_profiles:['photobench_open_v1'],summary:{scoring:{profiles:{
+    photobench_open_v1:{status:'completed',scored:2,total:2,scored_mean:0,normalized_mean:0,total_score:0},
+  }}}})]);
+  expect(screen.getByText('0.00 / 2.00 分 · 2/2')).toBeTruthy();
 });

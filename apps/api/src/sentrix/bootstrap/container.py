@@ -43,12 +43,12 @@ from sentrix.domain.identity.ports import (
     SemanticRepository,
 )
 from sentrix.domain.media.import_jobs import ImportJobRepository
-from sentrix.domain.memories.rotation import RotationRepository
 from sentrix.domain.media.ports import (
     AssetRepository,
     AudioMetadataReader,
     AudioRepository,
     AudioTranscriber,
+    CaptureTimeResolver,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -70,6 +70,7 @@ from sentrix.domain.memories.ports import (
     FactRepository,
     MemoryGraphRepository,
 )
+from sentrix.domain.memories.rotation import RotationRepository
 from sentrix.domain.places.aliases import PlaceAliases
 from sentrix.domain.places.ports import AssetPlaceRepository, PlaceResolver
 from sentrix.domain.retrieval.ports import (
@@ -90,6 +91,7 @@ from sentrix.infrastructure.assistant.model_endpoint import ServedModel, probe_c
 from sentrix.infrastructure.build import read_build_revision
 from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
 from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
+from sentrix.infrastructure.media.capture_time import ResolveCaptureTime
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
@@ -132,7 +134,9 @@ from sentrix.infrastructure.persistence.repositories.events import SqliteEventRe
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
 from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepository
 from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
+from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
+from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
 from sentrix.infrastructure.persistence.repositories.participants import (
     SqliteEventParticipantRepository,
@@ -143,8 +147,6 @@ from sentrix.infrastructure.persistence.repositories.portraits import (
 from sentrix.infrastructure.persistence.repositories.relationships import (
     SqliteRelationshipRepository,
 )
-from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
-from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.result_sets import SqliteResultSetRepository
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
 from sentrix.infrastructure.persistence.repositories.semantic import (
@@ -252,6 +254,7 @@ class Container:
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
+    capture_time_resolver: CaptureTimeResolver
     preview_encoder: PreviewEncoder
     # 视频三件（S8a）：ffprobe 探测、浏览器预览转码、血缘仓储。三者都是端口声明——
     # 具体实现（子进程 / 子进程 / SQL）全在 infrastructure，见 pyproject 的两条 purity 契约。
@@ -274,7 +277,7 @@ class Container:
     text_vector_repository: VectorRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
-    cross_modal_embedder: VisualEmbedder
+    cross_modal_embedder: VisualEmbedder | None
     text_embedder: TextEmbedder
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
@@ -361,13 +364,9 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
-        # 体验实例沿用时间窗切场景；SVD/Katna 只在显式配置时加载，避免
-        # 没有 Katna 的部署在 import 阶段就失败。
-        default_algorithm = "window" if settings.experience_mode else "svd_katna"
-        video_algorithm = os.getenv(
-            "SENTRIX_VIDEO_KEYFRAME_ALGORITHM", default_algorithm
-        ).strip().lower()
-        video_scene_planner = None
+        # 默认走 SVD/Katna；体验实例也用它。部署可用 env 显式切回 window。
+        video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_katna").strip().lower()
+        video_scene_planner: VideoScenePlanner | None = None
         if video_algorithm == "svd_katna":
             from sentrix.infrastructure.media.svd_katna_scene_planner import SVDKatnaScenePlanner
 
@@ -375,12 +374,7 @@ class Container:
         elif video_algorithm == "svd_lowrank":
             from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanner
 
-            source_root = os.getenv("SENTRIX_SVD_SOURCE_ROOT", "").strip()
-            if not source_root:
-                raise ValueError("SENTRIX_SVD_SOURCE_ROOT is required for svd_lowrank")
-            video_scene_planner = SVDLowRankScenePlanner(
-                Path(source_root), settings.media_dir / "derived" / "svd"
-            )
+            video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
         place_aliases = load_place_aliases()
@@ -495,6 +489,7 @@ class Container:
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
+            capture_time_resolver=ResolveCaptureTime(),
             preview_encoder=PillowPreviewEncoder(),
             video_metadata_reader=FfprobeVideoMetadataReader(),
             # 预览转码件落在 ``media_dir/derived/video`` 下：与其余媒体文件同一个根，

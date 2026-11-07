@@ -12,8 +12,9 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -55,7 +56,7 @@ def load_svd_config(path: str | Path | None = None) -> dict[str, Any]:
     if not candidate.is_file():
         return dict(DEFAULT_CONFIG)
     try:
-        import yaml  # type: ignore
+        import yaml
 
         payload = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
         return _merge(DEFAULT_CONFIG, payload if isinstance(payload, dict) else {})
@@ -99,7 +100,9 @@ class SVDLowRankKeyframeExtractor:
         colour = small.reshape(-1, 3).mean(axis=0).astype(np.float32) / 255.0
         return np.concatenate([compact.reshape(-1), colour])
 
-    def sample_video(self, video_path: str | Path):
+    def sample_video(
+        self, video_path: str | Path
+    ) -> tuple[list[tuple[float, int, np.ndarray]], dict[str, float]]:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"cannot open video: {video_path}")
@@ -127,7 +130,7 @@ class SVDLowRankKeyframeExtractor:
             "duration_sec": duration or samples[-1][0],
         }
 
-    def build_feature_matrix(self, samples) -> np.ndarray:
+    def build_feature_matrix(self, samples: Sequence[tuple[float, int, np.ndarray]]) -> np.ndarray:
         """Build features after compensating small frame-to-frame camera shake.
 
         Stabilization is intentionally bounded and only affects scoring. The
@@ -137,17 +140,19 @@ class SVDLowRankKeyframeExtractor:
             return np.vstack([self.preprocess(frame) for _, _, frame in samples]).astype(np.float32)
 
         width, height = [int(v) for v in self.config.get("resize", [160, 90])]
-        max_shift = max(1.0, min(width, height) * float(self.config.get("camera_stabilization_max_shift_ratio", 0.015)))
+        max_shift = max(
+            1.0, min(width, height) * float(self.config.get("camera_stabilization_max_shift_ratio", 0.015))
+        )
         previous: np.ndarray | None = None
         features: list[np.ndarray] = []
         for _, _, frame in samples:
             small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+            gray: np.ndarray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
             aligned = small
             if previous is not None:
                 (shift_x, shift_y), response = cv2.phaseCorrelate(previous, gray)
                 if response >= 0.12 and abs(shift_x) <= max_shift and abs(shift_y) <= max_shift:
-                    transform = np.float32([[1.0, 0.0, -shift_x], [0.0, 1.0, -shift_y]])
+                    transform = np.asarray([[1.0, 0.0, -shift_x], [0.0, 1.0, -shift_y]], dtype=np.float32)
                     aligned = cv2.warpAffine(
                         small,
                         transform,
@@ -179,7 +184,9 @@ class SVDLowRankKeyframeExtractor:
         )
         return rank, float(ratio[rank - 1])
 
-    def low_rank_decomposition(self, matrix: np.ndarray):
+    def low_rank_decomposition(
+        self, matrix: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, float]:
         if matrix.size == 0:
             return np.empty((0, 0)), np.empty(0), np.empty((0, 0)), 1, 1.0
         u, singular, vt = np.linalg.svd(matrix, full_matrices=False)
@@ -199,7 +206,7 @@ class SVDLowRankKeyframeExtractor:
         if not len(matrix):
             return np.empty(0)
         reconstructed = (u @ (u.T @ matrix)) if u.size else np.zeros_like(matrix)
-        return np.mean(np.square(matrix - reconstructed), axis=0)
+        return cast(np.ndarray, np.mean(np.square(matrix - reconstructed), axis=0))
 
     def subspace_change(self, previous_u: np.ndarray | None, current_u: np.ndarray) -> float:
         if previous_u is None or not previous_u.size or not current_u.size:
@@ -276,8 +283,7 @@ class SVDLowRankKeyframeExtractor:
             target = interval / 2.0
             while target < float(timestamps[-1]):
                 nearby = [
-                    i for i, timestamp in enumerate(timestamps)
-                    if abs(float(timestamp) - target) <= radius
+                    i for i, timestamp in enumerate(timestamps) if abs(float(timestamp) - target) <= radius
                 ]
                 if nearby:
                     selected.append(max(nearby, key=lambda i: float(scores[i])))

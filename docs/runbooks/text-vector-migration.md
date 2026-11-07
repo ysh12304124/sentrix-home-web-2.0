@@ -8,6 +8,13 @@
 默认目标库是 `load_settings().database_path`（通常是 `data/sentrix.db`），可用 `--db` 指定。
 脚本启动时先跑迁移，确保 `0015` 已应用。
 
+合并xy分支后，文本向量使用0015_text_vectors.sql，拍摄时间与地点来源使用
+0016_capture_time.sql。已发布xy曾将后者记为0015：执行器核对拍摄时间、地点来源
+列存在且文本向量表不存在后，在同一事务中将旧记录改为0016并执行文本向量迁移，
+原应用时间保留。新库、原main库和原xy库均有升级测试。重复编号或不符合已知结构
+的0015记录明确失败。此处理只修正记账及建表，存量文本向量仍须copy、verify。
+
+
 ```bash
 MIG=".venv/bin/python scripts/maintenance/text_vectors_migrate.py"
 ```

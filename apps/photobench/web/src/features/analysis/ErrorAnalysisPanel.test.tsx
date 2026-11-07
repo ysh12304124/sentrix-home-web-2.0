@@ -130,6 +130,7 @@ const job = {
 };
 function setup(stale = false) {
   vi.mocked(api).mockImplementation(async (path) => {
+    if (path.endsWith("/analyses")) return [] as never;
     if (path === "/config")
       return {
         judge_providers: [{ id: "test", label: "诊断", model: "J" }],
@@ -166,11 +167,62 @@ function setup(stale = false) {
 async function open() {
   render(<ErrorAnalysisPanel runId="r" terminal />);
   fireEvent.click(screen.getByText("错误分析 展开"));
-  await screen.findByLabelText("选择 q1");
-  await screen.findByRole("option", { name: "诊断 · J" });
+  await screen.findByText("题目列表");
+  await screen.findByRole("option", { name: "Judge（默认）" });
+  await screen.findByRole("option", { name: /model.*sample.*other/ });
+  fireEvent.click(screen.getByText("题目列表"));
 }
 
 describe("错误分析工作台", () => {
+  it("自动恢复同来源的已保存分析，不启动模型请求", async () => {
+    setup();
+    const original = vi.mocked(api).getMockImplementation()!;
+    vi.mocked(api).mockImplementation(async (path, options) => {
+      if (path.endsWith("/analyses")) return [{kind: "ai", job_id: "saved", options: {parent_job: job.job_id}}] as never;
+      if (path === "/analyses/saved") return {status: "completed", job_id: "saved", report: {requested: 1, covered: 1, model: "J", provider_id: "test", note: "已保存的分析", cases: []}} as never;
+      return original(path, options);
+    });
+    await open();
+    await waitFor(() => expect(api).toHaveBeenCalledWith("/analyses/saved", expect.anything()));
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("顶部只保留HTML导出，题目列表默认折叠并可展开收起", async () => {
+    setup();
+    const { container } = render(<ErrorAnalysisPanel runId="r" terminal />);
+    fireEvent.click(screen.getByText("错误分析 展开"));
+    const heading = await screen.findByText("题目列表");
+    const list = heading.closest("details")!;
+    expect(list.open).toBe(false);
+    expect(screen.queryByText("历史分析任务")).toBeNull();
+    expect(screen.queryByText("导出 JSON")).toBeNull();
+    expect(screen.queryByText("导出 CSV")).toBeNull();
+    expect(screen.queryByText("全选本页")).toBeNull();
+    expect(screen.queryByText("清空选择")).toBeNull();
+    expect(container.querySelector(".analysis-toolbar")?.contains(screen.getByText("导出 HTML"))).toBe(true);
+    expect(list.querySelector("a[download]")).toBeNull();
+    fireEvent.click(heading);
+    await waitFor(() => expect(list.open).toBe(true));
+    fireEvent.click(heading);
+    await waitFor(() => expect(list.open).toBe(false));
+    expect(post).not.toHaveBeenCalled();
+  });
+  it("点击统计板块筛选时自动展开题目列表，仍可手动收起", async () => {
+    setup();
+    render(<ErrorAnalysisPanel runId="r" terminal />);
+    fireEvent.click(screen.getByText("错误分析 展开"));
+    const list = (await screen.findByText("题目列表")).closest("details")!;
+    expect(list.open).toBe(false);
+    fireEvent.click(await screen.findByRole("tab", { name: "执行问题" }));
+    fireEvent.click(screen.getByText("相关题"));
+    await waitFor(() => expect(list.open).toBe(true));
+    expect(window.location.search).toContain("ea_tool_name=read_photo_text");
+    fireEvent.click(screen.getByText("题目列表"));
+    await waitFor(() => expect(list.open).toBe(false));
+    expect(screen.getByText("两次测评 AI 对比")).toBeTruthy();
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("折叠时不取数据；四视图直接切换且统计涵盖所有分页", async () => {
     setup();
     render(<ErrorAnalysisPanel runId="r" terminal />);
@@ -179,18 +231,18 @@ describe("错误分析工作台", () => {
     await screen.findByLabelText("一级能力");
     expect(screen.getAllByRole("tab")).toHaveLength(4);
     expect(screen.getByText(/当前范围 36\/36/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "执行问题" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "执行问题" }));
     expect(screen.getByText("按工具定位")).toBeTruthy();
     expect(screen.getByText("未满分题数")).toBeTruthy();
     expect(screen.queryByText("应用筛选")).toBeNull();
   });
-  it("筛选、汇总、导出同口径，点击问题保留已有分数条件", async () => {
+  it("页面筛选保留已有条件，顶部HTML始终导出完整报告", async () => {
     setup();
     await open();
-    fireEvent.change(screen.getByLabelText("完成质量"), {
+    fireEvent.change(screen.getByLabelText("答案正确性"), {
       target: { value: "0" },
     });
-    fireEvent.click(screen.getByRole("tab", { name: "执行问题" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "执行问题" }));
     fireEvent.click(screen.getByText("相关题"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
@@ -200,8 +252,8 @@ describe("错误分析工作台", () => {
         expect.anything(),
       ),
     );
-    expect(screen.getByText("导出 HTML").getAttribute("href")).toContain(
-      "score=0",
+    expect(screen.getByText("导出 HTML").getAttribute("href")).toBe(
+      "/api/v1/analyses/j/export?format=html",
     );
     expect(window.location.search).toContain("ea_tool_name=read_photo_text");
     expect(post).not.toHaveBeenCalled();
@@ -224,7 +276,7 @@ describe("错误分析工作台", () => {
     fireEvent(window, new PopStateEvent("popstate"));
     await waitFor(() =>
       expect(
-        (screen.getByLabelText("完成质量") as HTMLSelectElement).value,
+        (screen.getByLabelText("答案正确性") as HTMLSelectElement).value,
       ).toBe("1"),
     );
   });
@@ -252,10 +304,10 @@ describe("错误分析工作台", () => {
     });
     await open();
     fireEvent.change(screen.getByLabelText("分析模型"), {
-      target: { value: "test" },
+      target: { value: "judge" },
     });
     expect(post).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("生成问题总览"));
+    fireEvent.click(screen.getByText("分析所选题目并汇总"));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(
         "/runs/r/analysis",
@@ -263,54 +315,41 @@ describe("错误分析工作台", () => {
           kind: "ai",
           scope: "filter",
           mode: "overview",
-          max_cases: 12,
           parent_job: "j",
-          provider_id: "test",
+          model_role: "judge",
         }),
       ),
     );
   });
-  it("已选范围只发送选择的题；取消勾选不发模型请求", async () => {
+  it("范围只有当前筛选和全部题目，模型只有Judge和主模型", async () => {
     setup();
-    vi.mocked(post).mockResolvedValue({
-      job_id: "ai",
-      status: "completed",
-      processed: 0,
-    });
+    vi.mocked(post).mockResolvedValue({ job_id: "ai", status: "completed", processed: 0 });
     await open();
-    fireEvent.click(screen.getByLabelText("选择 q1"));
-    fireEvent.change(screen.getByLabelText("分析范围"), {
-      target: { value: "selection" },
-    });
-    fireEvent.change(screen.getByLabelText("分析模型"), {
-      target: { value: "test" },
-    });
-    fireEvent.click(screen.getByText("逐题深查"));
-    await waitFor(() =>
-      expect(post).toHaveBeenCalledWith(
-        "/runs/r/analysis",
-        expect.objectContaining({
-          scope: "selection",
-          indices: [0],
-          mode: "cases",
-        }),
-      ),
-    );
+    const scope = screen.getByLabelText("分析范围") as HTMLSelectElement;
+    expect([...scope.options].map(o => o.value)).toEqual(["filter", "run"]);
+    const model = screen.getByLabelText("分析模型") as HTMLSelectElement;
+    expect([...model.options].map(o => o.value)).toEqual(["judge", "main"]);
+    expect(model.value).toBe("judge");
+    expect(screen.queryByLabelText("选择 q1")).toBeNull();
+    fireEvent.change(scope, { target: { value: "run" } });
+    fireEvent.change(model, { target: { value: "main" } });
+    fireEvent.click(screen.getByText("仅逐题分析"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/runs/r/analysis", expect.objectContaining({ scope: "run", model_role: "main", mode: "cases" })));
   });
   it("过期来源禁止新AI与对比", async () => {
     setup(true);
     await open();
     fireEvent.change(screen.getByLabelText("分析模型"), {
-      target: { value: "test" },
+      target: { value: "judge" },
     });
     fireEvent.change(screen.getByLabelText("选择对比运行"), {
       target: { value: "other" },
     });
     expect(
-      (screen.getByText("生成问题总览") as HTMLButtonElement).disabled,
+      (screen.getByText("分析所选题目并汇总") as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(
-      (screen.getByText("创建对比报告") as HTMLButtonElement).disabled,
+      (screen.getByText("开始 AI 对比") as HTMLButtonElement).disabled,
     ).toBe(true);
   });
   it("仍支持选运行创建对比", async () => {
@@ -324,14 +363,29 @@ describe("错误分析工作台", () => {
     fireEvent.change(screen.getByLabelText("选择对比运行"), {
       target: { value: "other" },
     });
-    fireEvent.click(screen.getByText("创建对比报告"));
+    fireEvent.click(screen.getByText("开始 AI 对比"));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/runs/r/analysis", {
-        kind: "compare",
+        kind: "ai_compare",
+        comparison_filter: "all",
+        model_role: "judge",
+        scope: "filter",
+        filters: {},
         left_job: "j",
         right_job: "j",
       }),
     );
+  });
+  it("对比可叠加仅得分不同与全部范围，沿用主模型", async () => {
+    setup();
+    vi.mocked(post).mockResolvedValue({ job_id: "compare", status: "completed", processed: 0 });
+    await open();
+    fireEvent.change(screen.getByLabelText("分析范围"), { target: { value: "run" } });
+    fireEvent.change(screen.getByLabelText("分析模型"), { target: { value: "main" } });
+    fireEvent.change(screen.getByLabelText("对比题目"), { target: { value: "score_changed" } });
+    fireEvent.change(screen.getByLabelText("选择对比运行"), { target: { value: "other" } });
+    fireEvent.click(screen.getByText("开始 AI 对比"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/runs/r/analysis", expect.objectContaining({ kind: "ai_compare", scope: "run", comparison_filter: "score_changed", model_role: "main" })));
   });
   it("AI失败和抽样覆盖清楚展示，证据链接可跨页定位", async () => {
     setup();
@@ -340,7 +394,7 @@ describe("错误分析工作台", () => {
       status: "completed",
       processed: 2,
       report: {
-        schema_version: 2,
+        schema_version: 3,
         model: "J",
         provider_id: "test",
         requested: 36,
@@ -374,18 +428,16 @@ describe("错误分析工作台", () => {
     });
     await open();
     fireEvent.change(screen.getByLabelText("分析模型"), {
-      target: { value: "test" },
+      target: { value: "judge" },
     });
-    fireEvent.click(screen.getByText("生成问题总览"));
-    await screen.findByText(/总览生成失败/);
-    expect(screen.getByText(/未深查 34/)).toBeTruthy();
-    fireEvent.click(screen.getByText("i25:case"));
-    await waitFor(() =>
-      expect(api).toHaveBeenCalledWith(
-        expect.stringContaining("index=25"),
-        expect.anything(),
-      ),
-    );
+    fireEvent.click(screen.getByText("分析所选题目并汇总"));
+    await screen.findByText(/汇总生成失败/);
+    expect(screen.getByText(/未尝试分析 34/)).toBeTruthy();
+    fireEvent.click(screen.getByText("q25"));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("/analyses/j/evidence/25", expect.anything()));
+    fireEvent.click(screen.getByText("关键分析依据（1条）"));
+    fireEvent.click(screen.getAllByRole("button", { name: "题目与回答" })[0]);
+    expect(screen.getByLabelText("节点详情").textContent).toContain("此引用未唯一关联到调用节点");
   });
 });
 
