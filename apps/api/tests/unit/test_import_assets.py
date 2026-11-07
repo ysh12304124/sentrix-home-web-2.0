@@ -291,12 +291,11 @@ def test_video_probe_failure_is_recorded_not_swallowed():
     assert "ffprobe failed: boom" in probe.probe_error
 
 
-def test_video_without_metadata_stores_a_naive_local_captured_at():
-    """探测失败、退到导入时刻时，``captured_at`` 仍必须是本地 naive 时间。
+def test_video_without_metadata_leaves_captured_at_unknown():
+    """探测失败时拍摄时间是 **None**，不能拿导入时刻冒充。
 
-    默认 ``clock`` 是 ``datetime.now(UTC)``（aware）。若把它的原值当 ``captured_at``
-    落库（2026-10-28 的现场：ffprobe 缺失，10/10 视频全挂），后面事件候选窗口要算
-    ``captured_at - events.time_start``，aware 减 naive 直接抛 TypeError。
+    上传时间是用户按下「上传」的时间，不是视频被拍下的时间；把它写进
+    ``captured_at`` 会让时间线把文件归到今天，用户看到一个假日期。
     """
     clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
     use_case, assets, _ = build_video(
@@ -308,15 +307,11 @@ def test_video_without_metadata_stores_a_naive_local_captured_at():
         ImportRequest(scope_id="album1", file_name="clip.mov", content_type=None, content=b"mov")
     )
 
-    captured_at = assets.rows[result.asset_id].captured_at
-    assert captured_at.tzinfo is None
-    assert captured_at == clock_value.astimezone().replace(tzinfo=None)
-    # 真正的崩溃点：与 naive 的事件时间相减不能再抛 TypeError。
-    assert abs(captured_at - datetime(2026, 10, 28, 4, 7, 20)) < timedelta(days=1)
+    assert assets.rows[result.asset_id].captured_at is None
 
 
-def test_image_without_exif_stores_a_naive_local_captured_at():
-    """同一不变式对图片成立：没有 EXIF 时兜底成导入时刻，也要去掉 tzinfo。"""
+def test_image_without_exif_leaves_captured_at_unknown():
+    """没有 EXIF 拍摄时间时 ``captured_at`` 是 None；时间线据此显示「未知时间」。"""
     clock_value = datetime(2026, 10, 28, 4, 7, 20, tzinfo=UTC)
     assets = FakeAssets()
     use_case = ImportAssets(
@@ -331,9 +326,7 @@ def test_image_without_exif_stores_a_naive_local_captured_at():
         ImportRequest(scope_id="album1", file_name="a.jpg", content_type="image/jpeg", content=b"jpg")
     )
 
-    captured_at = assets.rows[result.asset_id].captured_at
-    assert captured_at.tzinfo is None
-    assert captured_at == clock_value.astimezone().replace(tzinfo=None)
+    assert assets.rows[result.asset_id].captured_at is None
 
 
 def test_transcode_failure_keeps_the_import_and_records_the_reason():

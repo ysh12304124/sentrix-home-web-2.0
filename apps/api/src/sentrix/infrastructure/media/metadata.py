@@ -18,7 +18,9 @@ from sentrix.infrastructure.media.image_io import ensure_heif_support
 log = logging.getLogger(__name__)
 
 GPS_INFO_TAG = 34853
+EXIF_IFD_TAG = 34665
 DATETIME_ORIGINAL_TAG = 36867
+DATETIME_DIGITIZED_TAG = 36868
 DATETIME_TAG = 306
 OFFSET_TIME_ORIGINAL_TAG = 36881
 OFFSET_TIME_TAG = 36880
@@ -40,7 +42,7 @@ def _degrees_minutes_seconds(values: Sequence[object], *, negative_ref: str, ref
     # 60**index 在 typeshed 里是 Any（int.__pow__ 要覆盖负指数返回 float 的情形），
     # 所以给 degrees 落一个显式标注，把实数类型钉住；表达式与运行结果都不变。
     degrees: float = sum(_rational(item) / (60**index) for index, item in enumerate(values))
-    if str(ref_value).upper() == negative_ref:
+    if _text(ref_value).upper() == negative_ref:
         degrees *= -1
     return degrees
 
@@ -53,12 +55,25 @@ _DATETIME_FORMATS = (
 )
 
 
+def _text(value: object) -> str:
+    """EXIF 的值可能是 str 或带 NUL 填充的 bytes，统一成可解析的文本。"""
+    if isinstance(value, bytes):
+        return value.decode("ascii", "ignore").strip("\x00 ")
+    return str(value).strip()
+
+
 def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
-    raw = tags.get(DATETIME_ORIGINAL_TAG) or tags.get(DATETIME_TAG)
+    # DateTimeOriginal / DateTimeDigitized 常在 Exif 子 IFD 里，DateTime 在 IFD0。
+    # 三处都看：只读顶层会漏掉「只有 DateTimeOriginal」的相机文件。
+    raw = (
+        tags.get(DATETIME_ORIGINAL_TAG)
+        or tags.get(DATETIME_DIGITIZED_TAG)
+        or tags.get(DATETIME_TAG)
+    )
     if not raw:
         return None
-    text = str(raw).strip()
-    offset = str(tags.get(OFFSET_TIME_ORIGINAL_TAG) or tags.get(OFFSET_TIME_TAG) or "").strip()
+    text = _text(raw)
+    offset = _text(tags.get(OFFSET_TIME_ORIGINAL_TAG) or tags.get(OFFSET_TIME_TAG) or "")
     # EXIF 的 offset 写作 "+0800"，strptime 的 %z 接受 "+08:00" 也接受 "+0800"，直接拼接即可
     if offset.startswith(("+", "-")) and len(offset) >= 5:
         text = f"{text}{offset}"
@@ -82,9 +97,19 @@ class PillowMetadataReader:
                 exif = image.getexif()
                 tags = {key: value for key, value in exif.items()}
                 try:
+                    # Exif 子 IFD 才是 DateTimeOriginal / OffsetTimeOriginal 的家。
+                    # 顶层优先，子 IFD 补缺；只取顶层会把这些文件当成「没有拍摄时间」。
+                    exif_ifd = exif.get_ifd(ExifTags.IFD.Exif) or {}
+                    if isinstance(exif_ifd, dict):
+                        tags = {**exif_ifd, **tags}
+                except Exception:
+                    log.warning("exif_sub_ifd_read_failed path=%s", path, exc_info=True)
+                try:
                     gps_tags = exif.get_ifd(ExifTags.IFD.GPSInfo) or {}
                 except Exception:
                     gps_tags = tags.get(GPS_INFO_TAG) or {}
+                if not isinstance(gps_tags, dict):
+                    gps_tags = {}
         except Exception:
             log.warning("exif_read_failed path=%s", path, exc_info=True)
             return None, None, None
@@ -112,8 +137,8 @@ class PillowMetadataReader:
                 log.warning("exif_gps_invalid path=%s", path, exc_info=True)
                 point = None
 
-        make = str(tags.get(MAKE_TAG) or "").strip()
-        model = str(tags.get(MODEL_TAG) or "").strip()
+        make = _text(tags.get(MAKE_TAG) or "")
+        model = _text(tags.get(MODEL_TAG) or "")
         device = model or make or None
 
         return captured_at, point, device

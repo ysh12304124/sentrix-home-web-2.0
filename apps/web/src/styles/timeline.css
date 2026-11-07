@@ -782,3 +782,18 @@
   .axis-event-time { width: 52px; margin-right: 8px; font-size: 10px; }
   .axis-event .timeline-event { margin-left: 22px; }
 }
+
+/* 没有拍摄时间的事件单独成组，不冒充上传日期。 */
+.timeline-unknown-block {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
+
+.timeline-unknown-block .axis-year {
+  margin-bottom: 8px;
+}
+
+.timeline-unknown-block .timeline-day-list {
+  margin-left: 0;
+}

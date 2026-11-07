@@ -47,8 +47,9 @@ def _scope_clause(
     无条件写 ``WHERE scope_id = ?`` 会让空串查 ``scope_id = ''``，返回空表——
     **而那个空表看起来与「这个范围真的没有事件」一模一样**。
 
-    日期索引、计数与按日列表共用同一组谓词；事件按 ``time_start`` 归日，
-    缺失时退回 ``created_at``，与 ``ReadTimeline._day_key`` 一致。
+    日期索引、计数与按日列表共用同一组谓词。**事件按 ``time_start`` 归日，缺失时不再
+    退回 ``created_at``**：上传时间不是拍摄时间。缺失的事件归入 ``unknown`` 分组，
+    与 ``ReadTimeline._day_key`` 一致。
     """
     clause = " WHERE status = 'active'"
     params: list[object] = []
@@ -61,8 +62,10 @@ def _scope_clause(
     if has_place:
         clause += " AND TRIM(COALESCE(place, '')) NOT IN (?, ?, ?, ?)"
         params.extend(PLACE_PLACEHOLDERS)
-    if date:
-        clause += " AND substr(COALESCE(time_start, created_at), 1, 10) = ?"
+    if date == "unknown":
+        clause += " AND (time_start IS NULL OR time_start = '')"
+    elif date:
+        clause += " AND substr(time_start, 1, 10) = ?"
         params.append(date)
     return clause, tuple(params)
 
@@ -192,7 +195,10 @@ class SqliteEventRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_COLUMNS} FROM events{clause}"
-                " ORDER BY COALESCE(time_start, created_at) DESC, id DESC LIMIT ? OFFSET ?",
+                # 未知时间排在最后，且内部仍按上传时间倒序——分组才能稳定地落成
+                # 末尾那一个「未知时间」桶，而不是被 created_at 打散到各天之间。
+                " ORDER BY (time_start IS NULL OR time_start = '') ASC,"
+                " COALESCE(time_start, created_at) DESC, id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
         return [_row_to_event(row) for row in rows]
@@ -213,11 +219,16 @@ class SqliteEventRepository:
     def calendar(
         self, scope_id: str | None, *, place: str = "", has_place: bool = False
     ) -> Sequence[tuple[str, int]]:
-        """有活动事件的日期及计数；只查日期，不展开事件或媒体。"""
+        """有活动事件的日期及计数；只查日期，不展开事件或媒体。
+
+        没有 ``time_start`` 的事件归到特殊的 ``unknown`` 桶——**不拿 ``created_at``
+        冒充拍摄日**。调用方把它渲染成单独的「时间未知」分组。
+        """
         clause, params = _scope_clause(scope_id, place, has_place=has_place)
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT substr(COALESCE(time_start, created_at), 1, 10) AS day,"
+                "SELECT CASE WHEN time_start IS NULL OR time_start = '' THEN 'unknown'"
+                " ELSE substr(time_start, 1, 10) END AS day,"
                 " COUNT(*) AS n FROM events"
                 f"{clause} GROUP BY day ORDER BY day ASC",
                 params,

@@ -441,11 +441,10 @@ class ImportAssets:
         )
 
         now = self._clock()
-        # ``clock`` 默认 ``datetime.now(UTC)``（aware），而 ``captured_at`` 的不变式是
-        # 「本地时间、无 tzinfo」。没有 EXIF/ffprobe 时兜底成导入时刻，也必须过同一层
-        # 归一化——否则事件时间窗比较会在 aware 减 naive 上抛 TypeError（见
-        # ``normalize_captured_datetime`` 的文档）。
-        captured_at = normalize_captured_datetime(captured_at or now)
+        # **拍摄时间读不出来就保持 None，不能拿导入时刻冒充。** 上传时间是用户按下
+        # 「上传」的时间，不是这张照片被拍下的时间；吞成 now 会让时间线把文件归到
+        # 今天，用户看到的是一个假日期。时间线的「未知时间」分组只认 NULL。
+        captured_at = normalize_captured_datetime(captured_at)
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,

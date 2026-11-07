@@ -1,7 +1,8 @@
 """时间线读取用例：年月日索引、按日分页与事件详情。
 
-日期属于事件的语义：``time_start`` 缺失时退回 ``created_at``。索引、计数和按日列表
-共用同一组 SQL 谓词，前端不需要在已加载的一页上自行筛选。
+日期属于事件的语义：``time_start`` 是拍摄时间；缺失时归入 **``unknown``**，不退回
+``created_at``（上传时间不是拍摄时间）。索引、计数和按日列表共用同一组 SQL 谓词，
+前端不需要在已加载的一页上自行筛选。
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ DEFAULT_SCOPE_ID = "home-default"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 EVENT_SCAN_LIMIT = 1000
+#: 没有拍摄时间的事件桶。与日期筛选参数共用一个字面量。
+UNKNOWN_DAY = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +100,17 @@ class CalendarYear:
     months: tuple[CalendarMonth, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CalendarIndex:
+    """时间线日历索引。``unknown_count`` 是没有拍摄时间的事件数。
+
+    它不塞进 ``years``：未知时间不是某一年某一天，混进去会让前端把上传日当成拍摄日。
+    """
+
+    years: tuple[CalendarYear, ...] = ()
+    unknown_count: int = 0
+
+
 @dataclass(slots=True)
 class _DayBucket:
     date: str
@@ -166,12 +180,16 @@ class ReadTimeline:
 
     def calendar(
         self, scope_id: str | None = None, *, place: str = "", has_place: bool = False
-    ) -> tuple[CalendarYear, ...]:
+    ) -> CalendarIndex:
         rows = self._events.calendar(scope_id or None, place=place, has_place=has_place)
         years: dict[int, dict[int, list[CalendarDay]]] = {}
         year_counts: dict[int, int] = {}
         month_counts: dict[tuple[int, int], int] = {}
+        unknown_count = 0
         for date, count in rows:
+            if date == UNKNOWN_DAY:
+                unknown_count += count
+                continue
             try:
                 year = int(date[:4])
                 month = int(date[5:7])
@@ -182,21 +200,24 @@ class ReadTimeline:
             )
             year_counts[year] = year_counts.get(year, 0) + count
             month_counts[(year, month)] = month_counts.get((year, month), 0) + count
-        return tuple(
-            CalendarYear(
-                year=year,
-                count=year_counts.get(year, 0),
-                months=tuple(
-                    CalendarMonth(
-                        month=month,
-                        count=month_counts.get((year, month), 0),
-                        days=tuple(days[month]),
-                    )
-                    for month in sorted(days)
-                ),
-            )
-            for year in sorted(years, reverse=True)
-            for days in (years[year],)
+        return CalendarIndex(
+            years=tuple(
+                CalendarYear(
+                    year=year,
+                    count=year_counts.get(year, 0),
+                    months=tuple(
+                        CalendarMonth(
+                            month=month,
+                            count=month_counts.get((year, month), 0),
+                            days=tuple(days[month]),
+                        )
+                        for month in sorted(days)
+                    ),
+                )
+                for year in sorted(years, reverse=True)
+                for days in (years[year],)
+            ),
+            unknown_count=unknown_count,
         )
 
     def get_event(self, event_id: str) -> TimelineEvent | None:
@@ -307,7 +328,8 @@ class ReadTimeline:
 
 
 def _day_key(event: EventRecord) -> str:
-    moment = event.time_start or event.created_at
-    if moment is None:
-        return ""
-    return moment.date().isoformat()
+    """事件归属的日期。**没有 time_start 就是未知**，不能退回 created_at——
+    那是上传时间，不是拍摄时间。"""
+    if event.time_start is None:
+        return UNKNOWN_DAY
+    return event.time_start.date().isoformat()

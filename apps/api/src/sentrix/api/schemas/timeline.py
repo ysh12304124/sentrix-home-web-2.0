@@ -73,6 +73,8 @@ class CalendarYear(BaseModel):
 
 class TimelineCalendarResponse(BaseModel):
     scope_id: str
+    #: 没有拍摄时间的事件数。前端把它渲染成单独的「时间未知」分组。
+    unknown_count: int = 0
     years: list[CalendarYear]
 
 

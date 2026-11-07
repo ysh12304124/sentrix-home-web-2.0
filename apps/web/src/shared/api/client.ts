@@ -278,6 +278,8 @@ export interface CalendarYear {
 
 export interface TimelineCalendarResponse {
   scope_id: string;
+  /** 没有拍摄时间的事件数；渲染成「时间未知」分组，不冒充上传日期。 */
+  unknown_count: number;
   years: CalendarYear[];
 }
 

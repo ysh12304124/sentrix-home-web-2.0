@@ -107,8 +107,9 @@ def _summary_payload(event: TimelineEventSummaryResult) -> TimelineEventSummary:
 
 
 def _validate_date(value: str) -> str:
-    if value == "":
-        return ""
+    # ``unknown`` 是没有拍摄时间的事件桶，与 YYYY-MM-DD 一样是服务端的合法筛选值。
+    if value in {"", "unknown"}:
+        return value
     try:
         parsed = date.fromisoformat(value)
     except ValueError:
@@ -154,7 +155,7 @@ def read_timeline(
     offset: int = Query(0, ge=0),
     place: str = Query("", max_length=60, description="地点筛选，服务端按地点/行政区匹配"),
     has_place: bool = False,
-    date_value: str = Query("", alias="date", pattern=r"^$|^\d{4}-\d{2}-\d{2}$"),
+    date_value: str = Query("", alias="date", pattern=r"^$|^unknown$|^\d{4}-\d{2}-\d{2}$"),
     container: Container = Depends(get_container),
 ) -> TimelineResponse:
     result = _read_timeline(container).execute(
@@ -184,11 +185,13 @@ def timeline_calendar(
     has_place: bool = False,
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    years = _read_timeline(container).calendar(
+    index = _read_timeline(container).calendar(
         scope_id or None, place=place.strip(), has_place=has_place
     )
+    years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,
+        unknown_count=index.unknown_count,
         years=[
             CalendarYear(
                 year=year.year,
