@@ -105,6 +105,7 @@ class RelationshipBatchRequest(BaseModel):
     """
 
     scope_id: str | None = None
+    graph_enabled: bool = True
     entity_by_name: dict[str, str] | None = None
     relationships: list[RelationshipBatchItem] | None = None
 

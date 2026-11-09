@@ -213,7 +213,7 @@ export function judgeProgressLabel(phase: unknown): string {
   return `Judge 已结束 ${completed}/${total}${skipped}`;
 }
 
-export function phaseSummary(key: string, phase: unknown, itemCount: unknown = null): string {
+export function phaseSummary(key: string, phase: unknown, itemCount: unknown = null, compact = false): string {
   if (!phase) return "";
   const p = dict(phase);
   if (key === "model_deploy" && p.unload_seconds != null) {
@@ -232,11 +232,10 @@ export function phaseSummary(key: string, phase: unknown, itemCount: unknown = n
     // 不拆的话 64 分钟全叫「导入」，读起来像复制文件花了 64 分钟。
     const timings = dict(p.timings);
     const parts: string[] = [];
-    if (timings.asset_import != null) parts.push(`资产落库 ${fmtSeconds(timings.asset_import)}`);
-    if (timings.prepare != null) parts.push(`观察 ${fmtSeconds(timings.prepare)}`);
-    if (timings.finish != null) parts.push(`归属 ${fmtSeconds(timings.finish)}`);
-    if (timings.summarize != null) parts.push(`总结 ${fmtSeconds(timings.summarize)}`);
-    if (timings.stage != null) parts.push(`落库 ${fmtSeconds(timings.stage)}`);
+    // Legacy requests combined import and processing. Only registration belongs
+    // on this card; observation and graph timings are shown in the pipeline.
+    const registration = timings.asset_import ?? timings.stage;
+    if (registration != null) parts.push(`登记落库累计 ${fmtSeconds(registration)}`);
     const breakdown = parts.length ? ` · ${parts.join(" · ")}` : "";
     // Backend timings cover internal work and may exclude request waiting/queueing.
     // Keep the measured phase wall clock authoritative and label the subtotal separately.
@@ -248,16 +247,23 @@ export function phaseSummary(key: string, phase: unknown, itemCount: unknown = n
       typeof value === "number" && Number.isInteger(value) && value >= 0 ? String(value) : "?";
     const observation = dict(dict(p.progress).observation);
     if (p.status === "running" && Object.keys(observation).length) {
-      return `当前目录已处理 ${count(observation.completed)}/${count(observation.total)} 个媒体 · 新增 ${count(observation.imported)} · 去重 ${count(observation.deduplicated)} · 失败 ${count(observation.failed)} · 阶段墙钟 ${total}`;
+      if (compact) {
+        return `媒体 ${count(observation.completed)}/${count(observation.total)} · 失败 ${count(observation.failed)} · ${total}`;
+      }
+      const timing = p.execution_mode === "explicit"
+        ? `阶段墙钟 ${total}` : "登记与处理合并计时，详见流水线";
+      return `当前目录已处理 ${count(observation.completed)}/${count(observation.total)} 个媒体 · 新增 ${count(observation.imported)} · 去重 ${count(observation.deduplicated)} · 失败 ${count(observation.failed)} · ${timing}`;
     }
     if (typeof p.scanned_count === "number") {
       const completed = typeof p.accepted_count === "number" && typeof p.deduplicated_count === "number" &&
         typeof p.failed_count === "number" ? p.accepted_count + p.deduplicated_count + p.failed_count : null;
+      if (compact) return `媒体 ${count(completed)}/${count(p.scanned_count)} · 失败 ${count(p.failed_count)} · ${total}`;
       return `已处理 ${count(completed)}/${count(p.scanned_count)} 个媒体 · 新增 ${count(p.accepted_count)} · 去重 ${count(p.deduplicated_count)} · 失败 ${count(p.failed_count)} · 阶段墙钟 ${total}${backendTotal}${breakdown}`;
     }
     const accepted = count(p.accepted_count);
     const totalMedia = count(p.total_media ?? p.total_photos);
     const failed = count(p.failed_count);
+    if (compact) return `媒体 ${accepted}/${totalMedia} · 失败 ${failed} · ${total}`;
     return `导入 ${accepted}/${totalMedia} 个媒体 · 失败 ${failed} · 阶段墙钟 ${total}${backendTotal}${breakdown}`;
   }
   if (key === "pipeline_processing" && p.progress) {

@@ -343,9 +343,7 @@ def test_direct_media_lineage_without_query_relevance_does_not_promote(library):
     assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
     assert result.graph_promoted_asset_ids == ()
     assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
-    assert result.graph_provenance["asset_graph_only"]["relations"] == [
-        "asset_derived_from_asset"
-    ]
+    assert result.graph_provenance["asset_graph_only"]["relations"] == ["asset_derived_from_asset"]
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------

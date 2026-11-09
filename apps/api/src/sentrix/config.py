@@ -51,6 +51,7 @@ class Settings(BaseSettings):
                 "embedding_scheme": "legacy",
                 "agent_wall_time_s": 600.0,
                 "chat_timeout_s": 180.0,
+                "album_workers": 2,
                 "face_providers": "CPUExecutionProvider",
                 "retinaface_providers": "CPUExecutionProvider",
             }.items():
@@ -79,6 +80,7 @@ class Settings(BaseSettings):
                 "vlm_generation_profile",
                 "vlm_exact_output_budget",
                 "vlm_context_tokens",
+                "album_workers",
                 "face_providers",
                 "retinaface_providers",
             )
@@ -169,11 +171,10 @@ class Settings(BaseSettings):
     # 整册导入是**串行**的（单卡 GPU），所以这个超时按单次调用算，不是按一张图算。
     vlm_timeout_s: float = 180.0
 
-    # 整册导入的预取窗口：同时在飞的**推理**数（视觉嵌入 / VLM 观察 / 人脸检测）。
-    # 1 就是原先的逐张串行。默认 4 是 1.0 在同一类机器上的实测值
-    # （``app.py:366`` 的 ``effective_workers``，11.78 秒/张；2.0 串行时 49.1 秒/张）。
-    # **提交永远串行**，与这个数无关——事件的归属顺序是语义的一部分。
-    album_workers: int = 4
+    # 整册导入的预取窗口：同时在飞的**推理**数。Mac profile 默认 2；llama-server 单槽
+    # 加 CPU 人脸推理时，4 个 worker 会堆积请求并放大内存压力。server 默认 4。
+    # 可通过 SENTRIX_ALBUM_WORKERS 显式覆盖；提交仍始终串行保序。
+    album_workers: int = Field(default=4, ge=1, le=4)
 
     def model_post_init(self, _context: Any, /) -> None:  # noqa: D105
         self.data_dir = self.data_dir.expanduser().resolve()

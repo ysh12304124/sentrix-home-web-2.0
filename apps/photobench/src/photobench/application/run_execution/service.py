@@ -1253,6 +1253,7 @@ class RunExecution:
                     aliases=[str(alias) for alias in face.get("aliases") or []],
                     file_name=relative.rsplit("/", 1)[-1],
                     content=content,
+                    graph_enabled=request.graph_enabled,
                 )
             except Exception as exc:  # noqa: BLE001 —— 单人失败不中断整批，见 docstring
                 details.append({"name": name, "ref_image": relative, "error": str(exc)})
@@ -1278,6 +1279,7 @@ class RunExecution:
                         scope_id=scope_id,
                         relationships=list(relationships),
                         entity_by_name=entity_by_name,
+                        graph_enabled=request.graph_enabled,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 —— 与种身份同一个形状
@@ -1774,7 +1776,10 @@ class RunExecution:
 
         future = self._start_phase_request(
             lambda: self.client.process_pipeline(
-                scope_id=scope_id, asset_ids=asset_ids, timeout=request.import_timeout
+                scope_id=scope_id,
+                asset_ids=asset_ids,
+                graph_enabled=request.graph_enabled,
+                timeout=request.import_timeout,
             ),
             name="sentrix-pipeline",
         )
@@ -1843,7 +1848,7 @@ class RunExecution:
         processed_count = int(result.get("processed") or 0)
         skipped_count = int(result.get("skipped") or 0)
         failed_count = len(response_failures)
-        if asset_ids and result.get("memory_graph") is None:
+        if asset_ids and request.graph_enabled and result.get("memory_graph") is None:
             error_details.append(
                 {
                     "sample_id": "memory_graph",
@@ -1912,7 +1917,7 @@ class RunExecution:
                 f"{failed_count} 个资产流水线处理失败"
                 if failed_count
                 else "记忆图构建未完成"
-                if graph_result is None
+                if request.graph_enabled and graph_result is None
                 else "因果边判定部分失败"
                 if error_details
                 else None

@@ -73,6 +73,7 @@ class HttpxSentrixClient:
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
+        graph_enabled: bool,
         timeout: int = 120,
     ) -> dict[str, Any]:
         """``POST /api/v1/people/seed``（``api/routes/identity.py:904``）。
@@ -93,6 +94,7 @@ class HttpxSentrixClient:
                     "family_role": family_role,
                     "aliases": "、".join(aliases),
                     "scope_id": scope_id,
+                    "graph_enabled": str(graph_enabled).lower(),
                 },
                 [("files", file_name, content)],
                 timeout,
@@ -105,6 +107,7 @@ class HttpxSentrixClient:
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
+        graph_enabled: bool,
         timeout: int = 60,
     ) -> dict[str, Any]:
         """``POST /api/v1/relationships/batch``（``api/routes/relationships.py:181``）。
@@ -118,6 +121,7 @@ class HttpxSentrixClient:
                 self._url("/relationships/batch"),
                 {
                     "scope_id": scope_id,
+                    "graph_enabled": graph_enabled,
                     "relationships": [dict(item) for item in relationships],
                     "entity_by_name": dict(entity_by_name),
                 },
@@ -169,11 +173,13 @@ class HttpxSentrixClient:
             )
         )
 
-    def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+    def process_pipeline(
+        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+    ) -> dict[str, Any]:
         return dict(
             self._http.request_json(
                 self._url("/pipeline/process"),
-                {"scope_id": scope_id, "asset_ids": list(asset_ids)},
+                {"scope_id": scope_id, "asset_ids": list(asset_ids), "graph_enabled": graph_enabled},
                 "POST",
                 timeout,
             )

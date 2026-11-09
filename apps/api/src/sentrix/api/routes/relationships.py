@@ -205,7 +205,7 @@ def import_relationships(
             for item in payload.relationships or []
         ],
     )
-    if payload.scope_id:
+    if payload.scope_id and payload.graph_enabled:
         refresh_memory_graph(container, payload.scope_id)
     return RelationshipBatchResponse(
         requested=outcome.requested,

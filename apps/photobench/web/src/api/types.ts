@@ -316,6 +316,7 @@ export interface GraphQaOverall {
   final_media_effect?: {
     available?: boolean;
     status?: string;
+    pairing_source?: "auto" | "explicit" | null;
     baseline_run_id?: string | null;
     with_graph_run_id?: string | null;
     sample_count?: number;

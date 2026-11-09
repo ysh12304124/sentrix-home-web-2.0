@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -63,6 +64,7 @@ from sentrix.domain.identity.ports import (
 
 # 1.0 ``person_insights.py:249`` 的 ``getattr(self.gamma, "model", "unknown")`` 兜底。
 UNKNOWN_MODEL = "unknown"
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +196,11 @@ class RunInsights:
         永远过不了、画像永远落不了库，而失败是静默的（``continue``）。
         """
         written = 0
+        try:
+            model_name = self._vision.model_id or UNKNOWN_MODEL
+        except Exception as error:  # noqa: BLE001 - 模型名是附属元数据，不能阻断确定性画像
+            log.warning("读取人物画像模型名失败，按 unknown 记录: %s", error)
+            model_name = UNKNOWN_MODEL
         for item in core:
             person_id = str(item["person_id"])
             pack = packs.get(person_id)
@@ -217,7 +224,7 @@ class RunInsights:
                 themes=_themes(portrait),
                 evidence_refs=_evidence_refs(portrait),
                 trigger_type=PORTRAIT_TRIGGER_PIPELINE,
-                model_name=self._vision.model_id or UNKNOWN_MODEL,
+                model_name=model_name,
             )
             written += 1
         return written

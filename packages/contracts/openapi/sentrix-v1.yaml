@@ -2674,6 +2674,10 @@ components:
           - type: string
           - type: 'null'
           title: Face Instance Ids
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          default: true
         files:
           items:
             type: string
@@ -5068,6 +5072,46 @@ components:
           type: string
           title: Causal Status
           default: not_configured
+        graph_structure_seconds:
+          type: number
+          title: Graph Structure Seconds
+          default: 0.0
+        image_count:
+          type: integer
+          title: Image Count
+          default: 0
+        image_temporal_edges:
+          type: integer
+          title: Image Temporal Edges
+          default: 0
+        image_object_edges:
+          type: integer
+          title: Image Object Edges
+          default: 0
+        image_visual_edges:
+          type: integer
+          title: Image Visual Edges
+          default: 0
+        image_visual_status:
+          type: string
+          title: Image Visual Status
+          default: no_images
+        semantic_observation_count:
+          type: integer
+          title: Semantic Observation Count
+          default: 0
+        semantic_edges:
+          type: integer
+          title: Semantic Edges
+          default: 0
+        semantic_status:
+          type: string
+          title: Semantic Status
+          default: no_observations
+        confirmed_mention_edges:
+          type: integer
+          title: Confirmed Mention Edges
+          default: 0
         causal_seconds:
           type: number
           title: Causal Seconds
@@ -5249,6 +5293,10 @@ components:
           type: array
           maxItems: 1000
           title: Asset Ids
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          default: true
       type: object
       required:
       - scope_id
@@ -5523,6 +5571,10 @@ components:
           - type: string
           - type: 'null'
           title: Scope Id
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          default: true
         entity_by_name:
           anyOf:
           - additionalProperties:
@@ -6229,6 +6281,11 @@ components:
           title: Include Debug
           description: 是否在回合轨迹里记录每次模型调用的完整输入与原始输出（默认关闭）
           default: false
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          description: 是否启用图记忆拓展检索；评测对照 run 可关闭
+          default: true
       type: object
       required:
       - message

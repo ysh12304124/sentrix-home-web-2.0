@@ -73,6 +73,7 @@ class SentrixClient(Protocol):
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
+        graph_enabled: bool,
         timeout: int = 120,
     ) -> dict[str, Any]:
         """``POST /api/v1/people/seed``（1.0 ``:2691`` 的单人投影）。
@@ -90,6 +91,7 @@ class SentrixClient(Protocol):
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
+        graph_enabled: bool,
         timeout: int = 60,
     ) -> dict[str, Any]:
         """``POST /api/v1/relationships/batch``（1.0 ``:2713``）。逐条失败不中断。"""
@@ -108,7 +110,9 @@ class SentrixClient(Protocol):
         """``POST /api/v1/imports/assets``：只落盘并登记资产，返回有序 ``asset_ids``。"""
         ...
 
-    def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+    def process_pipeline(
+        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+    ) -> dict[str, Any]:
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
 

@@ -98,8 +98,16 @@ function overallGainCards(overall: GraphQaOverall) {
     ),
     metricCard(
       "最终回答质量分（无图 → 有图）",
-      final?.available ? transition(finalWithout.answer_quality_mean, finalWith.answer_quality_mean) : "需配对无图 run",
-      final?.available ? `变化 ${typeof finalDelta.answer_quality_mean === "number" ? finalDelta.answer_quality_mean.toFixed(3) : "—"}` : "同题对照后计算",
+      final?.available
+        ? (typeof finalWithout.answer_quality_mean === "number" && typeof finalWith.answer_quality_mean === "number"
+          ? `${finalWithout.answer_quality_mean.toFixed(3)} → ${finalWith.answer_quality_mean.toFixed(3)}`
+          : "评分不完整")
+        : "需配对无图 run",
+      final?.available
+        ? (typeof finalDelta.answer_quality_mean === "number"
+          ? `变化 ${finalDelta.answer_quality_mean.toFixed(3)}`
+          : "存在 Judge/Agent 错误，暂不比较质量分")
+        : "同题对照后计算",
     ),
     metricCard(
       "候选召回率（primary → fused）",
@@ -198,6 +206,15 @@ export function GraphQualityPanel({ quality }: { quality: GraphQuality | null })
         最终媒体指标严格读取完整 QA 的交付媒体结果（列表中的“媒体召回率”，例如 39.3%），
         需要同题、同相册、同模型的 graph-off 对照 run；候选 primary → fused 只作为辅助诊断。
       </p>
+      {quality.graph_qa_overall?.final_media_effect?.baseline_run_id ? (
+        <p className="metric-calc-time">
+          {quality.graph_qa_overall.final_media_effect.pairing_source === "auto" ? "自动匹配" : "已绑定"}
+          无图对照 run：{quality.graph_qa_overall.final_media_effect.baseline_run_id}
+          {quality.graph_qa_overall.final_media_effect.status === "run_summary_partial_quality"
+            ? "；本轮评分不完整，仅比较最终媒体指标。"
+            : ""}
+        </p>
+      ) : null}
       {quality.graph_qa_overall &&
       (quality.graph_qa_overall.available || quality.graph_qa_overall.final_media_effect?.available) ? (
         <div className="phase-metrics graph-quality-metrics">{overallGainCards(quality.graph_qa_overall)}</div>

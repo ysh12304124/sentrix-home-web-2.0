@@ -146,6 +146,7 @@ class PipelineProcessRequest(BaseModel):
 
     scope_id: str = Field(..., min_length=1, max_length=255)
     asset_ids: list[str] = Field(default_factory=list, max_length=1000)
+    graph_enabled: bool = True
 
 
 class MemoryGraphBuildResponse(BaseModel):

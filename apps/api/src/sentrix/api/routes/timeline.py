@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -329,22 +330,41 @@ def process_album_pipeline(
     )
     stage_timings = StageTimings()
     with stage_timings.activate(), stage_timings.measure("pipeline_total"):
-        result = pipeline.execute(
-            AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
+        result = _run_pipeline_stage(
+            request.scope_id,
+            "media_and_memory_processing",
+            lambda: pipeline.execute(
+                AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
+            ),
         )
         timings = dict(result.timings)
 
         with stage_timings.measure("finalize"):
             participant_started = time.perf_counter()
             with stage_timings.measure("participant_projection"):
-                observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
-                _confirmed_person_events(container).refresh_participants([item.id for item in observations])
+
+                def project_participants() -> None:
+                    observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
+                    _confirmed_person_events(container).refresh_participants(
+                        [item.id for item in observations]
+                    )
+
+                _run_pipeline_stage(request.scope_id, "participant_projection", project_participants)
             timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
 
+            graph = None
             graph_started = time.perf_counter()
-            with stage_timings.measure("memory_graph"):
-                graph = refresh_memory_graph(container, request.scope_id)
-            timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
+            if request.graph_enabled:
+                with stage_timings.measure("memory_graph"):
+                    graph = _run_pipeline_stage(
+                        request.scope_id,
+                        "memory_graph",
+                        lambda: refresh_memory_graph(container, request.scope_id),
+                    )
+                # GraphBuildStats 只返回计数；这一段墙钟覆盖构图和图写入。
+                timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
+            else:
+                timings["memory_graph"] = 0.0
             timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
 
             family_started = time.perf_counter()
@@ -353,8 +373,20 @@ def process_album_pipeline(
             timings["family_graph"] = round(time.perf_counter() - family_started, 3)
 
             insights_started = time.perf_counter()
+            insight_failure: ImportFailure | None = None
             with stage_timings.measure("person_insights"):
-                insights = _maybe_run_insights(container, request.scope_id, result.processed)
+                try:
+                    insights = _maybe_run_insights(container, request.scope_id, result.processed)
+                except Exception as error:  # noqa: BLE001 - 辅助画像失败不应丢弃已完成的记忆图
+                    log.exception(
+                        "显式流水线的人物画像阶段失败；保留媒体记忆与图 scope=%s",
+                        request.scope_id,
+                    )
+                    insights = None
+                    insight_failure = ImportFailure(
+                        file_name="person_insights",
+                        reason=f"{type(error).__name__}: {error}",
+                    )
             timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
         timings["total"] = round(time.perf_counter() - total_started, 3)
 
@@ -369,12 +401,16 @@ def process_album_pipeline(
         summarized=result.summarized,
         timings=timings,
         timing_spans=[PipelineStageSpan(**span) for span in stage_timings.spans()],
-        failures=[ImportFailure(file_name=item.file_name, reason=item.reason) for item in result.failures],
+        failures=[
+            *[ImportFailure(file_name=item.file_name, reason=item.reason) for item in result.failures],
+            *([insight_failure] if insight_failure is not None else []),
+        ],
         memory_graph=(
             MemoryGraphBuildResponse(
                 scope_id=graph.scope_id,
                 node_count=graph.node_count,
                 edge_count=graph.edge_count,
+                graph_structure_seconds=timings["memory_graph"],
                 causal_candidate_pairs=graph.causal_candidate_pairs,
                 causal_edges=graph.causal_edges,
                 causal_status=graph.causal_status,
@@ -464,6 +500,15 @@ def _maybe_run_insights(container: Container, scope_id: str, imported: int) -> I
         return None
     counts = run_insights_for_scope(container, scope_id)
     return InsightCounts(**counts)
+
+
+def _run_pipeline_stage(scope_id: str, stage: str, operation: Callable[[], Any]) -> Any:
+    """记录显式测评流水线收尾阶段的完整异常，避免客户端只看到无上下文的 HTTP 500。"""
+    try:
+        return operation()
+    except Exception:
+        log.exception("显式流水线失败 scope=%s stage=%s", scope_id, stage)
+        raise
 
 
 @router.post("/imports/{operation_id}/cancel", status_code=202)

@@ -960,6 +960,7 @@ async def seed_person_identity(
     aliases: str | None = Form(None),
     scope_id: str = Form("home-default"),
     face_instance_ids: str | None = Form(None),
+    graph_enabled: bool = Form(True),
     files: list[UploadFile] = File(default=[]),
     container: Container = Depends(get_container),
 ) -> SeedIdentityResponse:
@@ -1020,7 +1021,8 @@ async def seed_person_identity(
     except NoSeedFacesError as error:
         # 1.0 在路由上抛 422（``app.py:2345``）：请求是好的，是这几张图里没有人脸。
         raise UnprocessableError(str(error)) from error
-    refresh_memory_graph(container, scope_id)
+    if graph_enabled:
+        refresh_memory_graph(container, scope_id)
     return SeedIdentityResponse(
         entity_id=result.entity_id,
         cluster_id=result.cluster_id,
