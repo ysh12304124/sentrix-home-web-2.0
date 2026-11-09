@@ -46,11 +46,11 @@ function relationRow(
     predicate,
     object_entity_id: object,
     inverse_predicate: inverse,
-    source: "model",
-    confidence: 0.8,
+    source: "user_override",
+    confidence: 1,
     evidence_refs: [],
     state: "active",
-    locked: false,
+    locked: true,
     revision: 1,
   };
 }
@@ -129,9 +129,9 @@ describe("/people 名人录（F7 §0 真实形状）", () => {
     });
     // 「有没有内容」由人数决定，关系条数为 0 不算空——这正是 1.0 画空图的那个坑。
     expect(screen.queryByText("还没有可显示的人物")).toBeNull();
-    expect(screen.getByText("8 人 · 0 条关系")).toBeTruthy();
+    expect(screen.getByText("8 人 · 0 条已确认关系")).toBeTruthy();
     // 默认视图是名录（计划书裁决②），图谱 tab 此时不该被卸载掉门槛
-    expect(screen.getByRole("tab", { name: "名录" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "人物" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("点一张卡走 ?person= 打开详情侧栏（不加路由）", async () => {
@@ -156,27 +156,19 @@ describe("图谱 tab", () => {
   }
 
   async function openGraph(container: HTMLElement) {
-    fireEvent.click(screen.getByRole("tab", { name: "关系图谱" }));
+    fireEvent.click(screen.getByRole("tab", { name: "关系" }));
     await waitFor(() => {
-      expect(container.querySelector(".graph-svg")).not.toBeNull();
+      expect(container.querySelector(".graph-shell, .graph-empty")).not.toBeNull();
     });
   }
 
-  it("0 条边（8 人全 unknown）：8 个节点都画出来，初始变换不是 NaN", async () => {
+  it("没有已确认关系时图谱为空，只显示一行提示", async () => {
     const { container } = mount();
     await openGraph(container);
 
-    // 夹具是 8 人 0 边——节点数 8 与边数 0 是两个不同的量，0 比 0 抓不到东西。
-    await waitFor(() => {
-      expect(container.querySelectorAll("[data-node-id]")).toHaveLength(8);
-    });
+    expect(screen.getByText("当前无已确认关系")).toBeTruthy();
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(0);
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(0);
-
-    // fit() 跑过才会写 transform；漏写或算出 NaN 都会在这里现形。
-    const transform = transformOf(container);
-    expect(transform).not.toBeNull();
-    expect(transform).not.toContain("NaN");
-    expect(transform).toMatch(/^translate\(-?[\d.]+ -?[\d.]+\) scale\([\d.]+\)$/);
   });
 
   it("后端一次写两行 + 一条同对的其他关系：图上只画 1 条边，且是优先级最高的那条", async () => {
@@ -206,5 +198,8 @@ describe("图谱 tab", () => {
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
     expect(container.querySelectorAll(".graph-edge-label")).toHaveLength(1);
     expect(container.querySelector(".graph-edge-label")?.textContent).toBe("父亲");
+    const transform = transformOf(container);
+    expect(transform).not.toBeNull();
+    expect(transform).not.toContain("NaN");
   });
 });

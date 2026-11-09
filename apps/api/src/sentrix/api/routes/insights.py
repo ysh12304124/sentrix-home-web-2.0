@@ -33,14 +33,19 @@ from sentrix.application.identity.extract_moments import ExtractMoments
 from sentrix.application.identity.run_insights import RunInsights
 from sentrix.bootstrap.container import Container
 from sentrix.domain.identity.insights import CORE_PEOPLE_LIMIT, rank_core_people
-from sentrix.domain.identity.models import DEFAULT_SCOPE_ID, PortraitRevisionRecord
+from sentrix.domain.identity.models import (
+    DEFAULT_SCOPE_ID,
+    PENDING_CLUSTER_NAME,
+    PortraitRevisionRecord,
+    entity_display_name,
+)
 
 router = APIRouter(tags=["insights"])
 
 # 1.0 ``app.py:1570`` 的 ``scope_id or "home-default"``。读视图给空值时兜底成默认空间
 # （「看看默认那个相册里有哪些人」是个合理的默认动作），而**跑流水线不给兜底**——
 # 它是重活，写错空间会往那个空间里灌一批真的画像行。
-ANONYMOUS_NAME = "未命名成员"
+ANONYMOUS_NAME = PENDING_CLUSTER_NAME
 
 
 def _extract_moments(container: Container) -> ExtractMoments:
@@ -121,11 +126,14 @@ def list_person_insights(
         tiers.setdefault(tier, []).append(
             {
                 **item,
-                # 1.0 ``app.py:1583`` 的兜底：还没命名的人显示成「未命名成员」而不是
-                # 一个 ``person_ab12cd34`` 这样的 id。
-                "display_name": (person.canonical_name if person else "") or ANONYMOUS_NAME,
+                # pending 实体的 canonical_name 是落库的内部名
+                # （「待确认人物簇 · cluster-x」），不能直接给用户看。
+                "display_name": (
+                    entity_display_name(person) if person is not None else ANONYMOUS_NAME
+                ),
                 "family_role": person.family_role if person else None,
                 "status": person.status if person else None,
+                "avatar_face_instance_id": item.get("avatar_face_instance_id"),
                 "portrait": _portrait_payload(portrait),
             }
         )

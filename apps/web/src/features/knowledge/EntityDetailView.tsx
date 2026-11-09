@@ -260,10 +260,7 @@ export function EntityDetailView({ detail: initial, onClose }: EntityDetailViewP
           )}
         </section>
 
-        <p className="entity-source-note">
-          证据文件：{detail.evidence_files.length} 个 · 数据来自{" "}
-          <code>GET /entities/{detail.entity.id}</code>
-        </p>
+        <p className="entity-source-note">证据文件：{detail.evidence_files.length} 个</p>
       </div>
 
       {asset !== null ? (

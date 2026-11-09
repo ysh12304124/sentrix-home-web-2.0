@@ -11,6 +11,7 @@ import httpx
 
 from sentrix.domain.memories.causality import CausalParseError, CausalVerdict
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger(__name__)
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -44,6 +45,7 @@ class OpenAICausalJudge:
                     "max_tokens": 768,
                 },
                 timeout=self._timeout_s,
+                headers=model_auth_headers(),
             )
             response.raise_for_status()
             payload = response.json()

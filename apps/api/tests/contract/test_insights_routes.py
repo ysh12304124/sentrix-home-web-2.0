@@ -3,7 +3,7 @@
 三条链路各自的边界都在这里钉住：
 
 1. **读视图**（``GET /person-insights``）按 ``tier`` 分档、空 ``scope_id`` 兜底成
-   ``home-default``、还没命名的人显示成「未命名成员」，并且**恰好**只返回 1.0 里还活着的
+   ``home-default``、还没命名的人显示成「未确认姓名人物」，并且**恰好**只返回 1.0 里还活着的
    那两块。``run`` / ``role_candidates`` / ``album_owner_candidates`` /
    ``relationship_hypotheses`` 是模块 docstring 明确不搬的四块（``infer_graph`` 整个不搬），
    断言的是**键不存在**而不是「值为空」——留一个恒空的占位键，读的人会以为那条链路是通的。
@@ -158,7 +158,7 @@ def _add_person(
 
     ``name=None`` 就是「还没命名」在数据层的样子：**不建实体行**。于是
     ``person_candidate_features`` 的 ``COALESCE(c.entity_id, c.id)`` 把簇 id 当 person_id，
-    路由查实体查不到，落到「未命名成员」那个兜底上（``FaceClusterRecord`` 说 ``entity_id``
+    路由查实体查不到，落到「未确认姓名人物」那个兜底上（``FaceClusterRecord`` 说 ``entity_id``
     可空——簇建出来到实体建出来之间就有这个窗口）。
 
     ``dates`` 是观察的拍摄日期，决定 ``date_count``——而 ``date_count`` 是 ``tier`` 的
@@ -280,7 +280,7 @@ def test_the_read_view_buckets_people_into_the_three_tiers(client: TestClient) -
 
 
 def test_an_unnamed_person_is_shown_as_an_anonymous_member(client: TestClient) -> None:
-    """还没命名的人显示成「未命名成员」，**不是他的 id**。
+    """还没命名的人显示成「未确认姓名人物」，**不是他的 id**。
 
     数据层的样子是「簇有、实体还没有」（``entity_id`` 可空）：``person_id`` 落成簇 id。
     断言的是显示名而不是 id，才钉得住 1.0 ``app.py:1583`` 那个兜底——把它删掉，这里变成
@@ -292,7 +292,7 @@ def test_an_unnamed_person_is_shown_as_an_anonymous_member(client: TestClient) -
 
     item = body["tiers"]["incidental"][0]
     assert item["person_id"] == person_id == "person_ab12cd34"
-    assert item["display_name"] == "未命名成员"
+    assert item["display_name"] == "未确认姓名人物"
 
 
 def test_the_read_view_does_not_carry_the_four_blocks_1_0_had(client: TestClient) -> None:

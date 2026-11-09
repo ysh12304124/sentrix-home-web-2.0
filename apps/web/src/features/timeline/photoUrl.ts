@@ -1,15 +1,11 @@
-import { assetFileUrl, assetPreviewUrl, type TimelinePhoto } from "../../shared/api/client";
+import { assetPreviewUrl, assetThumbnailUrl, type TimelinePhoto } from "../../shared/api/client";
 
-const HEIC_SUFFIXES = [".heic", ".heif"];
-
-/**
- * 浏览器直接渲染不了的格式走服务端转码预览，其余走原图。
- *
- * 时间线卡片与事件详情共用这一条判断——两处各写一遍，改格式支持时迟早漏一处。
- */
+/** 事件详情放大图：1600px 转码预览，浏览器缓存。 */
 export function timelinePhotoUrl(photo: TimelinePhoto): string {
-  const lowered = photo.file_name.toLowerCase();
-  return HEIC_SUFFIXES.some((suffix) => lowered.endsWith(suffix))
-    ? assetPreviewUrl(photo.asset_id)
-    : assetFileUrl(photo.asset_id);
+  return assetPreviewUrl(photo.asset_id);
+}
+
+/** 事件详情里的缩略图：480px，避免几十张原图同时解码。 */
+export function timelinePhotoThumbUrl(photo: TimelinePhoto): string {
+  return assetThumbnailUrl(photo.asset_id);
 }

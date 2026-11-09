@@ -28,8 +28,17 @@ export function Lightbox({ src, alt = "", caption = "", onClose }: LightboxProps
 
   return (
     <div className="lightbox" role="dialog" aria-modal="true" aria-label={alt || "图片预览"} onClick={onClose}>
-      <button type="button" className="lightbox-close" aria-label="关闭" onClick={onClose}>
-        ×
+      <button
+        type="button"
+        className="lightbox-close"
+        aria-label="关闭图片预览"
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+      >
+        <span aria-hidden="true">×</span>
+        关闭
       </button>
       {/* 点图片本身不该关闭——只有点空白遮罩才关。 */}
       <img src={src} alt={alt} onClick={(event) => event.stopPropagation()} />

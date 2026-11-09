@@ -15,8 +15,9 @@
 import { useState } from "react";
 
 import {
-  assetDisplayUrl,
+  assetPosterUrl,
   assetPreviewUrl,
+  assetThumbnailUrl,
   getAsset,
   type AssetDetailResponse,
   type SearchHit,
@@ -70,6 +71,7 @@ function VideoResult({
       controls
       preload="metadata"
       playsInline
+      poster={assetPosterUrl(assetId)}
       src={assetPreviewUrl(assetId)}
       aria-label="检索命中的视频"
       onLoadedMetadata={(event) => {
@@ -147,7 +149,7 @@ export function SearchResults({
               const startSec = frame?.seconds ?? item.asset.source_timestamp_sec ?? null;
               const info = (
                 <>
-                  <span>{item.asset.file_name}</span>
+                  <span>{item.asset.place ?? "地点未记录"}</span>
                   <small>{formatCapturedAt(item.asset.captured_at)}</small>
                   <small>
                     {item.asset.gps
@@ -184,7 +186,7 @@ export function SearchResults({
                       title="查看详情"
                     >
                       {item.asset.media_type === "image" ? (
-                        <img src={assetDisplayUrl(item.asset)} alt={item.asset.file_name} loading="lazy" />
+                        <img src={assetThumbnailUrl(item.asset.id)} alt="搜索结果照片" loading="lazy" />
                       ) : (
                         <span className="search-result-mark" aria-hidden="true">
                           {MEDIA_MARK[item.asset.media_type] ?? "▦"}

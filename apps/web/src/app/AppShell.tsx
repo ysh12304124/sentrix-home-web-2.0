@@ -1,199 +1,309 @@
 /**
- * 壳层：240px 侧边栏 + 72px 顶栏 + 内容区。
+ * 壳层：顶部横向导航 + 全局动作 + 内容区。
  *
- * **逐块移植 1.0 `src/app.js:237-238` 的 `shell()` 模板串。** 三处行为直接来自那两行，
- * 不是我自己定的：
- *
- * 1. 面包屑里的「返回」**只在非概览页出现**（`:238` 的三元 `state.view !== "overview"`）；
- * 2. 当前项高亮走 `.nav-item.active`（1.0 `styles.css:44`：浅色字 + lime 底）；
- * 3. 后端不可用时底部脉冲文案是「本地服务不可用」（`:238` 的 `backendError` 三元）。
+ * 六个用户入口按“回忆、提问、时间线、人物、资料库、添加资料”排列；宽屏一行放下，
+ * 中等宽度把后三项收进有文字的“更多”，窄屏全部收进有文字的“菜单”。管理入口只在
+ * 独立 8220 端口出现，不进入普通用户导航。
  */
 
-import { useEffect, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 
-import { NAV_ITEMS, SYSTEM_ITEMS, activeNavItem } from "./nav";
-import { useScope } from "./ScopeProvider";
-import { CommandPalette } from "./CommandPalette";
-import { HelpModal } from "./HelpModal";
-import { qaDashboardUrl } from "./qa";
+import { NAV_ITEMS } from "./nav";
+import { useTheme } from "./theme/ThemeProvider";
+import { ThemePicker } from "./theme/ThemePicker";
+import { GuidedTour } from "./GuidedTour";
+import { TOURS } from "./tours";
+import { FeedbackPanel } from "../features/feedback/FeedbackPanel";
+import { UploadsProvider } from "../features/imports/UploadsProvider";
+import { Onboarding } from "./Onboarding";
+import { OverlayProvider } from "./OverlayContext";
+import { useAuth } from "./AuthProvider";
 import { fetchHealth } from "../shared/api/client";
+import { newOperationId, reportClientEvent } from "../shared/clientEvents";
 import { useToast } from "../shared/ui/Toast";
 
-function NavButton({ icon, label, active, onClick }: { icon: string; label: string; active: boolean; onClick: () => void }) {
+type HealthState = "ok" | "degraded" | "unknown";
+
+function NavLinkItem({ path, label, onNavigate }: { path: string; label: string; onNavigate?: () => void }) {
   return (
-    <button type="button" className={active ? "nav-item active" : "nav-item"} onClick={onClick}>
-      <span className="icon" aria-hidden="true">{icon}</span>
-      <span>{label}</span>
-    </button>
+    <NavLink
+      to={path}
+      end={path === "/"}
+      className="top-nav-link"
+      onClick={() => {
+        void reportClientEvent({
+          eventName: "nav.click",
+          result: "ok",
+          operationId: newOperationId(),
+          scopeId: "",
+        });
+        onNavigate?.();
+      }}
+    >
+      {label}
+    </NavLink>
   );
 }
 
 export function AppShell() {
+  const { enabled: appearanceEnabled } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
-  const { scopeId, spaces, setScopeId } = useScope();
   const { notify } = useToast();
-  const [backendDown, setBackendDown] = useState(false);
-  // 1.0 的模态是全局 `state.modal`；2.0 这里只有两个壳层动作，不需要通用模态栈。
-  const [overlay, setOverlay] = useState<"command" | "help" | null>(null);
-
-  /**
-   * 切换相册。1.0 的 `select-space` 直接写 state——但写 `localStorage` 会抛
-   * （Safari 隐私模式、存储配额满），而抛出来时范围已经变了、侧边栏却停在旧值。
-   * 这里把失败接成 Toast，并且**不吞掉异常后继续**：切换失败就保持原范围。
-   */
-  function switchScope(next: string) {
-    if (next !== "" && !spaces.some((space) => space.id === next)) {
-      notify("相册切换失败：该相册已不在列表中", "error");
-      return;
-    }
-    try {
-      setScopeId(next);
-    } catch (cause) {
-      notify(`相册切换失败：${(cause as Error).message}`, "error");
-    }
-  }
-
-  function openQaDashboard() {
-    // 不探测服务是否就绪：2.0 API 没有 1.0 的 `/api/photobench/ensure`，
-    // 先 fetch 一个不存在的端点只会把「打不开」伪装成「启动中」。
-    window.open(qaDashboardUrl(window.location), "_blank", "noopener,noreferrer");
-  }
+  const { identity, logout, markOnboardingSeen } = useAuth();
+  const [health, setHealth] = useState<HealthState>("unknown");
+  const [lastHealthAt, setLastHealthAt] = useState<number | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const [overlay, setOverlay] = useState<"guide" | "feedback" | "appearance-feedback" | "theme" | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const autoOpenedOnboarding = useRef(false);
+  const moreRef = useRef<HTMLDetailsElement | null>(null);
+  const menuRef = useRef<HTMLDetailsElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetchHealth()
-      .then(() => !cancelled && setBackendDown(false))
-      .catch(() => !cancelled && setBackendDown(true));
+    const check = async () => {
+      try {
+        const result = await fetchHealth();
+        if (cancelled) return;
+        setHealth(result.status === "ok" ? "ok" : "degraded");
+        setLastHealthAt(Date.now());
+      } catch {
+        if (!cancelled) setHealth("unknown");
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void check();
+    }, 30_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    // 时间流逝本身也要触发重渲染，否则旧的绿色状态会一直留在屏幕上。
+    const ticker = window.setInterval(() => setClock(Date.now()), 15_000);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      window.clearInterval(ticker);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
+  }, []);
+
+  useEffect(() => {
+    void reportClientEvent({
+      eventName: "page.view",
+      result: "ok",
+      operationId: newOperationId(),
+    });
+    // 页面切换关掉展开的导航菜单。
+    moreRef.current?.removeAttribute("open");
+    menuRef.current?.removeAttribute("open");
   }, [location.pathname]);
 
-  const current = activeNavItem(location.pathname);
-  const activeSpace = spaces.find((space) => space.id === scopeId);
-  const spaceLabel = activeSpace?.name ?? "全部相册";
+  useEffect(() => {
+    if (autoOpenedOnboarding.current) return;
+    if (identity?.onboarding_show !== true) return;
+    autoOpenedOnboarding.current = true;
+    setOnboardingOpen(true);
+    void reportClientEvent({ eventName: "onboarding.open", result: "ok" });
+  }, [identity]);
+
+  const finishOnboarding = async (kind: "skip" | "complete") => {
+    setOnboardingOpen(false);
+    void reportClientEvent({
+      eventName: kind === "skip" ? "onboarding.skip" : "onboarding.complete",
+      result: "ok",
+    });
+    try {
+      await markOnboardingSeen();
+    } catch {
+      notify("这次选择尚未保存，下次登录可能再次出现。", "error");
+    }
+  };
+
+  const current = NAV_ITEMS.find(
+    (item) => item.path === location.pathname || (item.path !== "/" && location.pathname.startsWith(`${item.path}/`)),
+  );
+  const stale = lastHealthAt === null || clock - lastHealthAt > 90_000;
+  const healthLabel = stale || health === "unknown"
+    ? "状态待确认"
+    : health === "ok"
+      ? "服务正常"
+      : "部分功能暂不可用";
+  const healthDetail = lastHealthAt === null
+    ? "还没有确认过服务状态"
+    : `最后确认 ${new Date(lastHealthAt).toLocaleTimeString("zh-CN", { hour12: false })}`;
+
+  const closeDetails = (ref: RefObject<HTMLDetailsElement | null>) => {
+    ref.current?.removeAttribute("open");
+    ref.current?.querySelector("summary")?.focus();
+  };
 
   return (
     <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup">
+      <header className="app-topbar">
+        <Link to="/" className="topbar-brand">
           <span className="brand-mark">S</span>
-          <div>
-            <strong>Sentrix</strong>
-            <small>Home Memory</small>
-          </div>
-        </div>
-
-        <label className="space-switcher">
-          <span className="avatar tiny">S</span>
           <span>
-            <b>当前相册</b>
-            <select
-              aria-label="切换全部相册或独立相册"
-              value={scopeId}
-              onChange={(event) => switchScope(event.target.value)}
-            >
-              <option value="">全部相册</option>
-              {spaces.map((space) => (
-                <option key={space.id} value={space.id}>{space.name}</option>
-              ))}
-            </select>
-            <small>{scopeId === "" ? "正在查看全部相册" : `正在查看 ${spaceLabel}`}</small>
+            <strong>Sentrix</strong>
+            <small>家庭记忆</small>
           </span>
-        </label>
+        </Link>
 
-        <div className="side-label">家庭记忆</div>
-        <nav className="main-nav">
+        <nav className="top-nav" aria-label="主导航">
           {NAV_ITEMS.map((item) => (
-            <NavButton
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={current?.id === item.id}
-              onClick={() => navigate(item.path)}
-            />
+            <NavLinkItem key={item.id} path={item.path} label={item.label} />
           ))}
+
+          <details
+            className="nav-more"
+            ref={moreRef}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeDetails(moreRef);
+            }}
+          >
+            <summary>更多</summary>
+            <div className="nav-popover">
+              {NAV_ITEMS.slice(3).map((item) => (
+                <NavLinkItem
+                  key={item.id}
+                  path={item.path}
+                  label={item.label}
+                  onNavigate={() => closeDetails(moreRef)}
+                />
+              ))}
+            </div>
+          </details>
+
+          <details
+            className="nav-menu"
+            ref={menuRef}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeDetails(menuRef);
+            }}
+          >
+            <summary>菜单</summary>
+            <div className="nav-popover">
+              {NAV_ITEMS.map((item) => (
+                <NavLinkItem
+                  key={item.id}
+                  path={item.path}
+                  label={item.label}
+                  onNavigate={() => closeDetails(menuRef)}
+                />
+              ))}
+              <div className="nav-popover-divider" />
+              {appearanceEnabled ? <button type="button" className="nav-popover-action" onClick={() => { closeDetails(menuRef); setOverlay("theme"); }}>外观</button> : null}
+              <button
+                type="button"
+                className="nav-popover-action"
+                onClick={() => {
+                  closeDetails(menuRef);
+                  setOverlay("guide");
+                  void reportClientEvent({ eventName: "help.open", result: "ok" });
+                }}
+              >
+                如何使用
+              </button>
+              <button
+                type="button"
+                className="nav-popover-action"
+                onClick={() => {
+                  closeDetails(menuRef);
+                  setOverlay("feedback");
+                  void reportClientEvent({ eventName: "feedback.open", result: "ok" });
+                }}
+              >
+                反馈问题
+              </button>
+            </div>
+          </details>
         </nav>
 
-        <div className="side-label lower">空间与系统</div>
-        <nav className="main-nav">
-          {SYSTEM_ITEMS.map((item) => (
-            <NavButton
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={current?.id === item.id}
-              onClick={() => navigate(item.path)}
-            />
-          ))}
-          {/* 两个动作项照 1.0 `:238`：不是路由，所以不进 SYSTEM_ITEMS（那张表
-              与 ROUTES 一一对应，路由门禁会拒绝没有页面的导航项）。 */}
-          <NavButton
-            icon="?"
-            label="使用帮助"
-            active={false}
-            onClick={() => setOverlay("help")}
-          />
-          <NavButton
-            icon="▤"
-            label="QA 测评"
-            active={false}
-            onClick={openQaDashboard}
-          />
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="local-pulse">
-            <i />
-            <span>{backendDown ? "本地服务不可用" : "本地 AI 正常运行"}</span>
-          </div>
-          <small>Sentrix Home · 0.2.0</small>
+        <div className="topbar-actions">
+          {appearanceEnabled ? <button type="button" className="text-button topbar-action" onClick={() => setOverlay("theme")}>外观</button> : null}
+          <span
+            className="health-pill"
+            data-state={stale ? "unknown" : health}
+            title={healthDetail}
+          >
+            <i aria-hidden="true" />
+            <span>{healthLabel}</span>
+          </span>
+          <button
+            type="button"
+            className="text-button topbar-action"
+            onClick={() => {
+              setOverlay("guide");
+              void reportClientEvent({ eventName: "help.open", result: "ok" });
+            }}
+          >
+            如何使用
+          </button>
+          <button
+            type="button"
+            className="text-button topbar-action"
+            onClick={() => {
+              setOverlay("feedback");
+              void reportClientEvent({ eventName: "feedback.open", result: "ok" });
+            }}
+          >
+            反馈
+          </button>
+          <span className="top-user">
+            <span className="avatar tiny">{identity?.display_name.slice(0, 1) ?? "S"}</span>
+            <span className="top-user-name">{identity?.display_name ?? "家庭"}</span>
+            {identity?.account_id !== "local" ? (
+              <button
+                type="button"
+                className="text-button logout-action"
+                onClick={() => {
+                  void reportClientEvent({ eventName: "auth.logout", result: "ok" });
+                  void logout();
+                }}
+              >
+                退出
+              </button>
+            ) : null}
+          </span>
         </div>
-      </aside>
+      </header>
 
       <div className="main-content">
-        <header className="topbar">
-          <div className="breadcrumbs">
-            {current !== undefined && current.id !== "overview" ? (
-              <>
-                <button type="button" className="crumb-back" onClick={() => navigate(-1)}>←返回</button>
-                <b>/</b>
-              </>
-            ) : null}
-            <Link to="/" style={{ color: "inherit" }}>Sentrix Home</Link>
-            {current ? (
-              <>
-                <b>/</b>
-                <strong>{current.label}</strong>
-              </>
-            ) : null}
-          </div>
-          <div className="top-actions">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="打开命令搜索"
-              onClick={() => setOverlay("command")}
+        <UploadsProvider>
+          <OverlayProvider blocked={overlay !== null || onboardingOpen}>
+            <div
+              className={location.pathname === "/" ? "view-root memory-view" : "view-root"}
+              data-page={current?.id ?? "unknown"}
             >
-              ⌘
-            </button>
-            <span className="top-user">
-              <span className="avatar tiny">S</span>
-              <span>{spaceLabel}</span>
-            </span>
-          </div>
-        </header>
-        <div className="view-root">
-          <Outlet />
-        </div>
+              <Outlet />
+            </div>
+          </OverlayProvider>
+        </UploadsProvider>
       </div>
 
-      {overlay === "command" ? (
-        <CommandPalette onClose={() => setOverlay(null)} />
+      {overlay === "guide" ? (
+        <GuidedTour
+          pageLabel={current?.label ?? "回忆"}
+          steps={TOURS[current?.id ?? "memories"] ?? TOURS.memories}
+          onClose={() => setOverlay(null)}
+          onOpenOnboarding={() => {
+            setOnboardingOpen(true);
+            void reportClientEvent({ eventName: "onboarding.open", result: "ok" });
+          }}
+        />
       ) : null}
-      {overlay === "help" ? <HelpModal onClose={() => setOverlay(null)} /> : null}
+      {overlay === "theme" ? <ThemePicker onClose={() => setOverlay(null)} onFeedback={() => setOverlay("appearance-feedback")} /> : null}
+      {overlay === "feedback" || overlay === "appearance-feedback" ? <FeedbackPanel appearanceFeedback={overlay === "appearance-feedback"} onClose={() => setOverlay(null)} /> : null}
+      {onboardingOpen ? (
+        <Onboarding
+          onSkip={() => void finishOnboarding("skip")}
+          onComplete={() => void finishOnboarding("complete")}
+          onNavigate={(path) => navigate(path)}
+        />
+      ) : null}
     </main>
   );
 }

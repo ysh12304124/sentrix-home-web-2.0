@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
 from sentrix.domain.media.models import GpsPoint
@@ -286,6 +286,11 @@ class EventCandidateScore:
             "semantic_conflict": self.semantic_conflict,
             "split_guard": self.split_guard,
         }
+
+
+def _as_utc(value: datetime) -> datetime:
+    """历史事件的 time_start 可能来自无时区元数据；统一按 UTC 比较。"""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def within_candidate_window(anchor_at: datetime | None, event_at: datetime | None) -> bool:

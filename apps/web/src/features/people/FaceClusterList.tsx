@@ -79,10 +79,10 @@ export function FaceClusterList({
   return (
     <>
       {pair === null ? null : (
-        <section className="merge-bar" aria-label="合并人物簇">
-          <h3>合并两个簇</h3>
+        <section className="merge-bar" aria-label="合并两位人物">
+          <h3>合并两位人物</h3>
           <p className="merge-hint">
-            选一个<strong>保留</strong>为目标，另一个簇的样本会并进它。合并方向由你定，
+            选一个<strong>保留</strong>为目标，另一个人的样本会并进它。合并方向由你定，
             后端不做推断。
           </p>
           <ul className="merge-choices">
@@ -100,20 +100,20 @@ export function FaceClusterList({
                       checked={mergeTargetId === id}
                       onChange={() => onChooseMergeTarget(id)}
                     />
-                    {clusterDisplayName(cluster)} · {cluster.member_count} 张样本 · {id}
+                    {clusterDisplayName(cluster)} · {cluster.member_count} 张样本
                   </label>
                 </li>
               );
             })}
           </ul>
           <button type="button" className="primary" disabled={busy} onClick={onMerge}>
-            合并人物簇
+            合并这两位
           </button>
         </section>
       )}
 
       {clusters.length === 0 ? (
-        <p className="empty">没有待确认的人物簇。</p>
+        <p className="empty">没有待确认的人物。</p>
       ) : (
         <div className="cluster-grid">{multi.map(card)}</div>
       )}

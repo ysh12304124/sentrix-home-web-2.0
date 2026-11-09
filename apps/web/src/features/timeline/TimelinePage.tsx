@@ -12,8 +12,7 @@ import { Timeline } from "./Timeline";
 import "../../styles/timeline.css";
 
 export function TimelinePage() {
-  const { scopeId, spaces } = useScope();
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const { scopeId } = useScope();
   const [searchParams, setSearchParams] = useSearchParams();
   const focusedEventId = searchParams.get("event");
 
@@ -34,9 +33,9 @@ export function TimelinePage() {
   return (
     <>
       <PageHeader
-        kicker="记忆组织 / 事件"
-        title="家里的时间线，不只是文件列表。"
-        description={`当前范围：${scopeName}。照片和视频片段按真实拍摄时间统一整理。`}
+        kicker="家庭记忆"
+        title="时间线"
+        description="按时间从上往下浏览；点开某一天查看当天的回忆。"
       />
       <section className="timeline-layout">
         <div className="timeline-main">
@@ -46,15 +45,7 @@ export function TimelinePage() {
             onOpenEvent={openEvent}
           />
         </div>
-        <aside className="side-inspector">
-          <p className="section-kicker">视频记忆</p>
-          <h2>一段视频，也能成为清晰的家庭回忆</h2>
-          <p>视频场景会对齐关键帧与语音片段。打开资料库中的视频详情，可查看带时间戳的转写并跳转播放。</p>
-          <div className="inspector-note">
-            语音对齐 <strong>已接入视频场景</strong>
-            <small>转写片段保留起止时间；QA 检索可把语音作为视频证据，与画面证据一起回答问题。</small>
-          </div>
-        </aside>
+
       </section>
     </>
   );

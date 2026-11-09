@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -23,6 +23,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from sentrix import __version__
+from sentrix.api.deps import internal_call_guard
 from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
@@ -31,10 +32,13 @@ from sentrix.api.routes import (
     family,
     health,
     identity,
+    import_jobs,
     insights,
+    internal,
     knowledge,
     maintenance,
     media,
+    memories,
     relationships,
     search,
     spaces,
@@ -137,20 +141,37 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Real startup inference stays mandatory; schema export only assembles routes."""
-    container: Container = app.state.container
-    from sentrix.api.routes.media import recover_video_jobs
-
-    recover_video_jobs(container)
-    smoke_ok, smoke_error = await run_in_threadpool(container.embedding_health.smoke_test)
-    if not smoke_ok:
-        raise RuntimeError(
-            f"嵌入方案启动测试失败（embedding_scheme={container.settings.embedding_scheme}）: "
-            f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+    """启动后台执行器，并完成视频恢复与嵌入方案冒烟。"""
+    executors = [
+        executor
+        for executor in (
+            getattr(app.state, "import_executor", None),
+            getattr(app.state, "turn_executor", None),
         )
-    log.info("嵌入方案启动测试通过（%s）", container.settings.embedding_scheme)
-    yield
+        if executor is not None
+    ]
+    for executor in executors:
+        executor.start()
+    try:
+        container: Container = app.state.container
+        from sentrix.api.routes.media import recover_video_jobs
 
+        recover_video_jobs(container)
+        smoke_ok, smoke_error = await run_in_threadpool(container.embedding_health.smoke_test)
+        if not smoke_ok and not container.settings.experience_mode:
+            raise RuntimeError(
+                f"嵌入方案启动测试失败（embedding_scheme={container.settings.embedding_scheme}）: "
+                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+            )
+        if smoke_ok:
+            log.info("嵌入方案启动测试通过（%s）", container.settings.embedding_scheme)
+        else:
+            # 体验实例沿用 RecoveringEmbeddingHealth：先起服务，侧车恢复后自动重探。
+            log.warning("体验实例嵌入依赖暂不可用，将自动重试: %s", smoke_error)
+        yield
+    finally:
+        for executor in executors:
+            executor.stop()
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，
@@ -161,6 +182,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     container = Container.build(settings)
     container.database.migrate()
+    if settings.experience_mode:
+        # 先对账再清理；旧 8191 不开这个开关，绝不触碰它的媒体目录。
+        log.info("upload reconcile: %s", container.reconcile_uploads())
 
     app = FastAPI(
         title="Sentrix Home API",
@@ -170,15 +194,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=_lifespan,
     )
     app.state.container = container
+    app.state.settings = settings
+    app.state.import_executor = container.build_import_executor()
+    app.state.turn_executor = container.build_turn_executor()
     app.add_exception_handler(DomainError, domain_error_handler)
 
-    v1 = APIRouter(prefix="/api/v1")
+    v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
     v1.include_router(media.router)
+    v1.include_router(import_jobs.router)
+    v1.include_router(internal.router)
     v1.include_router(search.router)
     v1.include_router(assistant.router)
     v1.include_router(diagnostics.router)
     v1.include_router(timeline.router)
+    v1.include_router(memories.router)
     # 视频端点（S8a）。与 timeline 分开：视频那四条有自己的响应形状与血缘读法。
     v1.include_router(videos.router)
     v1.include_router(identity.router)

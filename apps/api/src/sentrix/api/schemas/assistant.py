@@ -57,6 +57,9 @@ class ConversationDetailResponse(BaseModel):
     conversation: ConversationSummary
     messages: list[MessageSummary]
     turns: list[TurnSummary]
+    # 向前分页：next_cursor 指向更早一页的最旧回合；has_more 表示还有更早的回合。
+    has_more: bool = False
+    next_cursor: str | None = None
 
 
 class StartTurnRequest(BaseModel):
@@ -153,6 +156,12 @@ class TurnPollResponse(BaseModel):
 
     turn_id: str
     status: str
+    # queued/recovering/waiting_dependency/retry_scheduled 由执行子状态表达；
+    # 业务终态仍只看 status。
+    execution_state: str = ""
+    attempt_no: int = 0
+    waiting_reason: str = ""
+    next_retry_at: str | None = None
     public_progress: list[ProgressEventPayload]
     result: CompleteEventPayload | None = None
     error: str = ""

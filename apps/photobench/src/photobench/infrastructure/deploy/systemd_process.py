@@ -183,6 +183,15 @@ class SystemdSentrixProcess:
                 reason="no_endpoint_requested",
                 error="endpoint is empty",
             )
+        if "experience" in self._unit.lower():
+            # 评测只能重启它自己的旧 8191；体验用户 API 各自由 systemd 按用户托管。
+            return RestartOutcome(
+                ok=False,
+                restarted=False,
+                endpoint=target,
+                reason="experience_unit_refused",
+                error=f"refusing to restart experience unit {self._unit}",
+            )
         previous = self.running_endpoint()
         try:
             self._write_endpoint_dropin(target)

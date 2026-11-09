@@ -54,6 +54,7 @@ from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.media.models import Asset, AssetStatus
 from sentrix.domain.media.ports import AssetRepository
 from sentrix.domain.media.progress import OperationCancelled
+from sentrix.runtime.work import import_task
 
 log = logging.getLogger("sentrix.media.import_album")
 
@@ -171,6 +172,7 @@ class ImportAlbum:
         # 事件留在 ``待总结事件`` / ``待判断`` 两个占位值上，与 1.0 没跑收尾时一样。
         self._summarize_event = summarize_event
 
+    @import_task
     def execute(self, request: AlbumImportRequest) -> AlbumImportResult:
         root, paths = self._paths(request)
 
@@ -363,7 +365,9 @@ class ImportAlbum:
         if not root.is_dir():
             raise NotADirectoryError(str(root))
         paths = sorted(
-            path for path in root.iterdir() if path.is_file() and path.suffix.lower() in SCAN_SUFFIXES
+            path
+            for path in root.iterdir()
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in SCAN_SUFFIXES
         )[: max(1, int(request.limit))]
         return root, paths
 
@@ -376,7 +380,9 @@ class ImportAlbum:
             scope_id=request.scope_id,
             file_name=path.name,
             content_type=None,
-            content=path.read_bytes(),
+            # 目录导入不得把整文件读成 bytes，也不能移动用户的原文件。
+            source_path=path,
+            source_move=False,
             defer_processing=defer_processing,
         )
 
@@ -419,6 +425,7 @@ class ProcessAlbumPipeline:
         self._summarize_event = summarize_event
         self._workers = max(1, int(workers))
 
+    @import_task
     def execute(self, request: AlbumProcessRequest) -> AlbumProcessResult:
         total_started = time.perf_counter()
         # 保序去重，防止客户端拼多个目录时把同一资产重复提交。

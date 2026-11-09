@@ -11,12 +11,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  faceInstanceCropUrl,
   listPersonInsights,
   sendPortraitFeedback,
   type PersonInsightItem,
   type PersonInsightsResponse,
 } from "../../shared/api/client";
-import { describeReviewError } from "./reviewErrors";
+import { describeReviewError, publicPersonName } from "./reviewErrors";
 
 const TIERS: readonly { key: "core" | "common" | "incidental"; label: string }[] = [
   { key: "core", label: "核心人物" },
@@ -75,7 +76,7 @@ export function PersonInsights({ scopeId }: Props) {
   }
 
   if (!loaded) {
-    return <p className="empty">正在读取人物画像…</p>;
+    return <p className="empty">正在读取人物介绍…</p>;
   }
 
   return (
@@ -87,7 +88,7 @@ export function PersonInsights({ scopeId }: Props) {
       )}
 
       {data !== null && TIERS.every((tier) => data.tiers[tier.key].length === 0) ? (
-        <p className="empty">这个相册还没有可治理的人物画像。</p>
+        <p className="empty">这个相册还没有可查看的人物介绍。</p>
       ) : null}
 
       {data === null
@@ -107,9 +108,23 @@ export function PersonInsights({ scopeId }: Props) {
                     return (
                       <article className="cluster-card" key={item.person_id}>
                         <header className="cluster-head">
-                          <div>
-                            <p className="section-kicker">{tier.label}</p>
-                            <strong>{item.display_name}</strong>
+                          <div className="insight-person">
+                            {item.avatar_face_instance_id === null ? (
+                              <span className="insight-avatar" aria-hidden="true">
+                                {publicPersonName(item.display_name).slice(0, 1)}
+                              </span>
+                            ) : (
+                              <img
+                                className="insight-avatar"
+                                src={faceInstanceCropUrl(item.avatar_face_instance_id)}
+                                alt=""
+                                loading="lazy"
+                              />
+                            )}
+                            <div>
+                              <p className="section-kicker">{tier.label}</p>
+                              <strong>{publicPersonName(item.display_name)}</strong>
+                            </div>
                           </div>
                           {portrait?.status === "user_locked" ? (
                             <span className="membership-badge family">已锁定</span>
@@ -124,7 +139,7 @@ export function PersonInsights({ scopeId }: Props) {
                         </p>
                         <div className="detail-empty">
                           {portrait === null
-                            ? "还没有生成画像。"
+                            ? "还没有生成介绍。"
                             : `${portrait.portrait_text}${currentFeedback === null ? "" : `（你的反馈：${currentFeedback}）`}`}
                         </div>
                         {portrait === null ? null : (

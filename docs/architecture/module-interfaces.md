@@ -1323,6 +1323,27 @@ AI业务提示词与输入预算/引用校验位于domain，HTTP及持久化位�
 阶段卡按内容自然撑高；媒体导入首屏只保留数量、失败和请求墙钟，登记累计与范围说明按需展开。流水线核心标题显示pipeline_core实际经过时间，prepare为跨媒体准备时间累计，不能当父阶段墙钟或计算占比。收尾汇总participant_projection/memory_graph/family_graph/person_insights四个顺序执行段，causal_graph为memory_graph包含项，不重复计算；缺少任一独立段计时则不补零。两组占比均以timings.total为分母；不改run持久记录。
 
 
+### 2026-11-02 体验服务：持久导入、同回合恢复与统一模型准入
+
+**体验发行**（`SENTRIX_EXPERIENCE_MODE=1`）走新增的持久链路；旧 8191/PhotoBench
+不设该开关时保持原有同步语义。
+
+- 上传：`POST /api/v1/media/uploads` 分块落盘、sha256、原子改名与 `import_jobs`
+  同一事务提交后才返回 202。进程内 `ImportJobExecutor` 以 SQLite 为待办来源，
+  用 `BEGIN IMMEDIATE` 认领、120 秒租约、20 秒心跳与 fencing；阶段记录在
+  `import_job_stages`。导入准备仍可并行，提交严格单线程并按 `receive_seq` 排序。
+- 问答：用户消息与 `agent_turns` 同事务创建；`(conversation_id, idempotency_key)`
+  唯一。执行器认领 `pending` 或租约过期的 `running`，尝试号/围栏递增；
+  `agent_turn_events_v2` 使用回合内单调 `event_seq`。最终助手消息、答案与回合终态
+  在同一事务提交，旧尝试晚到不会覆盖。
+- 模型：体验 API 的 `SENTRIX_VLM_BASE_URL` 指向控制面 `/internal/model/v1`，
+  由控制面按服务令牌与工作类型（chat/import/benchmark）准入 8100；槽位取实际
+  `--parallel`，同级用户轮转，导入等待满 120 秒后按 4:1 放行。
+- 进程边界：控制面只持有账号、会话、反馈、审计、事件与采样；用户媒体、向量、
+  问答正文仍在各自 `SENTRIX_DATA_DIR`。systemd 管进程生死，应用不拉起或重启模型。
+- 旁路：未接入控制入口的 8100 消费者在面板标为“未纳入调度”；在有编号的实测
+  旁路清零前，不能宣称问答优先级生效。
+
 ### 2026-11-01 PhotoBench完整证据AI对比
 
 `AnalysisBackend`签名保持；既有`submit`新增`ai_compare`任务kind，响应新增独立AIComparisonReport。

@@ -11,16 +11,16 @@
  */
 
 import { useState } from "react";
+
+import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
 import { useSearchParams } from "react-router";
 
-import { mergeFamilyScopes, runFamilyGraph } from "../../shared/api/client";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Section } from "../../shared/ui/Section";
 import { useScope } from "../../app/ScopeProvider";
-import { describeReviewError } from "./reviewErrors";
 import { FamilyGraphView } from "./family/FamilyGraphView";
 import { FamilyRoster } from "./family/FamilyRoster";
-import { dedupeRelationships } from "./family/graphLayout";
+import { confirmedRelationships } from "./family/graphLayout";
 import { PersonDetail } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
 import { useFamilyGraph } from "./family/useFamilyGraph";
@@ -30,29 +30,25 @@ import { PersonInsights } from "./PersonInsights";
 type View = "roster" | "graph" | "review" | "insights";
 
 const TABS: readonly { value: View; label: string }[] = [
-  { value: "roster", label: "名录" },
-  { value: "graph", label: "关系图谱" },
-  { value: "review", label: "待确认簇" },
-  { value: "insights", label: "画像治理" },
+  { value: "roster", label: "人物" },
+  { value: "graph", label: "关系" },
+  { value: "review", label: "待确认的人物" },
+  { value: "insights", label: "人物介绍" },
 ];
 
 export function PeoplePage() {
-  const { scopeId, spaces } = useScope();
-  const { state, people, relationships, error, reload, refresh } = useFamilyGraph(scopeId);
+  const { scopeId } = useScope();
+  const { state, people, relationships, error, refresh } = useFamilyGraph(scopeId);
   const [view, setView] = useState<View>("roster");
   const [searchParams, setSearchParams] = useSearchParams();
   const [relateTo, setRelateTo] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [mergeIds, setMergeIds] = useState<string[]>([]);
-  const [mergeBusy, setMergeBusy] = useState(false);
 
   /**
    * **一条关系在库里是两行**（正向 + 反向）。后端 `set_relationship` 一次写两行，
    * `GET /family-graph` 原样返回，所以直接数 `relationships.length` 会把「1 条」
    * 显示成「2 条」。布局与详情面板都走了 `dedupeRelationships`，这里对齐它们。
    */
-  const edgeCount = dedupeRelationships(relationships).length;
+  const edgeCount = confirmedRelationships(relationships).length;
   const selectedId = searchParams.get("person");
   const selected = people.find((person) => person.id === selectedId) ?? null;
 
@@ -64,7 +60,26 @@ export function PeoplePage() {
    * 那次变更，它的内部 location 里 `scope` 可能还是旧值——直接改 router 的参数会把
    * 用户刚切的相册覆盖掉。以窗口地址为准就没有这个问题。
    */
+  function changeView(next: View) {
+    setView(next);
+    void reportClientEvent({
+      eventName: "people.view",
+      result: "ok",
+      operationId: newOperationId(),
+      scopeId,
+    });
+  }
+
   function selectPerson(personId: string | null, relate: string | null = null) {
+    if (personId !== null) {
+      void reportClientEvent({
+        eventName: "people.detail_open",
+        result: "ok",
+        operationId: newOperationId(),
+        scopeId,
+        entityId: personId,
+      });
+    }
     setRelateTo(relate);
     const next = new URLSearchParams(window.location.search);
     if (personId === null) next.delete("person");
@@ -72,58 +87,14 @@ export function PeoplePage() {
     setSearchParams(next);
   }
 
-  async function handleRun() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await runFamilyGraph(scopeId);
-      reload();
-    } catch (cause) {
-      setActionError(describeReviewError(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleMerge() {
-    if (mergeIds.length < 2) return;
-    setMergeBusy(true);
-    setActionError(null);
-    try {
-      await mergeFamilyScopes(mergeIds);
-      setMergeIds([]);
-      reload();
-    } catch (cause) {
-      setActionError(describeReviewError(cause));
-    } finally {
-      setMergeBusy(false);
-    }
-  }
-
-  const banner = actionError ?? (state === "error" ? error : null);
+  const banner = state === "error" ? error : null;
 
   return (
     <>
       <PageHeader
         kicker="家庭人物"
-        title="把相册里的人，连成清楚的关系。"
-        description="关系默认来自模型判断；你的修改会直接写入数据库，并永久优先于后续推断。"
-        action={
-          // **「全部相册」下不能推断。** 后端 `POST /family-graph/runs` 对空 scope 是硬 400
-          // （`routes/family.py` 的 `_required`），一次 run 也本来就只针对一个 scope。
-          // 不禁用的话，新用户默认正好落在这个范围上，点一下换来一条无从下手的
-          // 「请求不成立：scope_id is required。请改一下填写的内容再试」——没有东西可改。
-          // GET 用同一个空 scope 返回 200，页面看着一切正常，所以这个失败格外迷惑人。
-          <button
-            type="button"
-            className="button primary"
-            disabled={busy || scopeId === ""}
-            title={scopeId === "" ? "先在上方的相册切换器里选一册" : undefined}
-            onClick={() => void handleRun()}
-          >
-            {busy ? "正在推断…" : "重新推断关系"}
-          </button>
-        }
+        title="人物与关系"
+        description="系统会先整理照片里的人；你确认或修改的内容会优先保留，不会被后续整理覆盖。"
       />
 
       <div className="family-tabs" role="tablist" aria-label="人物视图">
@@ -134,13 +105,13 @@ export function PeoplePage() {
             role="tab"
             aria-selected={view === tab.value}
             className={view === tab.value ? "family-tab active" : "family-tab"}
-            onClick={() => setView(tab.value)}
+            onClick={() => changeView(tab.value)}
           >
             {tab.label}
           </button>
         ))}
         <span className="family-tabs-note">
-          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条关系`}
+          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条已确认关系`}
         </span>
       </div>
 
@@ -151,55 +122,18 @@ export function PeoplePage() {
       )}
 
       {view === "roster" ? (
-        <Section kicker="人物名录" title="先认出人，再谈关系">
+        <Section kicker="人物" title="先认出人，再认识他们">
           {state === "loading" ? (
             <p className="empty">正在读取人物…</p>
           ) : (
             <FamilyRoster people={people} selectedId={selectedId} onSelect={(id) => selectPerson(id)} />
           )}
 
-          {spaces.length > 1 ? (
-            <details className="scope-merge">
-              <summary>合并相册范围</summary>
-              <p>
-                把同一家人的几个相册并成一张图。合并后人物与关系会跨相册铺开，
-                推断出的图也共用一份。
-              </p>
-              <ul className="scope-merge-list">
-                {spaces.map((space) => (
-                  <li key={space.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={mergeIds.includes(space.id)}
-                        onChange={() =>
-                          setMergeIds((current) =>
-                            current.includes(space.id)
-                              ? current.filter((id) => id !== space.id)
-                              : [...current, space.id],
-                          )
-                        }
-                      />
-                      {space.name}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-              <button
-                type="button"
-                className="button ghost small"
-                disabled={mergeBusy || mergeIds.length < 2}
-                onClick={() => void handleMerge()}
-              >
-                合并选中的 {mergeIds.length} 个相册
-              </button>
-            </details>
-          ) : null}
         </Section>
       ) : null}
 
       {view === "graph" ? (
-        <Section kicker="关系图谱" title="辈分从上到下，待归类留在图上">
+        <Section kicker="人物关系" title="辈分从上到下，还没归类的留在图上">
           {state === "loading" ? (
             <p className="empty">正在读取关系…</p>
           ) : (
@@ -216,13 +150,34 @@ export function PeoplePage() {
       ) : null}
 
       {view === "review" ? (
-        <Section kicker="人物聚类 / 待确认" title="先确认身份，再进入长期记忆">
-          <PeopleView scopeId={scopeId} />
+        <Section kicker="待确认的人物" title="先确认是谁，再进入长期记忆">
+          <PeopleView
+            scopeId={scopeId}
+            onConfirmSubmit={(clusterId) =>
+              void reportClientEvent({
+                eventName: "people.confirm_submit",
+                result: "started",
+                operationId: newOperationId(),
+                scopeId,
+                entityId: clusterId,
+              })
+            }
+            onConfirmResult={(clusterId, ok) =>
+              void reportClientEvent({
+                eventName: "people.confirm_result",
+                result: ok ? "ok" : "failed",
+                operationId: newOperationId(),
+                scopeId,
+                entityId: clusterId,
+                errorCode: ok ? undefined : "unknown",
+              })
+            }
+          />
         </Section>
       ) : null}
 
       {view === "insights" ? (
-        <Section kicker="人物画像" title="看看系统记得的这个人，像不像他">
+        <Section kicker="人物介绍" title="看看系统记得的这个人，像不像他">
           <PersonInsights scopeId={scopeId} />
         </Section>
       ) : null}

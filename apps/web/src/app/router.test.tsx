@@ -15,6 +15,15 @@ import { ROUTES } from "./router";
 // 而这条断言的整个意义就是「新加的页面别变成孤儿」。
 const PAGE_FILES = Object.keys(import.meta.glob("../features/*/*Page.tsx"));
 
+/** 体验入口刻意隐藏的旧页面：文件仍在（旧实例继续用），但不挂路由。 */
+const HIDDEN_PAGES = new Set([
+  "OverviewPage",
+  "KnowledgePage",
+  "SearchPage",
+  "SettingsPage",
+  "StoriesPage",
+]);
+
 /** 文件名 → 组件名。`features/library/LibraryPage.tsx` → `LibraryPage`。 */
 function componentNameOf(file: string): string {
   const base = file.split("/").pop() ?? file;
@@ -41,14 +50,23 @@ describe("路由可达性", () => {
   it("每个页面文件都被路由表引用（没有孤儿页面）", () => {
     // 按组件名比对：ROUTES 的值就是页面组件，`Component.name` 是它的函数名。
     const mounted = new Set(Object.values(ROUTES).map((Component) => Component.name));
-    const orphans = PAGE_FILES.map(componentNameOf).filter((name) => !mounted.has(name));
+    const orphans = PAGE_FILES.map(componentNameOf)
+      .filter((name) => !HIDDEN_PAGES.has(name))
+      .filter((name) => !mounted.has(name));
 
     expect(orphans, "这些页面文件写好了但没挂到任何路由上").toEqual([]);
   });
 
-  it("路由数与页面文件数一致——多一条少一条都要在这里现形", () => {
+  it("隐藏页面不挂在路由上", () => {
+    const mounted = new Set(Object.values(ROUTES).map((Component) => Component.name));
+    const leaked = [...HIDDEN_PAGES].filter((name) => mounted.has(name));
+    expect(leaked, "这些页面应保持隐藏").toEqual([]);
+  });
+
+  it("路由数与可见页面文件数一致——多一条少一条都要在这里现形", () => {
     // 前三条各自都可以通过而这一条不过：例如两个路由指向同一个组件、另一个页面成孤儿。
     expect(Object.keys(ROUTES).length).toBe(NAV_ITEMS.length + SYSTEM_ITEMS.length);
-    expect(PAGE_FILES.length).toBe(Object.keys(ROUTES).length);
+    const visible = PAGE_FILES.map(componentNameOf).filter((name) => !HIDDEN_PAGES.has(name));
+    expect(visible.length).toBe(Object.keys(ROUTES).length);
   });
 });

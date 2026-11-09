@@ -50,6 +50,7 @@ from sentrix.domain.assistant.ports import (
 )
 from sentrix.domain.assistant.tools import ToolSpec, openai_tools
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger("sentrix.assistant.chat_client")
 
@@ -588,7 +589,11 @@ class OpenAIChatModel:
         exact_budget = self._model.apply_output_budget(payload, timeout_s=self._timeout_s)
         try:
             with httpx.Client(timeout=self._timeout_s) as client:
-                response = client.post(f"{self._base_url}/chat/completions", json=payload)
+                response = client.post(
+                    f"{self._base_url}/chat/completions",
+                    json=payload,
+                    headers=model_auth_headers(),
+                )
                 response.extensions["diagnostics"] = {
                     "prompt_tokens_estimated": prompt_tokens,
                     "context_window_tokens": self._context_tokens,
