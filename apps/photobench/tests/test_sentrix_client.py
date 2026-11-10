@@ -147,9 +147,35 @@ def test_split_import_and_pipeline_use_the_explicit_endpoints():
     )
     assert http.calls[1][:3] == (
         f"{BASE}/api/v1/pipeline/process",
-        {"scope_id": "s1", "asset_ids": ["a1", "a2"]},
+        {"scope_id": "s1", "asset_ids": ["a1", "a2"], "operation_id": http.calls[1][1]["operation_id"]},
         "POST",
     )
+    assert len(http.calls[1][1]["operation_id"]) == 32
+
+
+@pytest.mark.parametrize("status", ["completed", "running", "failed"])
+def test_unknown_pipeline_reads_receipt_without_replaying_post(status):
+    from photobench.domain.errors import RequestOutcomeUnknownError
+
+    class UnknownHttp:
+        def __init__(self):
+            self.calls = []
+
+        def request_json(self, url, payload=None, method="GET", timeout=30):
+            self.calls.append((url, method))
+            if method == "POST":
+                raise RequestOutcomeUnknownError(method="POST", cause_type="ReadTimeout", attempts=1)
+            return {"status": status, "result": {"scope_id": "s", "skipped": 2}}
+
+    http = UnknownHttp()
+    client = HttpxSentrixClient(http, lambda: BASE)
+    if status == "completed":
+        assert client.finalize_pipeline(scope_id="s", asset_ids=["a", "b"], timeout=90)["skipped"] == 2
+    else:
+        with pytest.raises(RequestOutcomeUnknownError) as caught:
+            client.finalize_pipeline(scope_id="s", asset_ids=["a", "b"], timeout=90)
+        assert caught.value.facts["operation_id"]
+    assert [method for _, method in http.calls] == ["POST", "GET"]
 
 
 def test_ask_is_two_calls_and_the_turn_poll_uses_the_plural_path():

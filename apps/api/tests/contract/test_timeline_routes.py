@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -46,6 +47,102 @@ def test_timeline_is_empty_before_any_import(client: TestClient):
     assert body["scope_id"] == "album1"
     assert body["total"] == 0
     assert body["days"] == []
+
+
+def test_pipeline_receipt_replays_the_response_without_executing_again(client, tmp_path, monkeypatch):
+    from sentrix.application.media.import_album import ProcessAlbumPipeline
+
+    staged = client.post(
+        "/api/v1/imports/assets",
+        json={
+            "directory": str(album(tmp_path)),
+            "scope_id": "receipt-scope",
+        },
+    ).json()
+    payload = {"scope_id": "receipt-scope", "asset_ids": staged["asset_ids"], "operation_id": "original"}
+    response = client.post("/api/v1/pipeline/process", json=payload)
+    assert response.status_code == 200
+    receipt = client.get("/api/v1/pipeline/operations/original").json()
+    assert receipt["status"] == "completed" and receipt["result"] == response.json()
+    monkeypatch.setattr(ProcessAlbumPipeline, "execute", lambda *_: pytest.fail("pipeline was replayed"))
+    assert client.post("/api/v1/pipeline/process", json=payload).json() == response.json()
+    assert client.post("/api/v1/pipeline/process", json={**payload, "asset_ids": []}).status_code == 409
+
+
+def test_finalize_requires_processed_sources_and_never_prepares_media(client, tmp_path, monkeypatch):
+    from sentrix.application.media.import_album import ProcessAlbumPipeline
+    from sentrix.application.media.import_assets import ImportAssets
+
+    staged = client.post(
+        "/api/v1/imports/assets",
+        json={
+            "directory": str(album(tmp_path)),
+            "scope_id": "finish-scope",
+        },
+    ).json()
+    payload = {"scope_id": "finish-scope", "asset_ids": staged["asset_ids"]}
+    rejected = client.post("/api/v1/pipeline/finalize", json={**payload, "operation_id": "too-early"})
+    assert rejected.status_code == 409
+    assert client.get("/api/v1/pipeline/operations/too-early").json()["status"] == "failed"
+    assert client.post("/api/v1/pipeline/process", json=payload).status_code == 200
+    monkeypatch.setattr(ImportAssets, "prepare_image", lambda *_: pytest.fail("source inference repeated"))
+    event_ids = []
+    summarize = ProcessAlbumPipeline._summarize_events
+
+    def record_events(self, ids):
+        event_ids.extend(ids)
+        return summarize(self, ids)
+
+    monkeypatch.setattr(ProcessAlbumPipeline, "_summarize_events", record_events)
+    result = client.post("/api/v1/pipeline/finalize", json={**payload, "operation_id": "recovery"})
+    assert result.status_code == 200, result.text
+    assert event_ids
+    assert result.json()["processed"] == 0 and result.json()["skipped"] == 1
+    assert result.json()["summarized"] == len(event_ids)
+    assert result.json()["memory_graph"] is not None
+    assert client.get("/api/v1/pipeline/operations/recovery").json()["result"] == result.json()
+
+
+def test_recover_processes_only_unfinished_sources_and_receipt_survives_tracker_restart(
+    client, isolated_app, tmp_path, monkeypatch,
+):
+    from sentrix.application.media.import_assets import ImportAssets
+    from sentrix.application.media.track_pipeline import TrackPipeline
+    from sentrix.domain.media.models import AssetStatus
+    from sentrix.infrastructure.persistence.pipeline_receipts import SqlitePipelineReceipts
+
+    staged = client.post("/api/v1/imports/assets", json={
+        "directory": str(album(tmp_path, count=3)), "scope_id": "resume-scope",
+    }).json()
+    ids = staged["asset_ids"]
+    assert client.post("/api/v1/pipeline/process", json={
+        "scope_id": "resume-scope", "asset_ids": ids[:1],
+    }).status_code == 200
+    container = isolated_app.state.container
+    before = container.observation_repository.list_by_asset(ids[0])
+    container.asset_repository.update_status(ids[1], AssetStatus.PROCESSING)
+    prepare = ImportAssets.prepare_image
+    prepared = []
+
+    def record_prepare(self, asset):
+        prepared.append(asset.id)
+        return prepare(self, asset)
+
+    monkeypatch.setattr(ImportAssets, "prepare_image", record_prepare)
+    response = client.post("/api/v1/pipeline/recover", json={
+        "scope_id": "resume-scope", "asset_ids": ids, "operation_id": "recover-checkpoint",
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["processed"] == 2 and result["skipped"] == 1 and not result["failures"]
+    assert result["resumed_asset_ids"] == ids[1:2]
+    assert set(prepared) == set(ids[1:]) and len(prepared) == 2
+    assert container.observation_repository.list_by_asset(ids[0]) == before
+    restarted = TrackPipeline(SqlitePipelineReceipts(container.database))
+    assert restarted.get("recover-checkpoint")["result"] == result
+    assert restarted.execute(
+        "recover-checkpoint", "resume-scope", ids, "recover", lambda: pytest.fail("replayed after restart"),
+    ) == result
 
 
 def test_import_batch_then_timeline_has_every_photo(client: TestClient, tmp_path: Path):

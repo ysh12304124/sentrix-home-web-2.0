@@ -139,6 +139,9 @@ class AlbumProcessRequest:
     scope_id: str
     # 顺序就是目录扫描顺序；事件提交必须严格遵守它，不能按推理完成顺序提交。
     asset_ids: tuple[str, ...]
+    finalize_only: bool = False
+    resume_interrupted: bool = False
+    existing_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +149,7 @@ class AlbumProcessResult:
     scope_id: str
     processed: int = 0
     skipped: int = 0
+    resumed_asset_ids: tuple[str, ...] = ()
     events: int = 0
     lexical_terms: int = 0
     video_scenes: int = 0
@@ -430,6 +434,36 @@ class ProcessAlbumPipeline:
         total_started = time.perf_counter()
         # 保序去重，防止客户端拼多个目录时把同一资产重复提交。
         ordered_ids = list(dict.fromkeys(request.asset_ids))
+        recovered_asset_ids: list[str] = []
+        if request.resume_interrupted:
+            if not ordered_ids:
+                raise ValueError("pipeline recovery requires source asset IDs")
+            checkpoint = self._assets.get_many(ordered_ids)
+            for asset_id in ordered_ids:
+                asset = checkpoint.get(asset_id)
+                if (
+                    asset is None
+                    or asset.scope_id != request.scope_id
+                    or asset.parent_asset_id is not None
+                    or asset.status not in {AssetStatus.PROCESSED, AssetStatus.PROCESSING, AssetStatus.QUEUED}
+                ):
+                    raise ValueError(f"invalid source checkpoint for pipeline recovery: {asset_id}")
+            for asset_id in ordered_ids:
+                if checkpoint[asset_id].status is AssetStatus.PROCESSING:
+                    self._assets.update_status(asset_id, AssetStatus.QUEUED)
+                    recovered_asset_ids.append(asset_id)
+        if request.finalize_only:
+            if not ordered_ids:
+                raise ValueError("finalization requires a nonempty source asset checkpoint")
+            for asset_id in ordered_ids:
+                asset = self._assets.get(asset_id)
+                if (
+                    asset is None
+                    or asset.scope_id != request.scope_id
+                    or asset.parent_asset_id is not None
+                    or asset.status is not AssetStatus.PROCESSED
+                ):
+                    raise ValueError(f"source asset is not fully processed in this scope: {asset_id}")
         targets: list[Asset | None] = []
         failures: dict[int, AlbumFailure] = {}
         skipped = 0
@@ -464,7 +498,7 @@ class ProcessAlbumPipeline:
                 return self._importer.prepare_image(asset)
 
         processed = events = lexical_terms = video_scenes = 0
-        event_ids: list[str] = []
+        event_ids: list[str] = list(dict.fromkeys(request.existing_event_ids))
         timing_totals: dict[str, float] = {}
         prepared: dict[int, Future[PreparedImage]] = {}
         next_submit = next_finish = 0
@@ -514,6 +548,8 @@ class ProcessAlbumPipeline:
         summarize_started = time.perf_counter()
         with stage_span("event_summarize"):
             summarized = self._summarize_events(event_ids)
+        if request.resume_interrupted and summarized != len(event_ids):
+            failures[len(ordered_ids)] = AlbumFailure("event_summaries", "some event summaries failed")
         timing_totals["event_summarize"] = time.perf_counter() - summarize_started
         summarize_finished = time.perf_counter()
         spans.include({"event_summarize": (summarize_started, summarize_finished)})
@@ -524,6 +560,7 @@ class ProcessAlbumPipeline:
             scope_id=request.scope_id,
             processed=processed,
             skipped=skipped,
+            resumed_asset_ids=tuple(recovered_asset_ids),
             events=events,
             lexical_terms=lexical_terms,
             video_scenes=video_scenes,

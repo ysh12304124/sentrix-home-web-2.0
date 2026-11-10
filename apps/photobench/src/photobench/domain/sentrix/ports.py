@@ -112,6 +112,14 @@ class SentrixClient(Protocol):
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
 
+    def finalize_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        """Validate processed sources and finish the build without source inference."""
+        ...
+
+    def recover_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        """Resume unprocessed sources after their original owning process has stopped."""
+        ...
+
     def list_assets(self, *, scope_id: str, limit: int | None, timeout: int = 60) -> list[dict[str, Any]]:
         """``GET /api/v1/assets?scope_id=&limit=``，**拆掉响应信封后**的资产表。
 

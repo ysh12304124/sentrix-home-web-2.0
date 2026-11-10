@@ -1,5 +1,13 @@
 # PhotoBench 续跑与补评分
 
+## 流水线超时与恢复
+
+资产登记等待使用import_timeout；媒体处理及收尾使用独立pipeline_timeout，默认86400秒并冻结进任务。显式pipeline请求带operation_id，产品先保存running，再于全部阶段返回后保存完整响应。GET /api/v1/pipeline/operations/{id}可查询真实回执。POST超时不自动重放；回执已完成则读取原响应，仍在运行或未知时保留失败事实及operation_id。媒体数量不能代替批末回执。
+
+管理员确认原产品请求已经停止、该空间没有活动写入后，可向resume接口传finish_incomplete_build=true。它要求完整的原导入检查点和源资产ID，创建可追溯的新run，复用冻结QA及评分配置；原run和分数保持。恢复先调用/pipeline/recover，保留processed源媒体，仅将中断的processing项恢复为queued，再执行未完成媒体和收尾。回执记录恢复的源ID；流水线partial或失败会阻止QA启动。正常reuse仍拒绝不完整构建。
+
+已完成媒体的原耗时及超时期间缺失的遥测不移作新run耗时，恢复阶段仅统计本次执行。视频SVD/Katna保留既有选帧参数；单worker的亮度与熵筛选在当前线程按原公式顺序执行，避免从多线程API fork并继承OpenCV/BLAS锁。外层媒体workers保持。
+
 当前评分采用[双评分标准](photobench-dual-scoring.md)。同配置补评续写原批次，
 修改评分配置会创建新批次，两套结果分别保留，未覆盖的题不跨批次拼分。
 以下单Judge字段及“替换”描述用于兼容历史接口；新评分以独立批次为准。

@@ -84,6 +84,36 @@ def test_pipeline_unknown_outcome_preserves_failure_without_replay():
     assert client.calls_count == 1
 
 
+@pytest.mark.parametrize("graph", [{"node_count": 1}, None])
+def test_recovery_finishes_existing_sources_before_qa_and_preserves_receipt(graph):
+    client = FakeSentrixClient(
+        explicit_pipeline=True,
+        assets=_assets(),
+        pipeline_result={"processed": 0, "skipped": 2, "memory_graph": graph, "operation_id": "receipt-1"},
+        turns={"turn_1": [_completed_turn()]},
+    )
+    execution, *_ = _execution(client=client)
+    result = execution.execute(
+        _request(
+            mode="reuse",
+            scope_id="existing",
+            recover_pipeline=True,
+            recovery_asset_ids=("asset_a", "asset_b"),
+        )
+    )
+    names = client.call_names()
+    assert names.count("recover_pipeline") == 1
+    assert not set(names) & {"process_pipeline", "import_album", "import_assets", "seed_person"}
+    phase = result["phases"]["pipeline_processing"]
+    assert phase["response"]["operation_id"] == "receipt-1"
+    if graph is None:
+        assert result["status"] == "failed" and "start_turn" not in names
+        assert result["scope_build"]["status"] == "incomplete"
+    else:
+        assert result["scope_build"]["status"] == "ready"
+        assert names.index("recover_pipeline") < names.index("start_turn")
+
+
 def _manifest() -> dict[str, Any]:
     return {
         "album_id": ALBUM,

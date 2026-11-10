@@ -456,6 +456,9 @@ class RunSuites:
         """
         self._require_inactive()
         payload = payload or {}
+        recover_pipeline = payload.get("finish_incomplete_build", False)
+        if not isinstance(recover_pipeline, bool):
+            raise InvalidRequestError("finish_incomplete_build must be a boolean")
         repair_missing = payload.get("repair_missing_judges", True)
         if not isinstance(repair_missing, bool):
             raise InvalidRequestError("repair_missing_judges must be a boolean")
@@ -474,11 +477,19 @@ class RunSuites:
         scope_id = str(saved.get("scope_id") or "").strip()
         if not scope_id:
             raise InvalidRequestError("the saved run has no memory-space checkpoint")
-        if (saved.get("scope_build") or {}).get("status") == "incomplete":
+        incomplete = (saved.get("scope_build") or {}).get("status") == "incomplete"
+        if incomplete and not recover_pipeline:
             raise InvalidRequestError(
                 "selected scope has an incomplete build; confirm the original pipeline has stopped "
                 "and finish the build before resuming QA"
             )
+        if recover_pipeline:
+            phases = saved.get("phases") or {}
+            imported = bool((saved.get("resume_context") or {}).get("asset_import_complete")) or all(
+                (phases.get(key) or {}).get("status") == "done" for key in ("identity_seed", "photo_import")
+            )
+            if not incomplete or not saved.get("pipeline_asset_ids") or not imported:
+                raise InvalidRequestError("pipeline recovery requires a complete asset import checkpoint")
         album_id = str(saved.get("album_id") or "")
         qa_set = str(saved.get("qa_set") or "")
         if not album_id or not qa_set:
@@ -550,6 +561,8 @@ class RunSuites:
             endpoint_model=str(saved.get("endpoint_model") or ""),
             run_id=new_run_id,
             mode="reuse",
+            recover_pipeline=recover_pipeline,
+            recovery_asset_ids=tuple(saved.get("pipeline_asset_ids") or ()) if recover_pipeline else (),
             scope_id=scope_id,
             runtime_framework=str(saved.get("runtime_framework") or ""),
             judge_url=resumed_judge.judge_url,
@@ -578,6 +591,8 @@ class RunSuites:
             evidence_judge_enabled=bool(saved.get("evidence_judge_enabled")),
             resume_context={
                 "resumed_from": run_id,
+                "finish_incomplete_build": recover_pipeline,
+                "asset_import_complete": recover_pipeline,
                 "source_status": status,
                 "source_build_revision": saved.get("build_revision"),
                 "source_runtime_snapshot": saved.get("runtime_snapshot"),

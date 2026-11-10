@@ -19,7 +19,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
+from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.http.ports import HttpStream, JsonHttpClient
 from photobench.domain.sentrix.ports import API_PREFIX
 
@@ -170,14 +172,43 @@ class HttpxSentrixClient:
         )
 
     def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
-        return dict(
-            self._http.request_json(
-                self._url("/pipeline/process"),
-                {"scope_id": scope_id, "asset_ids": list(asset_ids)},
-                "POST",
-                timeout,
+        return self._pipeline_request("process", scope_id, asset_ids, timeout)
+
+    def finalize_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        return self._pipeline_request("finalize", scope_id, asset_ids, timeout)
+
+    def recover_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        return self._pipeline_request("recover", scope_id, asset_ids, timeout)
+
+    def _pipeline_request(
+        self,
+        kind: str,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        timeout: int,
+    ) -> dict[str, Any]:
+        operation_id = uuid4().hex
+        try:
+            return dict(
+                self._http.request_json(
+                    self._url(f"/pipeline/{kind}"),
+                    {"scope_id": scope_id, "asset_ids": list(asset_ids), "operation_id": operation_id},
+                    "POST",
+                    timeout,
+                )
             )
-        )
+        except RequestOutcomeUnknownError as error:
+            error.facts.update(operation_id=operation_id, scope_id=scope_id, pipeline_kind=kind)
+            # Read the durable receipt; never replay the uncertain POST.
+            try:
+                receipt = self._http.request_json(
+                    self._url(f"/pipeline/operations/{operation_id}"), timeout=10
+                )
+            except Exception:  # noqa: BLE001 - preserve the original uncertain request and its ID
+                raise error from None
+            if receipt.get("status") == "completed" and isinstance(receipt.get("result"), dict):
+                return dict(receipt["result"])
+            raise
 
     def import_progress(self, *, operation_id: str, timeout: int = 3) -> dict[str, Any]:
         return dict(

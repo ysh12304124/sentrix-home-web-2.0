@@ -659,6 +659,42 @@ def test_resume_rejects_unfinished_pipeline_before_starting_agents(tmp_path):
     assert not suites._active
 
 
+def test_explicit_pipeline_recovery_freezes_source_ids_and_qa_without_touching_original(tmp_path):
+    import copy
+
+    saved = _cancelled_state(
+        scope_build={"status": "incomplete"},
+        pipeline_asset_ids=["a", "b"],
+        items=[],
+        phases={"identity_seed": {"status": "done"}, "photo_import": {"status": "done"}},
+    )
+    original = copy.deepcopy(saved)
+    captured = []
+    gate = threading.Event()
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=(lambda request: captured.append(request) or FakeExecution(request, gate)),
+    )
+    try:
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+        request = captured[0]
+        assert request.recover_pipeline and request.recovery_asset_ids == ("a", "b")
+        assert request.frozen_qa_snapshot == original["qa_snapshot"]
+        assert saved == original
+    finally:
+        gate.set()
+
+
+@pytest.mark.parametrize("checkpoint", [[], ["a"]])
+def test_pipeline_recovery_requires_completed_import_checkpoint(tmp_path, checkpoint):
+    saved = _cancelled_state(scope_build={"status": "incomplete"}, pipeline_asset_ids=checkpoint)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="complete asset import checkpoint"):
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+    assert not suites._active
+
+
 def test_resume_carries_only_the_finished_items_and_reuses_the_scope(tmp_path: Path):
     """续跑只带**跑完的**题；``scheduled`` / ``running`` 的留给这一轮重跑。
 
