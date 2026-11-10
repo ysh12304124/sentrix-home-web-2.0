@@ -392,6 +392,24 @@ export function telemetryLiveState(run: unknown): Dict {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+/** Select one GPU's history and statistics together; host RAM remains host-wide. */
+export function telemetryDeviceView(run: unknown, deviceKey: string): Dict {
+  const value = dict(run);
+  const live = telemetryLiveState(run);
+  const device = dict(live.devices)[deviceKey];
+  if (!device) return value;
+  const phase = dict(dict(value.phases).gpu_metrics);
+  return {
+    ...value,
+    telemetry_live: { ...live, ...device, status: live.status },
+    phases: { ...dict(value.phases), gpu_metrics: {
+      status: phase.status, partial: phase.partial,
+      ...dict(phase.devices)[deviceKey], ...device.field_stats,
+      samples_count: device.samples_count,
+    } },
+  };
+}
+
 /** 1.0 `:996-999` —— 非数组一律当 `[]`。 */
 export function telemetryHistory(run: unknown): Dict[] {
   const history = telemetryLiveState(run).history;

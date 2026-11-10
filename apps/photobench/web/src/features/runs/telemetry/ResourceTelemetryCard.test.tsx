@@ -26,6 +26,36 @@ function run(): Run {
     peak: { system_memory_used_mib: 2048 } } } as Run;
 }
 describe("resource telemetry v1", () => {
+  it("switches the GPU curve, current values and statistics together without mixing cards", () => {
+    const value = run();
+    const devices = Object.fromEntries([0, 1].map(index => {
+      const history = [0, 1, 2].map(t => ({ t, index, protocol_version: RESOURCE_PROTOCOL,
+        model_process_gpu_memory_mib: index === 0 ? 6126 : 0,
+        system_memory_used_mib: 122000, phase: "qa_eval" }));
+      return [String(index), { samples_count: 3, history, latest: history[2],
+        field_stats: { model_process_gpu_memory_mib: { peak: index === 0 ? 6126 : 0, p50: index === 0 ? 6126 : 0 } } }];
+    }));
+    Object.assign(value.telemetry_live!, { devices, device_index: 0, raw_samples_count: 6, status: "stopped" });
+    value.phases = { gpu_metrics: { status: "done", model_process_gpu_memory_mib: { peak: 6126 } } };
+    const view = render(<TelemetryCard run={value} />);
+    expect(view.getByText("已停止")).toBeTruthy();
+    const select = view.getByRole("combobox", { name: "遥测显卡" });
+    const instance = charts.instances[0];
+    const data = (call: number) => instance.setOption.mock.calls[call][0].series[3].data;
+    expect(data(0)).toEqual([[0, 6126 / 1024], [1, 6126 / 1024], [2, 6126 / 1024]]);
+    const cards = () => view.container.querySelector(".live-telemetry-metrics")!;
+    expect(cards().children[3]!.textContent).toContain("5.98 GiB采样峰值 5.98 GiB");
+    fireEvent.change(select, { target: { value: "1" } });
+    expect(data(1)).toEqual([[0, 0], [1, 0], [2, 0]]);
+    expect(cards().children[3]!.textContent).toContain("0.00 GiB采样峰值 0.00 GiB");
+    expect(cards().children[2]!.textContent).toContain("119.14 GiB");
+    expect(view.container.textContent).toContain("整轮共 6 条显卡记录");
+    view.rerender(<TelemetryCard run={{ ...value }} />);
+    expect((select as HTMLSelectElement).value).toBe("1");
+    view.rerender(<TelemetryCard run={{ ...value, run_id: "another" }} />);
+    expect((select as HTMLSelectElement).value).toBe("0");
+    expect(charts.init).toHaveBeenCalledTimes(1);
+  });
   it("shows resource summaries before expanding charts and keeps missing current values separate from peaks", () => {
     const value = run();
     Object.assign(value.telemetry_live!.latest!, { cpu_utilization_pct: 0, gpu_utilization_pct: 73.25, cpu_temperature_c: 55.5, temperature_c: null });

@@ -142,6 +142,9 @@ export type RunPhases = Record<string, Phase | undefined>;
  * 下存在的可空字段。
  */
 export interface TelemetryLive {
+  devices?: Record<string, TelemetryLive>;
+  device_index?: number | null;
+  raw_samples_count?: number;
   memory_observation_version?: number;
   memory_observations?: Record<string, MemorySourceObservation>;
   memory_dependencies?: Record<string, string[]>;
