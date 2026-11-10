@@ -15,6 +15,8 @@ export function EvaluationTypeBadge({value}: {value: unknown}) {
 function scoringExplanation(value: unknown): string {
   const d = obj(value);
   if (d.scorer === "answer_quality") return "开放式回答：Judge 根据问题、参考答案与模型回答按 0 / 1 / 2 分评价回答质量。选项匹配由独立的 ATM-Bench式QS 评分记录展示。";
+  if (d.scorer === "number") return "数值题：Judge 对照原问题与参考答案匹配数值或日期，程序计 0 / 1 分。";
+  if (d.scorer === "list") return "列表召回题：主QS按模型正式交付集合与冻结GT的Jaccard计分；工具列表口径QS使用工具候选全集与同一GT。";
   if (d.scorer === "atm_number") return "数值题：按 ATM 官方数值规则计主分；语义辅分单独展示。";
   if (d.scorer === "atm_list") return "列表召回题：按实际交付的图片 / 视频 ID 集合计算主分；工具累计召回单列展示。";
   if (d.source_qtype === "open_end" || d.scorer === "atm_open") return "开放问答题：Judge 按回答内容判 0 / 1 分；媒体交付和工具证据另列指标。";

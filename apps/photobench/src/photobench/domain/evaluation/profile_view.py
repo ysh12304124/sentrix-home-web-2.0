@@ -14,6 +14,7 @@ from photobench.domain.evaluation.profiles import (
     evaluation_turn,
     result_key,
     scoring_summary,
+    tool_list_score,
     valid_result,
 )
 
@@ -50,6 +51,9 @@ def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]
         valid = valid_result(value)
         results[profile] = {
             **{k: copy.deepcopy(v) for k, v in value.items() if k not in {"requests", "history"}},
+            "tool_list_score": tool_list_score(row.get("evaluation") or {}, value)
+            if profile == ATM and (row.get("evaluation") or {}).get("scorer") in {"media_set", "atm_list"}
+            else None,
             "profile_id": profile,
             "batch_id": batch_id,
             "turn_index": turn,

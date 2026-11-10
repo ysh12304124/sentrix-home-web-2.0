@@ -27,6 +27,7 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from photobench.domain.evaluation.profiles import scoring_summary
 from photobench.domain.runs.analysis import (
     judge_bucket_for_summary,
     judge_score_for_summary,
@@ -112,6 +113,7 @@ def export_traces(
     """1.0 ``:6724-6770``。返回一个 list，不是带信封的对象（1.0 原样如此）。"""
     include = set(scores) if scores else None
     items_out: list[dict[str, Any]] = []
+    scoring = scoring_summary(state)
     for item in state.get("items") or []:
         item_score = judge_score_for_summary(item.get("judge"))
         if include is not None and judge_bucket_for_summary(item.get("judge")) not in include:
@@ -174,6 +176,7 @@ def export_traces(
                 "scoring_profile": state.get("selected_scoring_profile"),
                 "scoring_batch": state.get("selected_scoring_batch"),
                 "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
+                "scoring": scoring,
                 "final_trace": final_trace,
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
@@ -312,6 +315,7 @@ def export_sft(
         "scoring_profile": state.get("selected_scoring_profile"),
         "scoring_batch": state.get("selected_scoring_batch"),
         "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
+        "scoring": scoring_summary(state),
         "count": len(samples),
         "item_count": len(items_out),
         "items": items_out,

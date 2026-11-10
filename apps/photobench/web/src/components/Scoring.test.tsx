@@ -135,3 +135,24 @@ describe('独立评分标准', () => {
     expect(screen.getByText(/batch-test/)).toBeTruthy();
   });
 });
+
+it('基于benchmark默认单选，手动双选仍可提交', () => {
+  expect(defaultScoring('atm-bench-smoke10-current').profiles).toEqual([ATM_PROFILE]);
+  expect(defaultScoring('album3').profiles).toEqual([OPEN_PROFILE]);
+  const selection = defaultScoring('atm-bench'); selection.profiles.push(OPEN_PROFILE);
+  expect(scoringPayload(selection).scoring_profiles).toEqual([ATM_PROFILE, OPEN_PROFILE]);
+});
+it('逐题同时显示已采集结果，隐藏未采集标准并保留零分', () => {
+  render(<ItemScoringResults results={[]} current={{[OPEN_PROFILE]:{status:'not_collected'},[ATM_PROFILE]:{status:'completed',score:0,max_score:1,purpose:'list',tool_list_score:.75,media_metrics:{tools:{status:'available',jaccard:.75}}}}}/>);
+  expect(screen.getAllByRole('article')).toHaveLength(1);
+  expect(screen.getByText(/模型交付列表Jaccard：0.000/)).toBeTruthy();
+  expect(screen.getByText(/工具召回列表Jaccard：0.750/)).toBeTruthy();
+  expect(screen.queryByText('未运行采集')).toBeNull();
+});
+it('主QS与工具列表口径QS分别展示分数和覆盖率', () => {
+  render(<ScoringResults summary={{scoring:{profiles:{[ATM_PROFILE]:{status:'completed',scored:10,total:10,coverage:1,total_score:.4,tool_list_qs:{total_score:.475,scored:10,total:10,coverage:1,list_count:3,list_scored:3}}}}}}/>);
+  expect(screen.getByText('40.0%')).toBeTruthy();
+  const tools=screen.getByLabelText('工具列表口径QS');
+  expect(within(tools).getByText('47.5%')).toBeTruthy();
+  expect(within(tools).getByText(/覆盖率 10\/10/)).toBeTruthy();
+});

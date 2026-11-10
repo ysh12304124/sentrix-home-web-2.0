@@ -145,3 +145,12 @@ describe("QaResults · activeRejudge 过滤（1.0 visibleQaItems :355-364）", (
     expect(screen.queryByText("正在等待本轮第一条 Judge 评分结果…")).toBeNull();
   });
 });
+
+it('ATM逐题保留原生题型，不展示标准筛选与PhotoBench可回答性筛选', async () => {
+  render(<Harness activeRun={{...RUN,album_id:'atm-bench-smoke10-current'}}/>);
+  await screen.findByText('展开逐题结果（0 条）');
+  expect(screen.queryByLabelText('逐题筛分标准')).toBeNull();
+  expect(screen.queryByText('全部可回答性')).toBeNull();
+  expect(screen.queryByText('全部任务类型')).toBeNull();
+  expect(screen.getByLabelText('评分题型')).toBeTruthy();
+});

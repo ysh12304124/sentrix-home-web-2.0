@@ -86,11 +86,20 @@ def read_entry(run_dir: Path) -> dict[str, Any]:
             evaluation = (payload.get("overview", {}).get("summary") or {}).get("evaluation_summary")
             if evaluation is not None:
                 entry.setdefault("summary", {})["evaluation_summary"] = evaluation
+            scoring = (entry.get("summary") or {}).get("scoring") or {}
+            if any(
+                batch.get("profile_id") == "atm_qs_v1" and "tool_list_qs" not in batch
+                for batch in (scoring.get("batches") or {}).values()
+            ):
+                from photobench.domain.evaluation.profiles import scoring_summary
+
+                state = json.loads(committed_path(run_dir, "run.json").read_text(encoding="utf-8"))
+                entry.setdefault("summary", {})["scoring"] = scoring_summary(state)
             entry.update(execution_metadata(payload.get("overview") or {}))
             return entry
         path = run_dir / "run.json"
         stat = path.stat()
-        signature = [3, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+        signature = [4, stat.st_ino, stat.st_size, stat.st_mtime_ns]
         index = run_dir / ".photobench-read-index.json"
         try:
             cached = json.loads(index.read_text(encoding="utf-8"))

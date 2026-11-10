@@ -170,14 +170,14 @@ export function useRunDetail(options: RunDetailOptions) {
   const [batchMode, setBatchMode] = useState<'auto' | 'resume' | 'new'>('auto');
   const [resumeBatches, setResumeBatches] = useState<Record<string,string>>({});
   const [batchNonce, setBatchNonce] = useState(newBatchNonce);
-  const [readProfile, setReadProfile] = useState('photobench_open_v1');
+  const [readProfile, setReadProfile] = useState('');
   const [readBatch, setReadBatch] = useState('');
   const initializedReadRun = useRef<string | null>(null);
   useEffect(() => {
     if (!activeRunId || activeRun?.run_id !== activeRunId || initializedReadRun.current === activeRunId) return;
     initializedReadRun.current = activeRunId;
-    const batches = Array.isArray(activeRun.scoring_batches) ? activeRun.scoring_batches as Array<{profile_id:string}> : [];
-    setReadProfile(batches[0]?.profile_id || 'photobench_open_v1');
+    setScoring(defaultScoring(String(activeRun.album_id || '')));
+    setReadProfile(defaultScoring(String(activeRun.album_id || '')).profiles[0]);
     setReadBatch('');
   }, [activeRunId, activeRun]);
   const readQuery = readProfile ? new URLSearchParams({scoring_profile:readProfile, scoring_batch:readBatch}).toString() : '';

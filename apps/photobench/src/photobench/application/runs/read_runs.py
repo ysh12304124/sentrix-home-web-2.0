@@ -32,6 +32,7 @@ from photobench.domain.evaluation.profile_view import (
     choice_matching_result,
     item_profile_results,
     item_scores,
+    primary_profile_state,
     profile_state,
 )
 from photobench.domain.http.ports import JsonHttpClient
@@ -372,7 +373,13 @@ class ReadRuns:
         if (
             result.get("primary_scoring_batch_ids")
             and result.get("status") not in {"pending", "running", "cancelling"}
-            and result["summary"].get("profile_media_version") != 1
+            and (
+                result["summary"].get("profile_media_version") != 1
+                or any(
+                    b.get("profile_id") == "atm_qs_v1" and "tool_list_qs" not in b
+                    for b in ((result["summary"].get("scoring") or {}).get("batches") or {}).values()
+                )
+            )
         ):
             result["summary"] = analysis.effective_summary(self._state(run_id))
         result["run_valid"] = result["summary"]["run_valid"]
@@ -428,7 +435,7 @@ class ReadRuns:
     ) -> dict[str, Any]:
         """``GET /api/runs/{id}/items``（1.0 ``get_run_items`` ``:6441``）。"""
         with self._item_locks[hash(run_id) % len(self._item_locks)]:
-            cached = profile_state(self._state(run_id), scoring_profile, scoring_batch)
+            cached = primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch))
             state = {**cached, "items": [dict(item) for item in cached.get("items") or []]}
             self._hydrate_legacy_gt_images(state)
             qa_metadata = self._qa_index(state)
@@ -564,7 +571,7 @@ class ReadRuns:
     ) -> dict[str, Any]:
         """``GET /api/runs/{id}/items/{index}``（1.0 ``get_run_item`` ``:6528``）。"""
         with self._item_locks[hash(run_id) % len(self._item_locks)]:
-            cached = profile_state(self._state(run_id), scoring_profile, scoring_batch)
+            cached = primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch))
             state = {**cached, "items": [dict(item) for item in cached.get("items") or []]}
             self._hydrate_legacy_gt_images(state)
             items = state.get("items") or []

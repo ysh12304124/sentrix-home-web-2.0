@@ -15,7 +15,11 @@ from photobench.domain.evaluation.gt_context import (
     capture_context,
     pair_image_context,
 )
-from photobench.domain.evaluation.media import delivered_media_aliases, saved_media_metrics
+from photobench.domain.evaluation.media import (
+    delivered_media_aliases,
+    saved_media_metrics,
+    tool_media_aliases,
+)
 from photobench.domain.evaluation.profiles import (
     ATM,
     OPEN,
@@ -416,6 +420,7 @@ class ProfileScoring:
                     gt_turn=turn,
                     assets_by_name=self.assets,
                     media_aliases=delivered_media_aliases(record),
+                    tool_aliases=tool_media_aliases(item, index),
                 )
             elif purpose == "list":
                 output = {

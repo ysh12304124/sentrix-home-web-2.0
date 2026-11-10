@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import PurePosixPath
 from typing import Any
 
 from photobench.domain.evaluation.contract import media_set_metrics
@@ -32,6 +34,50 @@ def delivered_media_aliases(record: Mapping[str, Any]) -> list[dict[str, str]]:
         for handle, refs in aliases.items()
         if len(refs) == 1 and handle not in unresolved
         for kind, identifier in refs
+    ]
+
+
+def tool_media_aliases(item: Mapping[str, Any], turn_index: int) -> list[dict[str, str]]:
+    """Match actual tool previews to saved candidate identities; ambiguous handles are omitted."""
+    by_name: dict[str, set[tuple[str, str]]] = {}
+    for ref in item.get("retrieved_candidate_media") or []:
+        if ref.get("media_type") not in {"image", "video"} or not ref.get("media_id"):
+            continue
+        kind, identifier = stable_media_key(ref).split(":", 1)
+        for name in (ref.get("file_name"), ref.get("media_id")):
+            if name:
+                by_name.setdefault(PurePosixPath(str(name)).name.casefold(), set()).add((kind, identifier))
+    turns = item.get("runtime_turns") or [item]
+    aliases: dict[str, set[tuple[str, str]]] = {}
+    sources: set[tuple[str, str]] = set()
+    unresolved: set[str] = set()
+    for turn in turns[: turn_index + 1]:
+        for call in turn.get("debug_calls") or []:
+            for message in call.get("messages") or []:
+                if message.get("role") != "tool" or not isinstance(message.get("content"), str):
+                    continue
+                try:
+                    content = json.loads(message["content"])
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(content, dict) or not isinstance(content.get("result_set_id"), str):
+                    continue
+                for preview in content.get("preview") or []:
+                    if not isinstance(preview, dict):
+                        continue
+                    handle, name = preview.get("handle"), preview.get("file_name")
+                    if not isinstance(handle, str) or not handle.strip():
+                        continue
+                    refs = by_name.get(PurePosixPath(str(name or "")).name.casefold(), set())
+                    if len(refs) != 1 or preview.get("source_kind") == "video_keyframe":
+                        unresolved.add(handle)
+                    aliases.setdefault(handle, set()).update(refs)
+                    sources.add((content["result_set_id"], handle))
+    return [
+        {"result_set_id": source, "handle": handle, "media_type": kind, "media_id": identifier}
+        for source, handle in sorted(sources)
+        if handle not in unresolved and len(aliases[handle]) == 1
+        for kind, identifier in aliases[handle]
     ]
 
 

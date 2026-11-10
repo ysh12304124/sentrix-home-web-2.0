@@ -1965,6 +1965,7 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
     return {
         "index": index,
         "qa_id": item.get("qa_id"),
+        "benchmark_id": item.get("benchmark_id"),
         **{key: item[key] for key in ABILITY_FIELDS if key in item},
         "question": item.get("question"),
         "task_type": item.get("task_type"),
@@ -2049,6 +2050,9 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
         "expected_action": "action",
     }
     tags = [str(tag).strip() for tag in (hydrated.get("tags") or []) if str(tag).strip()]
+    if hydrated.get("benchmark_id") == "atm-bench" or (hydrated.get("evaluation") or {}).get("source_qtype"):
+        tag_fields = {}
+        tags = [tag for tag in tags if not tag.startswith(("action:", "answerability:", "task:"))]
     for field, prefix in tag_fields.items():
         value = str(hydrated.get(field) or "").strip()
         if value:

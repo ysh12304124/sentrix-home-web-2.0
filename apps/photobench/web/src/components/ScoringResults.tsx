@@ -12,6 +12,7 @@ export function ScoringResults({summary}: {summary:unknown}) {
       const complete = typeof result.total_score === 'number';
       const value = complete ? result.total_score : result.normalized_mean;
       const isOpen = id === OPEN_PROFILE;
+      const tools = obj(result.tool_list_qs);
       const displayValue = isOpen
         ? typeof result.scored_mean === 'number' ? result.scored_mean.toFixed(2) + ' / 2.00 分' : '—'
         : typeof value === 'number' ? percent(value) : '—';
@@ -23,6 +24,8 @@ export function ScoringResults({summary}: {summary:unknown}) {
         {!collected ? <div className='scoring-result-empty'>选择该标准并补评后，将显示得分与覆盖率。</div> : <>
           <div className='scoring-value-row'><strong>{displayValue}</strong><span>{valueLabel}</span></div>
           <div className='scoring-coverage'><span>覆盖率 {String(result.scored)}/{String(result.total)} · {percent(result.coverage)}</span><progress aria-label={label+'评分覆盖率'} max={1} value={typeof result.coverage === 'number' ? result.coverage : 0} /></div>
+          {!isOpen && <p className='scoring-result-note'>主QS：列表题使用模型正式交付列表的Jaccard。</p>}
+          {!isOpen && Object.keys(tools).length > 0 && <div className='scoring-tool-qs' aria-label='工具列表口径QS'><div className='scoring-value-row'><strong>{percent(typeof tools.total_score === 'number' ? tools.total_score : tools.scored_mean)}</strong><span>{typeof tools.total_score === 'number' ? '工具列表口径QS' : '已评分工具列表口径QS均值'}</span></div><p>覆盖率 {String(tools.scored)}/{String(tools.total)} · {percent(tools.coverage)}；列表题 {String(tools.list_scored)}/{String(tools.list_count)}。仅列表题替换为工具召回列表Jaccard，其余题沿用同批次分数，逐题等权。</p></div>}
           {Number(result.diagnostic_pending) > 0 && <p className='scoring-pending'>公共诊断待完成 {String(result.diagnostic_pending)} 项，评分覆盖率单独计算。</p>}
           <details className='scoring-result-details'><summary>评分版本与配置</summary><dl>
             <div><dt>题集</dt><dd>{String(result.qa_set || '-')}</dd></div>
@@ -37,7 +40,7 @@ export function ScoringResults({summary}: {summary:unknown}) {
         </>}
       </article>;
     })}
-  </div><p className='scoring-result-note'>开放式回答由Judge按0/1/2评分，展示原始均分，满分2.00分。ATM-Bench式QS按题等权平均，以百分比展示；选择与数值题使用Judge匹配。未评齐时均值仅包含已评分题目，覆盖率表示评分完成比例，完整总分需覆盖全部题目。媒体召回率在公共诊断指标中单独展示。跨测评比较需核对题集、规则版本、Judge和GT配置。</p></section>;
+  </div><p className='scoring-result-note'>开放式回答由Judge按0/1/2评分，展示原始均分，满分2.00分。ATM-Bench式QS按题等权平均，以百分比展示；选择与数值题使用Judge匹配。未评齐时均值仅包含已评分题目，覆盖率表示评分完成比例，完整总分需覆盖全部题目。主QS的列表题按模型正式交付集合计算Jaccard；工具列表口径QS仅替换列表题，使用同一GT与工具候选全集计算，不取R@5，也不从回答正文提取编号。媒体召回率仍单独展示。跨测评比较需核对题集、规则版本、Judge和GT配置。</p></section>;
 }
 export function ItemScoringResults({results, diagnostics, current, definition}: {results:unknown; diagnostics?:unknown; current?:unknown; definition?:unknown}) {
   const rows = Array.isArray(results) ? results.map(obj) : [];
@@ -48,9 +51,11 @@ export function ItemScoringResults({results, diagnostics, current, definition}: 
         const selected = rows.filter(r => r.profile_id === id);
         const latest = obj(obj(current)[id]);
         const isOpen = id === OPEN_PROFILE;
+        if (!selected.length && (!Object.keys(latest).length || latest.status === 'not_collected')) return null;
         return <article className={'item-score-card ' + (isOpen ? 'is-open-score' : 'is-qs-score')} key={id} aria-label={label}>
           <header className='item-score-card-head'><span className='item-score-mark' aria-hidden='true'>{isOpen ? '01' : 'QS'}</span><div><h5>{isOpen ? '开放式回答' : 'ATM-Bench式QS'}</h5><p>{isOpen ? 'Judge · 0 / 1 / 2 分' : '按题型规则评分'}</p></div></header>
           {Object.keys(latest).length ? latest.status === 'not_collected' ? <p className='item-score-empty'>未运行采集</p> : <EvaluationResult value={latest} definition={definition} /> : !selected.length ? <p className='item-score-empty'>未运行采集</p> : null}
+          {!isOpen && latest.purpose === 'list' && <p className='item-list-scores'>模型交付列表Jaccard：{typeof latest.score === 'number' ? latest.score.toFixed(3) : '未采集'} · 工具召回列表Jaccard：{typeof latest.tool_list_score === 'number' ? latest.tool_list_score.toFixed(3) : '未采集'}。主QS使用模型交付列表。</p>}
           {!!selected.length && <details className='score-history'><summary>评分调用与历史记录（{selected.length}条）</summary>{selected.map(r => {
             const scored = typeof r.score === 'number';
             const status = scored ? '已评分' : r.status === 'failed' || r.status === 'error' ? '评分失败' : r.status === 'running' ? '评分中' : '待评分';

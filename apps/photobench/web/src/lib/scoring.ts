@@ -8,8 +8,8 @@ export const PROFILE_LABELS: Record<string, string> = {
 };
 export interface ScoringConfig { use_gt_images: boolean; use_gt_metadata?: boolean; gt_metadata_mode?: 'readable_v1' | 'image_metadata_v1'; prompts?: Record<string, string> }
 export interface ScoringSelection { profiles: string[]; configs: Record<string, ScoringConfig> }
-export function defaultScoring(): ScoringSelection {
-  return {profiles: [OPEN_PROFILE], configs: Object.fromEntries(Object.keys(PROFILE_LABELS).map(p => [p, {use_gt_images:false, gt_metadata_mode:'image_metadata_v1'}]))};
+export function defaultScoring(benchmark?: string): ScoringSelection {
+  return {profiles: [benchmark?.startsWith('atm-') ? ATM_PROFILE : OPEN_PROFILE], configs: Object.fromEntries(Object.keys(PROFILE_LABELS).map(p => [p, {use_gt_images:false, gt_metadata_mode:'image_metadata_v1'}]))};
 }
 export function scoringPayload(selection: ScoringSelection, drafts: Record<string, string> = {}) {
   return {scoring_profiles: selection.profiles, scoring_configs: Object.fromEntries(selection.profiles.map(profile => [profile, {

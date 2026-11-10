@@ -1,4 +1,3 @@
-import { OPEN_PROFILE, PROFILE_LABELS } from "../../lib/scoring.ts";
 import { scoreChoices } from "../analysis/presentation.ts";
 import { taxonomyLabel } from "../../lib/qaTaxonomy.ts";
 /**
@@ -39,8 +38,6 @@ import type { QaPageView, ReviewDraft } from "./qaShared.ts";
 export interface QaResultsProps {
   /** 1.0 `activeRun`。取其 `run_id` / `rejudge` / `album_id` / `status`。 */
   activeRun: Run | null;
-  readProfile?: string;
-  onReadProfileChange?: (value:string) => void;
   /**
    * 逐题状态。**由组合层持有**（`useQaPage`）——它必须与 `RunDetail` 的记忆面板共享同一份
    * `qaDetails`，所以不能在本组件内部再起一个 hook 实例（1.0 是单组件、天然共享）。
@@ -68,7 +65,7 @@ export interface QaResultsProps {
 }
 
 export function QaResults({
-  activeRun, readProfile = OPEN_PROFILE, onReadProfileChange,
+  activeRun,
   qa,
   resultRef,
   reviewFor,
@@ -76,7 +73,8 @@ export function QaResults({
   onOpenMedia,
 }: QaResultsProps) {
   const activeRejudge = activeRun?.rejudge ?? null;
-  const scoreOptions = scoreChoices({evaluation_summary: readProfile ? {max_score: readProfile === OPEN_PROFILE ? 2 : 1} : activeRun?.summary?.evaluation_summary});
+  const scoreOptions = scoreChoices({evaluation_summary: activeRun?.summary?.evaluation_summary});
+  const isAtm = activeRun?.album_id?.startsWith("atm-") === true;
   const {
     qaPage,
     qaDetails,
@@ -168,12 +166,11 @@ export function QaResults({
             onChange={(event) => setQaFilter("search", event.target.value)}
           />
 <select aria-label="评分题型" value={qaFilters.evaluation_type || ""} onChange={event => setQaFilter("evaluation_type", event.target.value)}><option value="">全部评分题型</option><option value="number">ATM 数值</option><option value="list_recall">ATM 列表召回</option><option value="open_end">ATM 开放问答</option><option value="choice">选择题</option><option value="media_list">媒体列表召回</option><option value="open">开放回答</option></select>
-          <label>筛分标准 <select aria-label="逐题筛分标准" value={readProfile} onChange={event => {setQaFilter("score", ""); onReadProfileChange?.(event.target.value);}}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
           <select value={qaFilters.score} onChange={(event) => setQaFilter("score", event.target.value)}>
             <option value="">全部 Judge 分数</option>
             {scoreOptions.filter(s => s.value !== "None").map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
-          <select value={qaFilters.task_type} onChange={(event) => setQaFilter("task_type", event.target.value)}>
+          {!isAtm && <select value={qaFilters.task_type} onChange={(event) => setQaFilter("task_type", event.target.value)}>
             <option value="">全部任务类型</option>
             {(facets.task_types ?? []).map((value) => (
               <option key={value} value={value}>
@@ -181,6 +178,7 @@ export function QaResults({
               </option>
             ))}
           </select>
+          }
           <select aria-label="运行细分题型" value={qaFilters.question_type || ""} onChange={event => setQaFilter("question_type", event.target.value)}>
             <option value="">全部细分题型</option>
             {(facets.question_types ?? []).map(value => <option key={value} value={value}>{taxonomyLabel(value)}</option>)}
@@ -209,7 +207,7 @@ export function QaResults({
               </option>
             ))}
           </select>
-          <select
+          {!isAtm && <select
             value={qaFilters.answerability}
             onChange={(event) => setQaFilter("answerability", event.target.value)}
           >
@@ -220,6 +218,7 @@ export function QaResults({
               </option>
             ))}
           </select>
+          }
           <select
             value={qaFilters.agent_status}
             onChange={(event) => setQaFilter("agent_status", event.target.value)}

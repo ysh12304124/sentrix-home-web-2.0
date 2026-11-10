@@ -164,3 +164,12 @@ it("QS视图不重复渲染匹配面板，错选与正确项分别标注", () =>
   expect(screen.getByText(/匹配错误 · QS 0\/1 分/)).toBeTruthy();
   expect(screen.getByText(/评分批次 selected-old/)).toBeTruthy();
 });
+
+it('ATM仅展示原生题型，评测端行为诊断单独注明来源', () => {
+  const {container} = renderCard({index:0,question:'ATM问题', evaluation:{source_qtype:'number'}, answerability:'answerable',expected_action:'answer',tags:['answerability:answerable','native-tag']});
+  const tags=container.querySelector('.qa-meta-tags')!;
+  expect(tags.textContent).not.toContain('可回答');
+  expect(tags.textContent).not.toContain('answerability:');
+  expect(tags.textContent).toContain('native-tag');
+  expect(screen.getByText('公共行为诊断（评测端）')).toBeTruthy();
+});

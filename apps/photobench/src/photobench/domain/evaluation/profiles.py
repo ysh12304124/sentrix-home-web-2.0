@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
+from photobench.domain.evaluation.contract import media_key
 from photobench.domain.evaluation.prompts import ATM_OPEN_PROMPT, CHOICE_PROMPT, NUMBER_MATCH_PROMPT
 from photobench.domain.runs.judge import JUDGE_PROMPT, JUDGE_PROMPT_KINDS
 
@@ -88,8 +89,8 @@ def profile_configs(
             raise ValueError("GT flags must be booleans")
         result[profile] = {"prompts": prompts, **flags}
         if profile == OPEN:
-            version = raw.get("quality_input_version", "task_v3")
-            if version not in {"legacy_v1", "task_v2", "task_v3"}:
+            version = raw.get("quality_input_version", "task_v4")
+            if version not in {"legacy_v1", "task_v2", "task_v3", "task_v4"}:
                 raise ValueError("Unknown answer quality input version")
             result[profile]["quality_input_version"] = version
         elif "quality_input_version" in raw:
@@ -274,6 +275,53 @@ def request_history(result: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def tool_list_score(definition: Mapping[str, Any], value: Mapping[str, Any]) -> float | None:
+    """Compare recorded tool candidates with this question's frozen QS target set."""
+    metrics = (value.get("media_metrics") or {}).get("tools") or {}
+    prediction = metrics.get("predicted")
+    target = {media_key(ref) for ref in definition.get("target_media_refs") or []}
+    if not target or metrics.get("status") != "available" or not isinstance(prediction, list):
+        return None
+    if any(not isinstance(key, str) or not key.startswith(("image:", "video:")) for key in prediction):
+        return None
+    predicted = set(prediction)
+    return len(target & predicted) / len(target | predicted)
+
+
+def tool_list_qs(
+    values: Mapping[str, Mapping[str, Any]], definitions: Mapping[str, Mapping[str, Any]], total: int
+) -> dict[str, Any]:
+    """Use the frozen list GT and recorded tool candidates, within one batch/evaluation turn."""
+    scores: list[float] = []
+    list_count = list_scored = 0
+    for qa_id, row in definitions.items():
+        definition = row.get("evaluation") or {}
+        value = values.get(qa_id) or {}
+        if definition.get("scorer") in {"media_set", "atm_list"}:
+            list_count += 1
+            score = tool_list_score(definition, value)
+            if score is None:
+                continue
+            scores.append(score)
+            list_scored += 1
+        elif valid_result(value):
+            scores.append(value["score"])
+    scored = len(scores)
+    mean = sum(scores) / scored if scored else None
+    return {
+        "metric_version": "atm-tool-list-qs-v1",
+        "list_source": "tools",
+        "total": total,
+        "scored": scored,
+        "coverage": scored / total if total else 0,
+        "scored_mean": mean,
+        "total_score": mean if total and scored == total else None,
+        "status": "completed" if total and scored == total else "incomplete",
+        "list_count": list_count,
+        "list_scored": list_scored,
+    }
+
+
 def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
     rows = (state.get("qa_snapshot") or {}).get("rows") or []
     definitions = {str(row["qa_id"]): row for row in rows}
@@ -295,6 +343,11 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
         normalized = mean / maximum if mean is not None else None
         requests = [q for r in batch_results for q in request_history(r) if q.get("dispatch_started")]
         summaries[batch["batch_id"]] = {
+            **(
+                {"tool_list_qs": tool_list_qs(values, definitions, total)}
+                if batch["profile_id"] == ATM
+                else {}
+            ),
             "batch_id": batch["batch_id"],
             "profile_id": batch["profile_id"],
             "label": LABELS[batch["profile_id"]],
