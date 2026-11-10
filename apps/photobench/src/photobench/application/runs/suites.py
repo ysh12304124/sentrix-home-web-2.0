@@ -383,6 +383,7 @@ class RunSuites:
                         payload.get("import_timeout") or self._budget_defaults.get("import_timeout") or 0
                     )
                     or default_import_timeout(),
+                    pipeline_timeout=int(payload.get("pipeline_timeout") or 86400),
                     # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
                     scope_id=existing_scope_id,
                     runtime_framework=deps.runtime_framework,
@@ -473,6 +474,11 @@ class RunSuites:
         scope_id = str(saved.get("scope_id") or "").strip()
         if not scope_id:
             raise InvalidRequestError("the saved run has no memory-space checkpoint")
+        if (saved.get("scope_build") or {}).get("status") == "incomplete":
+            raise InvalidRequestError(
+                "selected scope has an incomplete build; confirm the original pipeline has stopped "
+                "and finish the build before resuming QA"
+            )
         album_id = str(saved.get("album_id") or "")
         qa_set = str(saved.get("qa_set") or "")
         if not album_id or not qa_set:
@@ -609,6 +615,7 @@ class RunSuites:
                 model_base_url=str(inherited["model_base_url"]),
                 manager_url=str(inherited.get("vllm_manager_url") or ""),
                 import_timeout=int(budgets.get("import_timeout") or 7200),
+                pipeline_timeout=int(budgets.get("pipeline_timeout") or 86400),
                 turn_timeout=int(budgets.get("turn_timeout") or 900),
                 qa_concurrency=int(budgets.get("qa_concurrency") or 0),
                 judge_backpressure=budgets.get("judge_backpressure", True) is not False,

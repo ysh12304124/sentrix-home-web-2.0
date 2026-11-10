@@ -251,6 +251,7 @@ class RunRequest:
     resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
     import_timeout: int = 7200
+    pipeline_timeout: int = 86400
     turn_timeout: int = 900
     qa_concurrency: int = 0
     judge_backpressure: bool = True
@@ -300,6 +301,7 @@ def freeze_runtime_request(
         runtime_framework=request.runtime_framework,
         execution_budgets={
             "import_timeout": request.import_timeout,
+            "pipeline_timeout": request.pipeline_timeout,
             "turn_timeout": request.turn_timeout,
             "qa_concurrency": request.qa_concurrency,
             "judge_backpressure": request.judge_backpressure,
@@ -1773,7 +1775,7 @@ class RunExecution:
 
         future = self._start_phase_request(
             lambda: self.client.process_pipeline(
-                scope_id=scope_id, asset_ids=asset_ids, timeout=request.import_timeout
+                scope_id=scope_id, asset_ids=asset_ids, timeout=request.pipeline_timeout
             ),
             name="sentrix-pipeline",
         )

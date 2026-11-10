@@ -49,6 +49,41 @@ def test_runtime_freezes_product_revision_separately_from_benchmark_revision(pro
     assert request.runtime_snapshot.connection()["product_build_revision"] == product_revision
 
 
+def test_pipeline_timeout_is_separate_from_asset_import_and_frozen():
+    request = freeze_runtime_request(_request(import_timeout=30, pipeline_timeout=43200), {}, "release")
+    assert request.runtime_snapshot.connection()["execution_budgets"]["pipeline_timeout"] == 43200
+    client = FakeSentrixClient(
+        explicit_pipeline=True, assets=_assets(), pipeline_result={"processed": 2, "memory_graph": {}}
+    )
+    execution, *_ = _execution(client=client)
+    state = RunState(
+        {"run_id": "run_test", "scope_id": "s", "pipeline_asset_ids": ["asset_a", "asset_b"], "phases": {}}
+    )
+    execution._phase_processing_explicit(state, request)
+    calls = [args for name, args in client.calls if name == "process_pipeline"]
+    assert len(calls) == 1 and calls[0]["timeout"] == 43200
+
+
+def test_pipeline_unknown_outcome_preserves_failure_without_replay():
+    from photobench.domain.errors import RequestOutcomeUnknownError
+
+    class UnknownPipeline(FakeSentrixClient):
+        calls_count = 0
+
+        def process_pipeline(self, **kwargs):
+            self.calls_count += 1
+            raise RequestOutcomeUnknownError(method="POST", cause_type="ReadTimeout", attempts=1)
+
+    client = UnknownPipeline(explicit_pipeline=True, assets=_assets())
+    execution, *_ = _execution(client=client)
+    state = RunState(
+        {"run_id": "run_test", "scope_id": "s", "pipeline_asset_ids": ["asset_a", "asset_b"], "phases": {}}
+    )
+    with pytest.raises(RequestOutcomeUnknownError):
+        execution._phase_processing_explicit(state, _request())
+    assert client.calls_count == 1
+
+
 def _manifest() -> dict[str, Any]:
     return {
         "album_id": ALBUM,
