@@ -71,6 +71,33 @@ def test_list_assets_quotes_the_scope_id():
     assert "scope_id=a%2Fb%20c" in http.calls[0][0]
 
 
+@pytest.mark.parametrize("limit,expected", [(None, 1533), (1200, 1200)])
+def test_list_assets_reads_all_pages_with_stable_offsets(limit, expected):
+    from urllib.parse import parse_qs, urlparse
+
+    class PagedHttp(FakeJsonHttpClient):
+        def _answer(self, url):
+            query = parse_qs(urlparse(url).query)
+            offset, size = int(query["offset"][0]), int(query["limit"][0])
+            assert size <= 500
+            assert query["sort"] == ["created"] and query["order"] == ["asc"]
+            return {
+                "items": [{"id": f"a{i}"} for i in range(offset, min(offset + size, 1533))],
+                "total": 1533,
+            }
+
+    http = PagedHttp()
+    client = HttpxSentrixClient(http, lambda: BASE)
+    assert client.list_assets(scope_id="s1", limit=limit) == [{"id": f"a{i}"} for i in range(expected)]
+    assert len(http.calls) == (expected + 499) // 500
+
+
+def test_list_assets_reports_an_incomplete_page_instead_of_truncating():
+    client, _ = _client({"assets": {"items": [], "total": 1533}})
+    with pytest.raises(RuntimeError, match="资产分页提前结束"):
+        client.list_assets(scope_id="s1", limit=None)
+
+
 def test_seed_person_is_a_single_person_multipart_with_a_joined_alias_string():
     """2.0 只有 ``POST /people/seed``（单人），``aliases`` 是**顿号或逗号分隔的一个
     字符串**（``identity.py:895`` 的 ``_split_terms``）。发成 JSON 数组会被 FastAPI

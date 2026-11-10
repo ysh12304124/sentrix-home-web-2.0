@@ -56,11 +56,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from photobench.application.deploy.service import SentrixModelSwitch
-from photobench.domain.deploy.ports import (
-    BENCHMARK_GATEWAY_TOKEN_ENV,
-    BENCHMARK_GATEWAY_UPSTREAM_ENV,
-    BENCHMARK_GATEWAY_URL_ENV,
-)
 from photobench.application.run_execution.gpu_sampler import PHASE_LABELS, GpuSampler
 from photobench.application.run_execution.import_progress import import_with_progress
 from photobench.application.run_execution.judge import InlineImages, JudgeRunner
@@ -69,6 +64,11 @@ from photobench.application.run_execution.state import RunState
 from photobench.config import default_qa_concurrency
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
+from photobench.domain.deploy.ports import (
+    BENCHMARK_GATEWAY_TOKEN_ENV,
+    BENCHMARK_GATEWAY_UPSTREAM_ENV,
+    BENCHMARK_GATEWAY_URL_ENV,
+)
 from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.evaluation.profiles import uses_readable_metadata
 from photobench.domain.evaluation.prompts import evaluation_prompts
@@ -1356,8 +1356,8 @@ class RunExecution:
             )
             state.persist()
             absolute, entry_count = self.albums.import_target(album_id, relative)
-            limit = min(1000, max(1, entry_count))
             explicit_pipeline = bool(getattr(self.client, "supports_explicit_pipeline", False))
+            limit = max(1, entry_count) if explicit_pipeline else min(1000, max(1, entry_count))
             if explicit_pipeline:
                 if getattr(self.client, "supports_live_import_progress", False):
                     result, directory_processed = self._import_album_with_progress(
@@ -1547,7 +1547,7 @@ class RunExecution:
         """
         baseline = 0
         try:
-            baseline = len(self.client.list_assets(scope_id=scope_id, limit=1000, timeout=60))
+            baseline = len(self.client.list_assets(scope_id=scope_id, limit=None, timeout=60))
         except Exception:  # noqa: BLE001 - 旁路进度失败不能影响导入主链
             baseline = 0
 
@@ -1562,7 +1562,7 @@ class RunExecution:
         )
         while not future.done():
             try:
-                visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=3)
+                visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=3)
                 current = max(0, len(visible) - baseline)
                 processed = min(total_media, processed_before + current)
                 state.record_phase("photo_import", "processed_count", processed)
@@ -1625,7 +1625,7 @@ class RunExecution:
         progress_signature: tuple[Any, ...] | None = None
         while True:
             poll_count += 1
-            assets = self.client.list_assets(scope_id=scope_id, limit=1000)
+            assets = self.client.list_assets(scope_id=scope_id, limit=None)
             pending = [item for item in assets if item.get("status") in PIPELINE_PENDING_STATUSES]
             failed = [item for item in assets if item.get("status") in PIPELINE_FAILED_STATUSES]
             processed = [item for item in assets if item.get("status") == "processed"]
@@ -1780,7 +1780,7 @@ class RunExecution:
         while not future.done():
             poll_count += 1
             try:
-                visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=3)
+                visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=3)
                 assets = [item for item in visible if str(item.get("id") or "") in target_ids]
                 processed = [item for item in assets if item.get("status") == "processed"]
                 pending = [item for item in assets if item.get("status") in PIPELINE_PENDING_STATUSES]
@@ -1820,7 +1820,7 @@ class RunExecution:
         result = future.result()
 
         try:
-            visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=60)
+            visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=60)
             assets = [item for item in visible if str(item.get("id") or "") in target_ids]
             poll_count += 1
         except Exception:  # noqa: BLE001 - 最终状态可由主响应兜底
@@ -2130,7 +2130,7 @@ class RunExecution:
         if health_error:
             raise RuntimeError(f"model service is unhealthy before QA evaluation: {health_error}")
         scope_id = str(state.get("scope_id"))
-        assets = self.client.list_assets(scope_id=scope_id, limit=1000)
+        assets = self.client.list_assets(scope_id=scope_id, limit=None)
         assets_by_name = index_assets_by_name(assets)
         snapshot = state.get("qa_snapshot")
         if not snapshot or "rows" not in snapshot:

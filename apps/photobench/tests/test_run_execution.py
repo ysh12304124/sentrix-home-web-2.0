@@ -635,6 +635,29 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
     assert pipeline["pipeline_metrics"]["event_summary_call_count"] == 1
 
 
+def test_explicit_pipeline_keeps_large_directory_and_complete_asset_inventory():
+    count = 1533
+    manifest = {**_manifest(), "photos": [f"photos/{i}.jpg" for i in range(count)]}
+    albums = FakeAlbums(
+        manifest=manifest, qa_rows=_rows(), files={"faces/1.jpg": b"J"}, directory_entries={"photos": count}
+    )
+    ids = [f"asset_{i}" for i in range(count)]
+    client = FakeSentrixClient(
+        explicit_pipeline=True,
+        assets=_assets(),
+        turns={"turn_1": [_completed_turn()]},
+        import_result={"imported": count, "deduplicated": 0, "asset_ids": ids, "failures": []},
+    )
+    execution, *_ = _execution(client=client, albums=albums)
+    state = execution.execute(_request())
+    imports = [values for name, values in client.calls if name == "import_assets"]
+    assert imports[0]["limit"] == count
+    assert state["phases"]["photo_import"]["scanned_count"] == count
+    pipeline = [values for name, values in client.calls if name == "process_pipeline"]
+    assert pipeline[0]["asset_ids"] == ids
+    assert all(values["limit"] is None for name, values in client.calls if name == "list_assets")
+
+
 def test_pipeline_metrics_count_images_without_videos_or_derived_assets():
     """``image_count`` 只数本次流水线目标里的图片：视频与派生帧都不是「评测图片」。"""
     client = FakeSentrixClient(

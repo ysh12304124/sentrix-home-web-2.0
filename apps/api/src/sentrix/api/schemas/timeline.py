@@ -96,6 +96,12 @@ class ImportBatchRequest(BaseModel):
     operation_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,96}$")
 
 
+class AssetImportRequest(ImportBatchRequest):
+    """资产登记不执行模型推理，允许一次登记完整目录。"""
+
+    limit: int = Field(200, ge=1)
+
+
 class ImportProgressResponse(BaseModel):
     operation_id: str
     scope_id: str
@@ -187,7 +193,8 @@ class PipelineProcessRequest(BaseModel):
     """显式流水线请求。``asset_ids`` 的顺序是语义提交顺序。"""
 
     scope_id: str = Field(..., min_length=1, max_length=255)
-    asset_ids: list[str] = Field(default_factory=list, max_length=1000)
+    # 流水线按 workers 有界预取，源资产清单不决定推理并发。
+    asset_ids: list[str] = Field(default_factory=list)
 
 
 class MemoryGraphBuildResponse(BaseModel):

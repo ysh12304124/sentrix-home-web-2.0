@@ -98,6 +98,7 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
     body = processed.json()
     assert body["processed"] == 2
     assert body["failures"] == []
+
     for stage in ("source_memory_prepare", "source_memory_commit", "event_summarize"):
         timings = body["timings"]
         assert timings[stage + "_wall"] >= 0
@@ -348,3 +349,34 @@ def test_tracked_import_failure_keeps_a_truthful_terminal(client, tmp_path):
     fact = client.get("/api/v1/imports/bad-directory/progress").json()
     assert fact["status"] == "failed" and fact["total"] is None
     assert fact["completed"] == 0 and "400" in fact["error"]
+
+
+def test_explicit_import_and_pipeline_accept_a_complete_large_source_list(client, tmp_path, monkeypatch):
+    from sentrix.application.media.import_album import AlbumStageResult, ImportAlbum
+
+    ids = [f"asset_large_{index}" for index in range(1533)]
+
+    def stage_only(self, request):
+        assert request.limit == 1533
+        return AlbumStageResult(
+            scope_id=request.scope_id, directory=request.directory, imported=len(ids), asset_ids=tuple(ids)
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ImportAlbum, "stage_only", stage_only)
+        staged = client.post(
+            "/api/v1/imports/assets",
+            json={"scope_id": "large-sources", "directory": str(tmp_path), "limit": 1533},
+        )
+    assert staged.status_code == 201
+    assert staged.json()["asset_ids"] == ids
+    # 未存在的资产应逐项报错，不能在请求层截断或拒绝1533项清单。
+    processed = client.post("/api/v1/pipeline/process", json={"scope_id": "large-sources", "asset_ids": ids})
+    assert processed.status_code == 200
+    assert processed.json()["processed"] == 0
+    assert len(processed.json()["failures"]) == len(ids)
+
+
+def test_legacy_import_retains_its_synchronous_batch_limit(client, tmp_path):
+    response = client.post("/api/v1/imports", json={"directory": str(tmp_path), "limit": 1001})
+    assert response.status_code == 422

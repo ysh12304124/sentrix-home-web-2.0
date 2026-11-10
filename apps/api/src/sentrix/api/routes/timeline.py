@@ -20,6 +20,7 @@ from sentrix.api.schemas.family import FamilyRunResponse
 from sentrix.api.schemas.operations import OperationCancellationResponse
 from sentrix.api.schemas.timeline import (
     AssetImportBatchResponse,
+    AssetImportRequest,
     CalendarDay,
     CalendarMonth,
     CalendarYear,
@@ -187,9 +188,7 @@ def timeline_calendar(
     has_place: bool = False,
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    index = _read_timeline(container).calendar(
-        scope_id or None, place=place.strip(), has_place=has_place
-    )
+    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
     years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,
@@ -202,10 +201,7 @@ def timeline_calendar(
                     CalendarMonth(
                         month=month.month,
                         count=month.count,
-                        days=[
-                            CalendarDay(date=day.date, count=day.count)
-                            for day in month.days
-                        ],
+                        days=[CalendarDay(date=day.date, count=day.count) for day in month.days],
                     )
                     for month in year.months
                 ],
@@ -369,7 +365,7 @@ def _execute_import(
 
 @router.post("/imports/assets", status_code=201)
 def import_album_assets(
-    request: ImportBatchRequest,
+    request: AssetImportRequest,
     container: Container = Depends(get_container),
 ) -> AssetImportBatchResponse:
     """仅导入媒体资产；重活统一留给 ``POST /pipeline/process``。

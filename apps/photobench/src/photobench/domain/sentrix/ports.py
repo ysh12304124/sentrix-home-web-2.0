@@ -112,8 +112,10 @@ class SentrixClient(Protocol):
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
+    def list_assets(self, *, scope_id: str, limit: int | None, timeout: int = 60) -> list[dict[str, Any]]:
         """``GET /api/v1/assets?scope_id=&limit=``，**拆掉响应信封后**的资产表。
+
+        ``limit=None`` 读取整个相册；适配器负责分页，整数表示最多返回的资产数。
 
         2.0 的响应是 ``{"items": [...]}`` 而 1.0 是 ``{"assets": [...]}``
         （``api/schemas/media.py:136``）——这个差异由适配器吸收，因为调用方用的是

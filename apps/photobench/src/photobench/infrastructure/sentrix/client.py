@@ -187,20 +187,28 @@ class HttpxSentrixClient:
             )
         )
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
-        """``GET /api/v1/assets``（``api/routes/media.py:290``），解封 ``{"items": [...]}``。
-
-        2.0 的上限是 ``min(limit, 1000)``（路由里做，不在 schema 上），所以调用方给
-        超过 1000 的数不会报错、只会被静默截断——这一点与 1.0 的 ``limit=2000``
-        行为不同，记在行为基线里。
-        """
-        payload = self._http.request_json(
-            self._url(f"/assets?scope_id={_quote(scope_id)}&limit={int(limit)}"),
-            method="GET",
-            timeout=timeout,
-        )
-        items = payload.get("items") if isinstance(payload, dict) else None
-        return [dict(item) for item in (items or []) if isinstance(item, dict)]
+    def list_assets(self, *, scope_id: str, limit: int | None, timeout: int = 60) -> list[dict[str, Any]]:
+        """按服务端每页500项读取；limit=None读取整个相册。按创建顺序稳定分页。"""
+        items: list[dict[str, Any]] = []
+        offset = 0
+        while limit is None or len(items) < limit:
+            size = 500 if limit is None else min(500, limit - len(items))
+            payload = self._http.request_json(
+                self._url(
+                    f"/assets?scope_id={_quote(scope_id)}&limit={size}&offset={offset}&sort=created&order=asc"
+                ),
+                method="GET",
+                timeout=timeout,
+            )
+            page = payload.get("items") or []
+            total = int(payload.get("total", offset + len(page)))
+            if not page and offset < total:
+                raise RuntimeError(f"资产分页提前结束：已读取{offset}，相册共{total}项")
+            items.extend(dict(item) for item in page if isinstance(item, dict))
+            offset += len(page)
+            if offset >= total:
+                break
+        return items
 
     def start_conversation(self, *, scope_id: str, title: str = "", timeout: int = 30) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations``（``api/routes/assistant.py:127``）。
