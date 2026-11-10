@@ -52,7 +52,7 @@ def tool_media_aliases(item: Mapping[str, Any], turn_index: int) -> list[dict[st
     sources: set[tuple[str, str]] = set()
     unresolved: set[str] = set()
     for turn in turns[: turn_index + 1]:
-        for call in turn.get("debug_calls") or []:
+        for call in (turn.get("trace_bundle") or {}).get("debug_calls") or []:
             for message in call.get("messages") or []:
                 if message.get("role") != "tool" or not isinstance(message.get("content"), str):
                     continue

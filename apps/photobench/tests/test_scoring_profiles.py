@@ -957,6 +957,7 @@ def test_real_tool_aliases_enter_only_v4_quality_without_changing_delivery():
             }
         ],
     )
+    record["trace_bundle"] = {"debug_calls": record.pop("debug_calls")}
     aliases = tool_media_aliases(item, 0)
     assert aliases == [
         {"result_set_id": "rs-real", "handle": "photo_1", "media_type": "image", "media_id": "a.jpg"},
@@ -1000,9 +1001,14 @@ def test_tool_aliases_reject_reused_handles_keyframes_and_future_turns():
 
     item = {
         "retrieved_candidate_media": [media("a.jpg"), media("b.jpg")],
-        "runtime_turns": [{"debug_calls": [call("one", "a.jpg")]}, {"debug_calls": [call("two", "b.jpg")]}],
+        "runtime_turns": [
+            {"trace_bundle": {"debug_calls": [call("one", "a.jpg")]}},
+            {"trace_bundle": {"debug_calls": [call("two", "b.jpg")]}},
+        ],
     }
     assert len(tool_media_aliases(item, 0)) == 1
     assert tool_media_aliases(item, 1) == []
-    item["runtime_turns"][0]["debug_calls"].append(call("three", "a.jpg", source_kind="video_keyframe"))
+    item["runtime_turns"][0]["trace_bundle"]["debug_calls"].append(
+        call("three", "a.jpg", source_kind="video_keyframe")
+    )
     assert tool_media_aliases(item, 0) == []
