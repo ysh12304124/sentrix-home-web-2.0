@@ -25,6 +25,10 @@
 
 ## API
 
+任务落盘失败时，页面显示当前进程记录的失败状态；磁盘上的最后检查点可能仍是运行中。
+删除接口允许清除已确认落盘失败且工作线程、清理均已结束的任务，仍阻止删除运行中或补评中的任务。
+删除失败时页面显示后端原因，并保留当前记录供重试。删除只移除该次测评结果，不删除产品相册或共享媒体。
+
 - `GET /api/v1/runs/{id}/recovery-plan`：只读题数、版本、补评分母，不触发推理。
 - `POST /api/v1/runs/{id}/resume`：`repair_missing_judges`（bool，默认 true）、`judge_use_gt_images`（bool，默认继承）、`product_build_revision`（显式选择当前已配置产品版本）。
 - `POST /api/v1/runs/{id}/rejudge`：保留原 Judge 连接/提示词字段；增加 `scope`（`missing`/`failed`/`unscored`/`all`）、`judge_use_gt_images`（bool，默认 false）。旧 API 未传 scope 维持全量重评兼容；前端明确提交 `missing`。

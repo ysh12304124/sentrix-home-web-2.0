@@ -802,19 +802,27 @@ class RunSuites:
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
         """``DELETE /api/runs/{id}``（1.0 ``delete_run`` ``:7010``）。"""
-        state = self._state_if_exists(run_id)
-        if state is None and run_id not in self._active:
-            raise KeyError(run_id)
-        if isinstance(state, dict) and (state.get("rejudge") or {}).get("status") == "running":
-            raise InvalidRequestError("cannot delete a run while rejudge is running")
         with self._lock:
+            state = self._state_if_exists(run_id)
+            if state is None and run_id not in self._active:
+                raise KeyError(run_id)
+            if isinstance(state, dict) and (state.get("rejudge") or {}).get("status") == "running":
+                raise InvalidRequestError("cannot delete a run while rejudge is running")
             execution = self._active.get(run_id)
             if execution is not None:
                 raise InvalidRequestError("cannot delete a run until its workers have stopped")
-        if state is not None and state.get("status") in DIRTY_STATUSES:
-            raise InvalidRequestError("cannot delete an active run")
-        self._writer.delete_run(run_id)
-        self._index.remove(run_id)
+            entry = self._index.entry(run_id) or {}
+            # A failed write leaves an active checkpoint on disk. The current process
+            # records the terminal failure in its index after execution has stopped.
+            failed_write = (
+                entry.get("status") == "failed"
+                and (entry.get("persistence") or {}).get("status") == "failed"
+                and not self._stop_pending(entry)
+            )
+            if state is not None and state.get("status") in DIRTY_STATUSES and not failed_write:
+                raise InvalidRequestError("cannot delete an active run")
+            self._writer.delete_run(run_id)
+            self._index.remove(run_id)
         return {"deleted": True, "run_id": run_id}
 
     # ---- 评审 ---------------------------------------------------------------
