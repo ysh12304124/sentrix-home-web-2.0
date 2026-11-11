@@ -392,6 +392,12 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
 
 def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
     batches = summarize_batches(state) if "scoring_results" in state else state.get("scoring_summaries") or {}
+    batches = {
+        key: {**batch, "list_source": "model_delivery", "text_ids_are_diagnostic_only": True}
+        if batch.get("profile_id") == ATM
+        else batch
+        for key, batch in batches.items()
+    }
     latest = {p: {"profile_id": p, "label": LABELS[p], "status": "not_collected"} for p in LABELS}
     for batch in batches.values():
         latest[batch["profile_id"]] = batch

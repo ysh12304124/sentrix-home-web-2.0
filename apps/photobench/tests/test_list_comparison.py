@@ -7,7 +7,7 @@ import pytest
 
 from photobench.domain.evaluation.list_comparison import list_answer_comparison
 from photobench.domain.evaluation.profile_view import item_profile_results, profile_state
-from photobench.domain.evaluation.profiles import ATM, result_key
+from photobench.domain.evaluation.profiles import ATM, result_key, scoring_summary
 from photobench.domain.runs.exports import export_sft, export_traces
 
 
@@ -155,3 +155,12 @@ def test_item_api_projection_and_both_exports_share_diagnostic_without_mutation(
         assert exported["profile_scores"][ATM]["list_comparison"] == expected
     assert projected["summary"]["selected_scoring"]["total_score"] == 0
     assert state == before
+
+
+def test_legacy_lightweight_summary_exposes_list_basis_without_writing_old_snapshot():
+    saved = {"scoring_summaries": {"b": {"profile_id": ATM, "total_score": 0}}}
+    before = copy.deepcopy(saved)
+    result = scoring_summary(saved)["profiles"][ATM]
+    assert result["list_source"] == "model_delivery"
+    assert result["text_ids_are_diagnostic_only"] is True and result["total_score"] == 0
+    assert saved == before
