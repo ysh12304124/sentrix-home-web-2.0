@@ -257,3 +257,4 @@
 {"capability": "历史评测空间证据核验与带备份元数据修复", "origin_kind": "NEW-2.0", "target_path": "scripts/maintenance/repair_benchmark_spaces.py", "verification": "apps/api/tests/unit/test_benchmark_space_repair.py", "status": "verified"}
 {"capability": "Mac 开发入口统一部署预设与流水线预算", "origin_kind": "NEW-2.0", "target_path": "Makefile", "verification": "apps/photobench/tests/test_photobench_deployment_profile.py", "status": "verified"}
 {"capability": "独立 API 上传任务自动消费", "origin_kind": "NEW-2.0", "target_path": "apps/api/src/sentrix/bootstrap/container.py", "verification": "apps/api/tests/integration/test_container.py", "status": "verified"}
+{"capability": "独立 API 持久问答执行与重启后的取消恢复", "origin_kind": "NEW-2.0", "target_path": "apps/api/src/sentrix/bootstrap/container.py", "verification": "apps/api/tests/integration/test_container.py", "status": "verified"}

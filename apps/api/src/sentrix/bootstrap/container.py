@@ -603,9 +603,7 @@ class Container:
         return True, ""
 
     def build_turn_executor(self):
-        """体验实例的问答回合执行器；旧实例返回 None。"""
-        if not self.settings.experience_mode:
-            return None
+        """消费问答接口创建的持久回合，包括独立本地 API 实例。"""
         from sentrix.bootstrap.assistant_wiring import build_run_turn
         from sentrix.infrastructure.assistant.turn_executor import TurnExecutor
 

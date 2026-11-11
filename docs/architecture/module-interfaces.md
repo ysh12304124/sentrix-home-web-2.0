@@ -1385,3 +1385,11 @@ AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=
 `experience_mode` 继续控制控制面认证、问答执行器和启动媒体对账清理，不能为修复上传
 而在独立 API 上直接开启整个体验模式。统计 `processing` 仍含排队和依赖等待状态，
 前端文案明确为“排队或处理中”，不把已接收宣称为正在推理。
+
+### 2026-11-11 独立 API 的 QA 执行与恢复
+
+问答 POST 在所有部署形态均持久化 pending 回合，因此 `build_turn_executor()`
+同样在独立 API 装配。保持默认单执行线程、依赖门槛、租约与围栏，不开启整个体验模式。
+持久执行尝试（attempt_no>0）的取消检查以 TurnRepository 的 cancel_requested 为准；
+不依赖已在重启时丢失、或在上次尝试收尾时移除的进程内操作登记。
+旧的未采用持久尝试编号的调用路径继续使用 OperationControl。

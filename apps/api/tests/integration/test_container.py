@@ -8,6 +8,7 @@ from PIL import Image
 
 from sentrix.bootstrap.container import MIGRATIONS_DIR, Container
 from sentrix.config import Settings
+from sentrix.infrastructure.media.operations import InProcessOperationControl
 from sentrix.infrastructure.persistence.database import MigrationError
 
 pytestmark = pytest.mark.usefixtures("fake_embedding_startup")
@@ -91,3 +92,43 @@ def test_shipped_migrations_directory_is_not_empty():
     editable 安装读的是源码树，所以这条拦不住 wheel 漏文件；真实验证见构建 wheel 的步骤。
     """
     assert sorted(MIGRATIONS_DIR.glob("*.sql")), f"{MIGRATIONS_DIR} 下没有任何 .sql 迁移"
+
+
+def test_local_queued_turn_executes_and_cancelled_turn_is_not_run(isolated_app):
+    container = replace(
+        isolated_app.state.container,
+        model_health=SimpleNamespace(check=lambda: (True, "")),
+    )
+    assert not container.settings.experience_mode
+    isolated_app.state.container = container
+    executor = container.build_turn_executor()
+    assert executor is not None
+    client = TestClient(isolated_app)
+
+    def enqueue():
+        response = client.post("/api/v1/assistant/conversations", json={"scope_id": "home-default"})
+        assert response.status_code == 201
+        conversation_id = response.json()["id"]
+        response = client.post(
+            f"/api/v1/assistant/conversations/{conversation_id}/turns",
+            json={"message": "你好"},
+        )
+        assert response.status_code == 202
+        return response.json()["turn_id"]
+
+    cancelled = enqueue()
+    assert client.post(f"/api/v1/assistant/turns/{cancelled}/cancel").status_code == 202
+    current = enqueue()
+    # 模拟 API 重启：SQLite 回合仍在，新进程没有原先的内存取消登记。
+    container = replace(container, operation_control=InProcessOperationControl())
+    executor = container.build_turn_executor()
+    assert container.turn_repository.get(current).attempt_no == 0
+    assert executor._run_once()
+    assert container.turn_repository.get(cancelled).status.value == "cancelled"
+    assert container.turn_repository.get(current).attempt_no == 0
+    assert executor._run_once()
+    record = container.turn_repository.get(current)
+    assert record.attempt_no == 1
+    assert record.status.is_terminal
+    assert record.status.value in {"complete", "partial"}
+    assert record.answer
