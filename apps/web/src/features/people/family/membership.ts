@@ -35,30 +35,6 @@ export function membershipOf(person: FamilyPerson): FamilyMembershipValue {
   return raw === "family" || raw === "friend" ? raw : "unknown";
 }
 
-/** 确认身份时可选的家庭角色（1.0 ``app.js:956`` 的 ``<select>``，原样保留）。 */
-export const FAMILY_ROLES: readonly string[] = ["母亲", "父亲", "孩子", "祖父母", "其他家庭成员"];
-
-/** 实体是不是还待确认。只认后端给的 `status`，前端不从名字或出现次数反推。 */
-export function isPendingPerson(person: FamilyPerson): boolean {
-  return person.status === "pending";
-}
-
-/**
- * 默认保留谁：有名字的 > 已确认的 > 出现多的 > id 小的。
- * 与名录排序同一个思路——用户最可能想保留的是那个「已经认识的人」。
- */
-export function defaultMergeTarget(people: readonly FamilyPerson[]): string {
-  const ranked = [...people].sort((a, b) => {
-    const named = Number(isNamed(b)) - Number(isNamed(a));
-    if (named !== 0) return named;
-    const confirmed = Number(!isPendingPerson(b)) - Number(!isPendingPerson(a));
-    if (confirmed !== 0) return confirmed;
-    if (a.appearance_count !== b.appearance_count) return b.appearance_count - a.appearance_count;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-  return ranked[0]?.id ?? "";
-}
-
 /** 后端给未命名人物的占位串。与簇/人物介绍用同一句用户文案。 */
 export const UNNAMED = UNNAMED_PERSON_NAME;
 

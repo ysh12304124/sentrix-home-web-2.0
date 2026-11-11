@@ -564,43 +564,6 @@ def test_the_source_event_leaves_no_participant_rows_behind(
     assert query(db, "SELECT * FROM events WHERE id = 'evt_2'") == []
 
 
-def test_the_source_event_person_moments_follow_the_merge(
-    db: Database, entities: SqliteEntityRepository, projector: ConfirmedPersonEvents
-):
-    """人物瞬间（``person_moments``）也指向 ``events(id)``，而参与者 ``rehome`` 不搬它。
-
-    真实相册里确认过人物、跑过人物介绍之后就会有这些行；夹具里没有它们时，重分段在真库上
-    撞外键而这里全绿（2026-11-11 确认「王王」时就是这样）。瞬间改挂到目标事件，不丢。
-    """
-    seed_pair(db, entities, gap=timedelta(minutes=5))
-    now = "2026-09-23T10:00:00+00:00"
-    with db.connect() as connection, connection:
-        connection.execute(
-            "INSERT INTO face_clusters (id, scope_id, status, entity_id, representative_embedding_json,"
-            " member_count, revision, created_at, updated_at)"
-            " VALUES ('cluster_1', ?, 'confirmed', 'ent_1', '[]', 1, 1, ?, ?)",
-            (HOME, now, now),
-        )
-        connection.execute(
-            "INSERT INTO face_instances (id, asset_id, observation_id, cluster_id, embedding_json,"
-            " detection_confidence, quality, pose_bucket, embedding_model, embedding_version, created_at)"
-            " VALUES ('face_2', 'asset_2', 'obs_2', 'cluster_1', '[1.0]', 0.9, 0.8, 'frontal',"
-            " 'buffalo_l', 'w600k_r50', ?)",
-            (now,),
-        )
-        connection.execute(
-            "INSERT INTO person_moments (id, scope_id, person_id, cluster_id, event_id, observation_id,"
-            " asset_id, face_instance_id, prompt_version, created_at, updated_at)"
-            " VALUES ('moment_1', ?, 'ent_1', 'cluster_1', 'evt_2', 'obs_2', 'asset_2', 'face_2', 'v1', ?, ?)",
-            (HOME, now, now),
-        )
-
-    assert projector.resegment("ent_1") == (("evt_1", "evt_2"),)
-
-    assert query(db, "SELECT * FROM events WHERE id = 'evt_2'") == []
-    assert scalar(db, "SELECT event_id FROM person_moments WHERE id = 'moment_1'") == "evt_1"
-
-
 def test_events_more_than_six_hours_apart_are_left_alone(
     db: Database, entities: SqliteEntityRepository, projector: ConfirmedPersonEvents
 ):

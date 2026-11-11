@@ -26,6 +26,7 @@ vi.mock("../shared/api/client", async (importOriginal) => {
     fetchTimeline: vi.fn(),
     fetchHealth: vi.fn(),
     searchAssets: vi.fn(),
+    listFaceClusters: vi.fn(),
     importAsset: vi.fn(),
     listFacts: vi.fn(),
     confirmFact: vi.fn(),
@@ -76,6 +77,7 @@ function mockClient(hasData: boolean) {
       : [],
   );
   vi.mocked(client.listPeople).mockResolvedValue([]);
+  vi.mocked(client.listFaceClusters).mockResolvedValue([]);
   vi.mocked(client.listConversations).mockResolvedValue([]);
   vi.mocked(client.createConversation).mockResolvedValue({
     id: "conv1",

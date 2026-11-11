@@ -129,16 +129,3 @@ episodic BAAI/bge-m3             1024d
 - 切换方案（wemm ↔ legacy）必须重建向量；旧 `model_name` 的行不会命中。
 - 测试数据：`~/tmp/mac-smoke`，scope `mac-legacy-smoke2`（2 张图、2 个事件、
   visual/text 两类向量均已落库）。
-
-### 2026-11-10：开发入口的部署预设
-
-`make dev` 与 `make photobench-dev` 在 Darwin 上默认导出
-`SENTRIX_DEPLOYMENT_PROFILE=mac`，其它平台保持 server；环境变量及 make 命令行显式值优先。
-这只影响这两个开发目标，不改变测试、生产部署或直接运行 uvicorn 的默认值。
-已启动的进程需要重启才能更新环境。不要只给 API 设置 mac 而让 PhotoBench 以 server 启动：
-后者会冻结 7200 秒导入预算，并在模型同步时把 API 重启为 server。
-
-Mac 新运行默认 QA 并发 2、导入/流水线请求超时 86400 秒。超时是上限，并非固定运行时长。
-显式 `PHOTOBENCH_IMPORT_TIMEOUT` 或运行请求 `import_timeout` 仍优先。
-历史运行的“续跑”继承原快照和预算；更改启动环境不会改写历史快照。
-流水线 POST 超时后不能盲目重放：产品可能继续处理，须核对资产与收尾状态。

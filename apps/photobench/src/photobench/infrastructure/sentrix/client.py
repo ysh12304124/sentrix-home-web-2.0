@@ -64,16 +64,6 @@ class HttpxSentrixClient:
         body: dict[str, Any] = self._http.request_json(self._url("/diagnostics"), timeout=timeout)
         return body
 
-    def ensure_space(self, *, scope_id: str, name: str, kind: str, timeout: int = 30) -> dict[str, Any]:
-        return dict(
-            self._http.request_json(
-                self._url("/memory-spaces"),
-                {"id": scope_id, "name": name, "kind": kind},
-                "POST",
-                timeout,
-            )
-        )
-
     def seed_person(
         self,
         *,

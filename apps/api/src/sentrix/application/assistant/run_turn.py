@@ -790,13 +790,6 @@ class RunTurn:
         self._use_claim_verifier = os.getenv("SENTRIX_CLAIM_VERIFIER", "1") != "0"
 
     def _check_cancel(self, turn_id: str) -> None:
-        record = self._turns.get(turn_id)
-        if record is not None and record.attempt_no > 0:
-            # 持久执行器可在重启后认领；原进程的 operation registry 已不存在。
-            # 取消路由已将标志落库，恢复和重试都必须读取同一份权威状态。
-            if record.cancel_requested:
-                raise OperationCancelled("turn:" + turn_id)
-            return
         if self._operation_control is not None:
             self._operation_control.check("turn:" + turn_id)
 

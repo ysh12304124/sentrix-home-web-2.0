@@ -58,7 +58,7 @@
 :root[data-ui-theme] .health-pill[data-state="ok"] i { background: var(--ui-success); }
 :root[data-ui-theme] :is(.nav-popover, .modal-panel, .feedback-panel, .tour-box) { background: var(--ui-surface); border-color: var(--ui-line); border-radius: var(--ui-radius-panel); box-shadow: var(--ui-shadow-pop); }
 :root[data-ui-theme] .app-shell .page-heading h1 { font-weight: 650; letter-spacing: -.015em; line-height: 1.25; }
-:root[data-ui-theme] .app-shell :is(.page-description) { font-size: 14px; line-height: 1.75; }
+:root[data-ui-theme] .app-shell :is(.page-description, .people-lead) { font-size: 14px; line-height: 1.75; }
 :root[data-ui-theme] :is(.page-heading, .section-head) :is(.eyebrow, .section-kicker) { letter-spacing: .06em; font-size: 11px; }
 :root[data-ui-theme] :is(.button, .primary-action, .ghost-action, .filter-chip, .login-card input, .login-card button) { border-radius: var(--ui-radius-control); }
 :root[data-ui-theme] .app-shell .button { font-size: 13px; font-weight: 600; }
@@ -66,13 +66,13 @@
 :root[data-ui-theme] :is(.button.primary, .primary-action, .login-card button, .feedback-panel > button) { background: var(--ui-accent); color: #fff; }
 :root[data-ui-theme] :is(.button.primary, .primary-action, .login-card button):hover:not(:disabled) { background: var(--ui-accent-hover); }
 :root[data-ui-theme] .app-shell .filter-chip.active { background: var(--ui-soft); border-color: var(--ui-line-strong); color: var(--ui-accent); }
-:root[data-ui-theme] :is(.empty-search, .cluster-card, .conversation-rail, .assistant-ask, .turn-card, .event-card, .library-card, .asset-card, .import-card, .upload-card, .login-card, .memory-frame) { border-radius: var(--ui-radius-card); border-color: var(--ui-line); }
+:root[data-ui-theme] :is(.empty-search, .cluster-card, .person-row, .conversation-rail, .assistant-ask, .turn-card, .event-card, .library-card, .asset-card, .import-card, .upload-card, .login-card, .memory-frame) { border-radius: var(--ui-radius-card); border-color: var(--ui-line); }
 :root[data-ui-theme] :is(.memory-frame, .login-card) { box-shadow: var(--ui-shadow); }
 :root[data-ui-theme] .memory-visual { background: var(--ui-hover); }
 :root[data-ui-theme] :is(.memory-caption, .memory-controls) { background: var(--ui-surface); }
 :root[data-ui-theme] .memory-caption h1 { letter-spacing: -.01em; font-weight: 650; }
 :root[data-ui-theme] :is(.memory-caption p, .memory-stage .memory-meta) { font-size: 13px; }
-:root[data-ui-theme] .app-shell :is(.assistant-ask input, .assistant-ask textarea, .search input) { border-radius: var(--ui-radius-control); border-color: var(--ui-line); background: var(--ui-surface); color: var(--ui-text); font-size: 14px; }
+:root[data-ui-theme] .app-shell :is(.assistant-ask input, .assistant-ask textarea, .cluster-naming input, .cluster-naming select, .search input) { border-radius: var(--ui-radius-control); border-color: var(--ui-line); background: var(--ui-surface); color: var(--ui-text); font-size: 14px; }
 :root[data-ui-theme] .app-shell .conversation-rail { box-shadow: none; }
 :root[data-ui-theme] .app-shell .rail-item { font-size: 13px; border-radius: var(--ui-radius-control); }
 :root[data-ui-theme] .app-shell .rail-item.active { background: var(--ui-soft); border-color: var(--ui-line); }
@@ -139,11 +139,28 @@
 :root[data-ui-theme] .assistant-progress { color:var(--ui-muted); }
 :root[data-ui-theme] .assistant-exchange { border-top:1px solid var(--ui-line); }
 :root[data-ui-theme] .result-count { color:var(--ui-muted); }
+:root[data-ui-theme] .people-lead { color:var(--ui-text); }
 :root[data-ui-theme] .people-confirmed { border-top:1px solid var(--ui-line); }
 :root[data-ui-theme] .cluster-card { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .cluster-pick { color:var(--ui-muted); }
+:root[data-ui-theme] .cluster-sample[aria-pressed="true"] { border-color:var(--ui-accent); }
 :root[data-ui-theme] .cluster-meta { color:var(--ui-muted); }
 :root[data-ui-theme] .cluster-actions button { border:1px solid var(--ui-line); }
 :root[data-ui-theme] .cluster-actions button.primary { background:var(--ui-accent); border-color:var(--ui-accent); }
+:root[data-ui-theme] .cluster-split { background:var(--ui-soft); }
+:root[data-ui-theme] .cluster-split button { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .cluster-naming label { color:var(--ui-text); }
+:root[data-ui-theme] .cluster-naming input, :root[data-ui-theme] .cluster-naming select { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .merge-bar { background:var(--ui-soft); }
+:root[data-ui-theme] .merge-hint { color:var(--ui-text); }
+:root[data-ui-theme] .merge-bar button.primary { border:1px solid var(--ui-accent); background:var(--ui-accent); }
+:root[data-ui-theme] .single-clusters { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .single-clusters summary { color:var(--ui-muted); }
+:root[data-ui-theme] .person-row { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .person-head small { color:var(--ui-muted); }
+:root[data-ui-theme] .person-row button { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .person-rename input { border:1px solid var(--ui-line); }
+:root[data-ui-theme] .person-rename button.primary { background:var(--ui-accent); border-color:var(--ui-accent); }
 :root[data-ui-theme] .online-pill[data-state="unknown"] { color:var(--ui-faint); }
 :root[data-ui-theme] .online-pill[data-state="unknown"] i { background:var(--ui-faint); }
 :root[data-ui-theme] .health-card.dark > p { color:var(--ui-faint); }
@@ -240,13 +257,13 @@
 
 /* Typography and edges share dimensions across themes; only the visual treatment changes. */
 :root[data-ui-theme] :is(.nav-more > summary, .nav-menu > summary) { white-space: nowrap; flex-shrink: 0; }
-:root[data-ui-theme] :is(.person-card, .library-summary, .timeline-month, .timeline-day, .import-picker, .import-overall, .import-job-card, .import-batch) { border-radius: var(--ui-radius-card); }
+:root[data-ui-theme] :is(.person-card, .person-row, .library-summary, .timeline-month, .timeline-day, .import-picker, .import-overall, .import-job-card, .import-batch) { border-radius: var(--ui-radius-card); }
 :root[data-ui-theme] .app-shell :is(.person-card-name, .rail-item strong) { font-size: 14px; font-weight: 600; }
 :root[data-ui-theme] .app-shell :is(.person-card-meta, .asset-info .asset-time, .asset-info .asset-place, .library-summary span, .sort-select, .sort-select select) { font-size: 12px; }
 :root[data-ui-theme] .app-shell .person-card { background: var(--ui-surface); border-color: var(--ui-line); }
 :root[data-ui-theme] .app-shell .person-card.selected { border-color: var(--ui-accent); background: var(--ui-soft); }
 :root[data-ui-theme] .app-shell .family-tab { font-size: 14px; font-weight: 600; }
-:root[data-ui-theme] .app-shell .family-tab.active { background: var(--ui-accent); color: var(--ui-on-accent); border-bottom-color: var(--ui-accent); }
+:root[data-ui-theme] .app-shell .family-tab.active { color: var(--ui-accent); border-bottom-color: var(--ui-accent); }
 :root[data-ui-theme] .app-shell .family-tabs { border-color: var(--ui-line); }
 :root[data-ui-theme] .app-shell .library-summary { background: var(--ui-surface); overflow: hidden; }
 :root[data-ui-theme] .app-shell .asset-info { padding: 12px; }

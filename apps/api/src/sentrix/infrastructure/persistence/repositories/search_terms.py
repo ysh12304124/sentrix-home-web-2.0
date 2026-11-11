@@ -8,17 +8,13 @@
    见 ``s4-deviations.md`` §1 第 4 项）；
 2. ``rebuild_scope`` 的删除范围按 scope 收敛，1.0 的 scoped rebuild 会先清空整张 FTS
    再只补一个 scope（``retrieval_indexes.py:271-295`` 的注释就是在记这个 bug）；
-3. 不提供 LIKE 子串回退（``search``）——FTS5 缺席时的降级分支在 2.0 永远不会走；
-4. ``person_bridge`` 跟着人物快照走（``sync_person_bridge``）：1.0 只在导入时写投影，
-   确认人物之后投影里没有人名，实体通道全靠扫观察兜底；而兜底在「全部相册」下不跑，
-   于是全部相册按人找照片召回为 0。见 ``docs/refactor/2026-11-11-entity-channel-all-albums.md``。
+3. 不提供 LIKE 子串回退（``search``）——FTS5 缺席时的降级分支在 2.0 永远不会走。
 """
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sentrix.domain.media.models import Observation
@@ -32,7 +28,6 @@ from sentrix.domain.retrieval.lexical import (
     normalize_text,
 )
 from sentrix.infrastructure.persistence.database import Database
-from sentrix.infrastructure.persistence.repositories.assets import people_names
 
 # 1.0 ``rebuild_all`` 用的是 ``list_observations(limit=10_000)``（``:272``）。同一个上限：
 # 词法投影是派生数据，一次重建漏掉第 10001 条之后的行会静默丢召回，所以重建范围
@@ -43,15 +38,6 @@ REBUILD_LIMIT = 10_000
 # 一条（身份层属于 S5，没有 ``entity_mentions`` 可桥），所以这一版**不再过滤**：
 # 加过滤等于留一个「字段清单与 1.0 对齐、实际少一个」的假象。
 _ACTIVE_FIELD_SOURCES = FIELD_SOURCES
-
-PERSON_BRIDGE = "person_bridge"
-
-# 「全部相册」（``scope_id`` 为空）按人找照片时要排除的空间。与
-# ``EntityRepository.list_entities`` / ``FaceRepository.list_clusters`` 同一条口径：
-# ``include_in_people = 0`` 的空间（评测空间）不进家庭的人物视图，也就不进家庭问答。
-# 写成「NOT IN 排除集」而不是「IN 包含集」也与 ``list_entities`` 一致：没登记进
-# ``memory_spaces`` 的老 scope 仍然算家庭数据。
-_EXCLUDED_FROM_PEOPLE = "(SELECT id FROM memory_spaces WHERE include_in_people = 0)"
 
 
 def _new_id() -> str:
@@ -64,83 +50,6 @@ def _values(raw: object) -> tuple[str, ...]:
     else:
         items = [raw]
     return tuple(value for value in (normalize_text(item) for item in items) if value)
-
-
-def _insert_term(connection: sqlite3.Connection, row: Sequence[object]) -> None:
-    """写一行 ``observation_search_terms``，并在有 token 时补一行 FTS。
-
-    ``row`` 的列序与 INSERT 一致：``(id, observation_id, asset_id, scope_id, field_type,
-    normalized_value, confidence, source_type, source_revision, created_at, updated_at)``。
-    """
-    connection.execute(
-        "INSERT INTO observation_search_terms (id, observation_id, asset_id, scope_id,"
-        " field_type, normalized_value, confidence, source_type, source_revision,"
-        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        tuple(row),
-    )
-    tokens = fts_content(row[5])
-    if not tokens:
-        return
-    connection.execute(
-        "INSERT INTO observation_search_fts (tokens, scope_id, field_type, asset_id,"
-        " observation_id) VALUES (?,?,?,?,?)",
-        (tokens, row[3], row[4], row[2], row[1]),
-    )
-
-
-def sync_person_bridge(connection: sqlite3.Connection, observation_ids: Iterable[str]) -> int:
-    """按 ``observations.people_json`` 的**当前值**重写这些观察的 ``person_bridge`` 行。
-
-    **必须在改 ``people_json`` 的同一个连接、同一个事务里调。** 人物快照是权威，
-    ``person_bridge`` 是它的派生行；两者分两次提交，中间崩一次就是「快照里有这个人、
-    按人名查不到」——那正是这次要修的缺陷（确认、合并都改快照，却没有一处刷投影）。
-    所以它是一个吃 ``connection`` 的函数，而不是 ``SqliteLexicalIndex`` 上自己开连接的
-    方法：写快照的仓储（``entities.py`` 的 ``_append_person_snapshot``，以及之后任何改
-    ``people_json`` 的写入路径）在自己的事务里调它。
-
-    只碰 ``person_bridge`` 这一个字段：其他字段（caption / objects / 锚点……）的值源
-    不随人物变化，整条 ``refresh_from_observation`` 会多读 asset 与地点、多写几十行，
-    而且要在事务外做。名字的解析与归一和 ``refresh_from_observation`` 是同一条路
-    （``people_names`` → ``_values``），两条写入给出同样的行。
-
-    观察不存在时只删不写（观察被删的那条路径自己清投影，这里不报错）。返回写了几行。
-    """
-    now = datetime.now(UTC).isoformat()
-    written = 0
-    for observation_id in dict.fromkeys(observation_ids):
-        connection.execute(
-            "DELETE FROM observation_search_terms WHERE observation_id = ? AND field_type = ?",
-            (observation_id, PERSON_BRIDGE),
-        )
-        connection.execute(
-            "DELETE FROM observation_search_fts WHERE observation_id = ? AND field_type = ?",
-            (observation_id, PERSON_BRIDGE),
-        )
-        row = connection.execute(
-            "SELECT id, scope_id, asset_id, confidence, revision, people_json FROM observations WHERE id = ?",
-            (observation_id,),
-        ).fetchone()
-        if row is None:
-            continue
-        for value in _values(people_names(row["people_json"])):
-            _insert_term(
-                connection,
-                (
-                    _new_id(),
-                    row["id"],
-                    row["asset_id"],
-                    row["scope_id"],
-                    PERSON_BRIDGE,
-                    value,
-                    float(row["confidence"] or 0),
-                    "observation",
-                    int(row["revision"] or 0),
-                    now,
-                    now,
-                ),
-            )
-            written += 1
-    return written
 
 
 class SqliteLexicalIndex:
@@ -181,7 +90,20 @@ class SqliteLexicalIndex:
                 "DELETE FROM observation_search_fts WHERE observation_id = ?", (observation.id,)
             )
             for row in rows:
-                _insert_term(connection, row)
+                connection.execute(
+                    "INSERT INTO observation_search_terms (id, observation_id, asset_id, scope_id,"
+                    " field_type, normalized_value, confidence, source_type, source_revision,"
+                    " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    row,
+                )
+                tokens = fts_content(row[5])
+                if not tokens:
+                    continue
+                connection.execute(
+                    "INSERT INTO observation_search_fts (tokens, scope_id, field_type, asset_id,"
+                    " observation_id) VALUES (?,?,?,?,?)",
+                    (tokens, observation.scope_id, row[4], observation.asset_id, observation.id),
+                )
         return len(rows)
 
     def _term_rows(self, observation: Observation, now: str) -> list[tuple[object, ...]]:
@@ -250,26 +172,6 @@ class SqliteLexicalIndex:
             rebuilt += self.refresh_from_observation(observation)
         return rebuilt
 
-    def rebuild_person_bridge(self, scope_id: str | None = None) -> int:
-        """只重建 ``person_bridge``：按每条观察当前的 ``people_json`` 重写（存量回填用）。
-
-        ``scope_id`` 为空时覆盖**所有**观察——回填是在修数据，评测空间的投影同样该
-        与快照一致（读侧的「全部相册」口径另由 ``assets_for_person`` 负责）。
-
-        **不设上限，一个事务。** ``rebuild_scope`` 有 ``REBUILD_LIMIT`` 是因为整条重建
-        要逐条读 asset 与地点；这里每条观察只是几句本地 SQL。设一个上限，超出的那部分
-        就会静默地「快照里有人、投影里没有」——这一版要消灭的正是这件事。一个事务是为了
-        回填中途失败时不留下一半新一半旧的投影。返回写了几行。
-        """
-        with self._database.connect() as connection, connection:
-            if scope_id:
-                rows = connection.execute(
-                    "SELECT id FROM observations WHERE scope_id = ? ORDER BY id", (scope_id,)
-                ).fetchall()
-            else:
-                rows = connection.execute("SELECT id FROM observations ORDER BY id").fetchall()
-            return sync_person_bridge(connection, [row["id"] for row in rows])
-
     def count(self, scope_id: str | None = None) -> int:
         with self._database.connect() as connection:
             if scope_id:
@@ -321,23 +223,15 @@ class SqliteLexicalIndex:
         ``field_type`` 是硬条件：不加它，同名的一个地名或物品也会把 asset 带进来。
         名字走 ``normalize_text``（与写入侧同一个口径）——写成 ``name.lower()`` 会在
         全角空格或多空格的名字上悄悄漏掉。
-
-        ``scope_id`` 为空是「全部相册」：只覆盖 ``include_in_people = 1`` 的空间，与
-        ``EntityRepository.list_entities`` 同一条口径。评测空间里也有同名的人（PhotoBench
-        的相册是真实家庭照片的副本），不排除的话全部相册下问「王王」会把评测副本里的
-        同一批照片再交一遍。显式给了 ``scope_id`` 就只看那个空间，不再过滤——评测按
-        自己的 scope 查，必须查得到。
         """
         value = normalize_text(name)
         if not value:
             return frozenset()
-        clause = " WHERE field_type = ? AND normalized_value = ?"
-        params: list[object] = [PERSON_BRIDGE, value]
+        clause = " WHERE field_type = 'person_bridge' AND normalized_value = ?"
+        params: list[object] = [value]
         if scope_id:
             clause += " AND scope_id = ?"
             params.append(scope_id)
-        else:
-            clause += f" AND scope_id NOT IN {_EXCLUDED_FROM_PEOPLE}"
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT DISTINCT asset_id FROM observation_search_terms" + clause, params

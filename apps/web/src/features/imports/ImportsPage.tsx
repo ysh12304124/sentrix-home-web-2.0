@@ -254,7 +254,7 @@ export function ImportsPage() {
                 <i style={{ width: `${batchPercent}%` }} />
               </div>
               <small>
-                完成 {completedCount} · 排队或处理中 {processingCount} · 等待上传 {waitingUploads}
+                完成 {completedCount} · 处理中 {processingCount} · 等待上传 {waitingUploads}
                 {failedUploads > 0 ? ` · 上传失败 ${failedUploads}` : ""}
               </small>
             </article>
@@ -303,7 +303,7 @@ export function ImportsPage() {
 
       <div className="import-stats">
         <article><span>已接收</span><b>{acceptedCount}</b></article>
-        <article><span>排队或处理中</span><b>{processingCount}</b></article>
+        <article><span>处理中</span><b>{processingCount}</b></article>
         <article><span>已完成</span><b>{completedCount}</b></article>
         <article><span>需要处理</span><b>{problemCount}</b></article>
       </div>
