@@ -40,6 +40,7 @@ from sentrix.domain.identity.person_merge import (
     PersonMergePlan,
 )
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.repositories.search_terms import sync_person_bridge
 
 # 带唯一约束、只需改挂的子表：(表, 指向人物的列)。冲突即重复，冲突行删除。
 _REPOINT_TABLES: tuple[tuple[str, str], ...] = (
@@ -414,6 +415,9 @@ class SqlitePersonMergeRepository:
 
         来源的条目换成目标；目标自己的条目也重写一遍——名字可能刚换过。只碰包含参与者
         id 的那些观察（``instr`` 过滤），不扫全表。
+
+        改过的观察在同一个事务里刷 ``person_bridge`` 投影（``sync_person_bridge``）：
+        快照里来源的名字换成了目标，投影不跟着改，按目标的名字在全部相册里就查不到这些照片。
         """
         participants = [plan.target_id, *plan.source_ids]
         clause = " OR ".join("instr(people_json, ?) > 0" for _ in participants)
@@ -421,6 +425,7 @@ class SqlitePersonMergeRepository:
             f"SELECT id, people_json FROM observations WHERE {clause}", tuple(participants)
         ).fetchall()
         member = set(participants)
+        changed: list[str] = []
         for row in rows:
             try:
                 people = json.loads(row["people_json"] or "[]")
@@ -439,6 +444,8 @@ class SqlitePersonMergeRepository:
                 "UPDATE observations SET people_json = ? WHERE id = ?",
                 (json.dumps(kept, ensure_ascii=False), row["id"]),
             )
+            changed.append(str(row["id"]))
+        sync_person_bridge(connection, changed)
 
     @staticmethod
     def _observation_ids(

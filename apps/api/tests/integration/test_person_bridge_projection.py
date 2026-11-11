@@ -301,6 +301,44 @@ def test_all_albums_finds_backfilled_people(library):
     assert [hit.asset_id for hit in hits] == [f"{HOME}-asset2"]
 
 
+# ---- 改名与人物合并：快照里的名字变了，投影跟着变 ------------------------------------
+
+
+def test_renaming_a_confirmed_person_moves_the_projection_to_the_new_name(library):
+    """改名改写了快照里的名字；投影不跟着改，全部相册按新名字就查不到。"""
+    entity_id = confirm(library, HOME, f"obs-{HOME}-asset1", f"obs-{HOME}-asset2")
+
+    library["entities"].rename_person(entity_id, "王小王")
+
+    assert bridge_rows(library["db"]) == [
+        (f"obs-{HOME}-asset1", HOME, "王小王"),
+        (f"obs-{HOME}-asset2", HOME, "王小王"),
+    ]
+    found = retriever(library).execute(people=["王小王"], scope_id=None, limit=10)
+    assert sorted(hit.asset_id for hit in found) == [f"{HOME}-asset1", f"{HOME}-asset2"]
+    assert retriever(library).execute(people=[NAME], scope_id=None, limit=10) == []
+
+
+def test_merging_people_moves_the_source_photos_onto_the_target_name(library):
+    """人物合并把来源的快照条目换成目标；投影要随之换成目标的名字。"""
+    from sentrix.domain.identity.person_merge import plan_person_merge
+    from sentrix.infrastructure.persistence.repositories.person_merge import SqlitePersonMergeRepository
+
+    entities = library["entities"]
+    target = confirm(library, HOME, f"obs-{HOME}-asset1")
+    source = confirm(library, HOME, f"obs-{HOME}-asset2", name="小王")
+    plan = plan_person_merge(
+        entities.get(target), [entities.get(source)], requested_name=None, aliases_by_id={}
+    )
+
+    SqlitePersonMergeRepository(library["db"]).merge_people(plan)
+
+    assert bridge_rows(library["db"]) == [
+        (f"obs-{HOME}-asset1", HOME, NAME),
+        (f"obs-{HOME}-asset2", HOME, NAME),
+    ]
+
+
 # ---- 守卫：每一条改人物快照的写入路径都要同步投影 ----------------------------------
 
 

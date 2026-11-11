@@ -955,12 +955,16 @@ class SqliteEntityRepository:
 
     @staticmethod
     def _rename_in_person_snapshots(connection: sqlite3.Connection, entity_id: str, name: str) -> int:
-        """把 ``people_json`` 里 ``entity_id`` 是这个人的条目改成新名字，返回改了几条观察。"""
+        """把 ``people_json`` 里 ``entity_id`` 是这个人的条目改成新名字，返回改了几条观察。
+
+        改过的观察在同一个事务里刷 ``person_bridge`` 投影：全部相册按人召回读的是投影，
+        只改快照的话按新名字仍然查不到。
+        """
         rows = connection.execute(
             "SELECT id, people_json FROM observations WHERE instr(people_json, ?) > 0",
             (entity_id,),
         ).fetchall()
-        changed = 0
+        changed: list[str] = []
         for row in rows:
             people = _decode_list(row["people_json"])
             touched = False
@@ -972,8 +976,9 @@ class SqliteEntityRepository:
                 connection.execute(
                     "UPDATE observations SET people_json = ? WHERE id = ?", (_encode(people), row["id"])
                 )
-                changed += 1
-        return changed
+                changed.append(str(row["id"]))
+        sync_person_bridge(connection, changed)
+        return len(changed)
 
     # ---- 提及桥 ------------------------------------------------------------------
 
