@@ -47,6 +47,7 @@ def scoring_evidence(record: Mapping[str, Any]) -> dict[str, Any]:
                 "status",
                 "judge_status",
                 "reason",
+                "checks",
                 "formula",
                 "target",
                 "predicted",

@@ -90,6 +90,11 @@ export function QaBrowserView({ sentrixUrl = "", manifests = [], onOpenMedia }: 
       />
 
       <div className="qa-browser-toolbar qa-browser-filters">
+        {qa.validation && <details className="phase-card"><summary>题包校验：{qa.validation.can_start ? '可启动' : '需修正后启动'} · {qa.validation.error_count}项错误／{qa.validation.warning_count}项提示</summary>
+          <p>校验保留原题目与GT；答案目标和检索证据分别使用。</p>
+          <a download={`${qa.qaBrowserSet}-validation.json`} href={'data:application/json;charset=utf-8,'+encodeURIComponent(JSON.stringify(qa.validation,null,2))}>下载校验报告</a>
+          {qa.validation.issues.map((r,i)=><p key={i}>QA {String(r.qa_id)} · {String(r.field)} · {String(r.severity)}：{String(r.message)} · {JSON.stringify(r.value)}</p>)}
+        </details>}
         <label><span>评分题型</span><select aria-label="评分题型" value={qa.qaEvaluation} onChange={e => qa.setQaEvaluation(e.target.value)}>
           <option value="">全部评分题型</option>
           <option value="choice">选择题</option><option value="media_list">列表召回</option><option value="open">开放回答</option>

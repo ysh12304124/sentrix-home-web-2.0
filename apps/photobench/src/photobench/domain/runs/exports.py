@@ -181,6 +181,9 @@ def export_traces(
                 "scoring": scoring,
                 "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
                 "process_diagnostics": process_for_qa(state, str(item.get("qa_id"))),
+                "scoring_reviews": [
+                    r for r in state.get("scoring_reviews") or [] if r.get("qa_id") == str(item.get("qa_id"))
+                ],
                 "final_trace": final_trace,
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
@@ -297,6 +300,9 @@ def export_sft(
                 "answer": item.get("answer"),
                 "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
                 "process_diagnostics": process_for_qa(state, str(item.get("qa_id"))),
+                "scoring_reviews": [
+                    r for r in state.get("scoring_reviews") or [] if r.get("qa_id") == str(item.get("qa_id"))
+                ],
                 "judge": item.get("judge"),
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}

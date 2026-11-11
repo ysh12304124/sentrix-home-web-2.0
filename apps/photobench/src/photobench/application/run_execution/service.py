@@ -697,6 +697,12 @@ class RunExecution:
                 "definition_sha256": qa_fingerprint(rows),
                 "rows": copy.deepcopy(rows),
             }
+        from photobench.domain.datasets.validation import require_valid_targets
+
+        # Validate new input before import/Agent work. Recovery keeps its frozen protocol.
+        preflight = (
+            require_valid_targets(snapshot["rows"], manifest) if request.frozen_qa_snapshot is None else None
+        )
         metadata = {}
         if request.frozen_qa_snapshot is None and any(
             uses_readable_metadata(c) for c in request.scoring_configs.values()
@@ -705,6 +711,7 @@ class RunExecution:
         return {
             **metadata,
             "qa_snapshot": snapshot,
+            "qa_validation": preflight,
             "resume_context": copy.deepcopy(request.resume_context),
             "metrics_contract_version": 2,
             "build_revision": self.runtime_snapshot.build_revision

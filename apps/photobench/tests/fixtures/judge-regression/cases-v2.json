@@ -1,0 +1,105 @@
+{
+  "version": "judge-quality-audit-2026.11.12-v2",
+  "expected_status": "审计预期；未声称独立人工金标",
+  "gt_images": false,
+  "cases": [
+    {
+      "qa_id": "atm-f10e0f3e-bdb9-4111-b571-7d02536eb211",
+      "question": "I remember seeing a demo of TTS technology during ACL. What was the full name of that demo?",
+      "reference": "Zero-shot Voice Cloning Model",
+      "answer": "那次在 ACL 上的 TTS 技术演示，全称是“Zero-shot Voice Cloning Model Demo 05. Regional English Accent Voice Cloning”。",
+      "id": "qa-379",
+      "expected": 1,
+      "review_status": "audit_expected",
+      "rationale": "完整核心名和非矛盾副标题；工具原文支持副标题",
+      "source_sequence": 379,
+      "qtype": "open_end"
+    },
+    {
+      "qa_id": "atm-03f6edc0-4646-4257-b999-6009b5afc1ab",
+      "question": "I once saw a cute stuffed toy dog in a restaurant. When and where was that?",
+      "reference": "Newport Court, Chinatown, London, on 15 January 2023.",
+      "answer": "那只毛绒小狗是在2023年1月15日下午，在伦敦附近的一家室内餐厅或咖啡馆里出现的。",
+      "id": "qa-183",
+      "expected": 0,
+      "review_status": "audit_expected",
+      "rationale": "日期匹配但遗漏所问具体地点，理由应承认日期正确",
+      "source_sequence": 183,
+      "qtype": "open_end"
+    },
+    {
+      "qa_id": "atm-70779bb0-e193-47e9-9101-fe1588c9b80b",
+      "question": "I remember sitting on a bus seat and seeing several coins. When and where did I take that photo?",
+      "reference": "On 8 May 2022 at Gloucester Green Bus Station, in Oxford.",
+      "answer": "那张照片是在2022年5月8日拍的，地点在牛津附近。照片里拍的是汽车座椅扶手上放着三枚硬币的特写。",
+      "id": "qa-329",
+      "expected": 0,
+      "review_status": "audit_expected",
+      "rationale": "两事实不矛盾，但未给具体车站",
+      "source_sequence": 329,
+      "qtype": "open_end"
+    },
+    {
+      "qa_id": "atm-bcf1e962-4d23-481c-998a-35a54bb6e420",
+      "question": "I remember trying to connect to Wi-Fi on an aircraft. How fast did the airline describe the speed?",
+      "reference": "Onboard bandwidth typically ranges from 1 to 3 Mbps on Boeing 777s and some A380s, and is often below 1 Mbps on most A380s, depending on satellite coverage and location.",
+      "answer": "航空公司说，在波音 777 和某些 A380 上，带宽通常在 1 到 3 Mbps 之间，具体取决于卫星覆盖情况，并且是所有乘客共享的。在大多数 A380 上，带宽通常低于 1 Mbps。",
+      "id": "qa-52",
+      "expected": 1,
+      "review_status": "audit_expected",
+      "rationale": "正确带宽范围与共享补充可并存",
+      "source_sequence": 52,
+      "qtype": "open_end"
+    },
+    {
+      "qa_id": "atm-1cba3500-8a7a-4732-ad47-e266d5667da4",
+      "question": "When will the IAP web development class begin?",
+      "reference": "ABSTENTION. Info not included in the image.",
+      "answer": "根据照片里的信息，IAP 网页开发课程的海报上写着网址是 weblab.mit.edu，但海报上没有直接写明具体的开始日期。\n\n不过海报上确实提到了“每节课都有免费午餐”和“初学者友好”，说明这是一个面向初学者的课程。\n\n如果你想确认具体的开始时间，可能需要直接访问那个网站或者联系相关机构查询。",
+      "id": "qa-70",
+      "expected": 1,
+      "review_status": "audit_expected",
+      "rationale": "参考未知，明确无法确认；不套用可回答适配标签",
+      "source_sequence": 70,
+      "qtype": "open_end"
+    },
+    {
+      "id": "name-core-wrong",
+      "question": "What was the full name of the TTS demo?",
+      "reference": "Zero-shot Voice Cloning Model",
+      "answer": "The demo was called Speech Recognition Model.",
+      "expected": 0,
+      "qtype": "open_end",
+      "review_status": "constructed_expected",
+      "rationale": "核心实体替换错误"
+    },
+    {
+      "id": "location-specific",
+      "question": "Which street was the photograph taken on?",
+      "reference": "Brunswick Walk, Cambridge",
+      "answer": "It was somewhere near Cambridge.",
+      "expected": 0,
+      "qtype": "open_end",
+      "review_status": "constructed_expected",
+      "rationale": "明确问街道，仅答城市不足"
+    },
+    {
+      "id": "location-city",
+      "question": "Which city was the photograph taken in?",
+      "reference": "Cambridge, Brunswick Walk",
+      "answer": "Cambridge.",
+      "expected": 1,
+      "qtype": "open_end",
+      "review_status": "constructed_expected",
+      "rationale": "只问城市，不强求参考的道路细节"
+    }
+  ],
+  "pending_cases": [
+    {
+      "qa_id": "atm-4e057a57-6ece-488c-88d1-70730594e71f",
+      "source_sequence": 531,
+      "expected": null,
+      "reason": "信息不足表达与未读海报泛化仍待裁决，不作为通过门禁"
+    }
+  ]
+}

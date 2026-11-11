@@ -21,6 +21,7 @@ from typing import Any
 
 from photobench.domain.datasets.catalog import ALBUM_MEDIA_COLLECTIONS
 from photobench.domain.datasets.qa_taxonomy import validate_qa_annotations
+from photobench.domain.datasets.validation import require_valid_targets
 from photobench.domain.evaluation.contract import validate_evaluation
 from photobench.domain.evaluation.gt_context import context_index, empty_context
 from photobench.infrastructure.datasets.qa_metadata import (
@@ -206,6 +207,7 @@ class JsonAlbumSource:
             ):
                 if definition.get(source):
                     row[target] = definition[source]
+        require_valid_targets(rows, manifest)
         return rows
 
     def read_file(self, album_id: str, relative: str) -> bytes:

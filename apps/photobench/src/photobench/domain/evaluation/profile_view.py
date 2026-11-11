@@ -12,6 +12,7 @@ from photobench.domain.evaluation.profiles import (
     ATM,
     LABELS,
     OPEN,
+    digest,
     evaluation_turn,
     result_key,
     scoring_summary,
@@ -33,9 +34,24 @@ def select_batch(state: Mapping[str, Any], profile: str, batch_id: str = "") -> 
 
 
 def item_scores(state: Mapping[str, Any], qa_id: str) -> list[dict[str, Any]]:
-    return [
-        copy.deepcopy(r) for r in (state.get("scoring_results") or {}).values() if str(r["qa_id"]) == qa_id
-    ]
+    batches = {b["batch_id"]: b for b in state.get("scoring_batches") or []}
+    rows = []
+    for result in (state.get("scoring_results") or {}).values():
+        if str(result["qa_id"]) != qa_id:
+            continue
+        value = copy.deepcopy(result)
+        batch = batches.get(result.get("batch_id"))
+        if batch:
+            config = batch.get("config") or {}
+            value["batch_definition"] = {
+                "rule_version": batch.get("rule_version"),
+                "qa_definition_sha256": batch.get("qa_definition_sha256"),
+                "judge": {k: (batch.get("judge") or {}).get(k) for k in ("url", "model")},
+                "config": {k: copy.deepcopy(v) for k, v in config.items() if k != "prompts"},
+                "prompts_sha256": digest(config.get("prompts") or {}),
+            }
+        rows.append(value)
+    return rows
 
 
 def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]:
@@ -143,6 +159,7 @@ def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") 
                         "profile_id",
                         "status",
                         "reason",
+                        "checks",
                         "finished_at",
                         "purpose",
                         "choice_match",

@@ -28,7 +28,7 @@ def quality_bucket(judge: dict[str, Any] | None) -> int | None:
     return judge_bucket_for_summary(judge)
 
 
-RULE_VERSION = 14
+RULE_VERSION = 15
 TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
 NORMAL = {"answered", "answered_with_gap", "policy_refusal"}
 LABELS = {
@@ -163,6 +163,9 @@ def trace_records(item: Mapping[str, Any], turns: list[dict[str, Any]], key: str
 
 
 def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
+    native_benchmark = item.get("benchmark_id") == "atm-bench" or bool(
+        (item.get("evaluation") or {}).get("source_qtype")
+    )
     turns = [x for x in item.get("runtime_turns") or [] if isinstance(x, dict)]
     if not turns:
         turns = [dict(item)]
@@ -391,6 +394,9 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
         expected = turn_record.get("expected_action") or (
             item.get("expected_action") if len(turns) == 1 else None
         )
+        recorded_expected = expected
+        if native_benchmark:
+            expected = None
         mixed_valid = expected != "answer_and_refuse" or task.get("behavior_rule_version") == 2
         annotation = {**item, **turn_record} if len(turns) == 1 else turn_record
         turn_content = content_types(saved_labels(annotation.get("task_type")))
@@ -413,7 +419,7 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
                 "conversation_id": turn_record.get("conversation_id"),
                 "turn_id": turn_record.get("turn_id"),
                 "termination_reason": reason,
-                "recorded_expected": expected,
+                "recorded_expected": recorded_expected,
                 "recorded_actual": task.get("actual_action"),
                 "expected": expected
                 if expected in {"answer", "refuse", "clarify", "answer_and_refuse"}
@@ -683,6 +689,7 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
                     )
                 )
     case = {
+        "process_diagnostics": item.get("process_diagnostics"),
         "judge_definitions": sorted(set(judge_definitions)),
         "agent_limits": agent_limits,
         "context_windows": context_windows,

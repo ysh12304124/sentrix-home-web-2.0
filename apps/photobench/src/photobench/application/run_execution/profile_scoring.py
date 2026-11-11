@@ -64,6 +64,7 @@ def prepare_batches(
     for purpose in ("task_decision", "evidence"):
         diagnostics[purpose] = diagnostics.get(purpose) or JUDGE_PROMPT_KINDS[purpose]
     diagnostics["evidence_enabled"] = bool(diagnostics.get("evidence_enabled"))
+    diagnostics["native_behavior_policy"] = "unlabeled_v1"
     for profile, config in configs.items():
         candidate = make_batch(
             profile,
@@ -209,10 +210,16 @@ class ProfileScoring:
             try:
                 if runner.cancel and runner.cancel.is_set():
                     raise RunCancelledError("scoring cancelled")
+                native = config.get("native_behavior_policy") == "unlabeled_v1" and (
+                    bool((row.get("evaluation") or {}).get("source_qtype"))
+                    or str((row.get("evaluation") or {}).get("scorer", "")).startswith("atm_")
+                )
                 result["task_judge"] = runner.judge_task_action(
                     str(record.get("message") or row.get("question") or ""),
                     str(record.get("answer") or ""),
-                    definition.get(
+                    None
+                    if native
+                    else definition.get(
                         "expected_action", record.get("expected_action", row.get("expected_action"))
                     ),
                     record.get("agent_status"),
@@ -223,6 +230,8 @@ class ProfileScoring:
                     reference=definition.get("reference_answer") or row.get("answer"),
                     conversation=turns[: index + 1],
                 )
+                if native:
+                    result["task_judge"]["label_source"] = "benchmark_native_unlabeled"
                 if (
                     config.get("evidence_enabled")
                     and record.get("predicted_images")
@@ -340,6 +349,13 @@ class ProfileScoring:
         expected = turn.get(
             "expected_action", record.get("expected_action", row.get("expected_action", "answer"))
         )
+        native_atm = (
+            profile == ATM
+            and config.get("atm_input_version") == "native_v2"
+            and (str(kind).startswith("atm_") or bool((row.get("evaluation") or {}).get("source_qtype")))
+        )
+        if native_atm:
+            expected = None
         reference = str(
             turn.get("reference_answer") or row.get("answer") or item.get("reference_answer") or ""
         )
@@ -479,6 +495,9 @@ class ProfileScoring:
                                     "answer": answer,
                                     "reference": reference,
                                     "expected_action": expected,
+                                    "behavior_policy": "benchmark_native"
+                                    if native_atm
+                                    else "explicit_action",
                                     "conversation": [
                                         {"question": t.get("message"), "answer": t.get("answer")}
                                         for t in turns[: index + 1]
@@ -508,6 +527,28 @@ class ProfileScoring:
                     "reason": parsed.get("reason", parsed.get("explanation", "")),
                     "call_observations": observations,
                 }
+                if (
+                    purpose == "open"
+                    and config.get("atm_input_version") == "native_v2"
+                    and "checks" in parsed
+                ):
+                    checks = parsed["checks"]
+                    if (
+                        not isinstance(checks, dict)
+                        or type(checks.get("core_match")) is not bool
+                        or any(
+                            not isinstance(checks.get(k), list)
+                            or any(not isinstance(v, str) for v in checks[k])
+                            for k in ("missing", "contradictions", "unverified_additions")
+                        )
+                    ):
+                        raise ValueError("Invalid Judge checks")
+                    consistent_score = int(
+                        checks["core_match"] and not checks["missing"] and not checks["contradictions"]
+                    )
+                    if score != consistent_score:
+                        raise ValueError("Judge score contradicts structured checks")
+                    output["checks"] = checks
             result.update(compact_verdict(output))
             result["max_score"] = 2 if profile == OPEN else 1
             result["status"] = "completed"

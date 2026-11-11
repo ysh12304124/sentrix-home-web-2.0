@@ -9,13 +9,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from photobench.domain.evaluation.media import tool_media_aliases
+from photobench.domain.evaluation.profile_view import select_batch
 from photobench.domain.evaluation.profiles import evaluation_turn, stable_media_key
 
-VERSION = "answer-process-v1"
+VERSION = "answer-process-v2"
 LABELS = {
     "candidate_gap": "目标未进入候选或仅部分命中",
     "not_inspected": "候选命中但未记录进一步取证",
-    "no_text": "工具未读出文字",
+    "no_text": "未取得已存文字",
     "tool_parameter": "工具参数限制",
     "budget_limit": "步骤、次数或时间限制",
     "tool_limit": "其他工具限制或异常",
@@ -29,6 +30,28 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()
     ).hexdigest()
+
+
+def scoring_context(state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve explicit selections or the latest batch per standard, never all history."""
+    profile = str(state.get("selected_scoring_profile") or "")
+    batch_id = str(state.get("selected_scoring_batch") or "")
+    if batch_id and not profile:
+        raise ValueError("Select a scoring standard for this batch")
+    profiles = (
+        [profile]
+        if profile
+        else list(dict.fromkeys(b["profile_id"] for b in state.get("scoring_batches") or []))
+    )
+    batches = [b for p in profiles if (b := select_batch(state, p, batch_id))]
+    ids = {b["batch_id"] for b in batches}
+    context = {
+        "selection": ("explicit" if profile else "latest_per_profile") if batches else "none",
+        "batches": [{"profile_id": b["profile_id"], "batch_id": b["batch_id"]} for b in batches],
+    }
+    return context, {
+        k: v for k, v in (state.get("scoring_results") or {}).items() if v.get("batch_id") in ids
+    }
 
 
 def media_keys(refs: Any) -> set[str]:
@@ -73,6 +96,7 @@ def item_process(
         targets = {str(k) for k in raw_target if isinstance(k, str) and k.startswith(("image:", "video:"))}
     findings: list[dict[str, Any]] = []
     chain = []
+    tool_events = []
 
     def add(category: str, status: str, message: str, sources: list[str], **facts: Any) -> None:
         findings.append(
@@ -82,6 +106,11 @@ def item_process(
                 "status": status,
                 "message": message,
                 "sources": sources,
+                "source_kind": "judge_reason"
+                if any(s.startswith("scoring_results[") for s in sources)
+                else "product_requirement"
+                if any("requirements[" in s for s in sources)
+                else "saved_trace",
                 **facts,
             }
         )
@@ -208,6 +237,16 @@ def item_process(
                 continue
             reason = str(result.get("failure_reason") or result.get("error") or call.get("text") or "")
             name = str(call.get("tool") or "")
+            if call.get("status") in {"denied", "failed", "error", "timeout"}:
+                tool_events.append(
+                    {
+                        "source": path,
+                        "turn_index": ti,
+                        "tool": name,
+                        "status": call.get("status"),
+                        "reason": reason or "not_recorded",
+                    }
+                )
             if name in {
                 "read_photo_text",
                 "view_photo",
@@ -235,7 +274,7 @@ def item_process(
                 add(
                     "no_text",
                     "confirmed",
-                    "本次文字读取返回未检测到文本；是否影响回答需结合题目复核。",
+                    "本次读取未取得已存文字；是否运行过OCR、图片是否有字及是否影响回答，需另查证据。",
                     [path],
                     **facts,
                 )
@@ -371,13 +410,15 @@ def item_process(
         "chain": chain,
         "findings": findings,
         "system_failure_inferred": False,
+        "tool_events": tool_events,
     }
 
 
 def run_process(state: Mapping[str, Any]) -> dict[str, Any]:
+    context, scores = scoring_context(state)
     rows = {str(r["qa_id"]): r for r in (state.get("qa_snapshot") or {}).get("rows") or []}
     items = [
-        item_process(rows.get(str(i.get("qa_id")), {}), i, state.get("scoring_results"))
+        {**item_process(rows.get(str(i.get("qa_id")), {}), i, scores), "scoring_context": context}
         for i in state.get("items") or []
     ]
     categories: Counter[str] = Counter()
@@ -389,7 +430,8 @@ def run_process(state: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "rule_version": VERSION,
         "run_id": state.get("run_id"),
-        "source_fingerprint": fingerprint(items),
+        "scoring_context": context,
+        "source_fingerprint": fingerprint([VERSION, context, items]),
         "items": items,
         "summary": {
             "analyzed_qa": len(items),
@@ -403,13 +445,28 @@ def run_process(state: Mapping[str, Any]) -> dict[str, Any]:
             "categories_overlap": True,
             "agent_calls": 0,
             "judge_calls": 0,
+            "tool_outcomes": [
+                {
+                    "status": status,
+                    "reason": reason,
+                    "calls": count,
+                    "qa_count": sum(
+                        any(e["status"] == status and e["reason"] == reason for e in i["tool_events"])
+                        for i in items
+                    ),
+                }
+                for (status, reason), count in sorted(
+                    Counter((e["status"], e["reason"]) for i in items for e in i["tool_events"]).items()
+                )
+            ],
         },
     }
 
 
 def process_for_qa(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]:
+    context, scores = scoring_context(state)
     row: Mapping[str, Any] = next(
         (r for r in (state.get("qa_snapshot") or {}).get("rows") or [] if str(r["qa_id"]) == qa_id), {}
     )
     item: Mapping[str, Any] = next((i for i in state.get("items") or [] if str(i.get("qa_id")) == qa_id), {})
-    return item_process(row, item, state.get("scoring_results"))
+    return {**item_process(row, item, scores), "scoring_context": context}

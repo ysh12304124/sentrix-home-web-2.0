@@ -1,4 +1,5 @@
 import { ProcessDiagnostics, type ProcessDiagnostic } from "./ProcessDiagnostics.tsx";
+import { ScoringReview } from "./ScoringReview.tsx";
 import { OPEN_PROFILE, ATM_PROFILE } from '../../lib/scoring.ts';
 import { ChoiceMatchingResult, EvaluationResult, EvaluationTypeBadge, evaluationReason } from "../../components/EvaluationResult.tsx";
 import { ItemScoringResults } from '../../components/ScoringResults.tsx';
@@ -222,6 +223,7 @@ function QaItemDetail({
       </div>
       <ProcessDiagnostics value={detail.process_diagnostics as ProcessDiagnostic | undefined} />
       <ItemScoringResults results={detail.scoring_results} diagnostics={detail.diagnostic_results} current={detail.profile_scores} definition={detail.evaluation} />
+      <ScoringReview key={String(detail.run_id) + String(detail.qa_id)} runId={String(detail.run_id || '')} results={detail.scoring_results} reviews={detail.scoring_reviews}/>
       {!detail.profile_scores && <details><summary>历史评分</summary><EvaluationResult value={detail.evaluation_result || detail.judge} definition={detail.evaluation} showChoiceMatching={!detail.choice_matching_result} />{detail.choice_matching_result != null && <ChoiceMatchingResult value={detail.choice_matching_result} definition={detail.evaluation} standalone />}</details>}
       <section className="qa-layer-chain">
         <div className="qa-layer-chain-head">

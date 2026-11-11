@@ -216,7 +216,17 @@ class FileRunStore:
             raise KeyError(run_id)
         path = self._root / ".process-diagnostics"
         path.mkdir(exist_ok=True)
-        target = path / f"{run_id}.json"
+        # One immutable derived input per selection/version; switching batches cannot overwrite it.
+        from photobench.domain.error_analysis.process import fingerprint
+
+        identity = fingerprint(
+            [
+                diagnostics.get("rule_version"),
+                diagnostics.get("scoring_context"),
+                diagnostics.get("source_fingerprint"),
+            ]
+        )
+        target = path / f"{run_id}.{identity}.json"
         with run_lock(run_dir):
             pending = target.with_suffix(".tmp")
             _durable_text(pending, json.dumps(diagnostics, ensure_ascii=False))
@@ -316,7 +326,11 @@ class FileRunStore:
             return {"reviews": {}}
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-            return {"reviews": value.get("reviews") or {}, "updated_at": value.get("updated_at")}
+            return {
+                "reviews": value.get("reviews") or {},
+                "updated_at": value.get("updated_at"),
+                **({"scoring_reviews": value["scoring_reviews"]} if "scoring_reviews" in value else {}),
+            }
         except (OSError, json.JSONDecodeError, AttributeError):
             return {"reviews": {}}
 

@@ -191,6 +191,7 @@ function CaseCard({
       <p>{c.reference_answer || "未记录"}</p>
       <h5>{c.turns.length > 1 ? "最终回答" : "模型回答"}</h5>
       <p>{c.answer || "未记录"}</p>
+      {c.process_diagnostics && <details><summary>本批次答题过程线索</summary><p>沿用保存轨迹及本批次Judge理由；语义线索待复核，各类不能相加为执行失败数。</p><pre>{pretty(c.process_diagnostics)}</pre></details>}
       {c.scoring_evidence && <details>
         <summary>题型评分与扣分依据 · {displayLabel(c.dimensions.scoring_question_type || "unknown")}</summary>
         <p>本次评分标准、批次、判分理由及已保存的媒体集合差异；缺失记录见判断限制。</p>

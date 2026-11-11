@@ -28,6 +28,7 @@ from photobench.domain.datasets.qa_media import (
     resolve_qa_rows,
 )
 from photobench.domain.datasets.qa_taxonomy import validate_qa_annotations
+from photobench.domain.datasets.validation import validate_targets
 from photobench.domain.errors import InvalidRequestError, NotFoundError
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.sentrix.ports import API_PREFIX
@@ -92,6 +93,7 @@ class DatasetCatalog:
         # （那是 run 主链的 BenchmarkRun.__init__ 才做的事）。所以不能走
         # AlbumSource.qa_rows——它会多补一个字段，响应形状就变了。
         rows = parse_jsonl(raw.decode("utf-8"))
+        validation = validate_targets(rows, manifest)
         definition = (manifest.get("qa_set_versions") or {}).get(qa_set) or {}
         if definition.get("schema_version") == "2.0":
             for row in rows:
@@ -104,6 +106,7 @@ class DatasetCatalog:
             "qa_version": definition,
             "media_resolution": media_resolution,
             "media_source": "sentrix",
+            "validation": validation,
         }
 
     def _resolve_qa_media(

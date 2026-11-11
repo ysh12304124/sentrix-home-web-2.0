@@ -61,8 +61,10 @@ def get_run(
 
 
 @router.get("/runs/{run_id}/process-diagnostics")
-def get_process_diagnostics(request: Request, run_id: str) -> dict[str, Any]:
-    return get_container(request).runs.get_process_diagnostics(run_id)
+def get_process_diagnostics(
+    request: Request, run_id: str, scoring_profile: str = "", scoring_batch: str = ""
+) -> dict[str, Any]:
+    return get_container(request).runs.get_process_diagnostics(run_id, scoring_profile, scoring_batch)
 
 
 @router.get("/runs/{run_id}/items", response_model=RunItemsResponse, response_model_exclude_unset=True)

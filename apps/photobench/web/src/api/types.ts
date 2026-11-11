@@ -775,6 +775,7 @@ export interface MediaResolution {
 
 /** `GET /api/qa-dataset` 的信封（`loadQaBrowser` `App.vue:2778`）。 */
 export interface QaDatasetResponse {
+  validation?: {can_start:boolean;error_count:number;warning_count:number;issues:Record<string,unknown>[]};
   album_id: string;
   qa_set: string;
   items: QaRow[];

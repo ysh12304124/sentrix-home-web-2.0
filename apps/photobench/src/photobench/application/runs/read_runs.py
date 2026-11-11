@@ -430,8 +430,13 @@ class ReadRuns:
                     self._projections.popitem(last=False)
         return result
 
-    def get_process_diagnostics(self, run_id: str) -> dict[str, Any]:
-        result = run_process(self._state(run_id))
+    def get_process_diagnostics(
+        self, run_id: str, scoring_profile: str = "", scoring_batch: str = ""
+    ) -> dict[str, Any]:
+        state = self._state(run_id)
+        result = run_process(
+            {**state, "selected_scoring_profile": scoring_profile, "selected_scoring_batch": scoring_batch}
+        )
         if isinstance(self._store, ProcessDiagnosticStore):
             self._store.save_process_diagnostics(run_id, result)
         return result
@@ -604,14 +609,25 @@ class ReadRuns:
             if item_index < 0 or item_index >= len(items):
                 raise KeyError(f"item index out of range: {item_index}")
             item = analysis.hydrate_qa_metadata(items[item_index], self._qa_index(state))
+            item["run_id"] = run_id
             if not item.get("scope_id") and state.get("scope_id"):
                 item["scope_id"] = state["scope_id"]
                 item["scope_source"] = "saved_run_scope_v1"
             item["review"] = (self.get_reviews(run_id).get("reviews") or {}).get(str(item.get("qa_id")))
+            item["scoring_reviews"] = [
+                r
+                for r in self.get_reviews(run_id).get("scoring_reviews") or []
+                if r.get("qa_id") == str(item.get("qa_id"))
+            ]
             item["scoring_results"] = item_scores(cached, str(item.get("qa_id")))
             item["profile_scores"] = item_profile_results(cached, str(item.get("qa_id")))
             item["choice_matching_result"] = choice_matching_result(cached, str(item.get("qa_id")))
-            item["process_diagnostics"] = process_for_qa(cached, str(item.get("qa_id")))
+            diagnostic_state = (
+                cached
+                if scoring_profile
+                else {**cached, "selected_scoring_profile": "", "selected_scoring_batch": ""}
+            )
+            item["process_diagnostics"] = process_for_qa(diagnostic_state, str(item.get("qa_id")))
             item["diagnostic_results"] = [
                 v
                 for v in (cached.get("diagnostic_results") or {}).values()

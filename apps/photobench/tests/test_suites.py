@@ -1218,3 +1218,43 @@ def test_typed_rejudge_keeps_final_turn_result_when_earlier_turn_finishes_last(t
     assert [t["judge"]["score"] for t in row["runtime_turns"]] == [0, 1]
     assert row["judge"]["reason"] == row["evaluation_result"]["reason"] == "final"
     assert row["evaluation_result"]["normalized_score"] == 1
+
+
+def test_scoring_review_append_preserves_legacy_reviews_and_formal_scores(tmp_path):
+    from test_scoring_reviews import fixture
+
+    state, raw = fixture()
+    state.update(run_id="r", status="completed", items=[{"qa_id": "q"}])
+    store = FakeRunStore({"r": state})
+    previous = {"reviews": {"q": {"verdict": "wrong", "note": "保留旧审核"}}, "scoring_reviews": []}
+    store.read_reviews = lambda run_id: previous
+    writer = FakeResultWriter()
+    suites = _suites(tmp_path, store=store, writer=writer)
+    import copy
+
+    original = copy.deepcopy(state)
+    first = suites.save_reviews("r", {"scoring_reviews": [raw]})
+    assert first["reviews"]["q"]["note"] == "保留旧审核"
+    previous.update(writer.reviews[-1][1])
+    second = suites.save_reviews("r", {"scoring_reviews": [raw | {"note": "补充审核依据"}]})
+    assert len(second["scoring_reviews"]) == 2 and state == original
+    previous.update(writer.reviews[-1][1])
+    suites.save_reviews("r", {"reviews": {}})
+    assert len(writer.reviews[-1][1]["scoring_reviews"]) == 2
+    count = len(writer.reviews)
+    with pytest.raises(InvalidRequestError, match="fingerprint"):
+        suites.save_reviews("r", {"scoring_reviews": [raw | {"answer_fingerprint": "changed"}]})
+    assert len(writer.reviews) == count and state == original
+
+
+def test_invalid_media_definition_is_refused_before_any_work_is_registered(tmp_path):
+    albums = FakeAlbums(
+        manifest=MANIFEST,
+        qa_rows=[
+            {"qa_id": "bad", "retrieval_media_refs": [{"media_type": "image", "media_id": "unknown.jpg"}]}
+        ],
+    )
+    suites = _suites(tmp_path, albums=albums)
+    with pytest.raises(InvalidRequestError, match="QA bad retrieval_media_refs"):
+        suites.start_suite(_payload())
+    assert suites.active_run_ids() == []

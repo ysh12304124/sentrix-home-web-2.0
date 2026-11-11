@@ -111,7 +111,7 @@ def test_derived_storage_and_export_leave_run_snapshot_untouched(tmp_path):
     result = run_process(state)
     store.save_process_diagnostics("r", result)
     assert path.read_bytes() == before
-    assert json.loads((tmp_path / ".process-diagnostics/r.json").read_text()) == result
+    assert json.loads(next((tmp_path / ".process-diagnostics").glob("r.*.json")).read_text()) == result
     assert export_traces(state)[0]["process_diagnostics"] == result["items"][0]
     assert export_sft(state)["items"][0]["process_diagnostics"] == result["items"][0]
 
@@ -158,3 +158,55 @@ def test_saved_keyframe_parent_identity_is_used_without_guessing():
     assert result["chain"][0]["hits"] == ["image:a.jpg", "video:b"]
     del item["retrieved_candidate_media"][1]["source_keyframe_asset_id"]
     assert all(c["candidate_status"] == "record_missing" for c in item_process(row, item)["chain"])
+
+
+def test_historical_reasons_are_isolated_in_detail_run_and_both_exports(tmp_path):
+    from photobench.domain.error_analysis.process import process_for_qa
+    from photobench.domain.evaluation.profile_view import profile_state
+
+    row, item = fixture()
+    state = {
+        "run_id": "r",
+        "items": [item],
+        "qa_snapshot": {"rows": [row]},
+        "scoring_batches": [
+            {
+                "profile_id": "atm_qs_v1",
+                "batch_id": b,
+                "rule_version": "v1",
+                "config": {"use_gt_images": False, "use_gt_metadata": False},
+                "qa_definition_sha256": "sha",
+                "judge": {},
+                "targets": [],
+            }
+            for b in ("old", "new")
+        ],
+        "scoring_results": {
+            b + ":q:0": {
+                "qa_id": "q",
+                "batch_id": b,
+                "profile_id": "atm_qs_v1",
+                "turn_index": 0,
+                "reason": reason,
+            }
+            for b, reason in (("old", "缺少地点"), ("new", "全部正确"))
+        },
+    }
+    old = profile_state(state, "atm_qs_v1", "old")
+    new = profile_state(state, "atm_qs_v1", "new")
+    before = copy.deepcopy(state)
+    assert any(f["category"] == "semantic_gap" for f in process_for_qa(old, "q")["findings"])
+    for selected in (state, new):
+        result = run_process(selected)
+        expected = process_for_qa(selected, "q")
+        assert not any(f["category"] == "semantic_gap" for f in expected["findings"])
+        assert result["items"] == [expected]
+        assert export_traces(selected)[0]["process_diagnostics"] == expected
+        assert export_sft(selected)["items"][0]["process_diagnostics"] == expected
+    assert state == before
+    writer = FileResultWriter(tmp_path)
+    writer.write_snapshot("r", state)
+    store = FileRunStore(tmp_path)
+    for selected in (old, new):
+        store.save_process_diagnostics("r", run_process(selected))
+    assert len(list((tmp_path / ".process-diagnostics").glob("r.*.json"))) == 2

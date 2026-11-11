@@ -63,6 +63,7 @@ export interface AnalysisCase {
   reference_answer: string;
   score: number | null;
   scoring_evidence?: Record<string, unknown>;
+  process_diagnostics?: Record<string, unknown>;
   evaluation_result?: Record<string, unknown>;
   evaluation?: Record<string, unknown>;
   execution: string;

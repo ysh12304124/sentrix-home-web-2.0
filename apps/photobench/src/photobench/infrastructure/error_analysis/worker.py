@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
+from photobench.domain.error_analysis.process import run_process
 from photobench.domain.error_analysis.rules import (
     Aggregator,
     case_from_item,
@@ -52,6 +53,8 @@ def source(
         if (selected / "run.json").is_file():
             full = json.loads((selected / "run.json").read_text())
             state["qa_snapshot"] = full.get("qa_snapshot") or {}
+            if not scoring_profile and full.get("scoring_batches"):
+                scoring_profile = full["scoring_batches"][0]["profile_id"]
             if scoring_profile:
                 projected = profile_state(full, scoring_profile, scoring_batch)
                 batch = select_batch(full, scoring_profile, scoring_batch)
@@ -76,9 +79,19 @@ def source(
                 if batch:
                     state["judge_url"], state["judge_model"] = batch["judge"]["url"], batch["judge"]["model"]
             if pinned is not None and scoring_profile:
+                diagnostics = run_process(projected)
+                by_qa = {r["qa_id"]: r for r in diagnostics["items"]}
+                selection["process_rule_version"] = diagnostics["rule_version"]
+                selection["process_source_fingerprint"] = diagnostics["source_fingerprint"]
                 with pinned.open("w", encoding="utf-8") as out:
                     for item in projected.get("items") or []:
-                        out.write(json.dumps(item, ensure_ascii=False) + chr(10))
+                        out.write(
+                            json.dumps(
+                                {**item, "process_diagnostics": by_qa.get(str(item.get("qa_id")))},
+                                ensure_ascii=False,
+                            )
+                            + chr(10)
+                        )
         if pinned is not None and not scoring_profile and rows.is_file():
             shutil.copyfile(rows, pinned)
         runtime = state.get("runtime_snapshot") or {}

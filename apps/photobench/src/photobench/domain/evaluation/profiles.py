@@ -16,7 +16,7 @@ from photobench.domain.runs.judge import JUDGE_PROMPT, JUDGE_PROMPT_KINDS
 
 OPEN = "photobench_open_v1"
 ATM = "atm_qs_v1"
-RULE_VERSION = "scoring-2026.11.06-v4"
+RULE_VERSION = "scoring-2026.11.12-v5"
 READABLE_METADATA_MODES = {"readable_v1", "image_metadata_v1"}
 LABELS = {OPEN: "开放式回答（0/1/2，历史口径）", ATM: "ATM-Bench式QS"}
 PROMPTS = {
@@ -69,6 +69,7 @@ def profile_configs(
             "use_gt_metadata",
             "gt_metadata_mode",
             "quality_input_version",
+            "atm_input_version",
         }:
             raise ValueError("Invalid scoring profile configuration")
         prompts = dict(PROMPTS[profile])
@@ -88,6 +89,13 @@ def profile_configs(
         if any(type(v) is not bool for v in flags.values()):
             raise ValueError("GT flags must be booleans")
         result[profile] = {"prompts": prompts, **flags}
+        if profile == ATM:
+            version = raw.get("atm_input_version", "native_v2")
+            if version not in {"legacy_v1", "native_v2"}:
+                raise ValueError("Unknown ATM input version")
+            result[profile]["atm_input_version"] = version
+        elif "atm_input_version" in raw:
+            raise ValueError("ATM input version is only valid for ATM")
         if profile == OPEN:
             version = raw.get("quality_input_version", "task_v4")
             if version not in {"legacy_v1", "task_v2", "task_v3", "task_v4"}:

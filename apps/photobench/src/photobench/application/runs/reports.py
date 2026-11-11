@@ -297,7 +297,10 @@ class RunReports:
         scoring_batch: str = "",
     ) -> list[dict[str, Any]]:
         return exports.export_traces(
-            profile_state(self._state(run_id), scoring_profile, scoring_batch),
+            {
+                **profile_state(self._state(run_id), scoring_profile, scoring_batch),
+                "scoring_reviews": self._store.read_reviews(run_id).get("scoring_reviews") or [],
+            },
             scores=scores,
             min_score=min_score,
         )
@@ -312,7 +315,10 @@ class RunReports:
         scoring_batch: str = "",
     ) -> dict[str, Any]:
         return exports.export_sft(
-            profile_state(self._state(run_id), scoring_profile, scoring_batch),
+            {
+                **profile_state(self._state(run_id), scoring_profile, scoring_batch),
+                "scoring_reviews": self._store.read_reviews(run_id).get("scoring_reviews") or [],
+            },
             scores=scores,
             min_score=min_score,
         )

@@ -296,6 +296,13 @@ class RunSuites:
             raise InvalidRequestError(f"album {album_id} has no qa_sets in manifest")
         if mode != "build" and qa_set not in (manifest.get("qa_sets") or {}):
             raise InvalidRequestError(f"unknown qa_set for album {album_id}: {qa_set}")
+        if mode != "build":
+            from photobench.domain.datasets.validation import require_valid_targets
+
+            try:
+                require_valid_targets(self._albums.qa_rows(album_id, qa_set), manifest)
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
         models = payload.get("models", [])
         if not isinstance(models, list) or not models:
             raise InvalidRequestError("models must contain at least one model")
@@ -850,6 +857,10 @@ class RunSuites:
     # ---- 评审 ---------------------------------------------------------------
 
     def save_reviews(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            return self._save_reviews(run_id, payload)
+
+    def _save_reviews(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """``POST /api/runs/{id}/reviews``（1.0 ``save_reviews`` ``:4988``）。
 
         **筛选规则照搬**：未知 ``qa_id``、非对象的条目、白名单外的 ``verdict`` 一律
@@ -860,7 +871,10 @@ class RunSuites:
             raise KeyError(run_id)
         if state.get("status") in {"running", "pending"}:
             raise InvalidRequestError("cannot change reviews while benchmark is running")
-        provided = payload.get("reviews")
+        if "reviews" not in payload and "scoring_reviews" not in payload:
+            raise InvalidRequestError("reviews or scoring_reviews is required")
+        previous = self._store.read_reviews(run_id)
+        provided = payload.get("reviews", previous.get("reviews") or {})
         if not isinstance(provided, dict):
             raise InvalidRequestError("reviews must be an object keyed by qa_id")
         valid_ids = {str(item.get("qa_id")) for item in state.get("items") or [] if item.get("qa_id")}
@@ -873,7 +887,18 @@ class RunSuites:
             if verdict not in {"correct", "partial", "wrong"}:
                 continue
             reviews[str(qa_id)] = {"verdict": verdict, "note": note, "updated_at": now_iso()}
-        stored = {"updated_at": now_iso(), "reviews": reviews}
+        from photobench.domain.evaluation.reviews import scoring_review
+
+        audits = list(previous.get("scoring_reviews") or [])
+        incoming = payload.get("scoring_reviews", [])
+        if not isinstance(incoming, list) or any(not isinstance(v, dict) for v in incoming):
+            raise InvalidRequestError("scoring_reviews must be a list of scoring audit records")
+        try:
+            for raw in incoming:
+                audits.append(scoring_review(state, raw, now_iso()))
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        stored = {**previous, "updated_at": now_iso(), "reviews": reviews, "scoring_reviews": audits}
         self._writer.save_reviews(run_id, stored)
         return {"saved": len(reviews), **stored}
 

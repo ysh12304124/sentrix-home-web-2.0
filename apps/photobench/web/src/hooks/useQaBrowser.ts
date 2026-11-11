@@ -47,6 +47,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
   const [qaEvaluation, setQaEvaluation] = useState("");
   const [qaBrowserLoading, setQaBrowserLoading] = useState(false);
   const [qaBrowserError, setQaBrowserError] = useState("");
+  const [validation,setValidation] = useState<QaDatasetResponse['validation']>();
   const [qaBrowserMediaResolution, setQaBrowserMediaResolution] = useState<MediaResolution | null>(null);
 
   const aliveRef = useRef(true);
@@ -87,11 +88,13 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
       setQaBrowserItems(data.items || []);
       setQaTask(""); setQaSubtype(""); setQaAction(""); setQaBrowserTag(""); setQaEvaluation("");
       setQaBrowserMediaResolution(data.media_resolution || null);
+      setValidation(data.validation);
     } catch (e) {
       if (!aliveRef.current) return;
       setQaBrowserError(e instanceof Error ? e.message : String(e));
       setQaBrowserItems([]);
       setQaBrowserMediaResolution(null);
+      setValidation(undefined);
     } finally {
       if (aliveRef.current) setQaBrowserLoading(false);
     }
@@ -128,6 +131,7 @@ export function useQaBrowser({ sentrixUrl = "", manifests = [] }: UseQaBrowserOp
   }, [qaBrowserItems, qaBrowserSearch, qaBrowserTag, qaTask, qaSubtype, qaAction, qaEvaluation]);
 
   return {
+    validation,
     qaTask, setQaTask, qaSubtype, setQaSubtype, qaAction, setQaAction, qaEvaluation, setQaEvaluation,
     qaBrowserAlbum,
     setQaBrowserAlbum,

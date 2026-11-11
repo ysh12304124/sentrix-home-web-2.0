@@ -277,11 +277,48 @@ def test_numeric_uses_one_judge_match_with_original_units_dates(answer, referenc
     s = state("atm_number")
     s["qa_snapshot"]["rows"][0]["answer"] = reference
     s["items"][0]["runtime_turns"][0]["answer"] = answer
-    service, batches, http, _ = setup(s, [ATM], [task(), {"score": 1, "reason": "等价"}])
+    service, batches, http, _ = setup(s, [ATM], [{"score": 1, "reason": "等价"}])
     r = service.score(batches[0], scoring_targets(s, batches[0], "all")[0])
-    assert r["score"] == 1 and len(http.calls) == 2
+    assert r["score"] == 1 and len(http.calls) == 1
     data = json.loads(http.calls[-1]["messages"][1]["content"])
     assert data["answer"] == answer and data["reference"] == reference
+
+
+def test_new_native_atm_does_not_apply_adapted_behavior_labels():
+    s = state("atm_open", source_qtype="open_end")
+    s["qa_snapshot"]["rows"][0]["expected_action"] = "clarify"
+    s["qa_snapshot"]["rows"][0]["answer"] = "unknown"
+    service, batches, http, _ = setup(s, [ATM], [{"accuracy": True, "explanation": "明确表达无法确认"}])
+    r = service.score(batches[0], scoring_targets(s, batches[0], "all")[0])
+    assert r["score"] == 1 and len(http.calls) == 1
+    data = json.loads(http.calls[0]["messages"][1]["content"])
+    assert data["reference"] == "unknown" and data["expected_action"] is None
+    assert data["behavior_policy"] == "benchmark_native"
+    diagnostic = s["diagnostic_results"][r["diagnostic_key"]]["task_judge"]
+    assert diagnostic["correct"] is None and diagnostic["label_source"] == "benchmark_native_unlabeled"
+
+
+@pytest.mark.parametrize("accuracy,missing", [(True, ["所问地点"]), (False, [])])
+def test_structured_score_and_reason_must_agree_in_both_directions(accuracy, missing):
+    s = state("atm_open", source_qtype="open_end")
+    service, batches, _, _ = setup(
+        s,
+        [ATM],
+        [
+            {
+                "accuracy": accuracy,
+                "checks": {
+                    "core_match": True,
+                    "missing": missing,
+                    "contradictions": [],
+                    "unverified_additions": [],
+                },
+            }
+        ],
+    )
+    r = service.score(batches[0], scoring_targets(s, batches[0], "all")[0])
+    assert r["status"] == "failed" and r["score"] is None
+    assert "contradicts" in r["reason"]
 
 
 @pytest.mark.parametrize(
@@ -707,7 +744,12 @@ def test_analysis_pins_selected_standard_and_rejects_missing_snapshot(tmp_path):
     assert json.loads(pinned.read_text())["judge"]["score"] == 0
     legacy = tmp_path / "legacy.jsonl"
     source(tmp_path, "r", pinned=legacy)
-    assert json.loads(legacy.read_text())["judge"]["score"] == 2
+    assert json.loads(legacy.read_text())["judge"]["score"] == 0
+    from photobench.domain.error_analysis.process import run_process
+
+    expected = run_process(profile_state(s, OPEN, batches[0]["batch_id"]))["items"][0]
+    assert json.loads(legacy.read_text())["process_diagnostics"] == expected
+    assert json.loads(pinned.read_text())["process_diagnostics"] == expected
     pointer = json.loads((directory / "snapshot-commit.json").read_text())
     (directory / ".snapshots" / pointer["generation"] / "run.json").unlink()
     with pytest.raises(ValueError, match="complete run snapshot"):

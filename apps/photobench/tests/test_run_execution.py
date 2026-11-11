@@ -702,7 +702,11 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
 
 def test_explicit_pipeline_keeps_large_directory_and_complete_asset_inventory():
     count = 1533
-    manifest = {**_manifest(), "photos": [f"photos/{i}.jpg" for i in range(count)]}
+    manifest = {
+        **_manifest(),
+        "photos": _manifest()["photos"]
+        + [f"photos/extra-{i}.jpg" for i in range(count - len(_manifest()["photos"]))],
+    }
     albums = FakeAlbums(
         manifest=manifest, qa_rows=_rows(), files={"faces/1.jpg": b"J"}, directory_entries={"photos": count}
     )

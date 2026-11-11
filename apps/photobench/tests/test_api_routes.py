@@ -84,7 +84,7 @@ def test_process_diagnostics_api_item_and_exports_share_derived_observations(cli
         item = client.get("/api/v1/runs/run-a/items/0", params={"scoring_profile": profile}).json()
         assert item["item"]["process_diagnostics"] == expected
     assert path.read_bytes() == original
-    derived = path.parent.parent / ".process-diagnostics" / "run-a.json"
+    derived = next((path.parent.parent / ".process-diagnostics").glob("run-a.*.json"))
     assert json.loads(derived.read_text()) == report
     assert client.get("/api/v1/runs/missing/process-diagnostics").status_code == 404
 
@@ -471,3 +471,47 @@ def test_default_http_detail_skips_raw_history(client: TestClient, monkeypatch):
         body = client.get(f"/api/v1/runs/run-a?include_history={include_history}").json()
         assert body["history_mode"] == "latest"
     assert container.config.telemetry_history_enabled is False
+
+
+def test_scoring_audit_persists_and_exports_without_changing_formal_run(client):
+    path = client.app.state.container.settings.results_root / "run-a" / "run.json"
+    state = json.loads(path.read_text())
+    state["scoring_results"] = {
+        "b:q1:0": {
+            "key": "b:q1:0",
+            "qa_id": "q1",
+            "batch_id": "b",
+            "profile_id": "atm_qs_v1",
+            "turn_index": 0,
+            "answer_fingerprint": "sha",
+            "score": 0,
+        }
+    }
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+    raw = {
+        "qa_id": "q1",
+        "batch_id": "b",
+        "profile_id": "atm_qs_v1",
+        "turn_index": 0,
+        "answer_fingerprint": "sha",
+        "verdict": "needs_review",
+        "reviewer": "审核人",
+        "note": "核对原始证据",
+    }
+    response = client.post("/api/v1/runs/run-a/reviews", json={"scoring_reviews": [raw]})
+    assert response.status_code == 200, response.text
+    audit = response.json()["scoring_reviews"][0]
+    assert audit["score_unchanged"] is True
+    assert client.get("/api/v1/runs/run-a/reviews").json()["scoring_reviews"] == [audit]
+    detail = client.get("/api/v1/runs/run-a/items/0").json()["item"]
+    assert detail["scoring_reviews"] == [audit]
+    trace = client.get("/api/v1/runs/run-a/export-trace").json()
+    sft = client.get("/api/v1/runs/run-a/export-sft").json()
+    assert trace[0]["scoring_reviews"] == sft["items"][0]["scoring_reviews"] == [audit]
+    assert path.read_bytes() == before
+    bad = client.post(
+        "/api/v1/runs/run-a/reviews", json={"scoring_reviews": [raw | {"answer_fingerprint": "stale"}]}
+    )
+    assert bad.status_code == 400
+    assert client.get("/api/v1/runs/run-a/reviews").json()["scoring_reviews"] == [audit]
