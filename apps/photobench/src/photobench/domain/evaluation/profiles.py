@@ -390,14 +390,25 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
     return summaries
 
 
+def scoring_source_metadata(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Annotate both persisted overviews and recomputed summaries without loading answers."""
+    return {
+        **summary,
+        **{
+            group: {
+                key: {**batch, "list_source": "model_delivery", "text_ids_are_diagnostic_only": True}
+                if batch.get("profile_id") == ATM
+                else batch
+                for key, batch in (summary.get(group) or {}).items()
+            }
+            for group in ("profiles", "batches")
+            if group in summary
+        },
+    }
+
+
 def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
     batches = summarize_batches(state) if "scoring_results" in state else state.get("scoring_summaries") or {}
-    batches = {
-        key: {**batch, "list_source": "model_delivery", "text_ids_are_diagnostic_only": True}
-        if batch.get("profile_id") == ATM
-        else batch
-        for key, batch in batches.items()
-    }
     latest = {p: {"profile_id": p, "label": LABELS[p], "status": "not_collected"} for p in LABELS}
     for batch in batches.values():
         latest[batch["profile_id"]] = batch
@@ -409,7 +420,9 @@ def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
         for q in request_history(r)
         if q.get("dispatch_started")
     ]
-    return {"profiles": latest, "batches": batches, "diagnostic_judge_calls": len(diagnostic_requests)}
+    return scoring_source_metadata(
+        {"profiles": latest, "batches": batches, "diagnostic_judge_calls": len(diagnostic_requests)}
+    )
 
 
 def stable_media_key(ref: Mapping[str, Any]) -> str:

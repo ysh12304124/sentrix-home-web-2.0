@@ -514,6 +514,27 @@ def test_legacy_overview_adapts_scoring_and_media_without_rewriting_snapshot(tmp
     assert all((run / name).read_bytes() == data for name, data in originals.items())
 
 
+def test_committed_overview_labels_list_sources_without_loading_answer_state(tmp_path, monkeypatch):
+    _write(tmp_path, "basis", _state("basis"))
+    reader = _read_runs(tmp_path)
+    overview = FileRunStore(tmp_path).load_overview("basis")
+    batch = {"profile_id": "atm_qs_v1", "total_score": 0, "batch_id": "b"}
+    overview["summary"]["scoring"] = {
+        "profiles": {"atm_qs_v1": batch},
+        "batches": {"b": batch},
+        "diagnostic_judge_calls": 17,
+    }
+    path = tmp_path / "basis/metadata.json"
+    path.write_text(json.dumps({"overview": overview}))
+    before = path.read_bytes()
+    monkeypatch.setattr(reader, "_state", lambda *args: pytest.fail("Overview must stay lightweight"))
+    actual = reader.get_run("basis", include_history=False)["summary"]["scoring"]
+    assert actual["profiles"]["atm_qs_v1"]["list_source"] == "model_delivery"
+    assert actual["batches"]["b"]["text_ids_are_diagnostic_only"] is True
+    assert actual["profiles"]["atm_qs_v1"]["total_score"] == 0
+    assert actual["diagnostic_judge_calls"] == 17 and path.read_bytes() == before
+
+
 def test_default_profile_read_projects_diagnostics_and_preserves_both_scores(tmp_path):
     from test_scoring_profiles import ATM, OPEN, scoring_targets, setup, state, task
 

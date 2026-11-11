@@ -35,6 +35,7 @@ from photobench.domain.evaluation.profile_view import (
     primary_profile_state,
     profile_state,
 )
+from photobench.domain.evaluation.profiles import scoring_source_metadata
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunReadViews, RunRevisions, RunStore
 from photobench.domain.runs import analysis
@@ -382,6 +383,10 @@ class ReadRuns:
             )
         ):
             result["summary"] = analysis.effective_summary(self._state(run_id))
+        result["summary"] = {
+            **result["summary"],
+            "scoring": scoring_source_metadata(result["summary"].get("scoring") or {}),
+        }
         result["run_valid"] = result["summary"]["run_valid"]
         result.setdefault("read_revision", revision or None)
         result["history_mode"] = "full" if include_history else "checkpoint"
