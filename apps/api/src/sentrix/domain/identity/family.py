@@ -23,6 +23,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sentrix.domain.identity.models import ENTITY_STATUS_PENDING
+
 # 1.0 ``db.py:5617`` 的 ``_FAMILY_MEMBERSHIPS``。**"unknown" 是合法值不是缺失**——
 # 模型推断不出归属时要显式写 unknown，而不是不写行（那样下次读出来是 None，
 # 与「确实是 unknown」在响应里长得一样）。
@@ -163,6 +165,9 @@ class FamilyPersonProjection:
     avatar_face_instance_id: str | None
     appearance_count: int
     representative_media: tuple[Mapping[str, object], ...] = field(default_factory=tuple)
+    # 实体自己的 ``status``（``pending`` / ``confirmed``）。名录与详情据此决定给「确认身份」
+    # 还是「改名」：只改名不确认，问答与按人找照片都看不到这个人（2026-11-11 王王事故）。
+    status: str = ENTITY_STATUS_PENDING
 
 
 @dataclass(frozen=True, slots=True)

@@ -429,6 +429,54 @@ def test_rename_person_folds_the_old_name_into_aliases(entities: SqliteEntityRep
     assert tuple(row) == ("canonical_name", "妈妈", "老妈", "user_rename")
 
 
+def _people_snapshot(db: Database, observation_id: str) -> list[dict[str, str]]:
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
+        ).fetchone()
+    return json.loads(row["people_json"] or "[]")
+
+
+def test_renaming_a_confirmed_person_rewrites_the_name_in_photo_snapshots(
+    entities: SqliteEntityRepository, seeded_db: Database
+):
+    """快照存的是名字：检索人物条件、记忆图、照片预览都读它。改名不同步，
+    这个人所有照片上记的还是旧名，按新名字一张都查不到。别人的条目不能被碰到。"""
+    add_entity(seeded_db, "ent_1", name="王王", status="confirmed")
+    add_entity(seeded_db, "ent_2", name="明明", status="confirmed")
+    entities.link_confirmed_mention("ent_1", "obs_1")
+    entities.link_confirmed_mention("ent_2", "obs_1")
+    entities.link_confirmed_mention("ent_1", "obs_2")
+
+    entities.rename_person("ent_1", "王小王")
+
+    assert _people_snapshot(seeded_db, "obs_1") == [
+        {"entity_id": "ent_1", "name": "王小王", "status": "confirmed"},
+        {"entity_id": "ent_2", "name": "明明", "status": "confirmed"},
+    ]
+    assert _people_snapshot(seeded_db, "obs_2") == [
+        {"entity_id": "ent_1", "name": "王小王", "status": "confirmed"},
+    ]
+
+
+def test_relinking_a_mention_refreshes_a_stale_snapshot_entry(
+    entities: SqliteEntityRepository, seeded_db: Database
+):
+    """老库里可能已经有改名前留下的旧条目：再写一次提及时按当前实体对齐，不追加第二条。"""
+    add_entity(seeded_db, "ent_1", name="王王", status="confirmed")
+    with seeded_db.connect() as connection, connection:
+        connection.execute(
+            "UPDATE observations SET people_json = ? WHERE id = 'obs_1'",
+            (json.dumps([{"entity_id": "ent_1", "name": "旧名", "status": "pending"}], ensure_ascii=False),),
+        )
+
+    entities.link_confirmed_mention("ent_1", "obs_1")
+
+    assert _people_snapshot(seeded_db, "obs_1") == [
+        {"entity_id": "ent_1", "name": "王王", "status": "confirmed"},
+    ]
+
+
 def test_rename_person_refuses_a_non_person_entity(entities: SqliteEntityRepository, seeded_db: Database):
     add_entity(seeded_db, "ent_place", name="湖边", status="confirmed", entity_type="place")
 

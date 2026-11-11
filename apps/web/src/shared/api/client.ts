@@ -642,18 +642,8 @@ export interface PersonPayload {
   aliases: string[];
 }
 
-interface FaceClusterListResponse {
-  clusters: FaceClusterSummary[];
-}
-
 interface PersonListResponse {
   people: PersonPayload[];
-}
-
-/** ``merged_into`` 非空表示这次确认并进了另一个已存在的人（同名合并）。 */
-export interface ConfirmClusterResponse {
-  entity: PersonPayload;
-  merged_into: string | null;
 }
 
 /** ``rejected_entity_id`` 为空表示这一簇本来就没有候选实体，调用没有改动任何行。 */
@@ -700,72 +690,10 @@ export interface BatchConfirmResponse {
   count: number;
 }
 
-/**
- * 簇列表。**默认不含 rejected**——后端 ``list_clusters(status=None)`` 就是这个语义，
- * 前端不自己过滤。传 ``status`` 再切一刀。
- */
-export async function listFaceClusters(
-  scopeId: string,
-  status?: string,
-): Promise<FaceClusterSummary[]> {
-  const params = new URLSearchParams({ scope_id: scopeId });
-  if (status) {
-    params.set("status", status);
-  }
-  const body = await request<FaceClusterListResponse>(`/face-clusters?${params.toString()}`);
-  return body.clusters;
-}
-
-/**
- * 确认一簇脸，给它一个名字。``name`` 允许为空串——空名字是**用例的判据**（400），
- * 不是请求格式错，所以这里不替后端拦。
- */
-export async function confirmFaceCluster(
-  clusterId: string,
-  payload: { name: string; family_role?: string | null },
-): Promise<ConfirmClusterResponse> {
-  return request<ConfirmClusterResponse>(`/face-clusters/${encodeURIComponent(clusterId)}/confirm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: payload.name, family_role: payload.family_role ?? null }),
-  });
-}
-
 /** 拒绝一簇：删掉候选实体，原始照片不受影响。 */
 export async function rejectFaceCluster(clusterId: string): Promise<RejectClusterResponse> {
   return request<RejectClusterResponse>(`/face-clusters/${encodeURIComponent(clusterId)}/reject`, {
     method: "POST",
-  });
-}
-
-/**
- * 合并两个簇：``source`` 的样本并进 ``target``，返回合并后的 ``target``。
- *
- * 两个 id 都由调用方的多选给出，方向由调用方指定——后端不做「哪个更像谁」的推断。
- */
-export async function mergeFaceClusters(
-  targetClusterId: string,
-  sourceClusterId: string,
-): Promise<FaceClusterSummary> {
-  return request<FaceClusterSummary>("/face-clusters/merge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      target_cluster_id: targetClusterId,
-      source_cluster_id: sourceClusterId,
-    }),
-  });
-}
-
-/** 从一簇里拆出一张脸，返回**新建的那个簇**（不是原簇）。 */
-export async function splitFaceCluster(
-  clusterId: string,
-  faceInstanceId: string,
-): Promise<FaceClusterSummary> {
-  return request<FaceClusterSummary>(`/face-clusters/${encodeURIComponent(clusterId)}/split`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ face_instance_id: faceInstanceId }),
   });
 }
 
@@ -803,6 +731,37 @@ export async function renamePerson(personId: string, name: string): Promise<Rena
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
+  });
+}
+
+/** 人物级合并的回执。计数只用于提示用户，审计在服务端的修订表里。 */
+export interface MergePeopleResponse {
+  entity: PersonPayload;
+  merged_person_ids: string[];
+  moved_face_count: number;
+  moved_relationship_count: number;
+  dropped_relationship_count: number;
+}
+
+/**
+ * 把 `sourcePersonIds` 并进 `targetPersonId`（名录里的手动合并）。
+ *
+ * 与 `POST /face-clusters/merge`（簇级）不同：这是**人物级**的，提及、关系、归属、画像一并改挂，
+ * 两个已确认的人也能合并。`name` 省略时由后端按「目标的名字 → 第一个有名字的来源」决定。
+ */
+export async function mergePeople(
+  targetPersonId: string,
+  sourcePersonIds: string[],
+  name?: string | null,
+): Promise<MergePeopleResponse> {
+  return request<MergePeopleResponse>("/people/merge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_person_id: targetPersonId,
+      source_person_ids: sourcePersonIds,
+      name: name ?? null,
+    }),
   });
 }
 
@@ -996,12 +955,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
-/**
- * 记忆空间（相册）列表。
- *
- * 形状对齐 1.0 的消费处 `src/app.js:1161`：`spaceResult[0].value.spaces || []`，
- * 即后端给 `{spaces: [...]}`。四个字段就是 `memory_spaces` 的四列，没有派生字段。
- */
+/** 显式登记空间用途；已存在的空间不允许在此接口重分类。 */
+export interface MemorySpaceCreateRequest {
+  id: string;
+  name: string;
+  kind?: "household" | "benchmark";
+}
+
+/** 记忆空间（相册）列表项；列表响应为 {spaces: [...]}。 */
 export interface MemorySpace {
   id: string;
   name: string;
@@ -1285,6 +1246,11 @@ export interface FamilyPerson {
   avatar_face_instance_id: string | null;
   appearance_count: number;
   representative_media: FamilyRepresentativeMedia[];
+  /**
+   * 实体状态：`pending`（系统整理出、还没人确认）或 `confirmed`。
+   * 只改名不确认的人进不了问答与按人找照片，所以详情据此给「确认身份」而不是「改名」。
+   */
+  status: string;
 }
 
 export interface FamilyRelationship {
@@ -1353,8 +1319,8 @@ export async function getFamilyGraph(scopeId: string): Promise<FamilyGraph> {
 /**
  * 人脸裁剪图。
  *
- * `FamilyPerson` 只给 `avatar_face_instance_id`，整条路径由前端拼；`PeopleView` 那条
- * 路是服务端把 `crop_url` 拼好带回来的（见 `FaceCropRef` 的注释）。两条路都留着：
+ * `FamilyPerson` 只给 `avatar_face_instance_id`，整条路径由前端拼；簇列表那条路是
+ * 服务端把 `crop_url` 拼好带回来的（见 `FaceCropRef` 的注释）。两条路都留着：
  * 家庭图谱的响应里没有 crop_url 这个字段。
  */
 export function faceInstanceCropUrl(faceInstanceId: string): string {

@@ -36,6 +36,7 @@ from sentrix.domain.identity.ports import (
     FamilyGraphRepository,
     MomentRepository,
     PersonCropRenderer,
+    PersonMergeRepository,
     PersonPreviewRenderer,
     PersonVision,
     PortraitRepository,
@@ -141,6 +142,7 @@ from sentrix.infrastructure.persistence.repositories.moments import SqliteMoment
 from sentrix.infrastructure.persistence.repositories.participants import (
     SqliteEventParticipantRepository,
 )
+from sentrix.infrastructure.persistence.repositories.person_merge import SqlitePersonMergeRepository
 from sentrix.infrastructure.persistence.repositories.portraits import (
     SqlitePortraitRepository,
 )
@@ -342,6 +344,8 @@ class Container:
     moment_repository: MomentRepository
     relationship_repository: RelationshipRepository
     family_graph_repository: FamilyGraphRepository
+    # 人物级合并（名录里「这几个是同一个人」）。一次事务改挂全部派生行，见端口 docstring。
+    person_merge_repository: PersonMergeRepository
     portrait_repository: PortraitRepository
 
     chat_model: ChatModel
@@ -566,6 +570,7 @@ class Container:
             moment_repository=SqliteMomentRepository(database),
             relationship_repository=SqliteRelationshipRepository(database),
             family_graph_repository=family,
+            person_merge_repository=SqlitePersonMergeRepository(database),
             portrait_repository=SqlitePortraitRepository(database),
             chat_model=OpenAIChatModel(
                 settings.vlm_base_url,
@@ -603,9 +608,7 @@ class Container:
         return True, ""
 
     def build_turn_executor(self):
-        """体验实例的问答回合执行器；旧实例返回 None。"""
-        if not self.settings.experience_mode:
-            return None
+        """消费问答接口创建的持久回合，包括独立本地 API 实例。"""
         from sentrix.bootstrap.assistant_wiring import build_run_turn
         from sentrix.infrastructure.assistant.turn_executor import TurnExecutor
 
@@ -619,9 +622,7 @@ class Container:
         )
 
     def build_import_executor(self):
-        """体验实例的导入执行器；旧实例返回 None。"""
-        if not self.settings.experience_mode:
-            return None
+        """消费上传接口创建的持久作业，包括独立本地 API 实例。"""
         from sentrix.bootstrap.import_wiring import (
             build_import_assets,
             build_media_postprocess,
