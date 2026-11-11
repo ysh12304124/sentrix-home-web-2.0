@@ -83,6 +83,7 @@ def _event_payload(event: TimelineEventResult) -> TimelineEvent:
             TimelinePhoto(
                 asset_id=photo.asset_id,
                 file_name=photo.file_name,
+                media_type=photo.media_type,
                 captured_at=photo.captured_at.isoformat() if photo.captured_at else None,
                 place=photo.place,
             )

@@ -206,6 +206,8 @@ export async function searchAssets(
 export interface TimelinePhoto {
   asset_id: string;
   file_name: string;
+  /** 老响应没有；按图片处理。 */
+  media_type?: string;
   captured_at: string | null;
   place: string;
 }

@@ -29,6 +29,7 @@ UNKNOWN_DAY = "unknown"
 class TimelinePhoto:
     asset_id: str
     file_name: str
+    media_type: str
     captured_at: datetime | None
     place: str
 
@@ -238,6 +239,7 @@ class ReadTimeline:
                 TimelinePhoto(
                     asset_id=asset_id,
                     file_name=asset.file_name,
+                    media_type=asset.media_type.value,
                     captured_at=asset.captured_at,
                     place=place.display() if place else "",
                 )

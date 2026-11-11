@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 
-import { fetchEvent, type TimelineEvent } from "../../shared/api/client";
+import { assetPosterUrl, fetchEvent, type TimelineEvent } from "../../shared/api/client";
 import { timelinePhotoThumbUrl, timelinePhotoUrl } from "./photoUrl";
 
 interface Loaded {
@@ -130,10 +130,20 @@ export function TimelineEventDetail({
                 <ul className="timeline-event-photo-list">
                   {event.photos.map((photo) => (
                     <li key={photo.asset_id}>
-                      {/* **点图片是放大，不是打开原文件。** 此前这里是
-                          `<a href="/assets/{id}/file" target="_blank">`——浏览器遇到
-                          HEIC 或不认识的 MIME 会直接下载，用户点「图片」得到的是一个文件。 */}
-                      {onOpenImage ? (
+                      {photo.media_type === "video" ? (
+                        <video
+                          className="timeline-event-video"
+                          controls
+                          playsInline
+                          preload="metadata"
+                          poster={assetPosterUrl(photo.asset_id)}
+                          src={timelinePhotoUrl(photo)}
+                          aria-label={photo.file_name || "事件视频"}
+                        />
+                      ) : onOpenImage ? (
+                        /* **点图片是放大，不是打开原文件。** 此前这里是
+                           `<a href="/assets/{id}/file" target="_blank">`——浏览器遇到
+                           HEIC 或不认识的 MIME 会直接下载，用户点「图片」得到的是一个文件。 */
                         <button
                           type="button"
                           className="timeline-photo-open"

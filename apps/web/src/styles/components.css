@@ -46,7 +46,8 @@
     max(28px, env(safe-area-inset-bottom)) max(28px, env(safe-area-inset-left));
   background: rgba(15, 23, 42, .82); cursor: zoom-out; touch-action: pan-y;
 }
-.lightbox img {
+.lightbox img,
+.lightbox-video {
   max-width: min(94vw, 1400px); max-height: 84vh;
   object-fit: contain; border-radius: var(--radius-sm);
   box-shadow: var(--shadow-pop); cursor: default;

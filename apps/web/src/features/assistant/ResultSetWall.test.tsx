@@ -86,3 +86,32 @@ describe("结果集缩略图墙", () => {
     expect(screen.queryByRole("button", { name: /看下一页/ })).toBeNull();
   });
 });
+
+
+  it("视频结果点开后用播放器打开预览，而不是把 mp4 塞进 img", () => {
+    render(
+      <ResultSetWall
+        events={[
+          retrievalEvent({
+            payload: {
+              tool: "search_memories",
+              tool_call_id: "call3",
+              result: {
+                result_set_id: "rs_1",
+                total: 1,
+                has_more: false,
+                asset_ids: ["a1"],
+                media_kinds: { a1: "video" },
+              },
+            },
+          }),
+        ]}
+        scopeId="album1"
+      />,
+    );
+
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".result-set-open")!);
+    expect(document.querySelector(".lightbox-video")?.getAttribute("src")).toBe(
+      "/api/v1/assets/a1/preview",
+    );
+  });

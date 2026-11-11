@@ -10,6 +10,7 @@ from sentrix.api.schemas.family import FamilyRunResponse
 class TimelinePhoto(BaseModel):
     asset_id: str
     file_name: str
+    media_type: str = "image"
     captured_at: str | None
     # ``Place.display()`` 的原样输出。**后端算好的最终字符串**——前端不做任何拼接，
     # 否则「附近」加给谁、什么时候加就成了两套规则。

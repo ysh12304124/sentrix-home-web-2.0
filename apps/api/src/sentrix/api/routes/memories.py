@@ -47,7 +47,9 @@ def rotation(
             poster_url=f"/api/v1/assets/{item.asset_id}/poster?v=2"
             if item.media_kind == "video"
             else f"/api/v1/assets/{item.asset_id}/preview",
-            play_url=f"/api/v1/assets/{item.asset_id}/file" if item.media_kind == "video" else None,
+            # 视频播放走预览路由：非 H.264/mp4 在这里已经转码，直接给 /file 会让
+            # 手机浏览器拿到 HEVC/QuickTime 原片而播不了。
+            play_url=f"/api/v1/assets/{item.asset_id}/preview" if item.media_kind == "video" else None,
         )
         for item in page.media
     ]

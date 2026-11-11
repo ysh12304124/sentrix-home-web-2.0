@@ -448,6 +448,11 @@ class AssistantToolbox:
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
             "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            # 前端结果集墙按这个映射决定点开时用图片还是视频播放器；模型看不到它。
+            "media_kinds": {
+                entry.asset_id: str(item.get("media_kind") or "")
+                for entry, item in zip(page.entries, preview, strict=False)
+            },
             "page": page.page,
         }
         if extra:

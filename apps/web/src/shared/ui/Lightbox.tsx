@@ -12,6 +12,7 @@ export interface LightboxItem {
   src: string;
   alt?: string;
   caption?: string;
+  kind?: "image" | "video";
 }
 
 export interface LightboxProps {
@@ -140,12 +141,25 @@ export function Lightbox({
           </button>
         </>
       ) : null}
-      <img
-        src={active.src}
-        alt={active.alt || ""}
-        draggable={false}
-        onClick={(event) => event.stopPropagation()}
-      />
+      {active.kind === "video" ? (
+        <video
+          className="lightbox-video"
+          src={active.src}
+          controls
+          autoPlay
+          playsInline
+          preload="metadata"
+          aria-label={active.alt || active.caption || "视频预览"}
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : (
+        <img
+          src={active.src}
+          alt={active.alt || ""}
+          draggable={false}
+          onClick={(event) => event.stopPropagation()}
+        />
+      )}
       {active.caption !== undefined && active.caption !== "" ? (
         <p className="lightbox-caption">
           {active.caption}

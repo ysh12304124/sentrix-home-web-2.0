@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import {
+  assetPreviewUrl,
   resultSetPhotoUrl,
   type AssistantProgressEvent,
 } from "../../shared/api/client";
@@ -23,10 +24,17 @@ import { Lightbox, type LightboxItem } from "../../shared/ui/Lightbox";
 
 const DEFAULT_PAGE_SIZE = 6;
 
+export interface ResultSetItem {
+  handle: string;
+  assetId: string;
+  kind: "image" | "video";
+}
+
 export interface ResultSetView {
   resultSetId: string;
   page: number;
   handles: string[];
+  items: ResultSetItem[];
   total: number;
   remaining: number;
   hasMore: boolean;
@@ -77,11 +85,20 @@ export function resultSetFromEvents(events: AssistantProgressEvent[]): ResultSet
         : DEFAULT_PAGE_SIZE;
     const start = Math.max(0, (page - 1) * pageSize);
     const count = Math.max(0, Math.min(pageSize, total - start, assetIds.length - start));
-    const handles = Array.from({ length: count }, (_, offset) => `photo_${start + offset + 1}`);
+    const mediaKinds = asRecord(result.media_kinds) ?? {};
+    const items = Array.from({ length: count }, (_, offset) => {
+      const assetId = assetIds[start + offset] ?? "";
+      return {
+        handle: `photo_${start + offset + 1}`,
+        assetId,
+        kind: String(mediaKinds[assetId] ?? "") === "video" ? "video" : "image",
+      } as ResultSetItem;
+    });
+    const handles = items.map((item) => item.handle);
     const remaining = Math.max(0, total - (start + handles.length));
     const hasMore = typeof result.has_more === "boolean" ? result.has_more : remaining > 0;
 
-    return { resultSetId, page, handles, total, remaining, hasMore };
+    return { resultSetId, page, handles, items, total, remaining, hasMore };
   }
   return null;
 }
@@ -108,27 +125,31 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
         </small>
       </header>
       <ul className="result-set-thumbs">
-        {view.handles.map((handle, handleIndex) => (
-          <li key={handle}>
+        {view.items.map((item, handleIndex) => (
+          <li key={item.handle}>
             {/* **点缩略图是放大**，不是新标签打开原图。原图仍然在
                 `resultSetPhotoUrl(..., true)` 里——那是 Lightbox 要显示的源。 */}
             <button
               type="button"
               className="result-set-open"
-              title={`${handle} · 查看大图`}
+              title={`${item.handle} · 查看大图`}
               onClick={() =>
                 setLightbox({
-                  items: view.handles.map((item) => ({
-                    src: resultSetPhotoUrl(view.resultSetId, item, scopeId, true),
-                    caption: item,
+                  items: view.items.map((photo) => ({
+                    src:
+                      photo.kind === "video"
+                        ? assetPreviewUrl(photo.assetId)
+                        : resultSetPhotoUrl(view.resultSetId, photo.handle, scopeId, true),
+                    caption: photo.handle,
+                    kind: photo.kind,
                   })),
                   index: handleIndex,
                 })
               }
             >
               <img
-                src={resultSetPhotoUrl(view.resultSetId, handle, scopeId)}
-                alt={handle}
+                src={resultSetPhotoUrl(view.resultSetId, item.handle, scopeId)}
+                alt={item.handle}
                 loading="lazy"
               />
             </button>

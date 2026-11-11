@@ -1024,6 +1024,7 @@ def deliver_media(asset: Asset, container: Container) -> Response:
             preview_path,
             media_type="video/mp4",
             filename=f"{Path(asset.file_name).stem}-preview.mp4",
+            content_disposition_type="inline",
             headers={"Cache-Control": "private, max-age=86400", "X-Sentrix-Source": "browser-preview"},
         )
     # 没有转码件（H.264 不用转 / 转码失败 / 还没探测过 / 音频）一律交原片：
@@ -1035,6 +1036,8 @@ def deliver_media(asset: Asset, container: Container) -> Response:
         path,
         media_type=asset.mime_type or "application/octet-stream",
         filename=asset.file_name,
+        # <video>/<audio> 要的是可直接播放的资源；attachment 在手机上可能被当成下载。
+        content_disposition_type="inline",
     )
 
 

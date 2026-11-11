@@ -24,6 +24,9 @@ from pathlib import Path
 # 1.0 ``processor.py:59`` 的集合，逐字照抄。``avc1`` 是 MP4 里的 codec_tag 写法，
 # 不同的封装/工具会给出两种名字之一。
 H264_CODECS = frozenset({"h264", "avc1"})
+# 浏览器能直接播的容器。H.264 塞进 QuickTime `.mov` 时 Chrome/Android 仍可能拒播，
+# 不能只看 codec_name。
+BROWSER_VIDEO_SUFFIXES = frozenset({".mp4", ".m4v"})
 
 # 1.0 ``processor.py:62-67`` 的参数序列。时长上不封顶（一个几小时的家庭录像也在用），
 # 所以超时给到 1 小时——与读元数据那 60 秒不是一个量级的事。
@@ -85,6 +88,7 @@ class FfmpegVideoTranscoder:
         self._root = Path(media_dir) / "derived" / "video"
 
     def browser_preview(self, asset_id: str, source: Path, codec: str) -> Path | None:
-        if is_browser_playable(codec):
+        source = Path(source)
+        if is_browser_playable(codec) and source.suffix.lower() in BROWSER_VIDEO_SUFFIXES:
             return None
         return transcode_to_h264(source, self._root / asset_id / "preview.mp4")
