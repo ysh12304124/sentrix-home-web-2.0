@@ -1580,6 +1580,7 @@ def list_summary(state: dict[str, Any]) -> dict[str, Any]:
     saved = dict(state.get("summary") or {})
     items = state.get("items") or []
     saved["scoring"] = scoring_summary(state)
+    saved["profile_read_version"] = 2
     saved["media_ranking"] = media_ranking_summary(items)
     saved["legacy_scoring_label"] = (
         "历史混合评分"
@@ -1669,6 +1670,7 @@ def effective_summary(state: dict[str, Any]) -> dict[str, Any]:
     saved = dict(state.get("summary") or {})
     items = state.get("items") or []
     saved["scoring"] = scoring_summary(state)
+    saved["profile_read_version"] = 2
     saved["media_ranking"] = media_ranking_summary(items)
     saved["legacy_scoring_label"] = (
         "历史混合评分"

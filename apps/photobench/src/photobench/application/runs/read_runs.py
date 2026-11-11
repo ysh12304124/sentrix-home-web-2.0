@@ -266,6 +266,18 @@ class ReadRuns:
             rows.sort(key=_run_sort_key, reverse=True)
         if group_tasks:
             rows = task_families(rows)
+        rows = [
+            {
+                **row,
+                "summary": {
+                    **row["summary"],
+                    "scoring": scoring_source_metadata(row["summary"]["scoring"], latest=True),
+                },
+            }
+            if (row.get("summary") or {}).get("scoring")
+            else row
+            for row in rows
+        ]
         response = analysis.paginate_rows(rows, page, page_size)
         response["active_count"] = sum(
             1
@@ -381,6 +393,7 @@ class ReadRuns:
             and result.get("status") not in {"pending", "running", "cancelling"}
             and (
                 result["summary"].get("profile_media_version") != 1
+                or result["summary"].get("profile_read_version") != 2
                 or any(
                     b.get("profile_id") == "atm_qs_v1" and "tool_list_qs" not in b
                     for b in ((result["summary"].get("scoring") or {}).get("batches") or {}).values()

@@ -398,8 +398,13 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
     return summaries
 
 
-def scoring_source_metadata(summary: Mapping[str, Any]) -> dict[str, Any]:
+def scoring_source_metadata(summary: Mapping[str, Any], *, latest: bool = False) -> dict[str, Any]:
     """Annotate both persisted overviews and recomputed summaries without loading answers."""
+    if latest:
+        profiles = dict(summary.get("profiles") or {})
+        for batch in (summary.get("batches") or {}).values():
+            profiles[batch["profile_id"]] = batch
+        summary = {**summary, "profiles": profiles}
     return {
         **summary,
         **{

@@ -38,7 +38,7 @@ from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
-from photobench.domain.evaluation.profile_view import profile_state
+from photobench.domain.evaluation.profile_view import primary_profile_state, profile_state
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunRevisions, RunStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
@@ -298,7 +298,7 @@ class RunReports:
     ) -> list[dict[str, Any]]:
         return exports.export_traces(
             {
-                **profile_state(self._state(run_id), scoring_profile, scoring_batch),
+                **primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch)),
                 "scoring_reviews": self._store.read_reviews(run_id).get("scoring_reviews") or [],
             },
             scores=scores,
@@ -316,7 +316,7 @@ class RunReports:
     ) -> dict[str, Any]:
         return exports.export_sft(
             {
-                **profile_state(self._state(run_id), scoring_profile, scoring_batch),
+                **primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch)),
                 "scoring_reviews": self._store.read_reviews(run_id).get("scoring_reviews") or [],
             },
             scores=scores,

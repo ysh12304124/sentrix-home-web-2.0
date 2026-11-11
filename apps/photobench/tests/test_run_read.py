@@ -557,6 +557,69 @@ def test_default_profile_read_projects_diagnostics_and_preserves_both_scores(tmp
     assert (tmp_path / "r/run.json").read_bytes() == before
 
 
+@pytest.mark.parametrize("committed", [False, True])
+def test_default_reads_latest_batch_and_explicit_old_batch_stays_unchanged(tmp_path, committed):
+    from test_scoring_profiles import (
+        ATM,
+        prepare_batches,
+        profile_configs,
+        scoring_targets,
+        setup,
+        state,
+        task,
+    )
+
+    from photobench.domain.evaluation.profile_view import profile_state
+    from photobench.domain.runs.analysis import effective_summary
+    from photobench.infrastructure.results.store import committed_path, write_committed_snapshot
+
+    snapshot = state()
+    service, batches, _, _ = setup(snapshot, [ATM], [task(), {"accuracy": False}, {"accuracy": True}])
+    old = batches[0]
+    snapshot.update(scoring_profiles=[ATM], primary_scoring_batch_ids=[old["batch_id"]])
+    service.score(old, scoring_targets(snapshot, old, "all")[0])
+    new = prepare_batches(snapshot, profile_configs([ATM]), old["judge"], nonce="later")[0]
+    service.score(new, scoring_targets(snapshot, new, "all")[0])
+    stale = effective_summary(profile_state(snapshot, ATM, old["batch_id"]))
+    stale.pop("profile_read_version", None)
+    if committed:
+        write_committed_snapshot(tmp_path / "r", snapshot)
+        path = committed_path(tmp_path / "r", "metadata.json")
+        metadata = json.loads(path.read_text())
+        for section in (metadata["entry"], metadata["overview"]):
+            section["summary"] = stale
+        path.write_text(json.dumps(metadata))
+    else:
+        snapshot["summary"] = stale
+        _write(tmp_path, "r", snapshot)
+    originals = {p: p.read_bytes() for p in (tmp_path / "r").rglob("*") if p.is_file()}
+    reader = _read_runs(tmp_path)
+    listed = reader.list_runs()["runs"][0]
+    overview = reader.get_run("r", include_history=False)
+    for value in (listed, overview):
+        result = value["summary"]["scoring"]["profiles"][ATM]
+        assert result["batch_id"] == new["batch_id"] and result["total_score"] == 1
+    assert reader.get_run_item("r", 0)["item"]["evaluation_result"]["score"] == 1
+    assert reader.get_run_items("r")["items"][0]["evaluation_result"]["score"] == 1
+    from photobench.application.runs.reports import RunReports
+
+    reports = RunReports(
+        store=FileRunStore(tmp_path), http=FakeJsonHttpClient(), sentrix_url=lambda: "http://local"
+    )
+    assert reports.export_traces("r")[0]["evaluation_result"]["score"] == 1
+    assert reports.export_sft("r")["items"][0]["evaluation_result"]["score"] == 1
+    assert (
+        reports.export_traces("r", scoring_profile=ATM, scoring_batch=old["batch_id"])[0][
+            "evaluation_result"
+        ]["score"]
+        == 0
+    )
+    historical = reader.get_run("r", scoring_profile=ATM, scoring_batch=old["batch_id"])
+    assert historical["summary"]["scoring"]["profiles"][ATM]["total_score"] == 0
+    assert overview["primary_scoring_batch_ids"] == [old["batch_id"]]
+    assert all(p.read_bytes() == content for p, content in originals.items())
+
+
 def test_atm_tags_remain_native_and_raw_adapter_fields_stay_available():
     from photobench.domain.runs.analysis import hydrate_qa_metadata
 

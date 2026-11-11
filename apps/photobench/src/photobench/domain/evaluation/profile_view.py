@@ -120,11 +120,12 @@ def choice_matching_result(state: Mapping[str, Any], qa_id: str) -> dict[str, An
 
 
 def primary_profile_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Default reads use the latest batch; original required IDs remain for completion checks."""
     if state.get("selected_scoring_profile") or not state.get("scoring_profiles"):
         return state
     ids = state.get("primary_scoring_batch_ids") or []
     batch = next((b for b in state.get("scoring_batches") or [] if b["batch_id"] in ids), None)
-    return profile_state(state, batch["profile_id"], batch["batch_id"]) if batch else state
+    return profile_state(state, batch["profile_id"]) if batch else state
 
 
 def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") -> dict[str, Any]:
