@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from sentrix.domain.media.capture_time import CaptureTime, CoordinateTimezone
+from sentrix.domain.media.capture_time import BEIJING, CaptureTime, CoordinateTimezone
 from sentrix.domain.media.models import GpsPoint
 
 
@@ -42,13 +42,23 @@ class ResolveCaptureTime:
         if value.utcoffset() is not None:
             local = value.astimezone(ZoneInfo(name)) if name else value
             status = "offset_gps_local" if name else "offset_only"
-            return local, CaptureTime(raw, source, name, status)
+            return local.astimezone(BEIJING), CaptureTime(
+                raw, source, "Asia/Shanghai", status, name
+            )
         if not name:
-            return value, CaptureTime(raw, source, "", "timezone_unknown")
+            # 没有 GPS/时区时，按用户的北京时间日历解释 naive EXIF 时间。
+            return value.replace(tzinfo=BEIJING), CaptureTime(
+                raw, source, "Asia/Shanghai", "beijing_assumed"
+            )
         zone = ZoneInfo(name)
         choices = [value.replace(tzinfo=zone, fold=fold) for fold in (0, 1)]
         valid = [v for v in choices if v.astimezone(UTC).astimezone(zone).replace(tzinfo=None) == value]
         if not valid or len({v.utcoffset() for v in valid}) != 1:
             status = "ambiguous_local_time" if valid else "nonexistent_local_time"
-            return value, CaptureTime(raw, source, name, status)
-        return valid[0], CaptureTime(raw, source, name, "gps_timezone_inferred")
+            # 无法唯一还原当地 offset 时仍按北京时间落库，避免再出现无时区行。
+            return value.replace(tzinfo=BEIJING), CaptureTime(
+                raw, source, "Asia/Shanghai", status, name
+            )
+        return valid[0].astimezone(BEIJING), CaptureTime(
+            raw, source, "Asia/Shanghai", "gps_timezone_inferred", name
+        )

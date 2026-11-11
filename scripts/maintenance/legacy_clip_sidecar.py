@@ -33,6 +33,7 @@ import contextlib
 import json
 import os
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,6 +52,10 @@ from scripts.maintenance.embedding_identity import clip_identity, implementation
 
 DIMENSION = 768
 CONTEXT_LENGTH = 52
+# 多用户同时上传时，无限开线程会让 PyTorch/CUDA 的 host 内存成倍上涨。
+# 8 对当前体验版足够（同一时间活跃用户通常 <4），超过的请求排队而不是一起分配。
+_MAX_CONCURRENCY = max(1, int(os.getenv("SENTRIX_LEGACY_CLIP_MAX_CONCURRENCY", "8") or "8"))
+_inference_slots = threading.BoundedSemaphore(_MAX_CONCURRENCY)
 
 # ONNX 模型默认路径（~/.cache/clip/）
 _DEFAULT_IMG_ONNX = Path.home() / ".cache" / "clip" / "clip_cn_vit-l-14.img.fp16.onnx"
@@ -470,6 +475,7 @@ class Handler(BaseHTTPRequestHandler):
                     "embedding_runtime": {
                         **_identity_runtime,
                         "listen_port": getattr(self.server, "server_port", None),
+                        "max_concurrency": _MAX_CONCURRENCY,
                     },
                 },
             )
@@ -495,13 +501,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not path:
                     self._send(400, {"error": "path 不能为空"})
                     return
-                vector = _embed_image(path)
+                with _inference_slots:
+                    vector = _embed_image(path)
             elif self.path in ("/embed_query", "/embed_text"):
                 text = str(str(body.get("text") or ""))
                 if not text.strip():
                     self._send(400, {"error": "text 不能为空"})
                     return
-                vector = _embed_query(text)
+                with _inference_slots:
+                    vector = _embed_query(text)
             else:
                 self._send(404, {"error": "not found"})
                 return

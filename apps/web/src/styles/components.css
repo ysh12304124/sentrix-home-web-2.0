@@ -40,9 +40,11 @@
 /* ---- 全屏看图 -------------------------------------------------------------
    点图片放大，而不是打开/下载原文件。关闭：点遮罩、右上角 ×、Esc。 */
 .lightbox {
-  position: fixed; inset: 0; z-index: 50;
+  position: fixed; inset: 0; z-index: 200;
   display: flex; align-items: center; justify-content: center;
-  padding: 28px; background: rgba(15, 23, 42, .82); cursor: zoom-out;
+  padding: max(28px, env(safe-area-inset-top)) max(28px, env(safe-area-inset-right))
+    max(28px, env(safe-area-inset-bottom)) max(28px, env(safe-area-inset-left));
+  background: rgba(15, 23, 42, .82); cursor: zoom-out; touch-action: pan-y;
 }
 .lightbox img {
   max-width: min(94vw, 1400px); max-height: 84vh;
@@ -50,7 +52,7 @@
   box-shadow: var(--shadow-pop); cursor: default;
 }
 .lightbox-close {
-  position: absolute; top: 18px; right: 22px; z-index: 2;
+  position: absolute; top: max(18px, env(safe-area-inset-top)); right: max(22px, env(safe-area-inset-right)); z-index: 3;
   min-width: 84px; min-height: 42px; padding: 0 16px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   border: 1px solid rgba(255,255,255,.55); border-radius: 999px;
@@ -59,6 +61,19 @@
   box-shadow: 0 6px 18px rgba(0,0,0,.35);
 }
 .lightbox-close span { font-size: 20px; font-weight: 400; }
+.lightbox-nav {
+  position: absolute; top: 50%; z-index: 3; transform: translateY(-50%);
+  width: 48px; height: 48px; display: grid; place-items: center;
+  border: 1px solid rgba(255,255,255,.55); border-radius: 50%;
+  background: rgba(15,23,42,.72); color: #fff; font-size: 30px; line-height: 1;
+  cursor: pointer; user-select: none;
+}
+.lightbox-nav.prev { left: max(10px, env(safe-area-inset-left)); }
+.lightbox-nav.next { right: max(10px, env(safe-area-inset-right)); }
+.lightbox-nav:disabled { opacity: .25; cursor: default; }
+@media (max-width: 760px) {
+  .lightbox-nav { width: 42px; height: 42px; font-size: 26px; }
+}
 .lightbox-close:hover { background: rgba(15,23,42,.95); border-color: #fff; }
 .lightbox-caption {
   position: absolute; bottom: 22px; margin: 0;

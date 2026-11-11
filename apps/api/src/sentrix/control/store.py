@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -73,6 +75,8 @@ def _parse(value: str) -> datetime:
 class ControlStore:
     def __init__(self, database: Database) -> None:
         self._database = database
+        self._activity_totals_cache: tuple[float, dict[str, dict[str, int]]] | None = None
+        self._activity_totals_lock = threading.Lock()
 
     @property
     def database(self) -> Database:
@@ -169,6 +173,66 @@ class ControlStore:
         with self._database.connect() as connection:
             row = connection.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
         return _account(row) if row is not None else None
+
+    def account_directory(self) -> dict[str, dict[str, str]]:
+        """用户显示名与分组。没有分组记录的用户按「项目组」处理。"""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT a.id, a.display_name, COALESCE(g.group_name, '项目组') AS group_name"
+                " FROM accounts a LEFT JOIN account_groups g ON g.account_id = a.id"
+                " WHERE a.role = 'user' AND a.disabled = 0"
+            ).fetchall()
+        return {
+            str(row["id"]): {
+                "display_name": str(row["display_name"]),
+                "group_name": str(row["group_name"]),
+            }
+            for row in rows
+        }
+
+    def user_activity_totals(self) -> dict[str, dict[str, int]]:
+        """每个用户库里的累计完成数，不依赖用户 API 是否在运行。
+
+        按需模式下空闲用户 API 会被停掉，管理台不能靠 ``/internal/status`` 统计。
+        这里直接只读打开各用户 ``sentrix.db``，取已完成导入与已完成/部分完成问答。
+        15 秒缓存避免管理台每 10 秒扫 48 个库。
+        """
+        now = time.monotonic()
+        with self._activity_totals_lock:
+            cached = self._activity_totals_cache
+            if cached is not None and now - cached[0] < 15.0:
+                return cached[1]
+            with self._database.connect() as connection:
+                accounts = connection.execute(
+                    "SELECT id, data_root FROM accounts WHERE role = 'user' AND disabled = 0"
+                ).fetchall()
+            totals: dict[str, dict[str, int]] = {}
+            for row in accounts:
+                account_id = str(row["id"])
+                db_path = Path(str(row["data_root"] or "")) / "sentrix.db"
+                totals[account_id] = {"uploads": 0, "turns": 0}
+                if not db_path.is_file():
+                    continue
+                try:
+                    user_db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+                    try:
+                        uploads = user_db.execute(
+                            "SELECT COUNT(*) FROM import_jobs WHERE status = 'completed'"
+                        ).fetchone()[0]
+                        turns = user_db.execute(
+                            "SELECT COUNT(*) FROM agent_turns"
+                            " WHERE status IN ('complete', 'partial')"
+                        ).fetchone()[0]
+                    finally:
+                        user_db.close()
+                    totals[account_id] = {
+                        "uploads": int(uploads or 0),
+                        "turns": int(turns or 0),
+                    }
+                except sqlite3.Error:
+                    continue
+            self._activity_totals_cache = (now, totals)
+            return totals
 
     def mark_onboarding_seen(self, account_id: str, version: int) -> int:
         now = _iso(_now())

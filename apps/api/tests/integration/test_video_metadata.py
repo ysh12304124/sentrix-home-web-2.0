@@ -167,6 +167,39 @@ def test_rotation_comes_from_side_data_then_the_rotate_tag():
     assert probe(rotate_tag).rotation == 270
 
 
+def test_missing_duration_uses_real_frame_rate_and_counts_frames():
+    """部分 WebM 没有 duration，avg_frame_rate 还会写成 1000/1。
+
+    真实帧率在 r_frame_rate（30/1）；时长只能靠 ``-count_frames`` 数帧后回推，
+    不能把 0 写进 metadata，否则场景采样器会认为视频没有帧。
+    """
+    payload = {
+        "format": {"tags": {}},
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "vp8",
+                "width": 320,
+                "height": 240,
+                "avg_frame_rate": "1000/1",
+                "r_frame_rate": "30/1",
+                "tags": {},
+            }
+        ],
+    }
+
+    with patch(
+        "sentrix.infrastructure.media.video_metadata.count_video_frames",
+        return_value=416,
+    ) as count:
+        result = probe(payload, path="no-duration.webm")
+
+    assert result.fps == pytest.approx(30.0)
+    assert result.frame_count == 416
+    assert result.duration_sec == pytest.approx(416 / 30)
+    count.assert_called_once()
+
+
 def test_ffprobe_failure_raises_value_error():
     """端口契约：读不出来抛 ``ValueError``，由用例接住记进 metadata_json。"""
     with (

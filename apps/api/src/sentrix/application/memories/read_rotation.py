@@ -12,7 +12,6 @@ from pathlib import Path
 from sentrix.domain.media.import_jobs import ImportJobStatus
 from sentrix.domain.media.models import AssetStatus, MediaType
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository, VideoRepository
-from sentrix.domain.media.scenes import VIDEO_SCENE_SOURCE_TYPE
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.memories.rotation import RotationMedia, RotationRepository
 
@@ -170,13 +169,12 @@ class ReadRotation:
         self, scope_id: str | None, *, event_ids: tuple[str, ...] | None = None
     ) -> list[_Candidate]:
         wanted = set(event_ids) if event_ids is not None else None
-        # 视频场景事件只是原片的派生切片：它们没有独立的原始素材，代表画面是
-        # kf_0001.jpg。回忆首页只展示原始图片与视频，所以整类跳过。
+        # 视频场景事件在新版本里就是**视频本身**的唯一事件（关键帧已折进去）。
+        # 回忆首页要展示源视频，不能整类跳过；_event_media 会把关键帧观察解析回父视频。
         events = [
             event
             for event in self._events.list_by_scope(scope_id, limit=10000)
-            if (wanted is None or event.id in wanted)
-            and event.source_type != VIDEO_SCENE_SOURCE_TYPE
+            if wanted is None or event.id in wanted
         ]
         if not events:
             return []
@@ -196,6 +194,18 @@ class ReadRotation:
                 for observation in observations.values()
                 if observation.asset_id
             ]
+        )
+        # 视频事件的观察挂在关键帧上；回忆卡片要展示源视频，所以把父视频一并取回。
+        parent_ids = {
+            asset.parent_asset_id
+            for asset in assets.values()
+            if asset.parent_asset_id is not None
+        }
+        assets.update(
+            {
+                asset.id: asset
+                for asset in self._assets.get_many([item for item in parent_ids if item]).values()
+            }
         )
         videos_with_derived = self._videos.derived_parent_ids(
             [
@@ -243,8 +253,11 @@ class ReadRotation:
             if asset is None or asset.status is not AssetStatus.PROCESSED:
                 continue
             # 关键帧/转码件不是用户资料；回忆里只出现原图与原视频。
+            # 命中关键帧时换成它的父视频，而不是把视频事件整条丢掉。
             if asset.parent_asset_id is not None:
-                continue
+                asset = assets.get(asset.parent_asset_id)
+                if asset is None:
+                    continue
             exists = file_ok.get(asset.id)
             if exists is None:
                 exists = Path(asset.path).is_file()

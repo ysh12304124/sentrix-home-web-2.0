@@ -127,11 +127,6 @@ class QueryMemoryFacts:
         parsed = parse_fact_arguments(arguments)
         if isinstance(parsed, FactRejection):
             return parsed
-        if not scope_id:
-            # 相册范围由系统注入，模型不许自己传（``ARGUMENT_KEYS`` 里没有 scope_id）。
-            # 走到这里说明装配错了，不是模型错了。
-            return FactRejection("unavailable", "missing_runtime_scope")
-
         entity_id: str | None = None
         if parsed.person:
             entity_id = self._resolve_person(parsed.person, scope_id)

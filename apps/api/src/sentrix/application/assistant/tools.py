@@ -51,6 +51,7 @@ from sentrix.domain.media.ports import (
     ObservationRepository,
     PhotoInspector,
     RecordedPhotoInspector,
+    VideoRepository,
 )
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
@@ -186,6 +187,7 @@ class AssistantToolbox:
         person_crops: PersonCropRenderer,
         asset_places: AssetPlaceRepository | None = None,
         events: EventRepository | None = None,
+        videos: VideoRepository | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._assets = assets
@@ -199,6 +201,7 @@ class AssistantToolbox:
         # Retrieval can find the video from transcript text, but an asset-only preview
         # would otherwise hide the event memory and send spoken-content questions to OCR.
         self._events = events
+        self._videos = videos
         # ``query_photo_people`` 的两条读路径（T122）。两者都是**只读**，
         # 且都只被这一个工具用——不是通用能力。
         self._faces = faces
@@ -303,13 +306,30 @@ class AssistantToolbox:
         result = self._retrieval.execute(
             EvidenceRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
         )
+        # 关键帧只是检索的中间证据。对用户和 agent 来说，命中的是它所属的视频：
+        # 结果集按父视频去重，交付也是视频本身，不再把 `kf_0001.jpg` 当成一张照片。
+        hit_assets = self._assets.get_many([hit.asset_id for hit in result.hits])
+        collapsed_ids: list[str] = []
+        collapsed_classes: dict[str, str] = {}
+        for hit in result.hits:
+            asset = hit_assets.get(hit.asset_id)
+            parent_id = (
+                asset.parent_asset_id
+                if asset is not None and asset.derived_kind == "video_keyframe"
+                else None
+            )
+            asset_id = parent_id or hit.asset_id
+            if asset_id in collapsed_classes:
+                continue
+            collapsed_ids.append(asset_id)
+            collapsed_classes[asset_id] = hit.evidence_class
         result_set = ResultSet(
             id=f"rs_{uuid.uuid4().hex[:12]}",
             scope_id=scope_id,
             query=query,
-            asset_ids=tuple(hit.asset_id for hit in result.hits),
+            asset_ids=tuple(collapsed_ids),
             created_at=now,
-            evidence_classes={hit.asset_id: hit.evidence_class for hit in result.hits},
+            evidence_classes=collapsed_classes,
         )
         self._result_sets.add(result_set)
         channel_trace = [
@@ -494,7 +514,11 @@ class AssistantToolbox:
             # 取 ``derived_kind``（``video_keyframe``）而不是 ``parent_asset_id``：
             # 模型需要的是「这是什么」，不是「它爸爸是谁」——后者会把整条视频血缘
             # 带进上下文，而回答一个问题只需要前者。
-            "source_kind": (asset.derived_kind if asset and asset.derived_kind else "photo"),
+            "source_kind": (
+                "video"
+                if asset is not None and asset.media_type is MediaType.VIDEO
+                else (asset.derived_kind if asset and asset.derived_kind else "photo")
+            ),
             "captured_at": asset.captured_at.isoformat() if asset and asset.captured_at else "",
             "capture_time": asdict(asset.capture_time) if asset else {},
             "location_evidence": {
@@ -525,9 +549,45 @@ class AssistantToolbox:
             # ——「里面有谁」「有几个人」「一共拍了几张不同人数的合影」——而这几个问题
             # 此前只能靠逐张 ``query_photo_people`` 或 ``inspect_photo`` 去凑。
             "people_count": self._people_count(entry.asset_id),
-            "evidence_summary": _observation_summary(latest),
+            "evidence_summary": (
+                _observation_summary(latest) or self._video_event_summary(asset)
+            ),
+            "video_scenes": self._video_scene_evidence(asset),
             **self._speech_preview(asset),
         }
+
+    def _video_scene_evidence(self, asset: Any) -> list[Mapping[str, Any]]:
+        """视频的逐帧证据：时间戳 + 该帧观察摘要。
+
+        检索结果已按父视频归并，模型看到的是一个视频；但回答“视频里发生了什么”
+        仍需要各帧证据，所以把关键帧观察压进 preview，而不是把关键帧当结果交付。
+        """
+        if asset is None or asset.media_type is not MediaType.VIDEO or self._videos is None:
+            return []
+        rows: list[Mapping[str, Any]] = []
+        for derived in self._videos.list_derived(asset.id):
+            frame = self._assets.get(derived.id)
+            if frame is None:
+                continue
+            observations = self._observations.list_by_asset(frame.id)
+            text = _observation_summary(observations[0] if observations else None)
+            if not text:
+                continue
+            rows.append(
+                {
+                    "timestamp_sec": float(derived.source_timestamp_sec or 0.0),
+                    "summary": text,
+                }
+            )
+        return rows[:12]
+
+    def _video_event_summary(self, asset: Any) -> str:
+        if asset is None or asset.media_type is not MediaType.VIDEO or self._events is None:
+            return ""
+        scenes = self._events.list_video_scenes(asset.id)
+        if not scenes:
+            return ""
+        return str(scenes[0].summary or "").strip()
 
     def _speech_preview(self, asset: Any) -> Mapping[str, Any]:
         """Expose transcript evidence only for a video or its timestamped keyframe.

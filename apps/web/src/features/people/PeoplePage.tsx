@@ -24,15 +24,13 @@ import { confirmedRelationships } from "./family/graphLayout";
 import { PersonDetail } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
 import { useFamilyGraph } from "./family/useFamilyGraph";
-import { PeopleView } from "./PeopleView";
 import { PersonInsights } from "./PersonInsights";
 
-type View = "roster" | "graph" | "review" | "insights";
+type View = "roster" | "graph" | "insights";
 
 const TABS: readonly { value: View; label: string }[] = [
   { value: "roster", label: "人物" },
   { value: "graph", label: "关系" },
-  { value: "review", label: "待确认的人物" },
   { value: "insights", label: "人物介绍" },
 ];
 
@@ -90,7 +88,7 @@ export function PeoplePage() {
   const banner = state === "error" ? error : null;
 
   return (
-    <>
+    <div className={selected === null ? "people-page" : "people-page has-detail"}>
       <PageHeader
         kicker="家庭人物"
         title="人物与关系"
@@ -149,33 +147,6 @@ export function PeoplePage() {
         </Section>
       ) : null}
 
-      {view === "review" ? (
-        <Section kicker="待确认的人物" title="先确认是谁，再进入长期记忆">
-          <PeopleView
-            scopeId={scopeId}
-            onConfirmSubmit={(clusterId) =>
-              void reportClientEvent({
-                eventName: "people.confirm_submit",
-                result: "started",
-                operationId: newOperationId(),
-                scopeId,
-                entityId: clusterId,
-              })
-            }
-            onConfirmResult={(clusterId, ok) =>
-              void reportClientEvent({
-                eventName: "people.confirm_result",
-                result: ok ? "ok" : "failed",
-                operationId: newOperationId(),
-                scopeId,
-                entityId: clusterId,
-                errorCode: ok ? undefined : "unknown",
-              })
-            }
-          />
-        </Section>
-      ) : null}
-
       {view === "insights" ? (
         <Section kicker="人物介绍" title="看看系统记得的这个人，像不像他">
           <PersonInsights scopeId={scopeId} />
@@ -198,6 +169,6 @@ export function PeoplePage() {
       <span className="sr-only" aria-live="polite">
         {selected === null ? "" : `已打开 ${personDisplayName(selected)} 的详情`}
       </span>
-    </>
+    </div>
   );
 }

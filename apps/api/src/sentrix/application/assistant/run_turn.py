@@ -25,6 +25,7 @@ SQLite、预算计数与十几条软门禁。2.0 的划分是：
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -77,7 +78,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     RequirementValueType,
 )
 from sentrix.domain.assistant.final_guard import FinalGuard, GuardFacts, answered_with_gap
-from sentrix.domain.assistant.intent import json_output_fact
+from sentrix.domain.assistant.intent import current_date_suffix, json_output_fact
 from sentrix.domain.assistant.jit import select_tools
 from sentrix.domain.assistant.models import (
     Attachment,
@@ -134,6 +135,10 @@ SYSTEM_PROMPT = """你是这个家庭相册的助手。你能做的只有两件�
 - 用日常说话的语气把用户问的那件事**说清楚**：不用把找到的每张照片都列一遍，
   但结论要完整——用户读完就知道答案是什么，不需要再问一遍。
   **不要**用小标题、加粗、项目符号或编号清单。
+- **同一会话里连续追问同一件事时，不要复述上一轮已经说过的整段内容。** 先直接回答
+  这次真正新增的问题，只补充新信息；如果确实没有新信息，就直说“和刚才说的一样，
+  没有更多细节”，不要换几个词把上一轮再重复一遍。历史里的上一轮回答不是本轮答案。
+- 用户问“今年是哪一年/今天几号”这类日期问题时，直接给日期，不要拿历史里的旅行话题代替。
 - 不确定就照实说：有把握说「看起来是…」，拿不准说「可能是…还不能完全确定」，
   没依据就说「现有记录里看不出来」。不要为了显得严谨而堆一长串可能性。
   但**「不太确定」不等于「答不上来」**：有照片支持就照实说照片里的样子，
@@ -972,6 +977,8 @@ class RunTurn:
         except OperationCancelled:
             session.state.finish(TerminationReason.CANCELLED)
             answer = ""
+
+        answer = self._dedupe_repeated_answer(record, answer)
 
         # 收尾前给还开着的需求补上真实原因：**是试过没拿到，还是根本没试**。
         # 必须在最后一次 ``as_payload()`` 之前——它同时喂给落库与返回值。
@@ -1916,6 +1923,34 @@ class RunTurn:
         # **还能不能重答**——不能就落回收尾路径。
         return state.can_step()
 
+    @staticmethod
+    def _with_requirement_person(
+        session: _Session, name: str, arguments: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """规划器已经声明了人物，模型却漏传 filters.person 时补上。
+
+        「明明有多少张照片」的规划结果带 ``scope.person=明明``，但小模型调用
+        ``query_memory_facts`` 时只写了 ``subject=asset``。它于是拿到全相册总数（350），
+        比正确答案（59）大得多，而且证据绑定只能判 partial。人物条件由规划器确定，
+        不依赖模型在工具参数里再抄一遍。
+        """
+        if name != "query_memory_facts":
+            return arguments
+        person = ""
+        for requirement in session.ledger.requirements:
+            person = dict(requirement.scope).get("person", "").strip()
+            if person:
+                break
+        if not person:
+            return arguments
+        updated = dict(arguments)
+        filters = dict(updated.get("filters") or {})
+        filters.setdefault("person", person)
+        updated["filters"] = filters
+        if updated.get("subject") in (None, "", "asset"):
+            updated["subject"] = "person_appearance"
+        return updated
+
     def _run_tool(self, session: _Session, call: ToolCall) -> tuple[str, tuple[Attachment, ...], bool, bool]:
         """执行一次工具调用，返回 ``(发回模型的 JSON, 本次交付, 检索是否为空, 有没有拿到东西)``。
 
@@ -1971,7 +2006,7 @@ class RunTurn:
         self._check_cancel(state.turn_id)
         outcome = self._toolbox.execute(
             call.name,
-            decision.arguments,
+            self._with_requirement_person(session, call.name, decision.arguments),
             scope_id=state.scope_id,
             now=datetime.now(UTC),
             # 1.0 的 ``inspect_photo`` 用它找「问题里提到的那个已确认人物」当裁剪目标
@@ -2059,14 +2094,67 @@ class RunTurn:
         （``_merge_system_constraint``）。原生消息角色下这条约束只剩一句「别在中途插
         system」——本模块从头到尾只构造一条 system。
         """
-        messages = [ChatMessage(ChatRole.SYSTEM, SYSTEM_PROMPT)]
-        for message in self._conversations.history_for_prompt(record.conversation_id, HISTORY_LIMIT):
+        history = list(
+            self._conversations.history_for_prompt(record.conversation_id, HISTORY_LIMIT)
+        )
+        system = SYSTEM_PROMPT + current_date_suffix()
+        previous_answer = next(
+            (message.content for message in reversed(history) if message.role is ChatRole.ASSISTANT),
+            "",
+        )
+        messages = [ChatMessage(ChatRole.SYSTEM, system)]
+        for message in history:
             if message.turn_id == record.id:
                 # 本回合的用户消息刚写进去，下面会单独加，别重复。
                 continue
             messages.append(ChatMessage(message.role, message.content))
-        messages.append(ChatMessage(ChatRole.USER, record.question))
+        question = record.question
+        if previous_answer:
+            question = (
+                f"{question}\n\n（补充要求：上一轮你已经回答过：{previous_answer[:800]}"
+                "。如果本轮只是追问同一件事，不要原样重复上一轮；只回答新增的信息。"
+                "确实没有新信息，就直接说“和刚才说的一样，没有更多细节”。）"
+            )
+        messages.append(ChatMessage(ChatRole.USER, question))
         return messages
+
+    def _dedupe_repeated_answer(self, record: TurnRecord, answer: str) -> str:
+        """同一会话里答案和上一轮几乎一样时，收成一句「没有更多细节」。
+
+        提示词已经要求不要复述，但小模型仍会把同一段证据原样再说一遍。这里做一道
+        确定性的兜底：只有**本轮问题和上一轮问题有共同话题**且答案高度相似时才触发，
+        不误伤真正补充了新信息的回答。
+        """
+        text = answer.strip()
+        if not text:
+            return answer
+        history = list(
+            self._conversations.history_for_prompt(record.conversation_id, HISTORY_LIMIT)
+        )
+        previous_user = ""
+        previous_question = ""
+        previous_answer = ""
+        for message in history:
+            if message.role is ChatRole.USER:
+                previous_user = message.content
+            elif message.role is ChatRole.ASSISTANT and message.content.strip():
+                previous_question = previous_user
+                previous_answer = message.content.strip()
+        if not previous_answer:
+            return answer
+
+        def normalized(value: str) -> str:
+            return re.sub(r"\s+", "", value)
+
+        answer_ratio = difflib.SequenceMatcher(
+            None, normalized(text), normalized(previous_answer)
+        ).ratio()
+        question_ratio = difflib.SequenceMatcher(
+            None, normalized(record.question), normalized(previous_question)
+        ).ratio()
+        if answer_ratio >= 0.75 and question_ratio >= 0.2:
+            return "和刚才说的一样，没有更多细节。"
+        return answer
 
     def _stop(
         self, session: _Session, reason: TerminationReason, *, detail: str = "", retry_final: bool = True
@@ -2131,7 +2219,7 @@ class RunTurn:
         # （``specs`` 传空元组，模型没有可调的东西）。也不重放历史——走到这里说明
         # 前面已经塌了，把塌掉的过程再喂一遍只会让它重蹈覆辙。
         messages = [
-            ChatMessage(ChatRole.SYSTEM, SYSTEM_PROMPT),
+            ChatMessage(ChatRole.SYSTEM, SYSTEM_PROMPT + current_date_suffix()),
             ChatMessage(ChatRole.USER, session.state.question),
             ChatMessage(ChatRole.USER, FORCE_FINAL_NUDGE),
         ]

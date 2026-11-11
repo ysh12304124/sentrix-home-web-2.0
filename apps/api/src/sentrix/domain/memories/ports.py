@@ -111,6 +111,27 @@ class EventRepository(Protocol):
         """
         ...
 
+    def finalize_video_event(
+        self,
+        event_id: str,
+        *,
+        title: str,
+        summary: str,
+        time_start: datetime | None,
+        time_end: datetime | None,
+        source_start_sec: float,
+        source_end_sec: float,
+        speech_transcript: str = "",
+        speech_segments: Sequence[dict[str, object]] = (),
+    ) -> EventRecord:
+        """把一个视频的唯一事件补成整段视频：标题、描述、整段墙钟时间与原片区间。
+
+        视频先按场景建事件，再在全部关键帧处理完后合并成一条；合并后的主事件必须
+        把 ``source_start_sec`` 从首个场景扩到 0、``source_end_sec`` 扩到视频时长，
+        否则前端 seek 仍只覆盖第一个场景。
+        """
+        ...
+
     def create_video_scene(
         self,
         *,

@@ -16,6 +16,7 @@ import {
   deliveredPhotoThumbUrl,
   getPerson,
   getPersonPortrait,
+  mergePeople,
   putFamilyRelationship,
   renamePerson,
   setEntityProperty,
@@ -27,6 +28,7 @@ import {
 import { describeReviewError } from "../reviewErrors";
 import { confirmedRelationships } from "./graphLayout";
 import {
+  isNamed,
   membershipLabel,
   membershipOf,
   personDisplayName,
@@ -57,7 +59,8 @@ export function PersonDetail({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState(personDisplayName(person));
+  const [name, setName] = useState(isNamed(person) ? personDisplayName(person) : "");
+  const [mergeTargetId, setMergeTargetId] = useState("");
   // 人物画像来自「人物介绍」那套画像表；没有时显示「无」，不回退到家庭侧的手写介绍。
   const [portraitText, setPortraitText] = useState<string | null>(null);
   const [aliases, setAliases] = useState<string[]>([]);
@@ -68,6 +71,9 @@ export function PersonDetail({
   const [aliasText, setAliasText] = useState("");
 
   const others = people.filter((item) => item.id !== person.id);
+  // 未命名人物在关系下拉里全都叫「未确认姓名人物」，选错人的概率比选对还高。
+  // 关系只允许连到已经有名字的人；未命名的人先在人物卡上命名。
+  const relationTargets = others.filter(isNamed);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +111,7 @@ export function PersonDetail({
         label: outgoing ? edge.predicate : edge.inverse_predicate,
       };
     });
+  const hasRelationWithTarget = edges.some((edge) => edge.otherId === targetId);
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
@@ -164,6 +171,10 @@ export function PersonDetail({
   function submitRelation(event: FormEvent) {
     event.preventDefault();
     if (targetId === "") return;
+    if (!relationTargets.some((item) => item.id === targetId)) {
+      setError("请先把对方命名，再建立关系。");
+      return;
+    }
     const choice = CHOICES[predicateIndex] ?? CHOICES[0];
     void run(() =>
       putFamilyRelationship({
@@ -174,6 +185,15 @@ export function PersonDetail({
         inversePredicate: choice.inversePredicate,
       }),
     );
+  }
+
+  function submitMerge(event: FormEvent) {
+    event.preventDefault();
+    if (mergeTargetId === "") return;
+    void run(async () => {
+      await mergePeople(mergeTargetId, person.id);
+      onClose();
+    });
   }
 
   const currentMembership: FamilyMembershipValue = membershipOf(person);
@@ -205,7 +225,11 @@ export function PersonDetail({
         <form className="detail-form" onSubmit={submitRename}>
           <label>
             姓名
-            <input value={name} onChange={(event) => setName(event.target.value)} />
+            <input
+              value={name}
+              placeholder="给这个人起个名字"
+              onChange={(event) => setName(event.target.value)}
+            />
           </label>
           <button type="submit" className="button ghost small" disabled={busy}>
             保存姓名
@@ -268,6 +292,39 @@ export function PersonDetail({
       </section>
 
       <section className="detail-section">
+        <h3>合并人物</h3>
+        <p className="detail-empty">
+          如果下面这个人和当前人物是同一个人，合并后保留对方的名字、画像和关系。
+        </p>
+        {others.length === 0 ? null : (
+          <form className="detail-form" onSubmit={submitMerge}>
+            <label>
+              合并到
+              <select
+                aria-label="合并到人物"
+                value={mergeTargetId}
+                onChange={(event) => setMergeTargetId(event.target.value)}
+              >
+                <option value="">选择要保留的人…</option>
+                {others.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {personDisplayName(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="submit"
+              className="button ghost small"
+              disabled={busy || mergeTargetId === ""}
+            >
+              合并并保留对方
+            </button>
+          </form>
+        )}
+      </section>
+
+      <section className="detail-section">
         <h3>关系</h3>
         {edges.length === 0 ? (
           <p className="detail-empty">当前无已确认关系。</p>
@@ -276,7 +333,9 @@ export function PersonDetail({
             {edges.map((edge) => (
               <li key={`${edge.subject}-${edge.object}`}>
                 <span>
-                  <b>{edge.label}</b> {personDisplayName(people.find((item) => item.id === edge.otherId) ?? person)}
+                  {personDisplayName(person)} 是{" "}
+                  <b>{personDisplayName(people.find((item) => item.id === edge.otherId) ?? person)}</b>{" "}
+                  的 {edge.label}
                 </span>
                 <button
                   type="button"
@@ -299,7 +358,9 @@ export function PersonDetail({
           </ul>
         )}
 
-        {others.length === 0 ? null : (
+        {relationTargets.length === 0 ? (
+          <p className="detail-empty">先把对方命名后，才能建立关系。</p>
+        ) : (
           <form className="detail-form" onSubmit={submitRelation}>
             <div className="detail-relation-row">
               <select
@@ -319,15 +380,18 @@ export function PersonDetail({
                 onChange={(event) => setTargetId(event.target.value)}
               >
                 <option value="">选择对方…</option>
-                {others.map((item) => (
+                {relationTargets.map((item) => (
                   <option key={item.id} value={item.id}>
                     {personDisplayName(item)}
                   </option>
                 ))}
               </select>
             </div>
+            <p className="detail-empty">
+              选择「父亲 → 儿子」表示：当前人物是对方的父亲，对方是当前人物的儿子。
+            </p>
             <button type="submit" className="button primary small" disabled={busy || targetId === ""}>
-              建立关系
+              {hasRelationWithTarget ? "更新关系" : "建立关系"}
             </button>
           </form>
         )}

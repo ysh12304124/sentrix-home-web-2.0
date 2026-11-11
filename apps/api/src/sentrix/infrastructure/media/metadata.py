@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -31,17 +32,40 @@ GPS_LATITUDE_REF, GPS_LATITUDE = 1, 2
 GPS_LONGITUDE_REF, GPS_LONGITUDE = 3, 4
 
 
-def _rational(value: Any) -> float:
+def _rational(value: Any) -> float | None:
+    """EXIF 有理数转 float；``0/0`` 这类占位值返回 ``None``。
+
+    部分手机把整组 GPS 写成 ``0/0``，Pillow 读出来是 ``IFDRational(0, 0)``；
+    ``float()`` 在 Python 3.11 会直接除零。先看分母，既避开异常，也不会把
+    0,0 误当成一个真实坐标。
+    """
+    if getattr(value, "denominator", None) == 0:
+        return None
     try:
         return float(value[0]) / float(value[1])
     except (TypeError, ValueError, ZeroDivisionError, IndexError):
+        pass
+    try:
         return float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
 
-def _degrees_minutes_seconds(values: Sequence[object], *, negative_ref: str, ref_value: str) -> float:
+def _degrees_minutes_seconds(
+    values: Sequence[object], *, negative_ref: str, ref_value: str
+) -> float | None:
+    """度分秒；任一分量是无效有理数时整组坐标作废，返回 ``None``。"""
+    numbers: list[float] = []
+    for item in values:
+        number = _rational(item)
+        if number is None:
+            return None
+        numbers.append(number)
+    if not numbers:
+        return None
     # 60**index 在 typeshed 里是 Any（int.__pow__ 要覆盖负指数返回 float 的情形），
     # 所以给 degrees 落一个显式标注，把实数类型钉住；表达式与运行结果都不变。
-    degrees: float = sum(_rational(item) / (60**index) for index, item in enumerate(values))
+    degrees: float = sum(value / (60**index) for index, value in enumerate(numbers))
     if _text(ref_value).upper() == negative_ref:
         degrees *= -1
     return degrees
@@ -88,6 +112,33 @@ def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
     return None
 
 
+def _parse_xmp_capture(image: object) -> datetime | None:
+    """XMP 的 DateCreated/CreateDate；编辑导出图常保留它而丢掉 EXIF。"""
+    info = getattr(image, "info", {}) or {}
+    raw = info.get("xmp") or info.get("XML:com.adobe.xmp") or ""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "ignore")
+    text = str(raw)
+    if not text:
+        return None
+    patterns = (
+        r"<photoshop:DateCreated>([^<]+)</photoshop:DateCreated>",
+        r"<xmp:CreateDate>([^<]+)</xmp:CreateDate>",
+        r'(?:photoshop:DateCreated|xmp:CreateDate)="([^"]+)"',
+        r"(20\d{2}[-:]\d{2}[-:]\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2})?)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+    return None
+
+
 class PillowMetadataReader:
     def read(self, path: Path) -> tuple[datetime | None, GpsPoint | None, str | None]:
         """返回 (拍摄时间, GPS, 设备型号)；任何一步失败都降级为 None。"""
@@ -120,32 +171,33 @@ class PillowMetadataReader:
                     gps_tags = tags.get(GPS_INFO_TAG) or {}
                 if not isinstance(gps_tags, dict):
                     gps_tags = {}
+                xmp_captured = _parse_xmp_capture(image)
         except Exception:
             log.warning("exif_read_failed path=%s", path, exc_info=True)
             return None, None, None
 
-        captured_at = _parse_exif_datetime(tags)
+        captured_at = _parse_exif_datetime(tags) or xmp_captured
 
         point: GpsPoint | None = None
         latitude_values = gps_tags.get(GPS_LATITUDE)
         longitude_values = gps_tags.get(GPS_LONGITUDE)
         if latitude_values and longitude_values:
-            try:
-                point = GpsPoint(
-                    latitude=_degrees_minutes_seconds(
-                        latitude_values,
-                        negative_ref="S",
-                        ref_value=gps_tags.get(GPS_LATITUDE_REF, "N"),
-                    ),
-                    longitude=_degrees_minutes_seconds(
-                        longitude_values,
-                        negative_ref="W",
-                        ref_value=gps_tags.get(GPS_LONGITUDE_REF, "E"),
-                    ),
-                )
-            except (ValueError, TypeError):
-                log.warning("exif_gps_invalid path=%s", path, exc_info=True)
-                point = None
+            latitude = _degrees_minutes_seconds(
+                latitude_values,
+                negative_ref="S",
+                ref_value=gps_tags.get(GPS_LATITUDE_REF, "N"),
+            )
+            longitude = _degrees_minutes_seconds(
+                longitude_values,
+                negative_ref="W",
+                ref_value=gps_tags.get(GPS_LONGITUDE_REF, "E"),
+            )
+            if latitude is not None and longitude is not None:
+                try:
+                    point = GpsPoint(latitude=latitude, longitude=longitude)
+                except (ValueError, TypeError):
+                    log.warning("exif_gps_invalid path=%s", path, exc_info=True)
+                    point = None
 
         make = _text(tags.get(MAKE_TAG) or "")
         model = _text(tags.get(MODEL_TAG) or "")

@@ -7,9 +7,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from sentrix.domain.media.import_jobs import (
+    IdempotencyConflict,
     ImportJob,
     ImportJobStage,
-    IdempotencyConflict,
     UploadBusy,
     UploadQuotaExceeded,
 )
@@ -126,6 +126,24 @@ class SqliteImportJobRepository:
                     if str(existing["content_sha256"]) != job.content_sha256:
                         raise IdempotencyConflict("idempotency key reused for different content")
                     return _job(existing), False
+
+                # 同一 scope 内同内容只落一个作业。手机端可能因为离开页面、
+                # 重选整个相册而用新的幂等键再传一次；没有这层去重就会重复建资产。
+                duplicate = connection.execute(
+                    f"SELECT {_COLUMNS} FROM import_jobs"
+                    " WHERE scope_id = ? AND content_sha256 = ?"
+                    " AND status IN ('accepted','queued','running','waiting_dependency',"
+                    " 'retry_scheduled','completed','partial')"
+                    " ORDER BY accepted_at LIMIT 1",
+                    (job.scope_id, job.content_sha256),
+                ).fetchone()
+                if duplicate is not None:
+                    if reservation_id is not None:
+                        connection.execute(
+                            "DELETE FROM upload_reservations WHERE id = ?", (reservation_id,)
+                        )
+                    connection.commit()
+                    return _job(duplicate), False
 
                 original = _unique_original_bytes(connection)
                 reserved_other = connection.execute(
@@ -446,10 +464,12 @@ class SqliteImportJobRepository:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 connection.execute(
-                    "INSERT INTO scope_postprocess (scope_id, dirty_generation, processed_generation, updated_at) "
+                    "INSERT INTO scope_postprocess"
+                    " (scope_id, dirty_generation, processed_generation, updated_at) "
                     "VALUES (?, 1, 0, ?) "
                     "ON CONFLICT(scope_id) DO UPDATE SET "
-                    "dirty_generation = scope_postprocess.dirty_generation + 1, updated_at = excluded.updated_at",
+                    "dirty_generation = scope_postprocess.dirty_generation + 1,"
+                    " updated_at = excluded.updated_at",
                     (scope_id, now.isoformat()),
                 )
                 row = connection.execute(

@@ -400,12 +400,19 @@ class SqliteEventRepository:
             raise KeyError(source_event_id if source is None else target_event_id)
         _require_compatible_times(source.time_start, source.time_end, target.time_start, target.time_end)
         with self._database.connect() as connection, connection:
+            for table in ("event_observations", "event_participants", "event_entities"):
+                connection.execute(
+                    f"UPDATE OR IGNORE {table} SET event_id = ? WHERE event_id = ?",
+                    (target_event_id, source_event_id),
+                )
+                # 上面是 OR IGNORE：两事件共有的行已经在 target 上，这里把剩下的删掉。
+                connection.execute(f"DELETE FROM {table} WHERE event_id = ?", (source_event_id,))
+            # 人物瞬间也指向 events(id)，唯一键不含 event_id；漏掉它会让接下来的
+            # DELETE 撞外键，人物确认后的重分段就会停在半完成状态。
             connection.execute(
-                "UPDATE OR IGNORE event_observations SET event_id = ? WHERE event_id = ?",
+                "UPDATE person_moments SET event_id = ? WHERE event_id = ?",
                 (target_event_id, source_event_id),
             )
-            # 上面是 OR IGNORE：两事件共有的观察已经在 target 上，这里把剩下的删掉。
-            connection.execute("DELETE FROM event_observations WHERE event_id = ?", (source_event_id,))
             connection.execute("DELETE FROM events WHERE id = ?", (source_event_id,))
             starts = [value for value in (target.time_start, source.time_start) if value is not None]
             ends = [value for value in (target.time_end, source.time_end) if value is not None]
@@ -516,6 +523,49 @@ class SqliteEventRepository:
         created = self.get(scene_id)
         assert created is not None
         return created
+
+    def finalize_video_event(
+        self,
+        event_id: str,
+        *,
+        title: str,
+        summary: str,
+        time_start: datetime | None,
+        time_end: datetime | None,
+        source_start_sec: float,
+        source_end_sec: float,
+        speech_transcript: str = "",
+        speech_segments: Sequence[dict[str, object]] = (),
+    ) -> EventRecord:
+        with self._database.connect() as connection, connection:
+            row = connection.execute(
+                "SELECT source_metadata_json FROM events WHERE id = ?", (event_id,)
+            ).fetchone()
+            metadata = _json_object(row["source_metadata_json"] if row is not None else None)
+            if speech_transcript:
+                metadata["speech_transcript"] = speech_transcript
+            if speech_segments:
+                metadata["speech_segments"] = list(speech_segments)
+            merged_summary = _with_speech(summary, metadata)
+            connection.execute(
+                "UPDATE events SET title = ?, summary = ?, time_start = ?, time_end = ?,"
+                " source_start_sec = ?, source_end_sec = ?, source_metadata_json = ?,"
+                " revision = revision + 1, updated_at = ? WHERE id = ?",
+                (
+                    title,
+                    merged_summary,
+                    time_start.isoformat() if time_start else None,
+                    time_end.isoformat() if time_end else None,
+                    float(source_start_sec),
+                    float(source_end_sec),
+                    json.dumps(metadata, ensure_ascii=False),
+                    datetime.now(UTC).isoformat(),
+                    event_id,
+                ),
+            )
+        finalized = self.get(event_id)
+        assert finalized is not None
+        return finalized
 
     def list_video_scenes(self, source_asset_id: str) -> Sequence[EventRecord]:
         """1.0 ``db.py:2427`` 的 ``list_video_scene_events``，原样四条：来源类型 / 源片 /

@@ -23,19 +23,17 @@ SSE 的形状与设计 §4.3 一致，沿用 1.0 已验证的两类事件：``pr
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-import threading
 from collections.abc import AsyncIterator
-from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from sentrix.api.deps import get_container
-from sentrix.api.routes.media import deliver_asset
-from sentrix.bootstrap.assistant_wiring import build_run_turn
+from sentrix.api.routes.media import asset_poster, deliver_asset
 from sentrix.api.schemas.assistant import (
     AttachmentSummary,
     CompleteEventPayload,
@@ -56,12 +54,11 @@ from sentrix.application.assistant.manage_conversations import (
     InvalidCursor,
     ManageConversations,
 )
-from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.run_turn import (
     RunTurn,
     TurnRequest,
 )
-from sentrix.application.assistant.tools import AssistantToolbox
+from sentrix.bootstrap.assistant_wiring import build_run_turn
 from sentrix.bootstrap.container import Container
 from sentrix.domain.assistant.models import (
     Conversation,
@@ -69,7 +66,6 @@ from sentrix.domain.assistant.models import (
     TurnIdempotencyConflict,
     TurnRecord,
 )
-from sentrix.domain.assistant.profile import DEFAULT_PROFILE
 
 log = logging.getLogger("sentrix.api.assistant")
 
@@ -475,6 +471,10 @@ def result_set_photo(
         if asset_id is None:
             raise HTTPException(status_code=404, detail="empty result set")
 
+    asset = container.asset_repository.get(asset_id)
+    if asset is not None and asset.media_type.value == "video" and not original:
+        # 结果集现在交付视频本身；前端用 <img> 展示时给封面，而不是把 mp4 塞进图片位。
+        return asset_poster(asset_id, container)
     return deliver_asset(asset_id, original=original, container=container)
 
 
@@ -486,11 +486,9 @@ async def cancel_turn(turn_id: str, request: Request) -> OperationCancellationRe
         raise HTTPException(status_code=404, detail="turn not found")
     # 取消标志持久化：进程重启后的恢复扫描不会认领已取消回合。
     container.turn_repository.request_cancel(turn_id, now=datetime.now(UTC))
-    try:
-        container.operation_control.request_cancel("turn:" + turn_id)
-    except KeyError:
+    with contextlib.suppress(KeyError):
         # 执行线程不在本进程（例如回合尚未被认领）——标志已经落库，足够。
-        pass
+        container.operation_control.request_cancel("turn:" + turn_id)
     return OperationCancellationResponse(
         operation_id=turn_id, cancel_requested=True, cleanup_status="pending"
     )

@@ -4,7 +4,7 @@ import {
   resultSetPhotoUrl,
   type AssistantProgressEvent,
 } from "../../shared/api/client";
-import { Lightbox } from "../../shared/ui/Lightbox";
+import { Lightbox, type LightboxItem } from "../../shared/ui/Lightbox";
 
 /**
  * 助手这一轮检索到的结果集缩略图墙。
@@ -95,7 +95,7 @@ export interface ResultSetWallProps {
 
 export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: ResultSetWallProps) {
   // Hook 必须在任何提前 return 之前——`view === null` 时也要按同样的顺序调用。
-  const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ items: LightboxItem[]; index: number } | null>(null);
   const view = resultSetFromEvents(events);
   if (view === null || view.handles.length === 0) return null;
 
@@ -108,7 +108,7 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
         </small>
       </header>
       <ul className="result-set-thumbs">
-        {view.handles.map((handle) => (
+        {view.handles.map((handle, handleIndex) => (
           <li key={handle}>
             {/* **点缩略图是放大**，不是新标签打开原图。原图仍然在
                 `resultSetPhotoUrl(..., true)` 里——那是 Lightbox 要显示的源。 */}
@@ -118,8 +118,11 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
               title={`${handle} · 查看大图`}
               onClick={() =>
                 setLightbox({
-                  src: resultSetPhotoUrl(view.resultSetId, handle, scopeId, true),
-                  caption: handle,
+                  items: view.handles.map((item) => ({
+                    src: resultSetPhotoUrl(view.resultSetId, item, scopeId, true),
+                    caption: item,
+                  })),
+                  index: handleIndex,
                 })
               }
             >
@@ -150,8 +153,11 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
       ) : null}
       {lightbox === null ? null : (
         <Lightbox
-          src={lightbox.src}
-          caption={lightbox.caption}
+          items={lightbox.items}
+          index={lightbox.index}
+          onIndexChange={(index) =>
+            setLightbox((current) => (current === null ? current : { ...current, index }))
+          }
           onClose={() => setLightbox(null)}
         />
       )}

@@ -89,6 +89,10 @@ class PyGeoCNAdminResolver:
     def resolve_admin(self, gps: GpsPoint) -> AdminArea | None:
         if not self.available:
             return None
+        # PyGeoCN 只认中国边界；先用粗 bbox 挡掉绝大多数国外坐标，避免每个点都
+        # 扫一遍 geopandas 多边形（批量回填国外相册时这点是分钟级差异）。
+        if not (18.0 <= gps.latitude <= 54.0 and 73.0 <= gps.longitude <= 135.0):
+            return None
         latitude, longitude = _cache_key(gps)
         resolved = _regeo(latitude, longitude)
         if resolved is None:

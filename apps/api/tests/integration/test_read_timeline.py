@@ -20,6 +20,7 @@ from sentrix.infrastructure.persistence.repositories.assets import (
     SqliteObservationRepository,
 )
 from sentrix.infrastructure.persistence.repositories.events import SqliteEventRepository
+from sentrix.infrastructure.persistence.repositories.video import SqliteVideoRepository
 
 XIAOSHAN = GpsPoint(30.1839, 120.2642)
 DAY_ONE = datetime(2017, 10, 5, 9, 0, 0, tzinfo=UTC)
@@ -221,3 +222,88 @@ def test_event_detail_lists_its_photos(timeline: ReadTimeline, repos, migrations
 
 def test_missing_event_detail_is_none(timeline: ReadTimeline):
     assert timeline.get_event("evt_gone") is None
+
+
+def test_video_event_hides_keyframes_and_uses_the_source_video(
+    timeline: ReadTimeline, repos, migrations_ready_db
+):
+    assets, observations, _places = repos
+    video_id, frame_id, observation_id = "asset_video", "asset_frame", "obs_frame"
+    assets.add(
+        Asset(
+            id=video_id,
+            scope_id="album1",
+            file_name="clip.mp4",
+            media_type=MediaType.VIDEO,
+            path="/tmp/clip.mp4",
+            mime_type="video/mp4",
+            size_bytes=1,
+            status=AssetStatus.PROCESSED,
+            content_sha256="sha-video",
+            captured_at=DAY_ONE,
+            captured_location=None,
+            created_at=DAY_ONE,
+            updated_at=DAY_ONE,
+        )
+    )
+    SqliteVideoRepository(migrations_ready_db).add_derived(
+        parent_asset_id=video_id,
+        asset=Asset(
+            id=frame_id,
+            scope_id="album1",
+            file_name="kf_0001.jpg",
+            media_type=MediaType.IMAGE,
+            path="/tmp/kf.jpg",
+            mime_type="image/jpeg",
+            size_bytes=1,
+            status=AssetStatus.PROCESSED,
+            content_sha256="sha-frame",
+            captured_at=DAY_ONE,
+            captured_location=None,
+            created_at=DAY_ONE,
+            updated_at=DAY_ONE,
+            derived_kind="video_keyframe",
+            parent_asset_id=video_id,
+        ),
+        derived_kind="video_keyframe",
+        source_timestamp_sec=0.0,
+        source_frame_index=0,
+        source_scene_index=0,
+    )
+    observations.add(
+        Observation(
+            id=observation_id,
+            scope_id="album1",
+            asset_id=frame_id,
+            source_type="import",
+            captured_at=DAY_ONE,
+            confidence=0.6,
+            created_at=DAY_ONE,
+            updated_at=DAY_ONE,
+            caption="视频里的关键帧",
+        )
+    )
+    events = SqliteEventRepository(migrations_ready_db)
+    events.create_video_scene(
+        event_id="evt_video",
+        scope_id="album1",
+        title="视频 · clip",
+        summary="视频描述",
+        place="浙江省杭州市萧山区",
+        time_start=DAY_ONE,
+        time_end=DAY_ONE + timedelta(seconds=30),
+        source_asset_id=video_id,
+        source_scene_index=0,
+        source_start_sec=0.0,
+        source_end_sec=30.0,
+    )
+    events.attach("evt_video", observation_id)
+
+    result = timeline.execute(scope_id="album1")
+    summary = result.days[0].events[0]
+    assert summary.representative_media_type == "video"
+    assert summary.representative_asset_id == video_id
+    assert summary.asset_count == 1
+    detail = timeline.get_event("evt_video")
+    assert detail is not None
+    assert [item.asset_id for item in detail.photos] == [video_id]

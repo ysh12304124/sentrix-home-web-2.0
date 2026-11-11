@@ -394,11 +394,16 @@ def test_a_user_relationship_lands_as_two_locked_rows(family_client: TestClient)
     assert {item["source"] for item in body["relationships"]} == {"user_override"}
 
 
-def test_a_relationship_without_a_scope_is_a_400(family_client: TestClient) -> None:
+def test_a_relationship_without_a_scope_uses_the_person_scope(
+    family_client: TestClient,
+) -> None:
+    """「全部相册」下前端传空 scope；关系写侧从人物实体自己的归属补上。"""
     response = _put_relationship(family_client, scope_id=None)
 
-    assert response.status_code == 400
-    assert response.json()["message"] == "scope_id is required"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert len(body["relationships"]) == 2
 
 
 def test_a_label_outside_the_whitelist_is_a_400_with_the_whitelist_message(
@@ -486,6 +491,21 @@ def test_a_relationship_built_over_http_shows_up_in_the_graph(family_client: Tes
 
     assert {item["predicate"] for item in body["relationships"]} == {"母亲", "儿子"}
     assert {item["id"] for item in body["people"]} == {"mom", "kid"}
+
+
+def test_empty_scope_reads_relationships_from_all_people_scopes(
+    family_client: TestClient,
+) -> None:
+    """「全部相册」传空 scope 时，people 会展开到各自 scope，关系也必须一起展开。
+
+    之前关系只按空串查，``GET /family-graph?scope_id=`` 返回 0 条——用户刚建好的边
+    看起来“没生效”。这里钉住空 scope 的读路径。
+    """
+    _put_relationship(family_client)
+
+    body = family_client.get("/api/v1/family-graph", params={"scope_id": ""}).json()
+
+    assert {item["predicate"] for item in body["relationships"]} == {"母亲", "儿子"}
 
 
 # ---- 推断运行（S7b2 · T313） ------------------------------------------------------

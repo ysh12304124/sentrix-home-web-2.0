@@ -91,7 +91,7 @@ from pathlib import Path
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
 from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
-from sentrix.domain.media.capture_time import CaptureTime
+from sentrix.domain.media.capture_time import CaptureTime, capture_time_from_filename
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetObserver,
@@ -448,6 +448,10 @@ class ImportAssets:
             source = video_probe.metadata.creation_source or "video_metadata"
         if audio_probe is not None and audio_probe.metadata is not None:
             source = audio_probe.metadata.creation_source or "audio_metadata"
+        if captured_at is None and request.file_name:
+            captured_at = capture_time_from_filename(request.file_name)
+            if captured_at is not None:
+                source = "filename"
         provenance = CaptureTime(
             captured_at.isoformat() if captured_at else "",
             source if captured_at else "unknown",

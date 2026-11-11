@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import ConflictError, InvalidRequestError
+from sentrix.api.routes.identity import name_person_service
 from sentrix.api.schemas.family import (
     FamilyAnalysisRunPayload,
     FamilyGraphResponse,
@@ -54,6 +55,11 @@ from sentrix.domain.identity.family import (
     FamilyPersonProjection,
     FamilyPortraitRecord,
     FamilyRelationshipRecord,
+)
+from sentrix.domain.identity.models import (
+    ENTITY_STATUS_CONFIRMED,
+    ENTITY_TYPE_PERSON,
+    is_pending_cluster_name,
 )
 
 router = APIRouter(tags=["family"])
@@ -170,14 +176,19 @@ def family_graph(
     repository = container.family_graph_repository
     scope_ids = repository.graph_scope_ids(scope_id)
     latest = repository.latest_run(scope_id)
+    people = repository.family_graph_people(scope_ids)
+    # 「全部相册」传的是空 scope：`graph_scope_ids("")` 只回 `[""]`，但 people 会
+    # 展开到每个实体自己的 scope。关系若按 `""` 查就是空——用户刚建好的边会“消失”。
+    # 用人物实际归属的 scope 查关系，和 people 的展开口径保持一致。
+    relationship_scopes = tuple(dict.fromkeys(item.scope_id for item in people)) or tuple(scope_ids)
     return FamilyGraphResponse(
         scope_id=scope_id,
         run=_run_payload(latest) if latest is not None else None,
-        people=[_person_payload(item) for item in repository.family_graph_people(scope_ids)],
+        people=[_person_payload(item) for item in people],
         scope_ids=list(scope_ids),
         relationships=[
             _relationship_payload(item)
-            for item_scope_id in scope_ids
+            for item_scope_id in relationship_scopes
             for item in repository.list_effective_relationships(item_scope_id)
         ],
     )
@@ -194,6 +205,31 @@ def _required(message: str, *values: str) -> None:
     """
     if not all(values):
         raise InvalidRequestError(message)
+
+
+def _confirm_relation_people(container: Container, entity_ids: tuple[str, ...]) -> None:
+    """用户建立关系就是承认这两个人是谁，顺带把未确认实体转成 confirmed。
+
+    只确认已经有真实姓名的实体；``待确认人物簇 · cluster_xxx`` 是内部占位名，拿它
+    确认只会让 agent 多出一个叫内部 id 的人。确认失败不吞：关系已经写入，但状态
+    没转成 confirmed 时用户/agent 看到的结果与操作不一致，必须暴露出来。
+    """
+    service = name_person_service(container)
+    for entity_id in dict.fromkeys(entity_ids):
+        entity = container.entity_repository.get(entity_id)
+        if (
+            entity is None
+            or entity.entity_type != ENTITY_TYPE_PERSON
+            or entity.status == ENTITY_STATUS_CONFIRMED
+            or is_pending_cluster_name(entity.canonical_name)
+            or not entity.canonical_name.strip()
+        ):
+            continue
+        service.confirm_entity(
+            entity.id,
+            name=entity.canonical_name,
+            family_role=entity.family_role,
+        )
 
 
 @router.patch("/family-graph/people/{person_id}/membership")
@@ -223,6 +259,7 @@ def update_family_membership(
         # **消息不改写**：1.0 是 ``detail=str(error)``，那几句话（unsupported family
         # membership / requires a person entity / …）是调用方用来区分失败的。
         raise InvalidRequestError(str(error)) from error
+    _confirm_relation_people(container, (person_id,))
     return FamilyMembershipResponse(
         ok=True, membership=_membership_payload(written) if written is not None else None
     )
@@ -240,13 +277,23 @@ def update_family_relationship(
     错误消息不同，多判一步会挡掉仓储自己那几句话术。
     """
     scope_id = (payload.scope_id or "").strip()
+    subject_entity_id = str(payload.subject_entity_id or "").strip()
+    object_entity_id = str(payload.object_entity_id or "").strip()
+    if not scope_id:
+        # 「全部相册」下前端拿不到一个具体 scope。人物实体自己知道它在哪一册，
+        # 这里用实体归属补上，而不是让用户为一个内部参数再选一次相册。
+        for entity_id in (subject_entity_id, object_entity_id):
+            entity = container.entity_repository.get(entity_id)
+            if entity is not None and entity.scope_id:
+                scope_id = entity.scope_id
+                break
     _required("scope_id is required", scope_id)
     try:
         written = container.family_graph_repository.set_relationship(
             scope_id,
-            str(payload.subject_entity_id or ""),
+            subject_entity_id,
             str(payload.predicate or ""),
-            str(payload.object_entity_id or ""),
+            object_entity_id,
             str(payload.inverse_predicate or ""),
             source=USER_SOURCE,
             confidence=USER_CONFIDENCE,
@@ -254,6 +301,7 @@ def update_family_relationship(
         )
     except ValueError as error:
         raise InvalidRequestError(str(error)) from error
+    _confirm_relation_people(container, (subject_entity_id, object_entity_id))
     return FamilyRelationshipResponse(
         ok=True, relationships=[_relationship_payload(item) for item in written]
     )
@@ -304,6 +352,7 @@ def update_family_portrait(
         source=USER_SOURCE,
         evidence_refs=payload.evidence_refs or (),
     )
+    _confirm_relation_people(container, (person_id,))
     return FamilyPortraitResponse(
         ok=True, portrait=_portrait_payload(written) if written is not None else None
     )

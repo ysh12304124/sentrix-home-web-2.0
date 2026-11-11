@@ -55,6 +55,8 @@ from sentrix.api.schemas.identity import (
     FaceClusterSummary,
     FaceCropRef,
     MergeClustersRequest,
+    MergePeopleRequest,
+    MergePeopleResponse,
     PersonDetailResponse,
     PersonListResponse,
     PersonPayload,
@@ -64,6 +66,7 @@ from sentrix.api.schemas.identity import (
     SeedIdentityResponse,
     SplitClusterRequest,
 )
+from sentrix.application.identity.merge_people import MergePeople
 from sentrix.application.identity.name_person import NamePerson
 from sentrix.application.identity.observe_appearance import ObserveAppearance
 from sentrix.application.identity.read_entity_detail import EntityDetail, ReadEntityDetail
@@ -171,7 +174,7 @@ def _review_cluster(container: Container) -> ReviewCluster:
     )
 
 
-def _name_person(container: Container) -> NamePerson:
+def name_person_service(container: Container) -> NamePerson:
     return NamePerson(
         faces=container.face_repository,
         entities=container.entity_repository,
@@ -838,7 +841,7 @@ def rename_person(
     payload: RenamePersonRequest,
     container: Container = Depends(get_container),
 ) -> RenamePersonResponse:
-    result = _name_person(container).rename(person_id, payload.name)
+    result = name_person_service(container).rename(person_id, payload.name)
     if result is None:
         raise NotFoundError("person not found")
     refresh_memory_graph(container, result.entity.scope_id)
@@ -847,12 +850,33 @@ def rename_person(
     )
 
 
+@router.post("/people/merge")
+def merge_people(
+    payload: MergePeopleRequest,
+    container: Container = Depends(get_container),
+) -> MergePeopleResponse:
+    """把 source 人物并入 target；两个人都可能是已确认的。"""
+    target = str(payload.target_entity_id or "").strip()
+    source = str(payload.source_entity_id or "").strip()
+    if not target or not source or target == source:
+        raise InvalidRequestError("target_entity_id and source_entity_id are required and distinct")
+    try:
+        merged = MergePeople(
+            faces=container.face_repository,
+            entities=container.entity_repository,
+        ).execute(target_entity_id=target, source_entity_id=source)
+    except ValueError as error:
+        raise InvalidRequestError(str(error)) from error
+    refresh_memory_graph(container, merged.scope_id)
+    return MergePeopleResponse(entity=_person_payload(container, merged))
+
+
 @router.post("/people/batch-confirm")
 def batch_confirm_people(
     payload: BatchConfirmRequest, container: Container = Depends(get_container)
 ) -> BatchConfirmResponse:
     """逐件确认，逐件回执。**一件失败不影响其余**（1.0 ``app.py:2205`` 的形状）。"""
-    use_case = _name_person(container)
+    use_case = name_person_service(container)
     confirmed: list[BatchConfirmOutcome] = []
     failed: list[BatchConfirmFailure] = []
     scopes: set[str] = set()

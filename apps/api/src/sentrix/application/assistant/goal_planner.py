@@ -41,6 +41,7 @@ from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
 from sentrix.domain.assistant.intent import (
     build_prompt,
     correction_hint,
+    current_date_suffix,
     history_prompt_suffix,
     json_output_fact,
     parse_declaration,
@@ -104,7 +105,7 @@ class GoalPlanner:
     ) -> PlannerResult:
         # 历史折进 system 文本，不再插一条 system 消息——严格 chat template 要求 system
         # 必须在开头（1.0 ``goal_planner.py:115-117``，实测 24 题因此失败）。
-        system = build_prompt() + history_prompt_suffix(history)
+        system = build_prompt() + current_date_suffix() + history_prompt_suffix(history)
         base = [ChatMessage(ChatRole.SYSTEM, system), ChatMessage(ChatRole.USER, question)]
 
         messages = list(base)

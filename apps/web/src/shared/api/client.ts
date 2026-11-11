@@ -816,6 +816,22 @@ export async function batchConfirmPeople(
   });
 }
 
+/** 把 source 人物并入 target；target 的名字、画像和关系保留。 */
+export async function mergePeople(
+  targetEntityId: string,
+  sourceEntityId: string,
+): Promise<PersonPayload> {
+  const response = await request<{ entity: PersonPayload }>("/people/merge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_entity_id: targetEntityId,
+      source_entity_id: sourceEntityId,
+    }),
+  });
+  return response.entity;
+}
+
 /**
  * 写一条实体属性。**别名走的就是这条路**：仓储把 ``aliases`` 存成
  * ``entity_properties`` 的一行（``ALIAS_PROPERTY_KEY``），``PATCH /people/{id}/name``
@@ -2020,6 +2036,10 @@ interface ClientEventPage {
 
 export interface ClientEventSummaryItem {
   account_id: string;
+  display_name?: string;
+  group_name?: string;
+  completed_uploads?: number;
+  completed_turns?: number;
   total: number;
   last_at: string;
   events: Record<string, number>;

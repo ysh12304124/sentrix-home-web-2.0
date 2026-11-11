@@ -185,19 +185,15 @@ def test_rename_writes_a_user_rename_revision(name_person: NamePerson, seeded_db
     ]
 
 
-def test_rename_turns_name_state_confirmed(name_person: NamePerson, seeded_db: Database):
-    """1.0 ``db.py:4459`` 的 ``name_state = 'confirmed'``：**手改过名字就算认过了**。
-
-    ``pending`` 的实体改名后 ``status`` 仍是 pending（改名不等于确认这个人），但
-    ``name_state`` 必须转 confirmed——界面据此把「待命名」摘掉。
-    """
+def test_rename_turns_name_state_and_status_confirmed(name_person: NamePerson, seeded_db: Database):
+    """用户在人物页给候选人填名字就是确认：name_state 与 status 都要转 confirmed。"""
     add_entity(seeded_db, "ent_1", name="待确认人物簇 · clu_1", status="pending")
     assert scalar(seeded_db, "SELECT name_state FROM entities WHERE id = 'ent_1'") == "anonymous"
 
     name_person.rename("ent_1", "妈妈")
 
     assert scalar(seeded_db, "SELECT name_state FROM entities WHERE id = 'ent_1'") == "confirmed"
-    assert scalar(seeded_db, "SELECT status FROM entities WHERE id = 'ent_1'") == "pending"
+    assert scalar(seeded_db, "SELECT status FROM entities WHERE id = 'ent_1'") == "confirmed"
 
 
 def test_rename_to_the_same_name_writes_no_revision(name_person: NamePerson, seeded_db: Database):
@@ -419,3 +415,16 @@ def test_same_name_in_another_scope_does_not_merge(name_person: NamePerson, seed
     assert scalar(seeded_db, "SELECT canonical_name FROM entities WHERE id = 'ent_other'") == "妈妈"
     assert scalar(seeded_db, "SELECT COUNT(*) FROM entities WHERE canonical_name = '妈妈'") == 2
     assert scalar(seeded_db, "SELECT status FROM face_clusters WHERE id = 'clu_2'") == "confirmed"
+
+
+def test_find_confirmed_person_by_name_with_empty_scope_searches_all_albums(
+    seeded_db: Database,
+):
+    """「全部相册」传到用户 API 的是空 scope；不能按空串精确匹配而查不到人。"""
+    entities = SqliteEntityRepository(seeded_db)
+    add_entity(seeded_db, "ent_1", name="明明", status="confirmed")
+
+    match = entities.find_confirmed_person_by_name("", "明明")
+
+    assert match is not None
+    assert match.entity_id == "ent_1"

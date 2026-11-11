@@ -100,6 +100,17 @@ class SplitClusterRequest(BaseModel):
     face_instance_id: str = ""
 
 
+class MergePeopleRequest(BaseModel):
+    """人物合并：保留 ``target_entity_id``，把 ``source_entity_id`` 并进去。"""
+
+    target_entity_id: str = ""
+    source_entity_id: str = ""
+
+
+class MergePeopleResponse(BaseModel):
+    entity: PersonPayload
+
+
 class PersonListResponse(BaseModel):
     people: list[PersonPayload]
 

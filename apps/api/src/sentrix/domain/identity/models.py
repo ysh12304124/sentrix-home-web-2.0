@@ -75,6 +75,7 @@ PROPERTY_STATUS_PENDING = "pending"
 
 REVISION_SOURCE_USER = "user"
 REVISION_SOURCE_USER_RENAME = "user_rename"
+REVISION_SOURCE_USER_MERGE = "user_merge"
 
 # 未命名人物簇对外显示的名字。用户只看到这一句，**不暴露内部 cluster id**。
 PENDING_CLUSTER_NAME = "未确认姓名人物"

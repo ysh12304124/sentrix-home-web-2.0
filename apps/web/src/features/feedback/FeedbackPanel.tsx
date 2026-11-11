@@ -299,7 +299,7 @@ function ExistingFeedbackPanel({ onClose }: { onClose: () => void }) {
               disabled={capturing || busy}
               onClick={() => void capturePage()}
             >
-              {capturing ? "正在截屏…" : "错误自动截屏"}
+              {capturing ? "正在截屏…" : "截屏"}
             </button>
             <span>截取的是反馈窗口后面的当前页面</span>
           </div>

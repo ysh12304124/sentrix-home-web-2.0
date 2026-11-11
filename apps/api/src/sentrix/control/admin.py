@@ -96,15 +96,40 @@ def incidents(
 def client_event_summary(
     request: Request,
     hours: int = 24,
+    all_time: bool = False,
     auth: AuthContext = Depends(require_admin),
 ) -> dict[str, object]:
-    """近 N 小时按账号聚合点击流；管理台用它展示每人的点击统计。"""
+    """按账号聚合点击流；``all_time=true`` 返回总体累计（受事件保留期限制）。"""
     del auth
     window = max(1, min(int(hours), 24 * 7))
-    since = (datetime.now(UTC) - timedelta(hours=window)).isoformat()
+    since = (
+        "1970-01-01T00:00:00+00:00"
+        if all_time
+        else (datetime.now(UTC) - timedelta(hours=window)).isoformat()
+    )
     accounts = request.app.state.route_table.ids()
-    items = _store(request).summarize_client_events(since=since, account_ids=accounts)
-    return {"hours": window, "since": since, "items": items}
+    store = _store(request)
+    items = store.summarize_client_events(since=since, account_ids=accounts)
+    directory = store.account_directory()
+    activity_totals = store.user_activity_totals()
+    by_account = {str(item["account_id"]): item for item in items}
+    # 图表要「一人一根柱」：没有点击记录的用户也补零，并把显示名/分组一起带出去。
+    items = []
+    for account_id in accounts:
+        item = dict(
+            by_account.get(
+                account_id,
+                {"account_id": account_id, "total": 0, "last_at": "", "events": {}},
+            )
+        )
+        meta = directory.get(account_id, {})
+        item["display_name"] = meta.get("display_name") or account_id
+        item["group_name"] = meta.get("group_name") or "项目组"
+        totals = activity_totals.get(account_id, {})
+        item["completed_uploads"] = int(totals.get("uploads", 0))
+        item["completed_turns"] = int(totals.get("turns", 0))
+        items.append(item)
+    return {"hours": 0 if all_time else window, "since": since, "items": items}
 
 
 @router.get("/admin/users/{account_id}")

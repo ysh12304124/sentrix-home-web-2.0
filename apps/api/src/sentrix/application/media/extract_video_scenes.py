@@ -126,6 +126,7 @@ class ExtractVideoScenes:
         self._video_repository = video_repository
         self._keyframes = keyframes
         self._process_image = process_image
+        self._observations = observations
         self._scene_planner = scene_planner
         self._transcriber = transcriber
         self._cross_modal_embedder = cross_modal_embedder
@@ -196,6 +197,7 @@ class ExtractVideoScenes:
 
         place = self._places.get(source_asset_id)
         place_text = place.display() if place else UNKNOWN_PLACE
+        video_end_sec = float(windows[-1].end_sec)
         derived_by_scene = {
             item.source_scene_index: item
             for item in self._video_repository.list_derived(source_asset_id)
@@ -314,6 +316,18 @@ class ExtractVideoScenes:
             for event in self._events.list_video_scenes(source_asset_id)
             if event.source_scene_index is not None
         }
+        # 新版本每个视频只有一条事件，source_scene_index=0 且覆盖整段视频。
+        # 重跑时不能再按场景序号逐条新建，否则会把已经合并的事件重新拆开。
+        whole_video_event = next(
+            (
+                event
+                for event in existing_events.values()
+                if float(event.source_start_sec or 0.0) <= 1e-6
+                and float(event.source_end_sec or 0.0) >= video_end_sec - 1e-3
+            ),
+            None,
+        )
+        scene_events: list[EventRecord] = []
         for position, (window, derived, was_existing) in enumerate(frame_records, start=1):
             if self._checkpoint is not None:
                 self._checkpoint("EVENT_BUILD", position - 1, len(frame_records), window.index)
@@ -324,11 +338,15 @@ class ExtractVideoScenes:
                 (_format_scene_transcript(overlapping), overlapping),
             )
             with stage_span("video_scene_write", asset.id):
-                event = (
-                    existing_events[window.index]
-                    if position <= self._resume_event_completed and window.index in existing_events
-                    else self._ensure_scene_event(asset, window, place_text, transcript, event_segments)
-                )
+                if whole_video_event is not None:
+                    event = whole_video_event
+                elif position <= self._resume_event_completed and window.index in existing_events:
+                    event = existing_events[window.index]
+                else:
+                    event = self._ensure_scene_event(
+                        asset, window, place_text, transcript, event_segments
+                    )
+            scene_events.append(event)
             finished = time.perf_counter()
             scene_write_seconds += finished - scene_started
             spans.include({"scene_write": (scene_started, finished)})
@@ -360,6 +378,53 @@ class ExtractVideoScenes:
             if self._checkpoint is not None:
                 self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
 
+        if scene_events:
+            primary = scene_events[0]
+            for extra in scene_events[1:]:
+                if extra.id != primary.id:
+                    self._events.merge(extra.id, primary.id)
+            # 视频资产本身还可能被导入链建过一条通用事件（时间地点信息不足）。
+            # 它也是这个视频的事件，一并折进唯一的视频事件，避免时间线出现两条。
+            if self._observations is not None:
+                video_observations = self._observations.list_by_asset(asset.id)
+                for event_id in self._events.events_for_observations(
+                    [item.id for item in video_observations]
+                ):
+                    if event_id != primary.id:
+                        self._events.merge(event_id, primary.id)
+            summary_parts: list[str] = []
+            for window, derived, _ in frame_records:
+                observations = (
+                    self._observations.list_by_asset(derived.id)
+                    if self._observations is not None
+                    else ()
+                )
+                text = _observation_text(observations[0]) if observations else ""
+                if text:
+                    summary_parts.append(f"{window.keyframe_timestamp_sec:.0f}s：{text}")
+            transcript_all = _format_scene_transcript(
+                _scene_segments(segments, 0.0, video_end_sec)
+            )
+            summary = "；".join(dict.fromkeys(part for part in summary_parts if part))[:1200]
+            if transcript_all:
+                summary = f"{summary}；语音：{transcript_all}" if summary else f"语音：{transcript_all}"
+            if not summary:
+                summary = f"视频：{asset.file_name}"
+            self._events.finalize_video_event(
+                primary.id,
+                # 先放占位标题，交给批次后处理的事件总结器统一生成标题与摘要；
+                # 用文件名当标题会把「视频 · 14219_raw视频」直接展示给用户。
+                title="待总结事件",
+                summary=summary[:1500],
+                time_start=asset.captured_at,
+                time_end=_offset(asset.captured_at, video_end_sec),
+                source_start_sec=0.0,
+                source_end_sec=video_end_sec,
+                speech_transcript=transcript_all,
+                speech_segments=_scene_segments(
+                    segments, 0.0, video_end_sec
+                ),
+            )
         spans.include({"total": (total_started, time.perf_counter())})
         return VideoSceneExtraction(
             scene_count=scene_count,
@@ -446,6 +511,24 @@ class ExtractVideoScenes:
             created_at=now,
             updated_at=now,
         )
+
+
+def _observation_text(observation: object) -> str:
+    """把一条关键帧观察压成事件描述里的短句。"""
+    parts: list[str] = []
+    for name in ("caption", "activity", "place"):
+        value = str(getattr(observation, name, "") or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    for name in ("objects", "clothing"):
+        values = getattr(observation, name, ()) or ()
+        text = "、".join(str(item).strip() for item in values if str(item).strip())
+        if text:
+            parts.append(text)
+    ocr = str(getattr(observation, "ocr_text", "") or "").strip()
+    if ocr:
+        parts.append(f"文字：{ocr[:120]}")
+    return "；".join(parts)[:300]
 
 
 def _offset(captured_at: datetime | None, seconds: float) -> datetime | None:

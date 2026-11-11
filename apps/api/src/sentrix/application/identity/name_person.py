@@ -9,8 +9,9 @@
 分支只写 ``entities`` 一行）。这一层就是那段反查与兜底，确认本身交给 ``ReviewCluster``
 ——同名并入、提及、家庭角色那几条规则只有一份。
 
-**改名不做同名合并。** 1.0 的 ``rename_person`` 只改名；把 B 改成 A 的名字不会把两人
-并起来。同名合并只发生在**确认**这条路上（那时才有人脸证据说明这是同一个人）。
+**改名就是确认。** 2026-11-10 的用户裁决：在人物页给待确认面孔填名字，表示用户已经
+认得这个人。因此改名后 ``status`` 也转 confirmed，agent 才能按已确认人物查到；若名字
+撞上另一个已确认的人，沿用确认路的同名合并规则。
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sentrix.application.identity.review_cluster import (
     ReviewCluster,
 )
 from sentrix.domain.identity.models import (
+    ENTITY_STATUS_CONFIRMED,
     ENTITY_TYPE_PERSON,
     EntityRecord,
 )
@@ -54,7 +56,13 @@ class NamePerson:
         self._review = review
 
     def rename(self, entity_id: str, new_name: str) -> RenameResult | None:
-        """给一个人改名：旧名折进别名，``name_state`` 转 ``confirmed``，留一条修订。
+        """给一个人改名，并把这个动作视为一次确认。
+
+        产品语义（2026-11-10 用户裁决）：用户在人物页给一个未确认的面孔填了名字，
+        就是明确表态「这是我认识的人」。因此改名不能再只把 ``name_state`` 置为
+        ``confirmed`` 而让 ``status`` 停在 ``pending``——那样 agent 按已确认人物
+        查名字时永远查不到他。改名后走 ``confirm_entity``：有可确认的簇就一并确认
+        簇、写提及、刷事件；没有簇就直接确认实体。
 
         非 person 实体返回 ``None``（1.0 的 ``rename_person`` 对非 person 返回 None，
         路由据此报 404）；空名字抛 ``InvalidReviewRequestError``（400），那是调用方出错，
@@ -69,6 +77,12 @@ class NamePerson:
         entity = self._entities.rename_person(entity_id, new_name)
         if entity is None:
             return None
+        if entity.status != ENTITY_STATUS_CONFIRMED:
+            confirmed = self.confirm_entity(
+                entity.id, name=str(new_name).strip(), family_role=entity.family_role
+            )
+            if confirmed is not None:
+                entity = confirmed.entity
         return RenameResult(entity=entity, aliases=self._entities.person_aliases(entity.id))
 
     def confirm_entity(

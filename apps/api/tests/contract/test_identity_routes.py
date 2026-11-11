@@ -455,24 +455,21 @@ def test_rename_with_a_blank_name_is_400(identity_client: TestClient):
     assert _error(response) == ("invalid_request", "person name is required")
 
 
-def test_renaming_a_pending_candidate_keeps_it_unnamed_on_the_wire(identity_client: TestClient):
-    """改名不等于确认这个人（1.0 ``db.py:4459`` 只动 ``name_state``）。
-
-    所以 ``pending`` 的实体改完名字，接口上仍然显示「未确认姓名人物」——界面据此知道这个人
-    还没被认过。这条钉住的是「改名」与「确认」是两件事。
-    """
+def test_renaming_a_pending_candidate_confirms_it(identity_client: TestClient):
+    """给待确认人物填名字就是确认，接口上应直接显示新名字。"""
     add_entity(identity_client, "ent_1", name="待确认人物簇 · cluster_1")
 
     response = identity_client.patch("/api/v1/people/ent_1/name", json={"name": "妈妈"})
 
     assert response.status_code == 200
-    assert response.json()["entity"]["canonical_name"] == PENDING_CLUSTER_NAME
-    assert response.json()["entity"]["confirmed"] is False
+    assert response.json()["entity"]["canonical_name"] == "妈妈"
+    assert response.json()["entity"]["status"] == "confirmed"
+    assert response.json()["entity"]["confirmed"] is True
     with _db(identity_client).connect() as connection:
         row = connection.execute(
             "SELECT canonical_name, name_state, status FROM entities WHERE id = 'ent_1'"
         ).fetchone()
-    assert (row["canonical_name"], row["name_state"], row["status"]) == ("妈妈", "confirmed", "pending")
+    assert (row["canonical_name"], row["name_state"], row["status"]) == ("妈妈", "confirmed", "confirmed")
 
 
 def test_rename_of_an_unknown_person_is_404(identity_client: TestClient):

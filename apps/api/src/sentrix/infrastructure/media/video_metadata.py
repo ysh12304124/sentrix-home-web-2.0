@@ -25,12 +25,14 @@ domain/application 碰子进程那类东西。端口声明在 ``domain/media/por
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from sentrix.domain.media.models import VideoMetadata
 from sentrix.infrastructure.media.ffprobe import (
     DEFAULT_PROBE_TIMEOUT_S,
     capture_time,
+    count_video_frames,
     iso6709_location,
     run_ffprobe,
 )
@@ -75,7 +77,15 @@ class FfprobeVideoMetadataReader:
                 rotation = int(float(stream_tags.get("rotate") or 0))
             except ValueError:
                 rotation = 0
-        fps = _rate(video.get("avg_frame_rate")) or _rate(video.get("r_frame_rate"))
+        # ``avg_frame_rate`` 通常更贴近实际，但部分 WebM 会写成 1000/1，而
+        # ``r_frame_rate`` 才是真实的 30/1。两者差一个数量级时以后者为准。
+        average_rate = _rate(video.get("avg_frame_rate"))
+        real_rate = _rate(video.get("r_frame_rate"))
+        fps = (
+            real_rate
+            if real_rate > 0 and (average_rate <= 0 or average_rate > real_rate * 2)
+            else average_rate or real_rate
+        )
         # 原片总帧数：1.0 唯一的读侧是 PhotoBench 的关键帧分析，它从
         # ``raw.streams[].nb_frames`` 取（``benchmark_orchestrator.py:5723-5726``），
         # 口径是 ``int(frames or 0)`` 且类型不对就吞掉。**照抄这个容错**：很多容器
@@ -86,6 +96,17 @@ class FfprobeVideoMetadataReader:
         except (TypeError, ValueError):
             frame_count = 0
         duration = float(format_info.get("duration") or video.get("duration") or 0)
+        # 没有容器/流时长时，用帧数 ÷ 真实帧率回推。先试流上的 nb_frames；很多
+        # WebM 连这个也不给，再走一次 ``-count_frames``。计数失败就保持 0，交给
+        # 场景采样器从解码帧回推，不能让「时长未知」把整条导入打死。
+        if duration <= 0:
+            if frame_count <= 0:
+                try:
+                    frame_count = count_video_frames(Path(path), timeout_s=self._timeout_s)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    frame_count = 0
+            if frame_count > 0 and fps > 0:
+                duration = frame_count / fps
         device = " ".join(
             filter(
                 None,

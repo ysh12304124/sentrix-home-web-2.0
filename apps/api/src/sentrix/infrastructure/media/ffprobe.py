@@ -66,6 +66,43 @@ def run_ffprobe(path: Path, *, timeout_s: int = DEFAULT_PROBE_TIMEOUT_S) -> dict
     return payload
 
 
+def count_video_frames(path: Path, *, timeout_s: int = DEFAULT_PROBE_TIMEOUT_S) -> int:
+    """缺时长时用 ``-count_frames`` 数一遍视频帧。
+
+    少数 WebM 只有帧时间戳、容器和流上都没有 duration/nb_frames（例如从剪辑软件
+    导出的片段）。它们仍能解码，只是拿不到时长；这时再跑一次带 ``-count_frames`` 的
+    ffprobe，配合帧率就能回推出时长。只在 ``duration <= 0`` 时调用，正常文件不走这条
+    解码整片的重路径。
+    """
+    process = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "json",
+            str(Path(path).resolve()),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+    )
+    if process.returncode:
+        raise ValueError(f"ffprobe frame count failed: {process.stderr.strip()[-1000:]}")
+    try:
+        payload = json.loads(process.stdout)
+        streams = payload.get("streams") or []
+        return int(streams[0].get("nb_read_frames") or 0) if streams else 0
+    except (TypeError, ValueError, IndexError, json.JSONDecodeError) as error:
+        raise ValueError(f"ffprobe frame count output is invalid: {error}") from error
+
+
 def normalized_datetime(value: object) -> str | None:
     """时区两种写法都要认：``+0800`` 补成 ``+08:00``，``Z`` 换成 ``+00:00``。"""
     text = str(value or "").strip()

@@ -65,13 +65,13 @@ export const TOURS: Readonly<Record<string, readonly TourStep[]>> = {
   people: [
     {
       selector: ".family-tabs",
-      title: "四个人物视图",
-      body: "在人物、关系、待确认的人物和人物介绍之间切换。",
+      title: "三个人物视图",
+      body: "在人物、关系和人物介绍之间切换。",
     },
     {
-      selector: ".people",
-      title: "先确认是谁",
-      body: "确认人物后，时间线和回答会更容易用名字找到内容；跳过不会改动原始照片。",
+      selector: ".family-roster",
+      title: "点开人物直接确认",
+      body: "点开一个人就能命名、设置关系和合并；命名或建立关系后，agent 会立刻按这个人查找。",
     },
   ],
   library: [

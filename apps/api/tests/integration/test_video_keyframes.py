@@ -55,6 +55,26 @@ def test_the_command_seeks_before_the_input_and_takes_exactly_one_frame(tmp_path
     assert command[command.index("-frames:v") + 1] == "1"
 
 
+def test_a_tail_timestamp_never_rounds_past_the_last_frame(tmp_path: Path):
+    """最后一帧的 PTS 是 23.063761；直接格式化会把 -ss 舍入到 23.064 并丢帧。"""
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"x")
+    last_frame = 23.063761430779746
+
+    def fake_run(command, **kwargs):
+        seek = float(command[command.index("-ss") + 1])
+        if seek <= last_frame:
+            Path(command[-1]).write_bytes(b"jpg")
+            return Mock(returncode=0, stdout="", stderr="")
+        # ffmpeg 越过最后一帧时就是这种形态：退出 0，但不写文件。
+        return Mock(returncode=0, stdout="", stderr="")
+
+    with patch(PATCH_TARGET, side_effect=fake_run):
+        result = _extractor(tmp_path).extract(source, "asset_1", 2, last_frame)
+
+    assert result.is_file()
+
+
 def test_failure_raises_with_the_ffmpeg_stderr(tmp_path: Path):
     source = tmp_path / "in.mov"
     source.write_bytes(b"x")

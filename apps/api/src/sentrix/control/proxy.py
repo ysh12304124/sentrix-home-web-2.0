@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -157,6 +158,7 @@ async def forward(
     client: httpx.AsyncClient,
     *,
     request_id: str | None = None,
+    on_finished: Callable[[], None] | None = None,
 ) -> StreamingResponse:
     rid = request_id or f"req_{uuid.uuid4().hex[:16]}"
     target = route.api_url + request.url.path
@@ -183,10 +185,15 @@ async def forward(
     }
     response_headers["x-request-id"] = rid
 
+    async def close_upstream() -> None:
+        await upstream.aclose()
+        if on_finished is not None:
+            on_finished()
+
     return StreamingResponse(
         upstream.aiter_raw(),
         status_code=upstream.status_code,
         headers=response_headers,
         media_type=upstream.headers.get("content-type"),
-        background=BackgroundTask(upstream.aclose),
+        background=BackgroundTask(close_upstream),
     )

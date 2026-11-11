@@ -4,7 +4,11 @@ import pytest
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
-from sentrix.infrastructure.media.metadata import PillowMetadataReader
+from sentrix.infrastructure.media.metadata import (
+    PillowMetadataReader,
+    _degrees_minutes_seconds,
+    _rational,
+)
 
 
 @pytest.fixture
@@ -39,6 +43,27 @@ def test_gps_degrees_minutes_seconds_are_converted(tmp_path):
     assert gps is not None
     assert gps.latitude == pytest.approx(18.7883, abs=1e-4)
     assert gps.longitude == pytest.approx(98.9853, abs=1e-4)
+
+
+def test_zero_over_zero_gps_is_a_missing_coordinate():
+    """手机常把整组 GPS 写成 0/0；它必须当作“没有定位”，不能让导入除零。"""
+
+    class ZeroRational:
+        numerator = 0
+        denominator = 0
+
+        def __float__(self):
+            raise ZeroDivisionError("division by zero")
+
+    assert _rational(ZeroRational()) is None
+    assert (
+        _degrees_minutes_seconds(
+            (ZeroRational(), ZeroRational(), ZeroRational()),
+            negative_ref="S",
+            ref_value="N",
+        )
+        is None
+    )
 
 
 def test_southern_and_western_hemispheres_are_negated(tmp_path):

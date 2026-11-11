@@ -216,6 +216,72 @@ const EMPTY_FILTERS: FeedbackFilters = {
   until: "",
 };
 
+interface ActivityUser {
+  accountId: string;
+  name: string;
+  clicks: number;
+  uploads: number;
+  questions: number;
+  total: number;
+}
+
+interface ActivityGroup {
+  name: string;
+  users: ActivityUser[];
+}
+
+function activityGroups(
+  items: readonly ClientEventSummaryItem[],
+  users: Record<string, ServiceState>,
+): ActivityGroup[] {
+  const byGroup = new Map<string, ActivityUser[]>();
+  for (const item of items) {
+    if (ACTIVITY_EXCLUDED_ACCOUNTS.has(item.account_id)) continue;
+    const status = users[item.account_id]?.status;
+    // 上传/问答优先取服务端直接查用户库的累计完成数；按需模式下 API 停着也有数。
+    const uploads = item.completed_uploads ?? status?.jobs?.completed ?? 0;
+    // partial 表示这次问答已经产生结果但只完成了一部分，仍计入已完成的问答。
+    const questions =
+      item.completed_turns ??
+      ((status?.turns?.complete ?? 0) + (status?.turns?.partial ?? 0));
+    // 之前用「全部事件 − 上传 − 提问」，结果 page.view、上传生命周期和
+    // assistant.accepted/complete 都被算成点击。点击只取明确的用户动作事件。
+    const clicks = [...CLICK_EVENT_NAMES].reduce(
+      (sum, eventName) => sum + (item.events[eventName] ?? 0),
+      0,
+    );
+    const user: ActivityUser = {
+      accountId: item.account_id,
+      name: (item.display_name ?? "").trim() || item.account_id,
+      clicks,
+      uploads,
+      questions,
+      total: clicks + uploads + questions,
+    };
+    const groupName = (item.group_name ?? "").trim() || "项目组";
+    const group = byGroup.get(groupName) ?? [];
+    group.push(user);
+    byGroup.set(groupName, group);
+  }
+  const rank = (name: string): number => {
+    const index = ACTIVITY_GROUP_ORDER.indexOf(name);
+    return index < 0 ? ACTIVITY_GROUP_ORDER.length : index;
+  };
+  return [...byGroup.entries()]
+    .map(([name, users]) => ({
+      name,
+      users: [...users].sort(
+        (left, right) =>
+          right.total - left.total || left.name.localeCompare(right.name, "zh-CN"),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        rank(left.name) - rank(right.name) ||
+        left.name.localeCompare(right.name, "zh-CN"),
+    );
+}
+
 const KIND_LABELS: Record<string, string> = {
   problem: "问题",
   inaccurate: "内容不准确",
@@ -328,6 +394,41 @@ const TURN_STATUS_LABELS: Record<string, string> = {
   cancelled: "已取消",
 };
 
+const RECENT_USER_LIMIT = 5;
+const FEEDBACK_PAGE_SIZE = 10;
+// 测试账号的历史数据量远大于真实用户，会把项目组的柱形图压扁；只从使用统计里排除，
+// 按用户运行/监控仍然保留，方便继续排查。
+const ACTIVITY_EXCLUDED_ACCOUNTS = new Set(["alice", "bob"]);
+const ACTIVITY_GROUP_ORDER = ["项目组", "505实验室", "体验用户"];
+// 真正的用户点击：导航、打开详情/筛选、时间线/回忆操作、反馈/帮助/引导、退出。
+// 不包含 page.view（自动）、import.*（上传列已统计）、assistant.*（问数列已统计）
+// 和 *_error（自动失败事件）。
+const CLICK_EVENT_NAMES = new Set([
+  "nav.click",
+  "scope.change",
+  "people.view",
+  "people.detail_open",
+  "people.filter",
+  "people.confirm_submit",
+  "library.view",
+  "library.detail_open",
+  "library.filter",
+  "timeline.month",
+  "timeline.date",
+  "timeline.event_open",
+  "memory.next",
+  "memory.prev",
+  "memory.pause",
+  "memory.resume",
+  "memory.video_play",
+  "feedback.open",
+  "help.open",
+  "onboarding.open",
+  "onboarding.skip",
+  "onboarding.complete",
+  "auth.logout",
+]);
+
 export function AdminPage() {
   const { identity } = useAuth();
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -346,6 +447,8 @@ export function AdminPage() {
   const restartKeys = useRef<Record<string, string>>({});
   // 展开状态独立于 10 秒总览刷新；默认全部收起，顺序按账号稳定排序。
   const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
+  const [showAllUsers, setShowAllUsers] = useState(false);
+  const [feedbackPage, setFeedbackPage] = useState(1);
   const [focusedRunId, setFocusedRunId] = useState("");
 
   const feedbackQuery = useMemo(() => {
@@ -369,7 +472,7 @@ export function AdminPage() {
             credentials: "same-origin",
           }),
           fetch("/control/v1/admin/trends?minutes=60", { credentials: "same-origin" }),
-          fetch("/control/v1/admin/client-events/summary?hours=24", {
+          fetch("/control/v1/admin/client-events/summary?all_time=true", {
             credentials: "same-origin",
           }),
         ]);
@@ -537,8 +640,31 @@ export function AdminPage() {
   const okCount = rows.filter((row) => row.state?.ok === true).length;
   const waiting = overview?.model_queue?.waiting ?? {};
   const queued = Object.values(waiting).reduce((total, value) => total + value, 0);
-  const users = Object.entries(overview?.services?.users ?? {}).sort(([a], [b]) =>
-    a.localeCompare(b),
+  // 「最近使用」取控制库记录的最后一次点击流时间；没有记录的用户排在末尾。
+  const users = useMemo(
+    () =>
+      Object.entries(overview?.services?.users ?? {}).sort(
+        ([leftAccount, left], [rightAccount, right]) => {
+          const leftTime = left.last_client_event?.received_at ?? "";
+          const rightTime = right.last_client_event?.received_at ?? "";
+          if (leftTime !== rightTime) {
+            if (leftTime === "") return 1;
+            if (rightTime === "") return -1;
+            return rightTime.localeCompare(leftTime);
+          }
+          return leftAccount.localeCompare(rightAccount);
+        },
+      ),
+    [overview],
+  );
+  const foldableUserCount = Math.max(0, users.length - RECENT_USER_LIMIT);
+  const visibleUsers = showAllUsers ? users : users.slice(0, RECENT_USER_LIMIT);
+  const hiddenUserCount = users.length - visibleUsers.length;
+  const feedbackPageCount = Math.max(1, Math.ceil(feedback.length / FEEDBACK_PAGE_SIZE));
+  const currentFeedbackPage = Math.min(feedbackPage, feedbackPageCount);
+  const pagedFeedback = feedback.slice(
+    (currentFeedbackPage - 1) * FEEDBACK_PAGE_SIZE,
+    currentFeedbackPage * FEEDBACK_PAGE_SIZE,
   );
   const activeJobsTotal = users.reduce(
     (total, [, state]) => total + (state.status?.jobs_active ?? activeJobCount(state.status)),
@@ -558,6 +684,23 @@ export function AdminPage() {
       ? Math.min(100, (gpu.memory_used_mib / gpu.memory_total_mib) * 100)
       : 0;
   const diskFree = overview?.host?.disk_free_gb;
+  const activity = useMemo(
+    () => activityGroups(eventSummary, overview?.services?.users ?? {}),
+    [eventSummary, overview?.services?.users],
+  );
+  const activityMax = useMemo(
+    () =>
+      activity.reduce(
+        (maximum, group) =>
+          group.users.reduce((groupMaximum, user) => Math.max(groupMaximum, user.total), maximum),
+        1,
+      ),
+    [activity],
+  );
+  const hasActivity = useMemo(
+    () => activity.some((group) => group.users.some((user) => user.total > 0)),
+    [activity],
+  );
 
   if (identity?.role !== "admin") {
     return (
@@ -746,64 +889,79 @@ export function AdminPage() {
 
       <div className="panel-head" style={{ marginTop: 22 }}>
         <h2>按用户运行</h2>
-        <small>默认收起；展开后显示运行详情与该账号的关键操作轨迹，不读取正文与媒体</small>
+        <small>
+          共 {users.length} 个用户，默认显示最近使用的 {Math.min(RECENT_USER_LIMIT, users.length)} 个；
+          展开用户可看运行详情与关键操作轨迹，不读取正文与媒体
+        </small>
       </div>
+      {users.length > 0 ? (
+        <div className="admin-list-toolbar">
+          <span>
+            {showAllUsers
+              ? `已展开全部 ${users.length} 个用户`
+              : `按最近使用排序，默认显示最近 ${Math.min(RECENT_USER_LIMIT, users.length)} 个`}
+          </span>
+          {foldableUserCount > 0 ? (
+            <button
+              type="button"
+              className="ghost-action"
+              aria-expanded={showAllUsers}
+              onClick={() => setShowAllUsers((value) => !value)}
+            >
+              {showAllUsers ? "收起其余用户" : `展开其余 ${foldableUserCount} 个用户`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="user-summary-list">
         {users.length === 0 ? (
           <div className="empty-panel">路由表里没有用户 API。</div>
         ) : (
-          users.map(([account, state]) => (
-            <UserSummary
-              key={account}
-              account={account}
-              state={state}
-              modelQueue={overview?.model_queue}
-              expanded={expandedUsers.has(account)}
-              onToggle={() =>
-                setExpandedUsers((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(account)) next.delete(account);
-                  else next.add(account);
-                  return next;
-                })
-              }
-              focusedRunId={focusedRunId}
-              onFocusRun={setFocusedRunId}
-            />
-          ))
+          <>
+            {visibleUsers.map(([account, state]) => (
+              <UserSummary
+                key={account}
+                account={account}
+                state={state}
+                modelQueue={overview?.model_queue}
+                expanded={expandedUsers.has(account)}
+                onToggle={() =>
+                  setExpandedUsers((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(account)) next.delete(account);
+                    else next.add(account);
+                    return next;
+                  })
+                }
+                focusedRunId={focusedRunId}
+                onFocusRun={setFocusedRunId}
+              />
+            ))}
+            {foldableUserCount > 0 ? (
+              <button
+                type="button"
+                className="text-button admin-fold-toggle"
+                aria-expanded={showAllUsers}
+                onClick={() => setShowAllUsers((value) => !value)}
+              >
+                {showAllUsers ? "收起其余用户" : `展开其余 ${foldableUserCount} 个用户`}
+              </button>
+            ) : null}
+          </>
         )}
       </div>
 
       <article className="panel">
         <div className="panel-head">
-          <h2>点击流统计</h2>
-          <small>近 24 小时，按账号分组</small>
+          <h2>用户使用统计</h2>
+          <small>
+            上传取已完成作业数，问答含部分完成；点击只计明确用户操作（点击流保留 7 天）
+          </small>
         </div>
-        {eventSummary.length === 0 ? (
-          <div className="empty-panel">近 24 小时还没有可统计的点击记录。</div>
+        {!hasActivity ? (
+          <div className="empty-panel">还没有可统计的使用记录。</div>
         ) : (
-          <div className="service-list">
-            {eventSummary.map((item) => {
-              const top = Object.entries(item.events)
-                .sort(([, a], [, b]) => b - a)
-                .slice(0, 3);
-              return (
-                <div key={item.account_id} className="service-row">
-                  <span className="status-dot" />
-                  <div>
-                    <strong>{item.account_id}</strong>
-                    <small>
-                      近 24h 点击 {item.total} 次
-                      {top.length > 0
-                        ? ` · ${top.map(([name, count]) => `${EVENT_LABELS[name] ?? name} ${count}`).join(" · ")}`
-                        : ""}
-                    </small>
-                  </div>
-                  <span className="service-badge">{formatAge(item.last_at)}</span>
-                </div>
-              );
-            })}
-          </div>
+          <ActivityChart groups={activity} maxTotal={activityMax} />
         )}
       </article>
 
@@ -843,12 +1001,15 @@ export function AdminPage() {
               : ""}
           </p>
           <div className="queue-chips" style={{ marginTop: 14 }}>
-            {users.map(([account]) => (
+            {visibleUsers.map(([account]) => (
               <span key={account} className="queue-chip">
                 {account} 执行 <b>{overview?.model_queue?.active_by_user?.[account] ?? 0}</b> ·
                 排队 <b>{sum(overview?.model_queue?.waiting_by_user?.[account])}</b>
               </span>
             ))}
+            {hiddenUserCount > 0 ? (
+              <span className="queue-chip">其余 {hiddenUserCount} 个用户已折叠</span>
+            ) : null}
           </div>
         </article>
 
@@ -918,7 +1079,9 @@ export function AdminPage() {
       <article className="panel">
         <div className="panel-head">
           <h2>反馈收件箱</h2>
-          <small>按账号、类型、状态、时间和关联 ID 筛选</small>
+          <small>
+            按账号、类型、状态、时间和关联 ID 筛选；每页 {FEEDBACK_PAGE_SIZE} 条
+          </small>
         </div>
         <div className="feedback-filters">
           <input
@@ -977,7 +1140,14 @@ export function AdminPage() {
               }
             />
           </label>
-          <button type="button" className="ghost-action" onClick={() => setFilters(filterDraft)}>
+          <button
+            type="button"
+            className="ghost-action"
+            onClick={() => {
+              setFilters(filterDraft);
+              setFeedbackPage(1);
+            }}
+          >
             筛选
           </button>
           <button
@@ -986,6 +1156,7 @@ export function AdminPage() {
             onClick={() => {
               setFilterDraft(EMPTY_FILTERS);
               setFilters(EMPTY_FILTERS);
+              setFeedbackPage(1);
             }}
           >
             清空
@@ -994,8 +1165,9 @@ export function AdminPage() {
         {feedback.length === 0 ? (
           <div className="empty-panel">当前筛选下没有反馈。</div>
         ) : (
-          <div className="feedback-admin-list">
-            {feedback.map((item) => {
+          <>
+            <div className="feedback-admin-list">
+              {pagedFeedback.map((item) => {
               const value = draft[item.id] ?? { status: item.status, reply: item.reply };
               const related = [
                 item.job_id ? `job ${item.job_id}` : "",
@@ -1077,9 +1249,35 @@ export function AdminPage() {
                     </button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+            <div className="admin-pagination">
+              <span>
+                共 {feedback.length} 条 · 第 {currentFeedbackPage} / {feedbackPageCount} 页
+              </span>
+              {feedbackPageCount > 1 ? (
+                <div>
+                  <button
+                    type="button"
+                    className="ghost-action"
+                    disabled={currentFeedbackPage <= 1}
+                    onClick={() => setFeedbackPage(currentFeedbackPage - 1)}
+                  >
+                    上一页
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-action"
+                    disabled={currentFeedbackPage >= feedbackPageCount}
+                    onClick={() => setFeedbackPage(currentFeedbackPage + 1)}
+                  >
+                    下一页
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </>
         )}
       </article>
 
@@ -1122,6 +1320,91 @@ export function AdminPage() {
   );
 }
 
+function ActivityChart({
+  groups,
+  maxTotal,
+}: {
+  groups: readonly ActivityGroup[];
+  maxTotal: number;
+}) {
+  return (
+    <div className="activity-wrap">
+      <div className="activity-legend">
+        <span><i className="legend-swatch clicks" />点击</span>
+        <span><i className="legend-swatch uploads" />上传</span>
+        <span><i className="legend-swatch questions" />问答</span>
+      </div>
+      {groups.map((group) => {
+        return (
+          <section key={group.name} className="activity-group">
+            <div className="activity-group-head">
+              <h3>{group.name}</h3>
+              <small>{group.users.length} 人</small>
+            </div>
+            <div
+              className="activity-list"
+              role="img"
+              aria-label={`${group.name}用户点击、上传和问答累计柱形图`}
+            >
+              {group.users.map((user) => {
+                const width = user.total > 0 ? (user.total / maxTotal) * 100 : 0;
+                return (
+                  <div
+                    key={user.accountId}
+                    className="activity-row"
+                    title={`${user.name}（${user.accountId}）：点击 ${user.clicks} · 上传 ${user.uploads} · 问答 ${user.questions}`}
+                  >
+                    <span className="activity-name" title={`${user.name}（${user.accountId}）`}>
+                      {user.name}
+                    </span>
+                    <div className="activity-track">
+                      {width > 0 ? (
+                        <div
+                          className="activity-bar"
+                          style={{ width: `${Math.max(0.8, width)}%` }}
+                        >
+                          {user.clicks > 0 ? (
+                            <span
+                              className="activity-segment clicks"
+                              style={{ flexGrow: user.clicks, flexBasis: 0 }}
+                              title={`点击 ${user.clicks}`}
+                            >
+                              {user.clicks}
+                            </span>
+                          ) : null}
+                          {user.uploads > 0 ? (
+                            <span
+                              className="activity-segment uploads"
+                              style={{ flexGrow: user.uploads, flexBasis: 0 }}
+                              title={`上传 ${user.uploads}`}
+                            >
+                              {user.uploads}
+                            </span>
+                          ) : null}
+                          {user.questions > 0 ? (
+                            <span
+                              className="activity-segment questions"
+                              style={{ flexGrow: user.questions, flexBasis: 0 }}
+                              title={`问答 ${user.questions}`}
+                            >
+                              {user.questions}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="activity-total">{user.total}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 function UserSummary({
   account,
   state,
@@ -1144,7 +1427,9 @@ function UserSummary({
   const activeTurns = status?.turns_active ?? status?.active_turns?.length ?? 0;
   const needsAttention =
     (status?.jobs?.needs_attention ?? 0) + (status?.jobs?.partial ?? 0);
-  const abnormal = state.ok !== true;
+  // 按需模式下停掉的用户 API 会显示 ConnectError；这是“休眠”，不是故障。
+  const asleep = state.ok !== true && state.error === "ConnectError";
+  const abnormal = state.ok !== true && !asleep;
   const last = state.last_client_event;
   return (
     <article className="panel user-summary" data-abnormal={abnormal} id={`user-${account}`}>
@@ -1157,8 +1442,12 @@ function UserSummary({
       >
         <span className="summary-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
         <span className="summary-account">{account}</span>
-        <span className="summary-state" data-ok={!abnormal}>
-          {abnormal ? "异常" : "在线"}
+        <span
+          className="summary-state"
+          data-ok={abnormal ? false : undefined}
+          data-asleep={asleep}
+        >
+          {asleep ? "休眠" : abnormal ? "异常" : "在线"}
         </span>
         <span className="summary-metric">在飞导入 <b>{activeJobs}</b></span>
         <span className="summary-metric">在飞问答 <b>{activeTurns}</b></span>

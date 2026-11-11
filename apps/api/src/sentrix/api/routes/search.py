@@ -3,21 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.media import to_summary
 from sentrix.api.schemas.search import ChannelTrace, SearchHit, SearchResponse
-from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
-from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-from sentrix.application.retrieval.retrieve_graph import RetrieveGraph
-from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
-from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
-from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
-from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
+from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest
 from sentrix.bootstrap.assistant_wiring import build_retrieve_evidence
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import MediaType
@@ -97,6 +90,7 @@ def search_assets(
     )
 
     items: list[SearchHit] = []
+    seen: set[str] = set()
     for hit in result.hits:
         asset = container.asset_repository.get(hit.asset_id)
         if asset is None:
@@ -104,6 +98,13 @@ def search_assets(
             # **可打开的**原图，所以只能丢弃——但丢弃这件事必须留痕。
             log.warning("检索命中了一个已不存在的资产，已丢弃: %s", hit.asset_id)
             continue
+        if asset.derived_kind == "video_keyframe" and asset.parent_asset_id:
+            parent = container.asset_repository.get(asset.parent_asset_id)
+            if parent is not None:
+                asset = parent
+        if asset.id in seen:
+            continue
+        seen.add(asset.id)
         items.append(
             SearchHit(
                 asset=to_summary(asset),

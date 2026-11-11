@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path  # noqa: F401 - 同时用于 SPA 目录解析
@@ -32,6 +33,7 @@ from sentrix.control.internal_model import router as internal_model_router
 from sentrix.control.metrics import collect_host_snapshot
 from sentrix.control.model_gate import ModelClientTable, ModelGate, ModelTarget
 from sentrix.control.monitor import Monitor
+from sentrix.control.on_demand import UserApiSupervisor
 from sentrix.control.proxy import (
     PROXY_METHODS,
     RouteTable,
@@ -42,6 +44,7 @@ from sentrix.control.store import CONTROL_MIGRATIONS_DIR, AccountError, ControlS
 from sentrix.infrastructure.persistence.database import Database
 
 CONTROL_PREFIX = "/control/v1"
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: ControlSettings | None = None) -> FastAPI:
@@ -68,6 +71,16 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         gate=gate,
         primary=not settings.admin_only,
     )
+    supervisor = (
+        UserApiSupervisor(
+            routes,
+            helper=settings.user_api_helper,
+            idle_ttl_s=settings.user_idle_ttl_s,
+            start_timeout_s=settings.user_start_timeout_s,
+        )
+        if settings.on_demand_users and not settings.admin_only
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -78,10 +91,14 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
         )
         app.state.http_client = client
         monitor.start()
+        if supervisor is not None:
+            supervisor.start()
         try:
             yield
         finally:
             monitor.stop()
+            if supervisor is not None:
+                await supervisor.shutdown()
             await client.aclose()
 
     app = FastAPI(title="Sentrix Control", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -91,6 +108,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
     app.state.model_gate = gate
     app.state.model_client_table = model_clients
     app.state.monitor = monitor
+    app.state.user_supervisor = supervisor
 
     router = APIRouter(prefix=CONTROL_PREFIX)
 
@@ -161,7 +179,27 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             route = routes.get(auth.account.id)
             if route is None:
                 raise HTTPException(status_code=503, detail="user API is not configured")
-            return await forward(request, route, request.app.state.http_client)
+            supervisor: UserApiSupervisor | None = request.app.state.user_supervisor
+            if supervisor is None:
+                return await forward(request, route, request.app.state.http_client)
+            try:
+                await supervisor.ensure_started(
+                    auth.account.id, route, request.app.state.http_client
+                )
+            except Exception as error:  # noqa: BLE001 - 启动失败只影响这个账号
+                log.warning("ensure user API failed account=%s", auth.account.id, exc_info=True)
+                raise HTTPException(status_code=503, detail="user API is not available") from error
+            supervisor.begin(auth.account.id)
+            try:
+                return await forward(
+                    request,
+                    route,
+                    request.app.state.http_client,
+                    on_finished=supervisor.end_callback(auth.account.id),
+                )
+            except BaseException:
+                supervisor.end(auth.account.id)
+                raise
 
     # 同一个 React 构建由控制面提供；API 前缀已在上面的路由里处理，SPA 只兜底其余 GET。
     dist = Path(__file__).resolve().parents[5] / "apps" / "web" / "dist"

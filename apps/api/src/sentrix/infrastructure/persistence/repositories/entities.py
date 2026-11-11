@@ -25,11 +25,13 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_CONFIRMED,
     ENTITY_STATUS_PENDING,
     ENTITY_STATUS_REJECTED,
+    ENTITY_STATUS_SUPERSEDED,
     ENTITY_TYPE_PERSON,
     PROPERTY_SOURCE_USER,
     PROPERTY_STATUS_ACTIVE,
     PROPERTY_STATUS_PENDING,
     RETIRED_CANDIDATE_SUMMARY,
+    REVISION_SOURCE_USER_MERGE,
     REVISION_SOURCE_USER_RENAME,
     ClusterState,
     EntityDecoration,
@@ -555,22 +557,31 @@ class SqliteEntityRepository:
         return True
 
     def find_confirmed_person_by_name(self, scope_id: str, name: str) -> PersonNameMatch | None:
+        """按名字找已确认人物；``scope_id`` 为空 = 跨全部相册。
+
+        「全部相册」是前端真实存在的选择，控制面会把空 scope 传到用户 API。此时仍按
+        单个空串去查会一条都找不到——用户刚在全部相册里命名的人，agent 看起来就像
+        「不存在」。与 ``family_graph_people`` 的口径保持一致：空 scope 查所有空间。
+        """
         target = str(name or "").strip()
         if not target:
             return None
+        scope_clause = " AND scope_id = ?" if scope_id else ""
+        scope_params: tuple[object, ...] = (scope_id,) if scope_id else ()
         with self._database.connect() as connection:
             exact = connection.execute(
                 f"SELECT {_ENTITY_COLUMNS} FROM entities"
-                " WHERE scope_id = ? AND entity_type = ? AND status = ? AND canonical_name = ?"
-                " ORDER BY updated_at DESC LIMIT 1",
-                (scope_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED, target),
+                " WHERE entity_type = ? AND status = ? AND canonical_name = ?"
+                f"{scope_clause} ORDER BY updated_at DESC LIMIT 1",
+                (ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED, target, *scope_params),
             ).fetchone()
             if exact is not None:
                 return PersonNameMatch(entity_id=exact["id"], via_alias=False)
             # 精确名没有才轮到别名。顺序不能反：反了的话，A 的别名会抢走名字真的叫这个的 B。
             candidates = connection.execute(
-                "SELECT id FROM entities WHERE scope_id = ? AND entity_type = ? AND status = ?",
-                (scope_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED),
+                "SELECT id FROM entities WHERE entity_type = ? AND status = ?"
+                f"{scope_clause} ORDER BY updated_at DESC",
+                (ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED, *scope_params),
             ).fetchall()
         for candidate in candidates:
             if target in self.person_aliases(candidate["id"]):
@@ -945,6 +956,148 @@ class SqliteEntityRepository:
                     (),
                 )
         return self.get(entity_id)
+
+    def merge_person_into(self, target_entity_id: str, source_entity_id: str) -> EntityRecord:
+        """把 source 人物并入 target，保留 target 的名字与画像。
+
+        用户已经确认的两个人合并不是聚类猜测：它明确表示「这两个名字是同一个人」。
+        因此这里直接搬走所有以实体 id 为外键的子行，并把 source 标成 superseded。
+        搬移顺序固定：先 ``UPDATE OR IGNORE`` 再删残留，避免撞唯一键时把 source 的
+        证据整批丢掉。
+        """
+        if target_entity_id == source_entity_id:
+            raise ValueError("cannot merge an entity into itself")
+        target = self.get(target_entity_id)
+        source = self.get(source_entity_id)
+        if (
+            target is None
+            or source is None
+            or target.entity_type != ENTITY_TYPE_PERSON
+            or source.entity_type != ENTITY_TYPE_PERSON
+        ):
+            raise ValueError("both merge endpoints must be person entities")
+        if (target.scope_id or DEFAULT_SCOPE_ID) != (source.scope_id or DEFAULT_SCOPE_ID):
+            raise ValueError("persons must belong to the same memory space")
+
+        # 旧名字要留在 target 的别名里，否则合并后无法再用旧名检索。
+        aliases = list(self.person_aliases(target.id))
+        for value in (*self.person_aliases(source.id), source.canonical_name):
+            if value and not is_pending_cluster_name(value) and value not in aliases:
+                aliases.append(value)
+        if aliases:
+            self.set_person_aliases(target.id, aliases)
+
+        now = _now()
+        with self._database.connect() as connection, connection:
+            for table, column in (
+                ("entity_mentions", "entity_id"),
+                ("event_participants", "person_id"),
+                ("event_entities", "entity_id"),
+                ("person_appearance_evidence", "person_id"),
+                ("person_moments", "person_id"),
+            ):
+                connection.execute(
+                    f"UPDATE OR IGNORE {table} SET {column} = ? WHERE {column} = ?",
+                    (target.id, source.id),
+                )
+                connection.execute(f"DELETE FROM {table} WHERE {column} = ?", (source.id,))
+
+            connection.execute(
+                "INSERT OR IGNORE INTO entity_observations"
+                " (entity_id, observation_id, confidence, source, created_at)"
+                " SELECT ?, observation_id, confidence, source, created_at"
+                " FROM entity_observations WHERE entity_id = ?",
+                (target.id, source.id),
+            )
+            connection.execute("DELETE FROM entity_observations WHERE entity_id = ?", (source.id,))
+
+            # 关系表没有唯一约束：先搬两端，再把合并后变成自环的边退休。
+            for table in ("relationships", "family_relationships"):
+                state_column = "status" if table == "relationships" else "state"
+                connection.execute(
+                    f"UPDATE {table} SET subject_entity_id = ? WHERE subject_entity_id = ?",
+                    (target.id, source.id),
+                )
+                connection.execute(
+                    f"UPDATE {table} SET object_entity_id = ? WHERE object_entity_id = ?",
+                    (target.id, source.id),
+                )
+                connection.execute(
+                    f"UPDATE {table} SET {state_column} = 'superseded', updated_at = ?"
+                    " WHERE subject_entity_id = ? AND object_entity_id = ?",
+                    (now, target.id, target.id),
+                )
+
+            # 归属/画像：target 没有生效行才搬，否则 source 的行退休，避免两行同时生效。
+            for table, state_column in (
+                ("family_person_memberships", "state"),
+                ("family_person_portraits", "state"),
+            ):
+                has_target = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE entity_id = ? AND {state_column} = 'effective' LIMIT 1",
+                    (target.id,),
+                ).fetchone()
+                if has_target is None:
+                    connection.execute(
+                        f"UPDATE {table} SET entity_id = ? WHERE entity_id = ?",
+                        (target.id, source.id),
+                    )
+                else:
+                    connection.execute(
+                        f"UPDATE {table} SET {state_column} = 'superseded', updated_at = ?"
+                        " WHERE entity_id = ? AND {state_column} = 'effective'".format(
+                            state_column=state_column
+                        ),
+                        (now, source.id),
+                    )
+
+            # 属性：target 已有同名 key 就保留 target 的，source 的退休；否则整体搬过去。
+            keys = connection.execute(
+                "SELECT DISTINCT property_key FROM entity_properties"
+                " WHERE entity_id = ? AND status IN ('active', 'pending')",
+                (source.id,),
+            ).fetchall()
+            for row in keys:
+                key = str(row["property_key"])
+                target_has = connection.execute(
+                    "SELECT 1 FROM entity_properties WHERE entity_id = ? AND property_key = ?"
+                    " AND status IN ('active', 'pending') LIMIT 1",
+                    (target.id, key),
+                ).fetchone()
+                if target_has is None:
+                    connection.execute(
+                        "UPDATE entity_properties SET entity_id = ?"
+                        " WHERE entity_id = ? AND property_key = ?",
+                        (target.id, source.id, key),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE entity_properties SET status = 'superseded', updated_at = ?"
+                        " WHERE entity_id = ? AND property_key = ?"
+                        " AND status IN ('active', 'pending')",
+                        (now, source.id, key),
+                    )
+
+            connection.execute(
+                "UPDATE entities SET status = ?, summary = ?, updated_at = ? WHERE id = ?",
+                (
+                    ENTITY_STATUS_SUPERSEDED,
+                    f"{source.summary}（已合并到 {target.canonical_name}）".strip(),
+                    now,
+                    source.id,
+                ),
+            )
+
+        self.record_revision(
+            target.id,
+            "merged_person",
+            source.id,
+            None,
+            source=REVISION_SOURCE_USER_MERGE,
+        )
+        merged = self.get(target.id)
+        assert merged is not None
+        return merged
 
     # ---- 提及桥 ------------------------------------------------------------------
 

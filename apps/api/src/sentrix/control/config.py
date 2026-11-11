@@ -54,6 +54,11 @@ class ControlSettings(BaseSettings):
     model_clients_file: Path = DEFAULT_MODEL_CLIENTS_FILE
 
     sample_interval_s: float = Field(default=10.0, gt=0)
+    # 每用户 API 按需启动：控制面在转发前拉起对应 systemd 单元，空闲后自动停掉。
+    on_demand_users: bool = False
+    user_api_helper: str = "/usr/local/sbin/sentrix-user-api"
+    user_idle_ttl_s: int = Field(default=600, gt=0)
+    user_start_timeout_s: float = Field(default=30.0, gt=0)
     restart_units: str = ""
     # 管理台显式标注：这些单元里的共享模型重启会影响全部用户。
     shared_model_units: str = ""

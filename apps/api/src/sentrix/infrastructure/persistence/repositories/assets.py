@@ -148,13 +148,16 @@ class SqliteAssetRepository:
         """
         scope_clause = "" if scope_id is None else " WHERE scope_id = ?"
         scope_params: tuple[object, ...] = () if scope_id is None else (scope_id,)
-        type_clause = " WHERE media_type = ?" if media_type else ""
         type_params: tuple[object, ...] = (media_type,) if media_type else ()
+        # 关键帧是视频的内部证据，不进入用户资料库；视频本身仍在列表里。
+        derived_clause = "derived_kind IS NULL"
         if scope_id is None:
-            where = type_clause
+            where = f" WHERE {derived_clause}" + (" AND media_type = ?" if media_type else "")
             params = type_params
         else:
-            where = scope_clause if not media_type else f"{scope_clause} AND media_type = ?"
+            where = f"{scope_clause} AND {derived_clause}" + (
+                " AND media_type = ?" if media_type else ""
+            )
             params = (*scope_params, *type_params)
 
         sort_expression = (
@@ -165,7 +168,8 @@ class SqliteAssetRepository:
         with self._database.connect() as connection:
             counts_rows = connection.execute(
                 "SELECT media_type, COUNT(*) AS n FROM assets"
-                f"{scope_clause} GROUP BY media_type",
+                f"{scope_clause}{' AND' if scope_clause else ' WHERE'} derived_kind IS NULL"
+                " GROUP BY media_type",
                 scope_params,
             ).fetchall()
             counts = {str(row["media_type"]): int(row["n"]) for row in counts_rows}

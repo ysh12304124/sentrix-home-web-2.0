@@ -10,7 +10,7 @@ import {
   type AssistantTurnPoll,
   type ConversationDetail,
 } from "../../shared/api/client";
-import { Lightbox } from "../../shared/ui/Lightbox";
+import { Lightbox, type LightboxItem } from "../../shared/ui/Lightbox";
 import { ResultSetWall } from "./ResultSetWall";
 import { TurnTimeline, isTerminalStatus } from "./TurnTimeline";
 import { useTurnStream } from "./useTurnStream";
@@ -139,7 +139,7 @@ export function AssistantPanel({
   /** 当前这一轮是哪个会话的哪条 exchange——切换会话后到达的结果不该串台。 */
   const [live, setLive] = useState<{ conversationId: string; key: string } | null>(null);
   // 交付照片点开是全屏看图，不是新标签打开原文件。
-  const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ items: LightboxItem[]; index: number } | null>(null);
   const progressRef = useRef<AssistantProgressEvent[]>([]);
   const historyToken = useRef(0);
   const pollTimers = useRef<Map<string, number>>(new Map());
@@ -427,7 +427,7 @@ export function AssistantPanel({
               ) : null}
               {exchange.attachments.length > 0 ? (
                 <ul className="assistant-photos">
-                  {exchange.attachments.map((photo) => (
+                  {exchange.attachments.map((photo, photoIndex) => (
                     <li key={photo.handle}>
                       {/* **点图片是放大**，不是新标签打开原文件——后者遇到 HEIC
                           或不认识的 MIME 会被浏览器直接下载。 */}
@@ -436,14 +436,17 @@ export function AssistantPanel({
                         className="assistant-photo-open"
                         onClick={() =>
                           setLightbox({
-                            src: deliveredPhotoUrl(photo.asset_id, photo.file_name),
-                            caption: "相关照片",
+                            items: exchange.attachments.map((item) => ({
+                              src: deliveredPhotoUrl(item.asset_id, item.file_name),
+                              caption: "相关照片",
+                            })),
+                            index: photoIndex,
                           })
                         }
                       >
                         <img
                           src={deliveredPhotoThumbUrl(photo.asset_id)}
-                          alt="相关照片"
+                          alt={photo.file_name || "相关照片"}
                           loading="lazy"
                         />
                       </button>
@@ -486,8 +489,11 @@ export function AssistantPanel({
       </div>
       {lightbox === null ? null : (
         <Lightbox
-          src={lightbox.src}
-          caption={lightbox.caption}
+          items={lightbox.items}
+          index={lightbox.index}
+          onIndexChange={(index) =>
+            setLightbox((current) => (current === null ? current : { ...current, index }))
+          }
           onClose={() => setLightbox(null)}
         />
       )}

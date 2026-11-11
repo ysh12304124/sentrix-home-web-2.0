@@ -617,6 +617,14 @@ class EntityRepository(Protocol):
         ``ValueError``——空名字不是「不改名」，是调用方出错。"""
         ...
 
+    def merge_person_into(self, target_entity_id: str, source_entity_id: str) -> EntityRecord:
+        """把 source 人物并入 target：搬提及/观察关联/事件参与者/关系/归属/画像。
+
+        source 最终标成 ``superseded``，不再出现在人物列表与 agent 的已确认人物查询里。
+        两个实体必须在同一 scope，且 source/target 不能相同；否则抛 ``ValueError``。
+        """
+        ...
+
     def link_confirmed_mention(
         self,
         entity_id: str,

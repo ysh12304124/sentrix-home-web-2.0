@@ -1,37 +1,109 @@
 /**
- * 全屏看图。**点图片应当放大，不是下载。**
+ * 全屏看图。点图片放大，不下载；支持多图左右滑动和关闭。
  *
- * 此前时间线详情、助手交付照片、人物证据都把图片包在
- * `<a href="/assets/{id}/file" target="_blank">` 里——新标签打开的是原文件，
- * 浏览器遇到 HEIC 或不认识的 MIME 就直接下载，用户点「图片」得到的是一个文件。
- *
- * 这里只做一件事：给一个 `src`，全屏显示它。关闭方式三个：点遮罩、右上角按钮、Esc。
- * 原文件链接仍然保留在各自的详情里（那是显式的「打开原文件」，语义不同）。
+ * 用 portal 挂到 body：助手结果集在滚动容器里，固定定位如果落在一个有
+ * transform/overflow 的祖先里，会被裁切或盖住关闭按钮。portal 后层级和点击
+ * 不受宿主布局影响。
  */
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-export interface LightboxProps {
+export interface LightboxItem {
   src: string;
   alt?: string;
   caption?: string;
+}
+
+export interface LightboxProps {
+  /** 单图用法；多图优先用 items。 */
+  src?: string;
+  alt?: string;
+  caption?: string;
+  items?: readonly LightboxItem[];
+  index?: number;
+  onIndexChange?: (index: number) => void;
   onClose: () => void;
 }
 
-export function Lightbox({ src, alt = "", caption = "", onClose }: LightboxProps) {
+function clampIndex(value: number, length: number): number {
+  if (length <= 0) return 0;
+  return Math.max(0, Math.min(length - 1, value));
+}
+
+export function Lightbox({
+  src = "",
+  alt = "",
+  caption = "",
+  items,
+  index,
+  onIndexChange,
+  onClose,
+}: LightboxProps) {
+  const photos: readonly LightboxItem[] =
+    items !== undefined && items.length > 0
+      ? items
+      : src !== ""
+        ? [{ src, alt, caption }]
+        : [];
+  const [internalIndex, setInternalIndex] = useState(index ?? 0);
+  const activeIndex = clampIndex(index ?? internalIndex, photos.length);
+  const active = photos[activeIndex];
+  const touchStart = useRef<number | null>(null);
+  const swiped = useRef(false);
+
+  const move = (delta: number) => {
+    if (photos.length <= 1) return;
+    const next = clampIndex(activeIndex + delta, photos.length);
+    if (next === activeIndex) return;
+    if (onIndexChange !== undefined) onIndexChange(next);
+    else setInternalIndex(next);
+  };
+
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
+      if (event.key === "ArrowLeft") move(-1);
+      if (event.key === "ArrowRight") move(1);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  });
 
-  return (
-    <div className="lightbox" role="dialog" aria-modal="true" aria-label={alt || "图片预览"} onClick={onClose}>
+  if (active === undefined) return null;
+
+  const overlay = (
+    <div
+      className="lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={active.alt || active.caption || "图片预览"}
+      onClick={() => {
+        if (swiped.current) {
+          swiped.current = false;
+          return;
+        }
+        onClose();
+      }}
+      onTouchStart={(event) => {
+        touchStart.current = event.touches[0]?.clientX ?? null;
+        swiped.current = false;
+      }}
+      onTouchEnd={(event) => {
+        const start = touchStart.current;
+        touchStart.current = null;
+        const end = event.changedTouches[0]?.clientX;
+        if (start === null || end === undefined) return;
+        const delta = end - start;
+        if (Math.abs(delta) < 45) return;
+        swiped.current = true;
+        move(delta < 0 ? 1 : -1);
+      }}
+    >
       <button
         type="button"
         className="lightbox-close"
         aria-label="关闭图片预览"
+        onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
           onClose();
@@ -40,9 +112,51 @@ export function Lightbox({ src, alt = "", caption = "", onClose }: LightboxProps
         <span aria-hidden="true">×</span>
         关闭
       </button>
-      {/* 点图片本身不该关闭——只有点空白遮罩才关。 */}
-      <img src={src} alt={alt} onClick={(event) => event.stopPropagation()} />
-      {caption !== "" ? <p className="lightbox-caption">{caption}</p> : null}
+      {photos.length > 1 ? (
+        <>
+          <button
+            type="button"
+            className="lightbox-nav prev"
+            aria-label="上一张"
+            disabled={activeIndex === 0}
+            onClick={(event) => {
+              event.stopPropagation();
+              move(-1);
+            }}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="lightbox-nav next"
+            aria-label="下一张"
+            disabled={activeIndex === photos.length - 1}
+            onClick={(event) => {
+              event.stopPropagation();
+              move(1);
+            }}
+          >
+            ›
+          </button>
+        </>
+      ) : null}
+      <img
+        src={active.src}
+        alt={active.alt || ""}
+        draggable={false}
+        onClick={(event) => event.stopPropagation()}
+      />
+      {active.caption !== undefined && active.caption !== "" ? (
+        <p className="lightbox-caption">
+          {active.caption}
+          {photos.length > 1 ? ` · ${activeIndex + 1} / ${photos.length}` : ""}
+        </p>
+      ) : photos.length > 1 ? (
+        <p className="lightbox-caption">{`${activeIndex + 1} / ${photos.length}`}</p>
+      ) : null}
     </div>
   );
+
+  if (typeof document === "undefined") return overlay;
+  return createPortal(overlay, document.body);
 }

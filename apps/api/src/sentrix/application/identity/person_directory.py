@@ -47,8 +47,10 @@ class EntityPersonDirectory:
         entity = self._entities.get(match.entity_id)
         if entity is None:
             return None
-        membership = self._family.get_effective_membership(scope_id, entity.id)
-        portrait = self._family.get_active_portrait(scope_id, entity.id)
+        # 全部相册时调用方传空 scope；人物的归属/画像按实体自己的空间取。
+        owner_scope = scope_id or entity.scope_id
+        membership = self._family.get_effective_membership(owner_scope, entity.id)
+        portrait = self._family.get_active_portrait(owner_scope, entity.id)
         return PersonProfile(
             # 报**实体的本名**而不是查询串：按别名查到时，用户问的是别名、答案里的名字
             # 得是本名，否则模型会把这个人的两个名字当成两个人。
@@ -59,7 +61,7 @@ class EntityPersonDirectory:
             membership=(membership.membership if membership is not None else "") or "unknown",
             membership_source=(membership.source if membership is not None else "") or "",
             summary=(portrait.portrait_text if portrait is not None else "") or "",
-            relationships=self._relationships(scope_id, entity.id),
+            relationships=self._relationships(owner_scope, entity.id),
         )
 
     def _relationships(self, scope_id: str, entity_id: str) -> tuple[PersonRelationship, ...]:

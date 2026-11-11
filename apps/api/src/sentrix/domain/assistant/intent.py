@@ -31,7 +31,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sentrix.domain.assistant.evidence_ledger import (
     REQUIREMENT_SCOPE_KEYS,
@@ -102,7 +104,9 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 - 关于相册的真问题就声明 photo_set + delivered_photo（成对、不计额度）；
   只有与相册无关的闲聊或写作请求才不声明。
 - 问已确认人物是谁、家庭角色、人物档案，或问人与人的关系时声明 person_profile——照片本身没有关系信息。
-- 只有全相册级统计（共几张、多少次、哪些媒体类型）才声明 structured_fact；单张的时间、地点在 preview 里。
+- 只有全相册级统计（共几张、多少次、哪些媒体类型）**以及某个已确认人物的统计**
+  （某人有多少张照片、出现几次）才声明 structured_fact；人物统计把名字写进 scope.person、
+  value_type 用 count，不要拿检索候选数回答总数。单张的时间、地点在 preview 里。
 - 只有 preview 摘要不足、且问画面可见属性（颜色、服饰、动作、物体、建筑）时才声明 visual_observation。
 - 只有问图内文字、数字、价格、招牌时声明 visible_text；地点、颜色、服饰、场景不算。
 - 问视频或录音里的人说了什么、提到什么内容时声明 spoken_content；不要把语音转写归为图内 OCR。
@@ -163,6 +167,12 @@ def planner_evidence_types() -> tuple[str, ...]:
     """给提示词用的证据类型清单。1.0 ``evidence_contract.planner_evidence_types`` 同形：
     稳定顺序，集合本身是唯一事实来源。"""
     return tuple(sorted(item.value for item in EvidenceType))
+
+
+def current_date_suffix() -> str:
+    """回答和规划都要知道的「今天」，统一按北京时间，避免把历史话题当成今年。"""
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    return f"\n\n今天是 {today}（北京时间）。用户说“今年/今天/最近”时以这个日期为准。"
 
 
 def build_prompt() -> str:

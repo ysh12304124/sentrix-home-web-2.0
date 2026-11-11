@@ -1059,17 +1059,16 @@ def test_memory_facts_unit_follows_the_media_filter(toolbox):
     assert (video.model_visible["unit"], video.model_visible["value"]) == ("original_video", 0)
 
 
-def test_memory_facts_without_a_scope_is_unavailable(toolbox):
-    """相册范围由系统注入。走到这里说明**装配错了，不是模型错了**——
-    所以是 ``unavailable`` 而不是某个 ``unsupported_*``：那两类要模型改参数，
-    这一类改参数没用。"""
+def test_memory_facts_without_a_scope_counts_all_albums(toolbox):
+    """空 scope 是「全部相册」，不是装配错误；与检索面使用同一条口径。"""
     build, _result_sets = toolbox
 
     outcome = build.execute(
         "query_memory_facts", {"operation": "count", "subject": "asset"}, scope_id="", now=NOW
     )
 
-    assert outcome.failure_reason == "missing_runtime_scope"
+    assert outcome.ok
+    assert outcome.model_visible["value"] == 2
 
 
 def test_memory_facts_rejects_a_person_that_was_never_confirmed(toolbox):

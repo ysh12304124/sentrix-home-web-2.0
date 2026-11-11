@@ -121,14 +121,12 @@ def test_importing_a_video_forms_scenes_with_lineage_back_to_the_source(
 
     assert result.video_scenes == 3
     scenes = harness.events.list_video_scenes(result.asset_id)
-    assert [item.source_scene_index for item in scenes] == [0, 1, 2]
-    assert [(item.source_start_sec, item.source_end_sec) for item in scenes] == [
-        (0.0, 60.0),
-        (60.0, 120.0),
-        (120.0, 125.0),
-    ]
-    assert all(item.source_type == "video_scene" for item in scenes)
-    assert all(item.source_asset_id == result.asset_id for item in scenes)
+    # 一个视频只有一个用户可见事件；三帧是它内部的证据。
+    assert len(scenes) == 1
+    assert scenes[0].source_scene_index == 0
+    assert (scenes[0].source_start_sec, scenes[0].source_end_sec) == (0.0, 125.0)
+    assert scenes[0].source_type == "video_scene"
+    assert scenes[0].source_asset_id == result.asset_id
 
     derived = harness.videos.list_derived(result.asset_id)
     assert [item.source_frame_index for item in derived] == [0, 1, 2]
@@ -155,7 +153,16 @@ def test_a_keyframe_is_an_image_asset_whose_observation_lands_in_its_scene_event
     derived = harness.videos.list_derived(result.asset_id)
     source = harness.assets.get(result.asset_id)
 
-    for scene, frame in zip(scenes, derived, strict=True):
+    assert len(scenes) == 1
+    observation_ids = harness.events.observation_ids(scenes[0].id)
+    assert len(observation_ids) == len(derived) == 3
+    attached_assets = {
+        harness.observations.get(observation_id).asset_id
+        for observation_id in observation_ids
+        if harness.observations.get(observation_id) is not None
+    }
+    assert attached_assets == {frame.id for frame in derived}
+    for frame in derived:
         frame_asset = harness.assets.get(frame.id)
         assert frame_asset is not None
         assert frame_asset.media_type is MediaType.IMAGE
@@ -164,10 +171,6 @@ def test_a_keyframe_is_an_image_asset_whose_observation_lands_in_its_scene_event
         assert source.captured_at is None
         assert frame_asset.captured_at is None
         assert frame_asset.capture_time == source.capture_time
-        observation_ids = harness.events.observation_ids(scene.id)
-        assert len(observation_ids) == 1
-        attached = harness.observations.get(observation_ids[0])
-        assert attached is not None and attached.asset_id == frame.id
 
 
 def test_running_the_extraction_again_reuses_the_existing_scenes(
@@ -186,7 +189,7 @@ def test_running_the_extraction_again_reuses_the_existing_scenes(
 
     assert (again.scene_count, again.keyframe_count, again.reused) == (3, 0, 3)
     assert [item.id for item in harness.videos.list_derived(result.asset_id)] == [item.id for item in before]
-    assert len(harness.events.list_video_scenes(result.asset_id)) == 3
+    assert len(harness.events.list_video_scenes(result.asset_id)) == 1
 
 
 def test_a_long_video_is_capped_at_max_scenes_by_growing_the_window(

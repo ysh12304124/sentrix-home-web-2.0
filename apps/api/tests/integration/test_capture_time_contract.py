@@ -1,11 +1,17 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from sentrix.application.media.extract_video_scenes import _offset
 from sentrix.application.retrieval.retrieve_metadata import _within
-from sentrix.domain.media.capture_time import CaptureTime, elapsed_seconds, time_sort_key
+from sentrix.domain.media.capture_time import (
+    CaptureTime,
+    capture_time_from_filename,
+    elapsed_seconds,
+    time_sort_key,
+    to_beijing,
+)
 from sentrix.domain.media.models import Asset, AssetStatus, GpsPoint, MediaType, VideoMetadata
 from sentrix.domain.memories.events import within_candidate_window
 from sentrix.domain.places.aliases import EMPTY_ALIASES
@@ -31,6 +37,32 @@ def test_container_timestamp_preserves_offset_across_host_timezones(monkeypatch)
         time.tzset()
 
 
+def test_filename_time_recovers_common_camera_and_wechat_names():
+    assert capture_time_from_filename("QQ图片20260527135139(7).jpeg") == datetime(
+        2026, 5, 27, 13, 51, 39
+    )
+    assert capture_time_from_filename("IMG_20260907_100911.jpg") == datetime(
+        2026, 9, 7, 10, 9, 11
+    )
+    assert capture_time_from_filename("截屏2026-11-04 18.16.13.png") == datetime(
+        2026, 11, 4, 18, 16, 13
+    )
+    assert capture_time_from_filename("wx_camera_1789018911409.jpg") == datetime.fromtimestamp(
+        1789018911.409, tz=UTC
+    )
+    assert capture_time_from_filename("IMG_4894.JPG") is None
+    assert capture_time_from_filename("IMG_20240102.jpg") == datetime(2024, 1, 2)
+    assert capture_time_from_filename("Screenshot 2024-01-02.png") == datetime(2024, 1, 2)
+    assert capture_time_from_filename("20240102.jpg") is None
+
+
+def test_naive_time_is_interpreted_as_beijing_when_no_zone_evidence():
+    value = datetime(2025, 1, 2, 3, 4, 5)
+    normalized = to_beijing(value)
+    assert normalized is not None
+    assert normalized.isoformat() == "2025-01-02T03:04:05+08:00"
+
+
 @pytest.mark.parametrize(
     ("lat", "lon", "zone"),
     [
@@ -50,8 +82,9 @@ def test_video_utc_and_photo_local_represent_same_instant():
     photo, provenance = resolver(datetime(2018, 4, 3, 9, 53, 52), gps, "exif")
     video, _ = resolver(datetime(2018, 4, 3, 2, 53, 52, tzinfo=UTC), gps, "creation_time")
     assert photo == video
-    assert photo.isoformat() == "2018-04-03T09:53:52+07:00"
+    assert photo.isoformat() == "2018-04-03T10:53:52+08:00"
     assert provenance.status == "gps_timezone_inferred"
+    assert provenance.original_timezone == "Asia/Bangkok"
     assert provenance.raw == "2018-04-03T09:53:52"
 
 
@@ -69,7 +102,9 @@ def test_dst_unknown_offset_not_guessed(raw, status):
         GpsPoint(40.71, -74.01),
         "exif",
     )
-    assert result == value and result.tzinfo is None
+    assert result is not None
+    assert result.replace(tzinfo=None) == value
+    assert result.utcoffset() == timedelta(hours=8)
     assert evidence.status == status
 
 
@@ -77,8 +112,11 @@ def test_missing_and_timezone_unknown_remain_unknown():
     resolver = ResolveCaptureTime()
     assert resolver(None, None, "exif") == (None, CaptureTime())
     value = datetime(2018, 4, 3, 9)
-    assert resolver(value, None, "exif")[0] == value
-    assert resolver(value, None, "exif")[1].status == "timezone_unknown"
+    result, evidence = resolver(value, None, "exif")
+    assert result is not None
+    assert result.replace(tzinfo=None) == value
+    assert result.utcoffset() == timedelta(hours=8)
+    assert evidence.status == "beijing_assumed"
 
 
 def test_calendar_and_explicit_zone_queries():
@@ -220,7 +258,7 @@ def test_unknown_capture_is_not_replaced_by_import_time(migrations_ready_db, tmp
         storage=FileSystemMediaStorage(tmp_path / "media"),
         metadata=PillowMetadataReader(),
     )
-    result = importer.execute(ImportRequest("album1", "unknown.jpg", "image/jpeg", content.getvalue()))
+    result = importer.execute(ImportRequest("album1", "unknown.jpg", "image/jpeg", content=content.getvalue()))
     restored = assets.get(result.asset_id)
     assert restored.captured_at is None
     assert restored.capture_time.status == "unknown"

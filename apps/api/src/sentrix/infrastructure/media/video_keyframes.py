@@ -29,6 +29,18 @@ FRAME_QUALITY = 2
 KEYFRAME_TIMEOUT_S = 300
 
 
+def _seek_seconds(timestamp_sec: float) -> str:
+    """把取帧时间格式化成三位小数，**绝不因四舍五入越过原时间**。
+
+    场景时间戳可能是最后一帧的精确 PTS（如 23.063761）。直接 ``f"{:.3f}"`` 会变成
+    23.064，ffmpeg 输入侧 seek 到最后一帧之后，退出码仍是 0 但一个字节都不写。
+    """
+    seek = max(0.0, float(timestamp_sec))
+    if float(f"{seek:.3f}") > seek:
+        seek = max(0.0, seek - 0.001)
+    return f"{seek:.3f}"
+
+
 class FfmpegVideoKeyframeExtractor:
     """domain ``VideoKeyframeExtractor`` 的 ffmpeg 实现。"""
 
@@ -44,34 +56,49 @@ class FfmpegVideoKeyframeExtractor:
         """
         target = self._root / asset_id / "scenes" / f"{scene_index:03d}" / "kf_0001.jpg"
         target.parent.mkdir(parents=True, exist_ok=True)
-        process = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-ss",
-                f"{float(timestamp_sec):.3f}",
-                "-i",
-                str(source),
-                "-frames:v",
-                "1",
-                # 手机视频常见非方像素（例如 720x480 + SAR 32:27，显示比例 16:9）。
-                # 不做这一步，抽出的 JPEG 会按方像素显示，人像被横向压扁；海报与
-                # 资料库预览正是直接拿这张 JPEG。按 SAR 展开到显示宽度再标记方像素。
-                "-vf",
-                "scale=iw*sar:ih,setsar=1",
-                "-q:v",
-                str(FRAME_QUALITY),
-                str(target),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=KEYFRAME_TIMEOUT_S,
+        # 输入侧 seek 在最后一帧附近可能“退出 0 但不写文件”。先按安全时间取一次；
+        # 只有这种边界失败才向前退 50ms / 500ms 重试，真正的 ffmpeg 报错立即抛出。
+        candidates = list(
+            dict.fromkeys(
+                max(0.0, float(timestamp_sec) - offset) for offset in (0.0, 0.05, 0.5)
+            )
         )
+        last_stderr = ""
+        for seek in candidates:
+            target.unlink(missing_ok=True)
+            process = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-v",
+                    "error",
+                    "-ss",
+                    _seek_seconds(seek),
+                    "-i",
+                    str(source),
+                    "-frames:v",
+                    "1",
+                    # 手机视频常见非方像素（例如 720x480 + SAR 32:27，显示比例 16:9）。
+                    # 不做这一步，抽出的 JPEG 会按方像素显示，人像被横向压扁；海报与
+                    # 资料库预览正是直接拿这张 JPEG。按 SAR 展开到显示宽度再标记方像素。
+                    "-vf",
+                    "scale=iw*sar:ih,setsar=1",
+                    "-q:v",
+                    str(FRAME_QUALITY),
+                    str(target),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=KEYFRAME_TIMEOUT_S,
+            )
+            if process.returncode:
+                raise RuntimeError(
+                    process.stderr.strip()[-1000:] or "ffmpeg keyframe extraction failed"
+                )
+            if target.is_file():
+                return target
+            last_stderr = process.stderr.strip()[-1000:]
         # 不只看返回码：ffmpeg 有些失败形态（写不出文件）返回 0。两个都判，
         # 与 ``transcode_to_h264`` 同一条口径。
-        if process.returncode or not target.is_file():
-            raise RuntimeError(process.stderr.strip()[-1000:] or "ffmpeg keyframe extraction failed")
-        return target
+        raise RuntimeError(last_stderr or "ffmpeg keyframe extraction failed")

@@ -278,7 +278,16 @@ class ReadTimeline:
             ),
             None,
         )
-        chosen = image or representative
+        video = next(
+            (
+                assets[asset_id]
+                for asset_id in asset_ids
+                if asset_id in assets
+                and getattr(assets[asset_id], "media_type", None) is MediaType.VIDEO
+            ),
+            None,
+        )
+        chosen = video or image or representative
         return TimelineEventSummary(
             id=event.id,
             title=event.title,
@@ -310,6 +319,14 @@ class ReadTimeline:
             for observation in observations.values()
             if observation.asset_id
         ]
+        # 视频事件的关键帧只是内部证据，用户看到的是源视频本身。
+        event_sources = {
+            event_id: event.source_asset_id
+            for event_id in event_ids
+            for event in (self._events.get(event_id),)
+            if event is not None and event.source_asset_id
+        }
+        all_asset_ids.extend(event_sources.values())
         assets = self._assets.get_many(all_asset_ids)
 
         result: dict[str, list[str]] = {}
@@ -320,11 +337,15 @@ class ReadTimeline:
                 if observation is None:
                     continue
                 asset = assets.get(observation.asset_id)
-                if asset is None:
+                if asset is None or asset.parent_asset_id is not None:
                     continue
                 ordered.append(
                     (time_sort_key(asset.captured_at or asset.created_at), asset.id)
                 )
+            source_id = event_sources.get(event_id)
+            if source_id and source_id in assets:
+                source = assets[source_id]
+                ordered.append((time_sort_key(source.captured_at or source.created_at), source.id))
             ordered.sort(key=lambda item: (item[0], item[1]))
             result[event_id] = list(dict.fromkeys(asset_id for _, asset_id in ordered))
         return result

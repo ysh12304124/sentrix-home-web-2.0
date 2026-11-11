@@ -53,8 +53,8 @@ def test_rebuild_plan_preserves_source_and_derives_frame_time(tmp_path, monkeypa
     result = module.plan(database)
     records = {row["asset_id"]: row for row in result["assets"]}
     assert result["read_only"] and result["existing_events"] == 1
-    assert records["photo"]["after"] == "2018-04-03T09:00:00+07:00"
-    assert records["frame"]["after"] == "2018-04-03T09:00:12.500000+07:00"
+    assert records["photo"]["after"] == "2018-04-03T10:00:00+08:00"
+    assert records["frame"]["after"] == "2018-04-03T10:00:12.500000+08:00"
     assert records["frame"]["capture_time"] == records["photo"]["capture_time"]
     assert {error["asset_id"] for error in result["errors"]} == {"missing", "orphan"}
     assert before == {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before}

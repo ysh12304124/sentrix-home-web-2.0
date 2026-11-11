@@ -1819,6 +1819,181 @@ body {
   gap: 10px;
 }
 
+.admin-fold-toggle {
+  align-self: flex-start;
+  margin: 2px 0 0;
+  padding: 6px 0;
+}
+
+.admin-list-toolbar,
+.admin-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+  color: var(--ex-muted);
+  font-size: 11px;
+}
+
+.admin-pagination {
+  margin: 10px 0 0;
+}
+
+.admin-pagination > div {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---- 管理页：按组的横向堆叠活动条 ---- */
+
+.activity-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activity-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 0 2px;
+  color: var(--ex-muted);
+  font-size: 11px;
+}
+
+.activity-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.legend-swatch.clicks,
+.activity-segment.clicks {
+  background: #2563eb;
+}
+
+.legend-swatch.uploads,
+.activity-segment.uploads {
+  background: #15803d;
+}
+
+.legend-swatch.questions,
+.activity-segment.questions {
+  background: #eab308;
+}
+
+.activity-group {
+  border: 1px solid var(--ex-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.activity-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.activity-group-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.activity-group-head small {
+  color: var(--ex-muted);
+  font-size: 10px;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 16px;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+
+.activity-row:hover {
+  background: #f5f6f8;
+}
+
+.activity-name {
+  flex: 0 0 84px;
+  width: 84px;
+  font-size: 10px;
+  color: #5f6368;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 12px;
+  border-radius: 3px;
+  background: #eef1f4;
+}
+
+.activity-bar {
+  height: 100%;
+  min-width: 22px;
+  display: flex;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.activity-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 2px;
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.activity-segment + .activity-segment {
+  border-left: 1px solid rgba(255, 255, 255, 0.45);
+}
+
+.activity-segment.questions {
+  color: #3f2d00;
+}
+
+.activity-total {
+  flex: 0 0 40px;
+  width: 40px;
+  text-align: right;
+  font-size: 10px;
+  color: #5f6368;
+  font-variant-numeric: tabular-nums;
+}
+
 .user-summary {
   padding: 0;
   overflow: hidden;
@@ -1874,6 +2049,11 @@ body {
 .summary-state[data-ok="false"] {
   background: rgba(197, 74, 58, 0.12);
   color: #a33a2d;
+}
+
+.summary-state[data-asleep="true"] {
+  background: rgba(111, 114, 104, 0.12);
+  color: var(--ex-muted);
 }
 
 .summary-metric {
@@ -2294,5 +2474,16 @@ body {
   .import-picker-actions {
     grid-column: 1 / -1;
     justify-content: flex-start;
+  }
+}
+
+/* 人物详情是固定侧栏；在主内容上让出同宽，避免关系/人物介绍的内容被盖住。 */
+.app-shell:has(.person-detail) .main-content {
+  padding-right: min(400px, 100vw);
+  box-sizing: border-box;
+}
+@media (max-width: 760px) {
+  .app-shell:has(.person-detail) .main-content {
+    padding-right: 0;
   }
 }

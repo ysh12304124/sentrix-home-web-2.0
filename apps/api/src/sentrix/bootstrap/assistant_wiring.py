@@ -80,6 +80,7 @@ def build_run_turn(container: Container) -> RunTurn:
             person_crops=container.person_crop_renderer,
             events=container.event_repository,
             asset_places=container.asset_place_repository,
+            videos=container.video_repository,
         ),
         profile=replace(
             DEFAULT_PROFILE,
