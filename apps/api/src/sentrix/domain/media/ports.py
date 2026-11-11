@@ -88,6 +88,44 @@ class AssetRepository(Protocol):
     def update_status(self, asset_id: str, status: AssetStatus) -> None: ...
 
 
+@dataclass(frozen=True)
+class MediaDeletionRecord:
+    asset_id: str
+    scope_id: str
+    file_name: str
+    media_type: str
+    deleted_at: str
+    asset_count: int
+    files_done: bool
+    vectors_done: bool
+    attempts: int
+    last_error: str
+
+
+class MediaDeletionRepository(Protocol):
+    """Atomically remove a source asset, exclusive memory and SQLite projections."""
+
+    def delete_asset(self, asset_id: str) -> bool:
+        """Commit source and projections plus cleanup work; False if absent."""
+        ...
+
+    def pending_cleanup(
+        self, asset_id: str | None = None
+    ) -> Sequence[tuple[str, tuple[str, ...], tuple[str, ...], tuple[tuple[str, str], ...], bool, bool]]:
+        """Durable cleanup: root ID, all asset IDs, paths, vector keys, stage flags."""
+        ...
+
+    def was_deleted(self, asset_id: str) -> bool:
+        """Whether the root was already deleted successfully."""
+        ...
+
+    def list_deletions(self, *, scope_id: str | None, limit: int) -> Sequence[MediaDeletionRecord]:
+        """Most recent committed deletions and their external-cleanup status."""
+        ...
+
+    def mark_cleanup(self, asset_id: str, *, files_done: bool, vectors_done: bool, error: str) -> None: ...
+
+
 class ObservationRepository(Protocol):
     def add(self, observation: Observation) -> None: ...
 
@@ -283,7 +321,13 @@ class MediaStorage(Protocol):
 
     def read(self, asset_id: str) -> bytes: ...
 
+    def read_asset(self, asset: Asset) -> bytes: ...
+
     def path_for(self, asset: Asset) -> Path: ...
+
+    def delete_assets(self, asset_ids: Sequence[str], paths: Sequence[str]) -> tuple[str, ...]:
+        """Remove managed media and derivatives; return unmanaged external paths left intact."""
+        ...
 
 
 class MetadataReader(Protocol):

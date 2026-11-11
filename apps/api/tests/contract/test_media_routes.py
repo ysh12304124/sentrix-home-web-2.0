@@ -91,6 +91,39 @@ def test_missing_asset_is_404(client: TestClient):
     assert client.get("/api/v1/assets/asset_nope/file").status_code == 404
 
 
+def test_delete_asset_removes_it_from_library_and_is_idempotent(client: TestClient):
+    asset_id = client.post(
+        "/api/v1/media/import",
+        files={"file": ("delete-me.jpg", jpeg_bytes(color="blue"), "image/jpeg")},
+        data={"scope_id": "album1"},
+    ).json()["asset_id"]
+
+    deleted = client.delete(f"/api/v1/assets/{asset_id}")
+
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404
+    assert client.get(f"/api/v1/assets/{asset_id}/file").status_code == 404
+    assert client.delete(f"/api/v1/assets/{asset_id}").status_code == 200
+    missing = client.delete("/api/v1/assets/unknown")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "not_found"
+
+    history = client.get("/api/v1/assets/deletions", params={"scope_id": "album1"})
+    assert history.status_code == 200
+    assert len(history.json()["items"]) == 1
+    record = history.json()["items"][0]
+    assert record["asset_id"] == asset_id
+    assert record["file_name"] == "delete-me.jpg"
+    assert record["scope_id"] == "album1"
+    assert record["asset_count"] == 1
+    assert record["files_done"] is True
+    assert record["vectors_done"] is True
+    assert record["deleted_at"].endswith("Z")
+    assert client.get("/api/v1/assets/deletions", params={"scope_id": "other"}).json() == {"items": []}
+    assert client.get("/api/v1/assets/deletions", params={"limit": 0}).status_code == 422
+
+
 def test_import_reports_and_writes_the_visual_vector(client: TestClient):
     """导入成功必须真的留下视觉向量，并且这件事在响应里看得见。
 

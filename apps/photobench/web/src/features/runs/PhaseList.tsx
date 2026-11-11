@@ -115,7 +115,11 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
             ? { ...legacyImport, total_seconds: Math.max(0, (now - Date.parse(legacyImport.started_at)) / 1000) }
             : legacyImport;
           const flow = !skipped && phaseDef.key === "pipeline_processing" ? pipelineProgressView(activeRun, now) : null;
-          const timing = flow ? pipelineTimingView(displayPhase, displayImport) : null;
+          const timing = flow ? pipelineTimingView(displayPhase, displayImport, {
+            qa: activeRun.mode === "build" ? undefined : activeRun.phases?.qa_eval ?? { status: "pending" },
+            graphEnabled: activeRun.graph_enabled,
+            now,
+          }) : null;
           const clock = flow ? phaseElapsed(flow.combined ? displayImport : displayPhase) : null;
           const status = skipped ? "skipped" : flow?.status ?? phase?.status ?? "pending";
           return (

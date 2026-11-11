@@ -22,7 +22,7 @@ function mediaLabel(mediaType: string): string {
   return { image: "图片", video: "视频", audio: "音频", text: "文本" }[mediaType] ?? mediaType;
 }
 
-export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
+export function AssetGrid({ assets, onDeleted }: { assets: readonly AssetSummary[]; onDeleted?: (id: string, warnings: string[]) => void }) {
   const [selected, setSelected] = useState<AssetDetailResponse | null>(null);
 
   /**
@@ -60,7 +60,10 @@ export function AssetGrid({ assets }: { assets: readonly AssetSummary[] }) {
           </button>
         ))}
       </section>
-      {selected ? <AssetDetail asset={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? <AssetDetail asset={selected} onClose={() => setSelected(null)} onDeleted={(id, warnings) => {
+        setSelected(null);
+        onDeleted?.(id, warnings);
+      }} /> : null}
     </>
   );
 }

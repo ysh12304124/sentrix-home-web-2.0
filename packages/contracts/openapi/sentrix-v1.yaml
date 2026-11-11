@@ -136,6 +136,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/deletions:
+    get:
+      tags:
+      - media
+      summary: List Media Deletions
+      description: Read committed media deletions and current external-cleanup status.
+      operationId: list_media_deletions_api_v1_assets_deletions_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaDeletionHistoryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/assets/{asset_id}:
     get:
       tags:
@@ -162,6 +200,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - media
+      summary: Delete Asset
+      description: Delete one source asset and retry its durable external cleanup.
+      operationId: delete_asset_api_v1_assets__asset_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAssetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/deletion-cleanup/retry:
+    post:
+      tags:
+      - media
+      summary: Retry Media Cleanup
+      description: Retry outstanding Qdrant and managed-file cleanup after a partial
+        failure.
+      operationId: retry_media_cleanup_api_v1_assets_deletion_cleanup_retry_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaCleanupRetryResponse'
   /api/v1/assets/{asset_id}/file:
     get:
       tags:
@@ -2891,6 +2970,25 @@ components:
           default: ''
       type: object
       title: CreateConversationRequest
+    DeleteAssetResponse:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        deleted:
+          type: boolean
+          title: Deleted
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      type: object
+      required:
+      - asset_id
+      - deleted
+      - warnings
+      title: DeleteAssetResponse
     DiagnosticsResponse:
       properties:
         status:
@@ -5049,6 +5147,73 @@ components:
         少掉的四个里 ``include_in_people`` 是有语义的，但 2.0 的 ``MemorySpace``
 
         模型就没带它——那是 S1 定下的形状，不在本次范围内。'
+    MediaCleanupRetryResponse:
+      properties:
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      type: object
+      required:
+      - warnings
+      title: MediaCleanupRetryResponse
+    MediaDeletionHistoryResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/MediaDeletionRecordResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: MediaDeletionHistoryResponse
+    MediaDeletionRecordResponse:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        scope_id:
+          type: string
+          title: Scope Id
+        file_name:
+          type: string
+          title: File Name
+        media_type:
+          type: string
+          title: Media Type
+        deleted_at:
+          type: string
+          title: Deleted At
+        asset_count:
+          type: integer
+          title: Asset Count
+        files_done:
+          type: boolean
+          title: Files Done
+        vectors_done:
+          type: boolean
+          title: Vectors Done
+        attempts:
+          type: integer
+          title: Attempts
+        last_error:
+          type: string
+          title: Last Error
+      type: object
+      required:
+      - asset_id
+      - scope_id
+      - file_name
+      - media_type
+      - deleted_at
+      - asset_count
+      - files_done
+      - vectors_done
+      - attempts
+      - last_error
+      title: MediaDeletionRecordResponse
     MemoryGraphBuildResponse:
       properties:
         scope_id:

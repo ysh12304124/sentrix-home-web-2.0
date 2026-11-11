@@ -73,7 +73,7 @@ class HttpxSentrixClient:
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
-        graph_enabled: bool,
+        graph_enabled: bool = True,
         timeout: int = 120,
     ) -> dict[str, Any]:
         """``POST /api/v1/people/seed``（``api/routes/identity.py:904``）。
@@ -107,7 +107,7 @@ class HttpxSentrixClient:
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
-        graph_enabled: bool,
+        graph_enabled: bool = True,
         timeout: int = 60,
     ) -> dict[str, Any]:
         """``POST /api/v1/relationships/batch``（``api/routes/relationships.py:181``）。
@@ -174,7 +174,7 @@ class HttpxSentrixClient:
         )
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
     ) -> dict[str, Any]:
         return dict(
             self._http.request_json(

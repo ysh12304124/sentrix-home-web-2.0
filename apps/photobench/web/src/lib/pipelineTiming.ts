@@ -60,8 +60,21 @@ export interface PipelineTimingView {
 
 type Definition = [key: string, label: string, basis: string, description: string, nested?: boolean];
 
+function agentDuration(qa: Phase, now: number): number | null {
+  const recorded = seconds(qa.agent_phase_wall_ms);
+  if (recorded !== null) return recorded / 1000;
+  const start = typeof qa.agent_phase_started_at === "string" ? Date.parse(qa.agent_phase_started_at) : NaN;
+  const finish = typeof qa.agent_phase_finished_at === "string" ? Date.parse(qa.agent_phase_finished_at) : NaN;
+  if (!Number.isFinite(start)) return null;
+  if (Number.isFinite(finish)) return finish >= start ? (finish - start) / 1000 : null;
+  return qa.status === "running" ? Math.max(0, (now - start) / 1000) : null;
+}
+
 /** 只投影已有计时，不用 worker 累计时间推算关键路径或补齐历史。 */
-export function pipelineTimingView(phase: Phase = {}, imported: Phase = {}): PipelineTimingView {
+export function pipelineTimingView(
+  phase: Phase = {}, imported: Phase = {},
+  options: { qa?: Phase; graphEnabled?: boolean; now?: number } = {},
+): PipelineTimingView {
   const combined = isCombinedImport(imported);
   const explicit = phase.execution_mode === "explicit" || imported.execution_mode === "explicit";
   const source = combined ? imported : phase;
@@ -106,6 +119,31 @@ export function pipelineTimingView(phase: Phase = {}, imported: Phase = {}): Pip
 
   if (explicit || ["source_memory_prepare", "source_memory_commit", "pipeline_core", "video_total", "video_keyframe_extraction"]
     .some(key => timings[key] != null)) {
+    const agentSeconds = options.qa ? agentDuration(options.qa, options.now ?? Date.now()) : null;
+    const pipelineWall = phaseElapsed(phase);
+    const flowRows = rows([
+      ["pipeline_core", "基础记忆构建", "整段实际耗时", "源媒体记忆、视频场景与关键帧处理、事件总结的处理窗口；并发分项不相加。"],
+      ["memory_graph", "图结构构建", "整段实际耗时", "普通图片、视频关键帧、语义/因果边及图写入的合计。"],
+    ]);
+    if (options.graphEnabled === false) {
+      const graph = flowRows.find(row => row.key === "memory_graph");
+      if (graph) { graph.value = "已关闭"; graph.share = null; }
+    }
+    if (options.qa) flowRows.push({
+      key: "qa_agent", label: "检索与推理（Agent）",
+      value: agentSeconds === null
+        ? options.qa.status === "pending" ? "待开始" : options.qa.status === "running" ? "待回传" : "未记录"
+        : pipelineDuration(agentSeconds),
+      basis: "QA 阶段实际经过", description: "包含检索工具、模型回答及其等待；Judge 评分另行执行，不计入此行。",
+      share: null, nested: false,
+    });
+    const flowTotal = pipelineWall.label === "实际总耗时" && agentSeconds !== null
+      ? `流水线＋Agent 合计 ${pipelineDuration(pipelineWall.seconds! + agentSeconds)}` : undefined;
+    groups.push({
+      key: "memory_flow", title: "记忆构建全流程", summary: flowTotal,
+      note: "基础记忆构建与图结构构建属于流水线；检索与推理属于随后执行的 QA Agent 阶段。合计只加两段独立阶段墙钟，包含流水线收尾，不含阶段间调度与 Judge；下方明细可能重叠，不再相加。",
+      rows: flowRows,
+    });
     const core = rows([["pipeline_core", "媒体处理与事件总结", "整段实际耗时", "包含下列处理步骤；并发推理与串行提交会重叠。"]])[0];
     groups.push({ key: "core", title: "媒体处理与事件总结",
       summary: core ? actualSummary(seconds(timings.pipeline_core)) : undefined,
@@ -113,30 +151,17 @@ export function pipelineTimingView(phase: Phase = {}, imported: Phase = {}): Pip
       rows: rows([
         ["source_memory_prepare", "源媒体模型准备", "并行任务累计", "视觉向量、画面理解、人脸检测；多张媒体并行准备。"],
         ["source_memory_commit", "源媒体记忆提交", "串行累计", "地点、人脸归类、事件归属、文本向量、实体、事实与检索索引。"],
-        ["video_total", "视频场景与关键帧处理", "串行累计", "含场景规划、抽帧、关键帧登记和记忆构建；细分见下表。"],
+        ["video_total", "视频场景与关键帧处理", "串行累计", "含场景规划、抽帧、关键帧登记和记忆构建。"],
         ["event_summarize", "事件总结", "整段实际耗时", "媒体处理结束后的事件摘要。"],
-      ]),
-    });
-    groups.push({ key: "video", title: "视频处理细分（仅视频）", collapsed: true,
-      summary: actualSummary(seconds(timings.video_total_wall)),
-      note: "这些阶段包含在「视频场景与关键帧处理」中；跨视频、关键帧取最早开始至最晚结束，占比以后端总耗时为分母，各项不可相加。",
-      rows: rows([
-        ["video_scene_planning", "视频场景规划", "串行累计", "读取视频信息并确定场景时间窗。"],
-        ["video_scene_write", "视频场景登记", "串行累计", "创建或复用场景事件。"],
-        ["video_keyframe_extraction", "关键帧提取", "串行累计", "ffmpeg 抽帧。"],
-        ["video_keyframe_asset_write", "关键帧登记", "串行累计", "保存关键帧资产及其源视频关联。"],
-        ["video_keyframe_memory", "关键帧记忆构建", "串行累计", "关键帧的画面理解、文字、人脸、向量与记忆处理。"],
       ]),
     });
     const finalizeParts = ["participant_projection", "memory_graph", "family_graph", "person_insights"].map(key => seconds(timings[key]));
     const finalizeSeconds = seconds(timings.finalize_wall) ?? (finalizeParts.every(value => value !== null)
       ? finalizeParts.reduce<number>((sum, value) => sum + (value as number), 0) : null);
     groups.push({ key: "finalize", title: "图谱与人物收尾", summary: actualSummary(finalizeSeconds),
-      note: "核心处理结束后依次执行；汇总下方四个独立阶段的实际耗时，占比同样以后端处理耗时为分母。因果边判定已包含在记忆图构建中，不重复相加。",
+      note: "核心处理后的收尾阶段实际耗时；其中图结构构建已在上方全流程列出，不在此重复展示。",
       rows: rows([
         ["participant_projection", "参与者投影", "整段实际耗时", "将已确认人物关联到事件，并刷新参与者摘要。"],
-        ["memory_graph", "记忆图构建", "整段实际耗时", "重建结构化记忆节点与关系，包含因果边判定。"],
-        ["causal_graph", "其中：因果边判定", "包含项", "筛选规则信号并执行文本模型判定。", true],
         ["family_graph", "家庭图谱", "整段实际耗时", "推断家庭关系。"],
         ["person_insights", "人物画像", "整段实际耗时", "生成、刷新人物画像。"],
       ]),
@@ -150,7 +175,6 @@ export function pipelineTimingView(phase: Phase = {}, imported: Phase = {}): Pip
         ["event_summarize", "事件总结", "批末实际耗时", "事件摘要。"],
         ["participant_refresh", "参与者刷新", "收尾实际耗时", "刷新已确认人物到事件的关联。"],
         ["memory_graph", "记忆图构建", "收尾实际耗时", "结构化记忆节点与关系。"],
-        ["causal_graph", "其中：因果边判定", "包含项", "包含在记忆图构建中。", true],
         ["family_graph", "家庭图谱", "收尾实际耗时", "家庭关系推断。"],
         ["person_insights", "人物画像", "收尾实际耗时", "人物画像生成与刷新。"],
         ["other", "其余调度与处理", "旧接口差额", "旧接口记录的核心处理总计扣除已计时步骤后的差额。"],

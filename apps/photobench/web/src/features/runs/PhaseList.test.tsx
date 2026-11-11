@@ -253,7 +253,7 @@ it("旧合并请求的观察、归属和画像时延只放在流水线，不混�
   const { container } = render(<PhaseList activeRun={run} />);
   const cards = container.querySelectorAll(".phase-card");
   expect(cards[3]?.textContent).toContain("登记落库累计 1s");
-  expect(cards[3]?.textContent).not.toMatch(/50s|30s|20s/);
+  expect(cards[3]?.textContent).not.toMatch(/(?:^|[^0-9])(?:50|30|20)s/);
   expect(cards[4]?.textContent).toContain("历史合并请求耗时 2分");
   expect(cards[4]?.textContent).toContain("主线程等待累计");
   expect(cards[4]?.textContent).toContain("人物画像人物画像生成与刷新。20s");
@@ -276,6 +276,26 @@ it("显式阶段区分请求墙钟、后端总计和嵌套步骤，长耗时显�
   expect(processing.textContent).toContain("未记录整段实际耗时");
   expect(getByRole("table", { name: "图谱与人物收尾", hidden: true }).textContent).toContain("占后端 20.0%");
   expect(pipeline?.querySelector("details")?.open).toBe(false);
+});
+
+it("流水线详情串接构图与 QA Agent 计时，收尾不重复列图构建", () => {
+  const { getByRole } = render(<PhaseList activeRun={{
+    run_id: "flow", mode: "full", graph_enabled: true,
+    phases: {
+      pipeline_processing: {
+        execution_mode: "explicit", status: "done",
+        started_at: "2026-11-09T10:00:00Z", finished_at: "2026-11-09T10:01:40Z",
+        timings: { total: 100, pipeline_core: 70, memory_graph: 8, participant_projection: 1, family_graph: 2, person_insights: 3 },
+      },
+      qa_eval: { status: "done", agent_phase_wall_ms: 120000, judge_phase_wall_ms: 200000 },
+    },
+  }} />);
+  const flow = getByRole("table", { name: "记忆构建全流程", hidden: true });
+  expect(flow.textContent).toContain("基础记忆构建");
+  expect(flow.textContent).toContain("图结构构建");
+  expect(flow.textContent).toContain("检索与推理（Agent）");
+  expect(flow.textContent).toContain("2分");
+  expect(getByRole("table", { name: "图谱与人物收尾", hidden: true }).textContent).not.toContain("记忆图构建");
 });
 
 it("只有流水线成功终态才显示100%，无需等待QA结束", () => {

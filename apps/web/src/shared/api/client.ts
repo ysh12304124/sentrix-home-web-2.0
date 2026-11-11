@@ -1198,6 +1198,34 @@ export async function getAsset(assetId: string): Promise<AssetDetailResponse> {
   return request<AssetDetailResponse>(`/assets/${encodeURIComponent(assetId)}`);
 }
 
+export async function deleteAsset(assetId: string): Promise<{ asset_id: string; deleted: boolean; warnings: string[] }> {
+  return request(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+}
+
+export interface MediaDeletionRecord {
+  asset_id: string;
+  scope_id: string;
+  file_name: string;
+  media_type: string;
+  deleted_at: string;
+  asset_count: number;
+  files_done: boolean;
+  vectors_done: boolean;
+  attempts: number;
+  last_error: string;
+}
+
+export async function listMediaDeletions(scopeId: string): Promise<MediaDeletionRecord[]> {
+  const query = new URLSearchParams({ limit: "50" });
+  if (scopeId) query.set("scope_id", scopeId);
+  const response = await request<{ items: MediaDeletionRecord[] }>(`/assets/deletions?${query}`);
+  return response.items;
+}
+
+export async function retryMediaCleanup(): Promise<{ warnings: string[] }> {
+  return request<{ warnings: string[] }>("/assets/deletion-cleanup/retry", { method: "POST" });
+}
+
 // ---- 视频 ------------------------------------------------------------------------
 
 export interface VideoMetadataPayload {

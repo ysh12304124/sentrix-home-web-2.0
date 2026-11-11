@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useScope } from "../../app/ScopeProvider";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
-import { listAssets, type AssetSummary } from "../../shared/api/client";
+import { listAssets, listMediaDeletions, retryMediaCleanup, type AssetSummary, type MediaDeletionRecord } from "../../shared/api/client";
 import { AssetGrid } from "./AssetGrid";
 import { countByScope } from "./scopeCounts";
 import "../../styles/library.css";
@@ -32,6 +32,12 @@ export function LibraryPage() {
   const { scopeId, spaces } = useScope();
   const [assets, setAssets] = useState<readonly AssetSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
+  const [cleanupPending, setCleanupPending] = useState(false);
+  const [deletions, setDeletions] = useState<readonly MediaDeletionRecord[]>([]);
+  const [deletionsError, setDeletionsError] = useState<string | null>(null);
+  const [deletionsLoading, setDeletionsLoading] = useState(true);
+  const [deletionsRevision, setDeletionsRevision] = useState(0);
   const [filter, setFilter] = useState<MediaFilter>("all");
   const [order, setOrder] = useState<SortOrder>("newest");
 
@@ -48,6 +54,20 @@ export function LibraryPage() {
       cancelled = true;
     };
   }, [scopeId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDeletionsLoading(true);
+    listMediaDeletions(scopeId)
+      .then((records) => {
+        if (cancelled) return;
+        setDeletions(records);
+        setDeletionsError(null);
+      })
+      .catch((cause: Error) => !cancelled && setDeletionsError(cause.message))
+      .finally(() => { if (!cancelled) setDeletionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [scopeId, deletionsRevision]);
 
   const visible = useMemo(() => {
     const filtered = filter === "all" ? assets : assets.filter((a) => a.media_type === filter);
@@ -121,6 +141,37 @@ export function LibraryPage() {
       </div>
 
       {error ? <p className="error">{error}</p> : null}
+      {deleteNotice ? <p role="status">{deleteNotice}</p> : null}
+      {(cleanupPending || deletions.some((record) => !record.files_done || !record.vectors_done)) ? <button type="button" onClick={() => {
+        void retryMediaCleanup()
+          .then((result) => {
+            setCleanupPending(result.warnings.some((warning) => warning.includes("待重试")));
+            setDeleteNotice(result.warnings.length ? result.warnings.join("；") : "外部索引和文件清理已完成");
+            setDeletionsRevision((revision) => revision + 1);
+          })
+          .catch((cause: Error) => setDeleteNotice(`重试失败：${cause.message}`));
+      }}>重试外部清理</button> : null}
+      <details className="deletion-history">
+        <summary>删除记录 · 最近 50 条</summary>
+        <div className="deletion-history-content">
+          <p className="config-help">数据库中的媒体和独占记忆已在删除时提交；文件与向量镜像的清理状态单独显示。</p>
+          <button type="button" onClick={() => setDeletionsRevision((revision) => revision + 1)}>刷新记录</button>
+          {deletionsError ? <p role="alert" className="error">读取删除记录失败：{deletionsError}</p> : null}
+          {deletionsLoading ? <p>正在读取删除记录…</p> : deletions.length === 0 ? <p>当前范围暂无删除记录。</p> : (
+            <div className="deletion-history-scroll"><table>
+              <thead><tr><th>资源</th><th>删除时间</th><th>关联资产</th><th>文件</th><th>向量镜像</th><th>清理详情</th></tr></thead>
+              <tbody>{deletions.map((record) => <tr key={record.asset_id}>
+                <td><strong>{record.file_name || record.asset_id}</strong><small>{record.asset_id}</small></td>
+                <td>{record.deleted_at ? new Date(record.deleted_at).toLocaleString("zh-CN") : "未记录"}</td>
+                <td>{record.asset_count}</td>
+                <td>{record.files_done ? "完成" : "待重试"}</td>
+                <td>{record.vectors_done ? "完成" : "待重试"}</td>
+                <td>{record.last_error || (record.files_done && record.vectors_done ? "全部完成" : "等待清理")}</td>
+              </tr>)}</tbody>
+            </table></div>
+          )}
+        </div>
+      </details>
       {visible.length === 0 ? (
         <EmptyState
           symbol="▦"
@@ -132,7 +183,12 @@ export function LibraryPage() {
           }
         />
       ) : (
-        <AssetGrid assets={visible} />
+        <AssetGrid assets={visible} onDeleted={(id, warnings) => {
+          setAssets((current) => current.filter((asset) => asset.id !== id && asset.parent_asset_id !== id));
+          setDeleteNotice(warnings.length ? `媒体已删除；${warnings.join("；")}` : "媒体及关联记忆已删除");
+          setCleanupPending(warnings.some((warning) => warning.includes("待重试")));
+          setDeletionsRevision((revision) => revision + 1);
+        }} />
       )}
     </>
   );

@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   assetFileUrl,
   assetInlineUrl,
+  deleteAsset,
   getVideo,
   type AssetDetailResponse,
   type ObservationPayload,
@@ -31,16 +32,27 @@ const MEDIA_LABEL: Readonly<Record<string, string>> = {
   text: "文本",
 };
 
+const STATUS_LABEL: Readonly<Record<string, string>> = {
+  queued: "待处理",
+  processing: "处理中",
+  processed: "已处理",
+  failed: "处理失败",
+};
+
+function displayTime(value: string | null | undefined): string {
+  if (!value) return "未标注";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
 /** 只把观察时间与描述带出来；文件本身通过 Observation 里的 asset_id 打开。 */
 function ObservationList({ observations }: { observations: readonly ObservationPayload[] }) {
   if (observations.length === 0) {
-    return (
-      <p className="asset-detail-note">
-        后端没有按资产返回 Observation 的端点：<code>GET /assets/{"{id}"}</code> 只回
-        AssetSummary，事件侧也只有 <code>GET /events/{"{id}"}</code>（没有按资产反查）。
-        这里不伪造观察记录。
-      </p>
-    );
+    return <p className="asset-detail-note">当前详情没有可展示的观察记录。</p>;
   }
   return (
     <ul className="asset-observations">
@@ -49,7 +61,7 @@ function ObservationList({ observations }: { observations: readonly ObservationP
           <div>
             <strong>{observation.caption || "原始观察证据"}</strong>
             <small>
-              {observation.captured_at ?? "未标注时间"} · {observation.source_type}
+              {displayTime(observation.captured_at)} · {MEDIA_LABEL[observation.source_type] ?? observation.source_type}
             </small>
           </div>
           <a
@@ -69,6 +81,7 @@ function ObservationList({ observations }: { observations: readonly ObservationP
 export interface AssetDetailProps {
   asset: AssetDetailResponse;
   onClose: () => void;
+  onDeleted?: (assetId: string, warnings: string[]) => void;
   /** 视频命中帧的秒数；非视频忽略。 */
   initialTimeSec?: number | null;
   /** 调用方已经有 Observation 时直接传入（实体详情 / 实体组详情）。 */
@@ -78,6 +91,7 @@ export interface AssetDetailProps {
 export function AssetDetail({
   asset,
   onClose,
+  onDeleted,
   initialTimeSec = null,
   observations: providedObservations,
 }: AssetDetailProps) {
@@ -85,6 +99,8 @@ export function AssetDetail({
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textError, setTextError] = useState<string | null>(null);
   const [videoScenes, setVideoScenes] = useState<{ id: string; scenes: VideoScenePayload[]; error: string | null } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -153,37 +169,59 @@ export function AssetDetail({
 
   return (
     <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资产详情">
-      <button type="button" className="close" onClick={onClose}>关闭</button>
-      <div className="asset-detail-media">{media}</div>
-      {asset.media_type === "video" ? (
-        <VideoSpeechTranscript
-          scenes={videoScenes?.id === asset.id ? videoScenes.scenes : null}
-          error={videoScenes?.id === asset.id ? videoScenes.error : null}
-          onSeek={(seconds) => {
-            if (videoRef.current) {
-              videoRef.current.currentTime = seconds;
-              void videoRef.current.play();
-            }
-          }}
-        />
-      ) : null}
-      <dl>
-        <dt>文件名</dt><dd>{asset.file_name}</dd>
-        <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? asset.media_type}（{asset.mime_type ?? "未知 MIME"}）</dd>
-        <dt>拍摄时间</dt><dd>{asset.captured_at ?? "未标注"}</dd>
-        <dt>地点</dt>
-        <dd>{asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "无 GPS"}</dd>
-        {initialTimeSec !== null ? (
-          <>
-            <dt>命中时间</dt><dd>{initialTimeSec.toFixed(2)} 秒</dd>
-          </>
+      <div className="asset-detail-panel">
+        <header className="asset-detail-header">
+          <div className="asset-detail-title">
+            <span className="asset-detail-eyebrow">{MEDIA_LABEL[asset.media_type] ?? asset.media_type}详情</span>
+            <h2 title={asset.file_name}>{asset.file_name}</h2>
+          </div>
+          <button type="button" className="asset-detail-close" aria-label="关闭资产详情" onClick={onClose}>关闭</button>
+        </header>
+        <div className="asset-detail-body">
+          <div className="asset-detail-media">{media}</div>
+          <section className="asset-detail-info" aria-label="文件信息">
+            <h3>文件信息</h3>
+            <dl>
+              <div><dt>文件类型</dt><dd>{asset.mime_type ?? "未知"}</dd></div>
+              <div><dt>拍摄时间</dt><dd title={asset.captured_at ?? undefined}>{displayTime(asset.captured_at)}</dd></div>
+              <div><dt>地点坐标</dt><dd>{asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "无 GPS"}</dd></div>
+              {initialTimeSec !== null ? <div><dt>命中时间</dt><dd>{initialTimeSec.toFixed(2)} 秒</dd></div> : null}
+              <div><dt>处理状态</dt><dd>{STATUS_LABEL[asset.status] ?? asset.status}</dd></div>
+            </dl>
+            <a className="asset-detail-file-link" href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件 ↗</a>
+          </section>
+          {asset.media_type === "video" ? (
+            <VideoSpeechTranscript
+              scenes={videoScenes?.id === asset.id ? videoScenes.scenes : null}
+              error={videoScenes?.id === asset.id ? videoScenes.error : null}
+              onSeek={(seconds) => {
+                if (videoRef.current) {
+                  videoRef.current.currentTime = seconds;
+                  void videoRef.current.play();
+                }
+              }}
+            />
+          ) : null}
+          <section className="asset-detail-evidence" aria-label="观察记录">
+            <h3>观察记录</h3>
+            <ObservationList observations={observations} />
+          </section>
+        </div>
+        {onDeleted && !asset.parent_asset_id ? (
+          <footer className="asset-detail-footer">
+            {deleteError ? <p role="alert" className="error">删除失败：{deleteError}</p> : null}
+            <button type="button" className="asset-detail-delete" disabled={deleting} onClick={() => {
+              if (!window.confirm(`确定删除「${asset.file_name}」及其关联记忆和索引？此操作无法撤销。`)) return;
+              setDeleting(true);
+              setDeleteError(null);
+              void deleteAsset(asset.id)
+                .then((result) => onDeleted(asset.id, result.warnings))
+                .catch((cause: Error) => setDeleteError(cause.message))
+                .finally(() => setDeleting(false));
+            }}>{deleting ? "正在删除…" : "删除媒体及关联记忆"}</button>
+          </footer>
         ) : null}
-        <dt>处理状态</dt><dd>{asset.status}</dd>
-        <dt>Observation</dt>
-        <dd className="asset-detail-observations"><ObservationList observations={observations} /></dd>
-        <dt>原始文件</dt>
-        <dd><a href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件</a></dd>
-      </dl>
+      </div>
     </div>
   );
 }

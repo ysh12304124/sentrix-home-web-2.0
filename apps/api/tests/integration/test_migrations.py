@@ -24,6 +24,26 @@ def test_migrations_are_applied_once_and_recorded(tmp_path):
     assert {"a", "b", "schema_migrations"} <= tables
 
 
+def test_graph_provenance_column_already_present_is_recorded_without_duplicate_alter(tmp_path):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "0001_result_sets.sql").write_text(
+        "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, graph_provenance_json TEXT NOT NULL);"
+    )
+    source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
+    (migrations / "0020_result_set_graph_provenance.sql").write_bytes(
+        (source / "0020_result_set_graph_provenance.sql").read_bytes()
+    )
+    db = Database(tmp_path / "t.db", migrations)
+
+    assert db.migrate() == ["0001", "0020"]
+    assert db.migrate() == []
+    with db.connect() as conn:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(agent_result_sets)")].count(
+            "graph_provenance_json"
+        ) == 1
+
+
 def test_failed_migration_rolls_back(tmp_path):
     db = Database(tmp_path / "t.db", migrations_dir=tmp_path / "migrations")
     (tmp_path / "migrations").mkdir()

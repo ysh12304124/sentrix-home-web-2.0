@@ -224,6 +224,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 |---|---|---|---|
 | `OperationControl` | `domain/media/ports.py` | `start/request_cancel/check/finish`，有界登记与真实退出确认 | `InProcessOperationControl` |
 | `AssetRepository` | `domain/media/ports.py:71` | `add/get/list_by_scope/find_by_hash/update_status` | `SqliteAssetRepository` |
+| `MediaDeletionRepository` | `domain/media/ports.py` | `delete_asset/pending_cleanup/mark_cleanup/was_deleted/list_deletions` | `SqliteMediaDeletionRepository` |
 | `ObservationRepository` | `:89` | `add/get/list_by_asset/list_scope/enrich/latest_ocr_text/latest_people_snapshot` | `SqliteObservationRepository` |
 | `VlmObserver` | `:184` | `model_id`、`observe(path) -> ObservationSemantics \| None` | `OpenAIVlmObserver` |
 | `PhotoInspector` | `:201` | `model_id`、`inspect(path, question, faces, target_person, crop)` | `OpenAIPhotoInspector` |
@@ -1100,7 +1101,7 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 
 以下端口方法当前无生产调用者，替换时不要假设有调用链：
 
-`EventRepository.dissolve`、`PortraitRepository.list_for_person`、`PortraitRepository.set_lock`、`MediaStorage.path_for`、`LexicalIndex.rebuild_scope`、`InferenceProvider.token_count`、`TelemetryProvider.kv_cache`。
+`EventRepository.dissolve`、`PortraitRepository.list_for_person`、`PortraitRepository.set_lock`、`LexicalIndex.rebuild_scope`、`InferenceProvider.token_count`、`TelemetryProvider.kv_cache`。
 
 ### 9.3 冻结/不实现能力
 
@@ -1321,6 +1322,8 @@ AI业务提示词与输入预算/引用校验位于domain，HTTP及持久化位�
 ### 2026-10-29 阶段计时只读展示
 
 阶段卡按内容自然撑高；媒体导入首屏只保留数量、失败和请求墙钟，登记累计与范围说明按需展开。流水线核心标题显示pipeline_core实际经过时间，prepare为跨媒体准备时间累计，不能当父阶段墙钟或计算占比。收尾汇总participant_projection/memory_graph/family_graph/person_insights四个顺序执行段，causal_graph为memory_graph包含项，不重复计算；缺少任一独立段计时则不补零。两组占比均以timings.total为分母；不改run持久记录。
+
+2026-11-09 展示调整：PhotoBench 流水线详情新增“记忆构建全流程”，分别读取已保存的 pipeline_core（基础记忆）、memory_graph（普通图片、视频关键帧、语义/因果边和写入合计）及 qa_eval.agent_phase_wall_ms（检索与推理的 Agent 阶段）。只有完整阶段起止和 Agent 计时都存在时，才显示流水线与 Agent 两段墙钟合计；不把 worker 累计时长、因果包含项或并发 Judge 时间相加。图关闭显示“已关闭”，历史缺值保持“未记录”。收尾汇总仍包含图构建实际时间，但明细不重复列图与因果项；视频内部细分折叠组移除，保留“视频场景与关键帧处理”合并项。仅调整只读投影，不改变 API、run.json 或计时采集。
 
 
 ### 2026-11-01 PhotoBench完整证据AI对比

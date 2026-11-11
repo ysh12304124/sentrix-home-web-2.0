@@ -50,3 +50,30 @@ class AssetSummary(BaseModel):
 
 class AssetListResponse(BaseModel):
     items: list[AssetSummary]
+
+
+class DeleteAssetResponse(BaseModel):
+    asset_id: str
+    deleted: bool
+    warnings: list[str]
+
+
+class MediaDeletionRecordResponse(BaseModel):
+    asset_id: str
+    scope_id: str
+    file_name: str
+    media_type: str
+    deleted_at: str
+    asset_count: int
+    files_done: bool
+    vectors_done: bool
+    attempts: int
+    last_error: str
+
+
+class MediaDeletionHistoryResponse(BaseModel):
+    items: list[MediaDeletionRecordResponse]
+
+
+class MediaCleanupRetryResponse(BaseModel):
+    warnings: list[str]

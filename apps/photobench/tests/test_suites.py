@@ -294,6 +294,26 @@ def test_start_suite_registers_the_run_and_returns_its_id(tmp_path: Path):
     gate.set()
 
 
+def test_graph_switch_reaches_run_request_and_baseline(tmp_path: Path):
+    captured: list[RunRequest] = []
+
+    def factory(request: RunRequest) -> FakeExecution:
+        captured.append(request)
+        return FakeExecution(request)
+
+    for enabled in (False, True):
+        suites = _suites(tmp_path, new_execution=factory)
+        result = suites.start_suite(_payload(graph_enabled=enabled, graph_baseline_run_id="baseline-run"))
+        assert result["graph_enabled"] is enabled
+        assert captured[-1].graph_enabled is enabled
+        assert captured[-1].graph_baseline_run_id == ("baseline-run" if enabled else "")
+
+
+def test_graph_switch_rejects_non_boolean(tmp_path: Path):
+    with pytest.raises(InvalidRequestError, match="graph_enabled must be a boolean"):
+        _suites(tmp_path).start_suite(_payload(graph_enabled="false"))
+
+
 # ---- 取消 -----------------------------------------------------------------
 
 

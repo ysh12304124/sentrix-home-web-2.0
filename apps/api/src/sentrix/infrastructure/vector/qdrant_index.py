@@ -129,6 +129,45 @@ class QdrantVectorIndex:
                 written += len(batch)
         return written
 
+    def delete_sources(self, sources: Sequence[tuple[str, str]]) -> None:
+        if not sources:
+            return
+        # This call is an explicit outbox retry; allow a new connection attempt
+        # after a transient lock or filesystem error cached by status().
+        with self._client_lock:
+            if self._client is None:
+                self._error = ""
+        client = self._get_client()
+        from qdrant_client import models
+
+        keys = sorted(set(sources))
+        for collection in client.get_collections().collections:
+            if not collection.name.startswith(self.prefix + "_"):
+                continue
+            for offset in range(0, len(keys), 64):
+                batch = keys[offset : offset + 64]
+                client.delete(
+                    collection_name=collection.name,
+                    points_selector=models.FilterSelector(
+                        filter=models.Filter(
+                            should=[
+                                models.Filter(
+                                    must=[
+                                        models.FieldCondition(
+                                            key="source_type", match=models.MatchValue(value=kind)
+                                        ),
+                                        models.FieldCondition(
+                                            key="source_id", match=models.MatchValue(value=source)
+                                        ),
+                                    ]
+                                )
+                                for kind, source in batch
+                            ]
+                        )
+                    ),
+                    wait=True,
+                )
+
     def search(
         self,
         *,

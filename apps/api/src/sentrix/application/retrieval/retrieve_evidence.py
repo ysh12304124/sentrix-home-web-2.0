@@ -56,11 +56,11 @@ from sentrix.application.retrieval.retrieve_visual import (
     VisualSearchResult,
 )
 from sentrix.domain.media.models import MediaType
-from sentrix.domain.media.ports import ObservationRepository
+from sentrix.domain.media.ports import AssetRepository, MediaStorage, ObservationRepository
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.fusion import DEFAULT_CHANNEL_WEIGHTS, fuse
 from sentrix.domain.retrieval.models import CandidateHit, ChannelTrace, FusedCandidate
-from sentrix.domain.retrieval.ports import Reranker
+from sentrix.domain.retrieval.ports import Reranker, VisualEvidenceUtility
 
 log = logging.getLogger("sentrix.retrieval.evidence")
 
@@ -228,6 +228,9 @@ class RetrieveEvidence:
         reranker: Reranker | None = None,
         observations: ObservationRepository | None = None,
         rerank_top_k: int = 24,
+        utility: VisualEvidenceUtility | None = None,
+        assets: AssetRepository | None = None,
+        media_storage: MediaStorage | None = None,
     ) -> None:
         self._visual = visual
         self._lexical = lexical
@@ -239,6 +242,9 @@ class RetrieveEvidence:
         self._reranker = reranker
         self._observations = observations
         self._rerank_top_k = rerank_top_k
+        self._utility = utility
+        self._assets = assets
+        self._media_storage = media_storage
         if reranker is not None and observations is None:
             raise ValueError("启用重排时必须提供 ObservationRepository：候选文本来自观察")
 
@@ -553,6 +559,76 @@ class RetrieveEvidence:
                 )
                 selected = selected[:limit]
             fused = selected
+            if self._utility is not None and self._assets is not None and self._media_storage is not None:
+                # The paper scores actual images, not observation text. Keep the
+                # original selection intact if any candidate cannot be scored.
+                pool = [*primary_fused[:limit], *graph_candidates[: min(3, limit)]]
+                unique = list({candidate.asset_id: candidate for candidate in pool}.values())
+                started = time.monotonic()
+                scored: list[tuple[float, int, FusedCandidate]] = []
+                non_image_ids = {
+                    candidate.asset_id
+                    for candidate in selected
+                    if (asset := self._assets.get(candidate.asset_id)) is not None
+                    and asset.media_type != MediaType.IMAGE
+                }
+                failure = ""
+                for position, candidate in enumerate(unique):
+                    asset = self._assets.get(candidate.asset_id)
+                    if asset is None:
+                        failure = "candidate_missing"
+                        break
+                    if asset.media_type != MediaType.IMAGE:
+                        continue
+                    try:
+                        image = self._media_storage.read_asset(asset)
+                    except OSError as error:
+                        failure = f"image_unavailable: {error}"
+                        break
+                    score = self._utility.score(text, image)
+                    if score is None:
+                        failure = "true_token_logprob_unavailable"
+                        break
+                    scored.append((score, position, candidate))
+                if failure:
+                    traces.append(
+                        ChannelTrace(
+                            channel="utility",
+                            status="degraded",
+                            candidate_count=len(scored),
+                            latency_ms=round((time.monotonic() - started) * 1000, 1),
+                            reason=failure,
+                        )
+                    )
+                elif scored:
+                    ranked_images = [
+                        replace(candidate, raw_scores={**candidate.raw_scores, "utility": score})
+                        for score, _, candidate in sorted(scored, key=lambda row: (-row[0], row[1]))
+                    ]
+                    image_iter = iter(ranked_images)
+                    fused = [
+                        candidate if candidate.asset_id in non_image_ids else next(image_iter, candidate)
+                        for candidate in selected
+                    ]
+                    traces.append(
+                        ChannelTrace(
+                            channel="utility",
+                            status="ok",
+                            candidate_count=len(scored),
+                            latency_ms=round((time.monotonic() - started) * 1000, 1),
+                            backend=self._utility.model_id,
+                        )
+                    )
+                else:
+                    traces.append(
+                        ChannelTrace(
+                            channel="utility",
+                            status="degraded",
+                            candidate_count=0,
+                            latency_ms=0,
+                            reason="no_visual_candidates",
+                        )
+                    )
         else:
             fused = primary_fused[:limit]
 

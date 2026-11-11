@@ -46,6 +46,7 @@ from sentrix.domain.media.ports import (
     AudioRepository,
     AudioTranscriber,
     CaptureTimeResolver,
+    MediaDeletionRepository,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -79,6 +80,7 @@ from sentrix.domain.retrieval.ports import (
     VectorIndex,
     VectorRepository,
     VisualEmbedder,
+    VisualEvidenceUtility,
 )
 from sentrix.domain.spaces.ports import SpaceRepository
 from sentrix.infrastructure.assistant.chat_client import OpenAIChatModel
@@ -114,6 +116,7 @@ from sentrix.infrastructure.models.legacy import (
     LegacyEmbeddingHealthProbe,
 )
 from sentrix.infrastructure.models.reranker import BgeSidecarReranker
+from sentrix.infrastructure.models.visual_utility import OpenAIVisualEvidenceUtility
 from sentrix.infrastructure.models.wemm import WeMMSidecarEmbedder
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.appearance import SqliteAppearanceRepository
@@ -131,6 +134,7 @@ from sentrix.infrastructure.persistence.repositories.events import SqliteEventRe
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
 from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepository
 from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
+from sentrix.infrastructure.persistence.repositories.media_deletion import SqliteMediaDeletionRepository
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
 from sentrix.infrastructure.persistence.repositories.participants import (
@@ -179,6 +183,7 @@ class Container:
     operation_control: OperationControl
     import_progress: ImportProgressStore
     asset_repository: AssetRepository
+    media_deletion: MediaDeletionRepository
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
@@ -210,6 +215,7 @@ class Container:
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
     reranker: Reranker | None
+    visual_evidence_utility: VisualEvidenceUtility
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
@@ -373,6 +379,7 @@ class Container:
             import_progress=InProcessImportProgressStore(),
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,
+            media_deletion=SqliteMediaDeletionRepository(database),
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
@@ -415,6 +422,9 @@ class Container:
             ),
             text_embedder=text_embedder,
             reranker=reranker,
+            visual_evidence_utility=OpenAIVisualEvidenceUtility(
+                settings.vlm_base_url, served_model, timeout_s=settings.vlm_timeout_s
+            ),
             embedding_health=embedding_health,
             place_resolver=OfflinePlaceResolver(
                 admin=PyGeoCNAdminResolver(),

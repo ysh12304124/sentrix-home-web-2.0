@@ -31,6 +31,7 @@ from sentrix.domain.memories.ports import (
 )
 from sentrix.domain.retrieval.ports import VectorRepository
 
+from .image_graph import project_image_graph
 from .keyframe_graph import project_keyframe_graph
 
 log = logging.getLogger("sentrix.memories.build_graph")
@@ -472,6 +473,20 @@ class BuildMemoryGraph:
                     attributes=attributes,
                 )
             ),
+            add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
+                source,
+                target,
+                relation,
+                weight=weight,
+                attributes=attributes,
+                discriminator=discriminator,
+            ),
+        )
+
+        project_image_graph(
+            assets=assets,
+            latest_observations=latest_by_asset,
+            vectors=self._vectors,
             add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
                 source,
                 target,

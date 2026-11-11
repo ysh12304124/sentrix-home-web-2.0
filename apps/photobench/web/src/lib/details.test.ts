@@ -161,16 +161,15 @@ describe("itemTimingBreakdown（1.0 :2122-2133）", () => {
   });
 
   it("缺 saved 时按字段各自回退（model_ms 取 llm_summary，judge/wall 取 item 平铺）", () => {
-    // `agent_wall_ms` 与 `other_ms` 现在由 `wall_clock_ms − judge_ms` 推出：
-    // 111 − 33 = 78；`other` 再把 model/tool 减掉，负值钳到 0（模型调用可能是并发的，
-    // 串行时长之和会大于墙钟）。此前这两个字段恒为 null，页面上的耗时位因此是空的。
+    // 111 − 33 = 78 可得到 Agent 墙钟；工具时长缺失且模型累计超过墙钟，
+    // 无法可靠拆出“其他耗时”，保留 null，避免把并发调用伪装成串行组成。
     expect(itemTimingBreakdown({ wall_clock_ms: 111, llm_summary: { total_ms_sum: 222 }, judge_ms: 33 })).toEqual({
       wall_clock_ms: 111,
       agent_wall_ms: 78,
       model_ms: 222,
       tool_ms: null,
       judge_ms: 33,
-      other_ms: 0,
+      other_ms: null,
     });
   });
 

@@ -36,7 +36,7 @@ describe("资产详情", () => {
     render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} />);
     const image = screen.getByRole("img") as HTMLImageElement;
     expect(image.src).toContain("/api/v1/assets/a1/file");
-    expect(screen.getByText("2026-01-02T10:00:00+00:00")).toBeTruthy();
+    expect(screen.getByText(/2026.*01.*02/)).toBeTruthy();
     expect(screen.getByText("31.230000, 121.470000")).toBeTruthy();
   });
 
@@ -80,13 +80,32 @@ describe("资产详情", () => {
     await waitFor(() => expect(screen.getByText("这是一段导入的笔记")).toBeTruthy());
   });
 
-  it("有 Observation 就列出；没有就说明后端缺端点而不是留空壳", () => {
+  it("有 Observation 就列出；没有就显示简明提示", () => {
     const { rerender } = render(
       <AssetDetail asset={asset({ id: "a1" })} observations={[observation]} onClose={() => {}} />,
     );
     expect(screen.getByText("桥边有一排红色的花")).toBeTruthy();
 
     rerender(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} />);
-    expect(screen.getByText(/没有按资产返回 Observation 的端点/)).toBeTruthy();
+    expect(screen.getByText("当前详情没有可展示的观察记录。")).toBeTruthy();
+  });
+
+  it("确认删除后调用 API 并把结果交给资料库列表", async () => {
+    const onDeleted = vi.fn();
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ asset_id: "a1", deleted: true, warnings: [] }),
+    });
+    vi.stubGlobal("confirm", confirm);
+    vi.stubGlobal("fetch", fetch);
+    render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} onDeleted={onDeleted} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
+    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
+
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", []));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/assets/a1", { method: "DELETE" });
   });
 });

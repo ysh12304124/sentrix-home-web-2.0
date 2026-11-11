@@ -239,7 +239,7 @@ def channels_of(hit) -> dict[str, int]:
 class PathOnlyGraph:
     """返回一条只有图路径分数、没有查询通道支持的候选。"""
 
-    def execute(self, *, seed_asset_ids, scope_id, limit, question, max_hops):
+    def execute(self, *, seed_asset_ids, scope_id, limit, question):
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -253,9 +253,9 @@ class PathOnlyGraph:
 
 
 class DirectLineageGraph:
-    """一跳关键帧到原视频的血缘边，图路径本身就是可解释的媒体证据。"""
+    """图候选在当前接口中只携带命中，不附带旧版 provenance 对象。"""
 
-    def execute(self, *, seed_asset_ids, scope_id, limit, question, max_hops):
+    def execute(self, *, seed_asset_ids, scope_id, limit, question):
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -265,14 +265,6 @@ class DirectLineageGraph:
                     raw_score=1.0,
                 ),
             ),
-            provenance={
-                "asset_graph_only": {
-                    "hops": 1,
-                    "relations": ["asset_derived_from_asset"],
-                    "path": ["asset:asset_seed", "asset:asset_graph_only"],
-                    "score": 1.0,
-                }
-            },
         )
 
 
@@ -323,27 +315,24 @@ def test_a_candidate_outside_every_channels_head_is_still_ranked_by_the_fusion(l
     assert channels_of(result.hits[0]) == {"visual_ann": 2, "lexical": 2}
 
 
-def test_graph_path_only_candidate_does_not_replace_primary_tail(library):
-    """图路径命中不能仅凭 path score 挤掉查询相关的 primary 尾部。"""
+def test_graph_path_candidate_uses_reserved_tail_slot(library):
+    """当前融合策略给图拓展保留尾部窗口，且不改动 primary 头部。"""
     result = build(library, graph=PathOnlyGraph()).execute(
         EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
     )
 
-    assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
-    assert result.graph_promoted_asset_ids == ()
-    assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
+    assert result.graph_asset_ids == ("asset_graph_only",)
+    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
 
 
-def test_direct_media_lineage_without_query_relevance_does_not_promote(library):
-    """即使是一跳媒体血缘，也不能只凭图关系替换更相关的 primary 候选。"""
+def test_graph_result_without_legacy_provenance_uses_reserved_slot(library):
+    """新接口无需旧版 provenance 字段，也能保留图候选轨迹。"""
     result = build(library, graph=DirectLineageGraph()).execute(
         EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
     )
 
-    assert "asset_graph_only" not in [hit.asset_id for hit in result.hits]
-    assert result.graph_promoted_asset_ids == ()
-    assert result.graph_suppressed_asset_ids == ("asset_graph_only",)
-    assert result.graph_provenance["asset_graph_only"]["relations"] == ["asset_derived_from_asset"]
+    assert result.graph_asset_ids == ("asset_graph_only",)
+    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------
@@ -467,20 +456,18 @@ def test_graph_expansion_uses_primary_head_and_preserves_query_relevant_results(
     result = use_case.execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
 
     assert graph.seeds == ("asset_b", "asset_c")
-    assert graph.max_hops == 2
-    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_c"]
+    assert graph.max_hops == GRAPH_MAX_HOPS
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
     assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
-    assert result.fused_asset_ids == ("asset_b", "asset_c")
-    assert result.graph_promoted_asset_ids == ()
-    assert result.graph_suppressed_asset_ids == ("asset_graph",)
+    assert result.fused_asset_ids == ("asset_b", "asset_graph")
 
 
-def test_a_weak_graph_path_does_not_displace_primary_head(library):
+def test_a_weak_graph_path_keeps_primary_head_and_uses_tail_slot(library):
     class _WeakGraph(_RecordingGraph):
         def execute(self, **kwargs):
             self.seeds = tuple(kwargs["seed_asset_ids"])
-            self.max_hops = kwargs["max_hops"]
+            self.max_hops = kwargs.get("max_hops", GRAPH_MAX_HOPS)
             return GraphSearchResult(
                 hits=(
                     CandidateHit(
@@ -495,9 +482,9 @@ def test_a_weak_graph_path_does_not_displace_primary_head(library):
 
     result = build(library, graph=_WeakGraph()).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
 
-    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_c"]
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
     assert result.graph_asset_ids == ("asset_graph",)
-    assert result.fused_asset_ids == ("asset_b", "asset_c")
+    assert result.fused_asset_ids == ("asset_b", "asset_graph")
 
 
 # ---- 通道轨迹（T125：S6 的验收条件）------------------------------------------------

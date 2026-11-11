@@ -179,6 +179,10 @@ class VectorIndex(Protocol):
 
     def upsert(self, records: Sequence[VectorRecord]) -> int: ...
 
+    def delete_sources(self, sources: Sequence[tuple[str, str]]) -> None:
+        """Remove matching mirrored points; unavailable index raises VectorIndexUnavailable."""
+        ...
+
     def search(
         self,
         *,
@@ -296,6 +300,17 @@ class Reranker(Protocol):
     def model_id(self) -> str: ...
 
     def rerank(self, query: str, documents: Sequence[str]) -> Sequence[float]: ...
+
+
+class VisualEvidenceUtility(Protocol):
+    """论文式视觉证据帮助度：逐图返回 True token 的对数概率。"""
+
+    @property
+    def model_id(self) -> str: ...
+
+    def score(self, question: str, image: bytes) -> float | None:
+        """无法取得 token 概率时返回 None，调用方保留原有检索顺序。"""
+        ...
 
 
 class StructuredQueryRepository(Protocol):

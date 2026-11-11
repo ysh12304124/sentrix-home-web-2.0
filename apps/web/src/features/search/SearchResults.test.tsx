@@ -62,7 +62,7 @@ describe("检索结果", () => {
     const dialog = screen.getByRole("dialog", { name: "资产详情" });
     expect(within(dialog).getByRole("img")).toBeTruthy();
     expect(within(dialog).getByText("bridge.jpg")).toBeTruthy();
-    expect(within(dialog).getByText("2026-01-02T10:00:00+00:00")).toBeTruthy();
+    expect(within(dialog).getByText(/2026.*01.*02/)).toBeTruthy();
     expect(within(dialog).getByText("31.230000, 121.470000")).toBeTruthy();
   });
 

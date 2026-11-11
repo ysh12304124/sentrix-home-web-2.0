@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import re
+import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 from sentrix.domain.media.models import Asset
@@ -36,3 +39,27 @@ class FileSystemMediaStorage:
         if not matches:
             raise FileNotFoundError(f"未找到 asset {asset_id} 的媒体文件")
         return matches[0].read_bytes()
+
+    def read_asset(self, asset: Asset) -> bytes:
+        return self.path_for(asset).read_bytes()
+
+    def delete_assets(self, asset_ids: Sequence[str], paths: Sequence[str]) -> tuple[str, ...]:
+        """Delete only files owned by this data directory, including video derivatives."""
+        root = self._media_dir.resolve()
+        skipped: list[str] = []
+        for raw in paths:
+            path = Path(raw).resolve()
+            if not path.is_relative_to(root):
+                skipped.append(raw)
+                continue
+            path.unlink(missing_ok=True)
+        for asset_id in asset_ids:
+            # Asset IDs come from SQLite, but still reject path components here.
+            if re.fullmatch(r"[A-Za-z0-9_-]+", asset_id) is None:
+                raise ValueError("invalid asset ID in cleanup job")
+            derived = (root / "derived" / "video" / asset_id).resolve()
+            if not derived.is_relative_to(root):
+                raise ValueError("unsafe derived media path")
+            if derived.is_dir():
+                shutil.rmtree(derived)
+        return tuple(skipped)

@@ -151,6 +151,14 @@ class Database:
             if done is not None:
                 connection.execute("COMMIT")
                 return False
+            if script.name == "0020_result_set_graph_provenance.sql":
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_result_sets)")}
+                if "graph_provenance_json" in columns:
+                    # Mac legacy databases gained this column before the
+                    # versioned migration. Record it without running ALTER twice.
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                    connection.execute("COMMIT")
+                    return True
             for statement in _statements(script.read_text(encoding="utf-8")):
                 connection.execute(statement)
             connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))

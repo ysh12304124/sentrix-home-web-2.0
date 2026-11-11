@@ -15,12 +15,22 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from sentrix.api.deps import get_container
-from sentrix.api.schemas.media import AssetListResponse, AssetSummary, ImportResponse
+from sentrix.api.errors import ConflictError, NotFoundError
+from sentrix.api.schemas.media import (
+    AssetListResponse,
+    AssetSummary,
+    DeleteAssetResponse,
+    ImportResponse,
+    MediaCleanupRetryResponse,
+    MediaDeletionHistoryResponse,
+    MediaDeletionRecordResponse,
+)
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
+from sentrix.application.media.delete_asset import DeleteAsset
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
 from sentrix.application.media.import_assets import ImportAssets, ImportRequest, StagedImport
 from sentrix.application.media.index_place import IndexAssetPlace
@@ -959,12 +969,48 @@ def list_assets(
     return AssetListResponse(items=[to_summary(asset) for asset in assets])
 
 
+@router.get("/assets/deletions")
+def list_media_deletions(
+    scope_id: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    container: Container = Depends(get_container),
+) -> MediaDeletionHistoryResponse:
+    """Read committed media deletions and current external-cleanup status."""
+    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
+    records = use_case.list_records(scope_id=scope_id or None, limit=limit)
+    return MediaDeletionHistoryResponse(
+        items=[MediaDeletionRecordResponse.model_validate(record, from_attributes=True) for record in records]
+    )
+
+
 @router.get("/assets/{asset_id}")
 def get_asset(asset_id: str, container: Container = Depends(get_container)) -> AssetSummary:
     asset = container.asset_repository.get(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
     return to_summary(asset)
+
+
+@router.delete("/assets/{asset_id}")
+def delete_asset(asset_id: str, container: Container = Depends(get_container)) -> DeleteAssetResponse:
+    """Delete one source asset and retry its durable external cleanup."""
+    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
+    try:
+        result = use_case.execute(asset_id)
+    except ValueError as error:
+        raise ConflictError(str(error)) from error
+    if result is None:
+        raise NotFoundError("asset not found")
+    return DeleteAssetResponse(
+        asset_id=result.asset_id, deleted=result.deleted, warnings=list(result.warnings)
+    )
+
+
+@router.post("/assets/deletion-cleanup/retry")
+def retry_media_cleanup(container: Container = Depends(get_container)) -> MediaCleanupRetryResponse:
+    """Retry outstanding Qdrant and managed-file cleanup after a partial failure."""
+    warnings = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index).retry()
+    return MediaCleanupRetryResponse(warnings=list(warnings))
 
 
 def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Response:

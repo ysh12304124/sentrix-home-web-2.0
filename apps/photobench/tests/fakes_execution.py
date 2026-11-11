@@ -112,6 +112,7 @@ class FakeSentrixClient:
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
+        graph_enabled: bool = True,
         timeout: int = 120,
     ) -> dict[str, Any]:
         self._record(
@@ -122,6 +123,7 @@ class FakeSentrixClient:
             aliases=list(aliases),
             file_name=file_name,
             content=content,
+            graph_enabled=graph_enabled,
         )
         if name in self.seed_error:
             raise self.seed_error[name]
@@ -141,6 +143,7 @@ class FakeSentrixClient:
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
+        graph_enabled: bool = True,
         timeout: int = 60,
     ) -> dict[str, Any]:
         self._record(
@@ -148,6 +151,7 @@ class FakeSentrixClient:
             scope_id=scope_id,
             relationships=list(relationships),
             entity_by_name=dict(entity_by_name),
+            graph_enabled=graph_enabled,
         )
         return {"requested": len(relationships), "imported": len(relationships), "results": []}
 
@@ -159,8 +163,16 @@ class FakeSentrixClient:
         self._record("import_assets", scope_id=scope_id, directory=directory, limit=limit, timeout=timeout)
         return {**self.import_result, "scope_id": scope_id, "directory": directory}
 
-    def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
-        self._record("process_pipeline", scope_id=scope_id, asset_ids=list(asset_ids), timeout=timeout)
+    def process_pipeline(
+        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
+    ) -> dict[str, Any]:
+        self._record(
+            "process_pipeline",
+            scope_id=scope_id,
+            asset_ids=list(asset_ids),
+            graph_enabled=graph_enabled,
+            timeout=timeout,
+        )
         return {**self.pipeline_result, "scope_id": scope_id}
 
     def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
