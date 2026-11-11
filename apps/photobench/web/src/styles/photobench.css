@@ -1434,5 +1434,12 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .scoring-review-fields label:last-child { grid-column:1/-1; }
 .scoring-review code { overflow-wrap:anywhere; }
 .scoring-review .table-scroll { overflow-x:auto; }
+.scoring-review table { table-layout:fixed; min-width:760px; }
+.scoring-review th,.scoring-review td { white-space:normal; overflow-wrap:anywhere; }
+.scoring-review th:first-child { width:22%; }
+.scoring-review th:last-child { width:30%; }
 .scoring-review td { vertical-align:top; min-width:160px; }
+.process-diagnostics-overview table { min-width:0; table-layout:fixed; }
+.process-diagnostics-overview th,.process-diagnostics-overview td { white-space:normal; overflow-wrap:anywhere; }
+.process-diagnostics-overview th:not(:first-child) { width:80px; }
 @media(max-width:700px) { .scoring-review-fields { grid-template-columns:minmax(0,1fr); } }

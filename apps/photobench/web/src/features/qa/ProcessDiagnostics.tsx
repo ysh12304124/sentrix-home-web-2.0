@@ -82,7 +82,7 @@ export function ProcessDiagnosticsOverview({ runId, scoringProfile = '', scoring
       .catch(error => {if (latestId.current === id) setState({ id, error: String(error) });});
   };
   const summary = current?.report?.summary;
-  return <details className="phase-card" onToggle={event => { if (event.currentTarget.open) load(); }}>
+  return <details className="phase-card process-diagnostics-overview" onToggle={event => { if (event.currentTarget.open) load(); }}>
     <summary>答题过程诊断汇总</summary>
     {current?.loading ? <p>正在分析已保存答卷…</p> : null}
     {current?.error ? <p role="alert">{current.error}<button onClick={load}>重试</button></p> : null}
