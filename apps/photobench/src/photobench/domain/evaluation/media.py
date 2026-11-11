@@ -39,6 +39,13 @@ def delivered_media_aliases(record: Mapping[str, Any]) -> list[dict[str, str]]:
 
 def tool_media_aliases(item: Mapping[str, Any], turn_index: int) -> list[dict[str, str]]:
     """Match actual tool previews to saved candidate identities; ambiguous handles are omitted."""
+    return tool_media_alias_resolution(item, turn_index)[0]
+
+
+def tool_media_alias_resolution(
+    item: Mapping[str, Any], turn_index: int
+) -> tuple[list[dict[str, str]], set[str]]:
+    """Keep unresolved handles visible to read-only answer-text diagnostics."""
     by_name: dict[str, set[tuple[str, str]]] = {}
     for ref in item.get("retrieved_candidate_media") or []:
         if ref.get("media_type") not in {"image", "video"} or not ref.get("media_id"):
@@ -73,12 +80,13 @@ def tool_media_aliases(item: Mapping[str, Any], turn_index: int) -> list[dict[st
                         unresolved.add(handle)
                     aliases.setdefault(handle, set()).update(refs)
                     sources.add((content["result_set_id"], handle))
-    return [
+    resolved = [
         {"result_set_id": source, "handle": handle, "media_type": kind, "media_id": identifier}
         for source, handle in sorted(sources)
         if handle not in unresolved and len(aliases[handle]) == 1
         for kind, identifier in aliases[handle]
     ]
+    return resolved, unresolved | {handle for handle, refs in aliases.items() if len(refs) != 1}
 
 
 def media_metrics_for_sets(

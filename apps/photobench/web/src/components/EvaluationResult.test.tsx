@@ -3,6 +3,20 @@ import { afterEach, expect, it } from "vitest";
 import { EvaluationResult, EvaluationSummary, EvaluationTypeBadge } from "./EvaluationResult.tsx";
 import { scoreChoices } from "../features/analysis/presentation.ts";
 afterEach(cleanup);
+it('正文编号对照默认折叠，诊断分与正式交付零分分开', () => {
+  render(<EvaluationResult value={{scorer:'list',score:0,max_score:1,list_comparison:{model_delivery_jaccard:0,tool_candidate_jaccard:1,answer_text:{status:'available',score:2/3,predicted:['image:a.jpg','image:b.jpg']}}}} />);
+  const comparison=screen.getByLabelText('正文编号对照');
+  expect((comparison as HTMLDetailsElement).open).toBe(false);
+  expect(within(comparison).getByText('0.0%')).toBeTruthy();
+  expect(within(comparison).getByText('100.0%')).toBeTruthy();
+  expect(within(comparison).getByText('66.7%')).toBeTruthy();
+  expect(within(comparison).getByText('只读诊断')).toBeTruthy();
+});
+it('编号范围或缺失映射显示无法完整计算，不显示为零', () => {
+  render(<EvaluationResult value={{scorer:'list',list_comparison:{answer_text:{status:'unavailable',reason:'range_not_expanded',score:null}}}} />);
+  expect(screen.getByText('无法完整计算')).toBeTruthy();
+  expect(screen.getByText('正文包含编号范围，尚未展开。')).toBeTruthy();
+});
 it("二分制满分与筛选类别一致", () => {
   expect(scoreChoices({evaluation_summary: {count: 1, scales: ["1"], by_type: {choice: {}}}}).map(s => s.value)).toEqual(["2", "0", "None"]);
   render(<EvaluationResult value={{scorer: "choice_judge", score: 1, max_score: 1, normalized_score: 1, matched_option: "B", comparisons: [{option_id: "B", matches: true, reason: "语义一致"}]}} definition={{correct_option: "B", options: [{id: "B", text: "无法确认"}]}} />);

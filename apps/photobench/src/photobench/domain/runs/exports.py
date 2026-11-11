@@ -27,6 +27,7 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from photobench.domain.evaluation.profile_view import item_profile_results
 from photobench.domain.evaluation.profiles import scoring_summary
 from photobench.domain.runs.analysis import (
     judge_bucket_for_summary,
@@ -177,6 +178,7 @@ def export_traces(
                 "scoring_batch": state.get("selected_scoring_batch"),
                 "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
                 "scoring": scoring,
+                "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
                 "final_trace": final_trace,
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
@@ -291,6 +293,7 @@ def export_sft(
                 "question": item.get("question"),
                 "expected_action": item.get("expected_action"),
                 "answer": item.get("answer"),
+                "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
                 "judge": item.get("judge"),
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}

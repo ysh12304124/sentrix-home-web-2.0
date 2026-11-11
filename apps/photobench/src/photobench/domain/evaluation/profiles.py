@@ -344,7 +344,11 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
         requests = [q for r in batch_results for q in request_history(r) if q.get("dispatch_started")]
         summaries[batch["batch_id"]] = {
             **(
-                {"tool_list_qs": tool_list_qs(values, definitions, total)}
+                {
+                    "tool_list_qs": tool_list_qs(values, definitions, total),
+                    "list_source": "model_delivery",
+                    "text_ids_are_diagnostic_only": True,
+                }
                 if batch["profile_id"] == ATM
                 else {}
             ),

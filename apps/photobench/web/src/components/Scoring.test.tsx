@@ -74,7 +74,7 @@ describe('独立评分标准', () => {
     expect(screen.getByText('0.00 / 2.00 分')).toBeTruthy();
     expect(screen.getByText('0.0%')).toBeTruthy();
     expect(screen.getByText('回答质量均分')).toBeTruthy();
-    expect(screen.getByText('QS总分')).toBeTruthy();
+    expect(screen.getByText('模型交付口径QS（主QS）')).toBeTruthy();
   });
   it('开放式以2分制显示原始均分，QS独立显示百分比和待评分状态', () => {
     render(<ScoringResults summary={{scoring:{profiles:{
@@ -86,12 +86,12 @@ describe('独立评分标准', () => {
     expect(within(open).queryByText('64.4%')).toBeNull();
     const atm=screen.getByRole('article',{name:PROFILE_LABELS[ATM_PROFILE]});
     expect(within(atm).getByText('—')).toBeTruthy();
-    expect(within(atm).getByText('已评分QS均值')).toBeTruthy();
+    expect(within(atm).getByText('已评分模型交付口径QS均值')).toBeTruthy();
   });
   it('部分QS得分仍展示已评分均值百分比', () => {
     render(<ScoringResults summary={{scoring:{profiles:{[ATM_PROFILE]:{status:'incomplete',scored:2,total:3,coverage:2/3,scored_mean:.75,normalized_mean:.75,total_score:null}}}}}/>);
     expect(screen.getByText('75.0%')).toBeTruthy();
-    expect(screen.getByText('已评分QS均值')).toBeTruthy();
+    expect(screen.getByText('已评分模型交付口径QS均值')).toBeTruthy();
   });
   it('两套结果使用独立卡片，配置默认收起并保留完整快照标识', () => {
     const hash='df903991fe7f2c2581d3d2d9e4841b56770996396737af032b39acfc42f06876';
@@ -149,10 +149,11 @@ it('逐题同时显示已采集结果，隐藏未采集标准并保留零分', (
   expect(screen.getByText(/工具召回列表Jaccard：0.750/)).toBeTruthy();
   expect(screen.queryByText('未运行采集')).toBeNull();
 });
-it('主QS与工具列表口径QS分别展示分数和覆盖率', () => {
+it('模型交付与工具候选口径QS分别展示分数和覆盖率', () => {
   render(<ScoringResults summary={{scoring:{profiles:{[ATM_PROFILE]:{status:'completed',scored:10,total:10,coverage:1,total_score:.4,tool_list_qs:{total_score:.475,scored:10,total:10,coverage:1,list_count:3,list_scored:3}}}}}}/>);
   expect(screen.getByText('40.0%')).toBeTruthy();
-  const tools=screen.getByLabelText('工具列表口径QS');
+  const tools=screen.getByLabelText('工具候选口径QS');
+  expect(screen.getByText('模型交付口径QS（主QS）')).toBeTruthy();
   expect(within(tools).getByText('47.5%')).toBeTruthy();
   expect(within(tools).getByText(/覆盖率 10\/10/)).toBeTruthy();
 });
