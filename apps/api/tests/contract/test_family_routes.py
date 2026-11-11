@@ -137,6 +137,14 @@ def test_only_people_appear_and_the_pending_one_gets_the_family_graph_placeholde
     assert by_id["mom"]["portrait"] is None
 
 
+def test_each_person_carries_its_entity_status(family_client: TestClient) -> None:
+    """名录同时列出待确认与已确认的人；界面靠 ``status`` 决定给「确认身份」还是「改名」。"""
+    by_id = {item["id"]: item for item in _people(family_client)}
+
+    assert by_id["mom"]["status"] == "confirmed"
+    assert by_id["kid"]["status"] == "pending"
+
+
 def test_representative_media_comes_from_faces_not_from_observations(family_client: TestClient) -> None:
     """**这张表走人脸，不走观察。**
 

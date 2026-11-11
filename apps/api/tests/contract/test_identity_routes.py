@@ -347,6 +347,50 @@ def test_merge_moves_the_faces_and_retires_the_source(identity_client: TestClien
     assert (row["status"], row["member_count"]) == ("rejected", 0)
 
 
+def test_merging_two_confirmed_people_keeps_the_target_name(identity_client: TestClient):
+    """人物级合并：簇级合并拒绝的「两个已确认的人」，在这里由用户决定。"""
+    add_entity(identity_client, "ent_a", name="妈妈", status="confirmed")
+    add_entity(identity_client, "ent_b", name="母亲", status="confirmed")
+    add_cluster(identity_client, "cluster_a", status="confirmed", entity_id="ent_a", member_count=1)
+    add_cluster(identity_client, "cluster_b", status="confirmed", entity_id="ent_b", member_count=1)
+    add_instance(identity_client, "face_a", cluster_id="cluster_a")
+    add_instance(identity_client, "face_b", cluster_id="cluster_b")
+
+    response = identity_client.post(
+        "/api/v1/people/merge", json={"target_person_id": "ent_a", "source_person_ids": ["ent_b"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entity"]["id"] == "ent_a"
+    assert body["entity"]["canonical_name"] == "妈妈"
+    assert body["entity"]["aliases"] == ["母亲"]
+    assert body["merged_person_ids"] == ["ent_b"]
+    assert body["moved_face_count"] == 1
+    # 来源不再出现在人物列表里。
+    people = identity_client.get("/api/v1/people", params={"scope_id": HOME}).json()["people"]
+    assert [item["id"] for item in people] == ["ent_a"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "status", "code"),
+    [
+        ({"target_person_id": "ent_a", "source_person_ids": []}, 400, "invalid_request"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_a"]}, 400, "invalid_request"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_missing"]}, 404, "not_found"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_hidden"]}, 409, "conflict"),
+    ],
+)
+def test_merge_people_error_codes(identity_client: TestClient, payload: dict, status: int, code: str):
+    add_entity(identity_client, "ent_a", name="妈妈", status="confirmed")
+    add_entity(identity_client, "ent_hidden", name="别处的人", status="confirmed", scope_id=HIDDEN)
+
+    response = identity_client.post("/api/v1/people/merge", json=payload)
+
+    assert response.status_code == status
+    assert _error(response)[0] == code
+
+
 def test_splitting_a_foreign_face_is_404(identity_client: TestClient):
     add_entity(identity_client, "ent_1", name="待确认人物簇 · cluster_1")
     add_cluster(identity_client, "cluster_1", entity_id="ent_1", member_count=1)

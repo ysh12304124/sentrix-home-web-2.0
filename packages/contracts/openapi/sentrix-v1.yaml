@@ -102,6 +102,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/media/uploads:
+    post:
+      tags:
+      - media
+      summary: Upload Media
+      description: 流式接收一个文件。只有原件落盘且作业入库后才返回 202。
+      operationId: upload_media_api_v1_media_uploads_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_media_api_v1_media_uploads_post'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadAcceptedResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/assets:
     get:
       tags:
@@ -123,6 +149,34 @@ paths:
           type: integer
           default: 200
           title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Offset
+      - name: media_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Media Type
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          default: captured
+          title: Sort
+      - name: order
+        in: query
+        required: false
+        schema:
+          type: string
+          default: desc
+          title: Order
       responses:
         '200':
           description: Successful Response
@@ -156,6 +210,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssetSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/poster:
+    get:
+      tags:
+      - media
+      summary: Asset Poster
+      description: 视频封面：优先复用已抽取的关键帧，没有就抽第一帧；图片直接给预览。
+      operationId: asset_poster_api_v1_assets__asset_id__poster_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/thumbnail:
+    get:
+      tags:
+      - media
+      summary: Asset Thumbnail
+      description: 列表缩略图。480px 足够 4 列网格，避免把原图整张传给浏览器。
+      operationId: asset_thumbnail_api_v1_assets__asset_id__thumbnail_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -229,6 +335,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/import-jobs:
+    get:
+      tags:
+      - import-jobs
+      summary: List Import Jobs
+      operationId: list_import_jobs_api_v1_import_jobs_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1000
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJobListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/imports/progress:
+    get:
+      tags:
+      - import-jobs
+      summary: Get Import Progress
+      description: '两段式进度：逐文件建库 + 整册后处理。
+
+
+        逐文件状态来自 import_jobs；后处理阶段/事件计数来自 scope_postprocess。
+
+        两者必须分开，否则后处理进行时第一段 100% 会被误读成“全部结束”。'
+      operationId: get_import_progress_api_v1_imports_progress_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/sentrix__api__schemas__import_jobs__ImportProgressResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/import-jobs/{job_id}:
+    get:
+      tags:
+      - import-jobs
+      summary: Get Import Job
+      operationId: get_import_job_api_v1_import_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJobView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/import-jobs/{job_id}/cancel:
+    post:
+      tags:
+      - import-jobs
+      summary: Cancel Import Job
+      operationId: cancel_import_job_api_v1_import_jobs__job_id__cancel_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJobView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/import-jobs/{job_id}/requeue:
+    post:
+      tags:
+      - import-jobs
+      summary: Requeue Import Job
+      description: 管理员重排：只接受已停下、未被执行器持有的作业。
+      operationId: requeue_import_job_api_v1_import_jobs__job_id__requeue_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJobView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/internal/status:
+    get:
+      tags:
+      - internal
+      summary: Internal Status
+      operationId: internal_status_api_v1_internal_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Internal Status Api V1 Internal Status Get
   /api/v1/search:
     get:
       tags:
@@ -380,6 +647,20 @@ paths:
         schema:
           type: string
           title: Conversation Id
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Cursor
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
       responses:
         '200':
           description: Successful Response
@@ -469,6 +750,13 @@ paths:
         schema:
           type: string
           title: Conversation Id
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Idempotency-Key
       requestBody:
         required: true
         content:
@@ -507,6 +795,14 @@ paths:
         schema:
           type: string
           title: Turn Id
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: After
       - name: Last-Event-ID
         in: header
         required: false
@@ -717,6 +1013,21 @@ paths:
           default: ''
           title: Place
         description: 地点筛选，服务端按地点/行政区匹配
+      - name: has_place
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Has Place
+      - name: date
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^$|^unknown$|^\d{4}-\d{2}-\d{2}$
+          default: ''
+          title: Date
       responses:
         '200':
           description: Successful Response
@@ -724,6 +1035,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TimelineResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/timeline/calendar:
+    get:
+      tags:
+      - timeline
+      summary: Timeline Calendar
+      operationId: timeline_calendar_api_v1_timeline_calendar_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      - name: place
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 60
+          default: ''
+          title: Place
+      - name: has_place
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Has Place
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimelineCalendarResponse'
         '422':
           description: Validation Error
           content:
@@ -821,7 +1174,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImportProgressResponse'
+                $ref: '#/components/schemas/sentrix__api__schemas__timeline__ImportProgressResponse'
         '422':
           description: Validation Error
           content:
@@ -903,6 +1256,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OperationCancellationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/rotation:
+    get:
+      tags:
+      - memories
+      summary: Rotation
+      operationId: rotation_api_v1_memories_rotation_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/rotation/viewed:
+    post:
+      tags:
+      - memories
+      summary: Viewed
+      operationId: viewed_api_v1_memories_rotation_viewed_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotationViewedRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -1610,6 +2020,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BatchConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/merge:
+    post:
+      tags:
+      - identity
+      summary: Merge People
+      description: '把几个人物并成一个（名录里的手动合并）。
+
+
+        与 ``POST /face-clusters/merge`` 的区别：那条是簇级、不许合并两个已确认的人；这条
+
+        是人物级，由用户指定保留谁、叫什么，提及、关系、归属、画像一并改挂。错误码沿用簇审阅
+
+        那一族：参数不成立 400、人不存在 404、跨空间/已被合并过/同名冲突 409。'
+      operationId: merge_people_api_v1_people_merge_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergePeopleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergePeopleResponse'
         '422':
           description: Validation Error
           content:
@@ -2482,6 +2925,24 @@ components:
             $ref: '#/components/schemas/AssetSummary'
           type: array
           title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+        offset:
+          type: integer
+          title: Offset
+          default: 0
+        limit:
+          type: integer
+          title: Limit
+          default: 200
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+          default: {}
       type: object
       required:
       - items
@@ -2520,6 +2981,10 @@ components:
             type: object
           - type: 'null'
           title: Gps
+        place:
+          type: string
+          title: Place
+          default: ''
         derived_kind:
           anyOf:
           - type: string
@@ -2712,6 +3177,71 @@ components:
       required:
       - name
       title: Body_seed_person_identity_api_v1_people_seed_post
+    Body_upload_media_api_v1_media_uploads_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+        scope_id:
+          type: string
+          title: Scope Id
+          default: home-default
+      type: object
+      required:
+      - file
+      title: Body_upload_media_api_v1_media_uploads_post
+    CalendarDay:
+      properties:
+        date:
+          type: string
+          title: Date
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - date
+      - count
+      title: CalendarDay
+    CalendarMonth:
+      properties:
+        month:
+          type: integer
+          title: Month
+        count:
+          type: integer
+          title: Count
+        days:
+          items:
+            $ref: '#/components/schemas/CalendarDay'
+          type: array
+          title: Days
+      type: object
+      required:
+      - month
+      - count
+      - days
+      title: CalendarMonth
+    CalendarYear:
+      properties:
+        year:
+          type: integer
+          title: Year
+        count:
+          type: integer
+          title: Count
+        months:
+          items:
+            $ref: '#/components/schemas/CalendarMonth'
+          type: array
+          title: Months
+      type: object
+      required:
+      - year
+      - count
+      - months
+      title: CalendarYear
     ChannelTrace:
       properties:
         channel:
@@ -2856,6 +3386,15 @@ components:
             $ref: '#/components/schemas/TurnSummary'
           type: array
           title: Turns
+        has_more:
+          type: boolean
+          title: Has More
+          default: false
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
       type: object
       required:
       - conversation
@@ -2914,6 +3453,31 @@ components:
           default: ''
       type: object
       title: CreateConversationRequest
+    CreateSpaceRequest:
+      properties:
+        id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.-]+$
+          title: Id
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        kind:
+          type: string
+          enum:
+          - household
+          - benchmark
+          title: Kind
+          default: household
+      type: object
+      required:
+      - id
+      - name
+      title: CreateSpaceRequest
     DiagnosticsResponse:
       properties:
         status:
@@ -2936,6 +3500,21 @@ components:
           - type: string
           - type: 'null'
           title: Embeddings Error
+        model_generation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Generation
+        model_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Error
+        models_endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Models Endpoint
         runtime_configuration:
           additionalProperties: true
           type: object
@@ -4307,6 +4886,9 @@ components:
             $ref: '#/components/schemas/FamilyRepresentativeMedia'
           type: array
           title: Representative Media
+        status:
+          type: string
+          title: Status
       type: object
       required:
       - id
@@ -4317,10 +4899,11 @@ components:
       - avatar_face_instance_id
       - appearance_count
       - representative_media
+      - status
       title: FamilyPersonPayload
-      description: '``people[]`` 的一项。``display_name`` 的占位是 **「待命名人物」**（1.0 这个端点
+      description: '``people[]`` 的一项。``display_name`` 的占位统一为 **「未确认姓名人物」**，
 
-        里的原词，与 ``app.py`` 那处的「待命名成员」不是一个串）。'
+        任何端点都不把落库的内部 cluster id 带给用户。'
     FamilyPortraitPayload:
       properties:
         id:
@@ -4790,73 +5373,122 @@ components:
       - file_name
       - reason
       title: ImportFailure
-    ImportProgressResponse:
+    ImportJobListResponse:
       properties:
-        operation_id:
+        items:
+          items:
+            $ref: '#/components/schemas/ImportJobView'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ImportJobListResponse
+    ImportJobStageView:
+      properties:
+        stage:
           type: string
-          title: Operation Id
+          title: Stage
+        status:
+          type: string
+          title: Status
+        reason:
+          type: string
+          title: Reason
+          default: ''
+        attempts:
+          type: integer
+          title: Attempts
+          default: 0
+        error_category:
+          type: string
+          title: Error Category
+          default: ''
+      type: object
+      required:
+      - stage
+      - status
+      title: ImportJobStageView
+    ImportJobView:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        asset_id:
+          type: string
+          title: Asset Id
         scope_id:
           type: string
           title: Scope Id
+        receive_seq:
+          type: integer
+          title: Receive Seq
+        file_name:
+          type: string
+          title: File Name
+        media_type:
+          type: string
+          title: Media Type
+        size_bytes:
+          type: integer
+          title: Size Bytes
         status:
           type: string
           title: Status
         stage:
           type: string
           title: Stage
-        total:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Total
-        completed:
+        attempts:
           type: integer
-          title: Completed
-        imported:
-          type: integer
-          title: Imported
-        deduplicated:
-          type: integer
-          title: Deduplicated
-        failed:
-          type: integer
-          title: Failed
-        current_file:
+          title: Attempts
+        error_category:
+          type: string
+          title: Error Category
+          default: ''
+        error_message:
+          type: string
+          title: Error Message
+          default: ''
+        next_retry_at:
           anyOf:
           - type: string
           - type: 'null'
-          title: Current File
+          title: Next Retry At
+        accepted_at:
+          type: string
+          title: Accepted At
         updated_at:
           type: string
           title: Updated At
-        sequence:
+        completed_items:
           type: integer
-          title: Sequence
-        error:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Error
-        observed_at:
-          type: string
-          title: Observed At
+          title: Completed Items
+          default: 0
+        failed_items:
+          type: integer
+          title: Failed Items
+          default: 0
+        stages:
+          items:
+            $ref: '#/components/schemas/ImportJobStageView'
+          type: array
+          title: Stages
+          default: []
       type: object
       required:
-      - operation_id
+      - job_id
+      - asset_id
       - scope_id
+      - receive_seq
+      - file_name
+      - media_type
+      - size_bytes
       - status
       - stage
-      - total
-      - completed
-      - imported
-      - deduplicated
-      - failed
-      - current_file
+      - attempts
+      - accepted_at
       - updated_at
-      - sequence
-      - error
-      - observed_at
-      title: ImportProgressResponse
+      title: ImportJobView
     ImportResponse:
       properties:
         asset_id:
@@ -5072,6 +5704,31 @@ components:
         少掉的四个里 ``include_in_people`` 是有语义的，但 2.0 的 ``MemorySpace``
 
         模型就没带它——那是 S1 定下的形状，不在本次范围内。'
+    LibraryProgressView:
+      properties:
+        total:
+          type: integer
+          title: Total
+          default: 0
+        completed:
+          type: integer
+          title: Completed
+          default: 0
+        processing:
+          type: integer
+          title: Processing
+          default: 0
+        failed:
+          type: integer
+          title: Failed
+          default: 0
+        percent:
+          type: integer
+          title: Percent
+          default: 0
+      type: object
+      title: LibraryProgressView
+      description: 第一段：逐个文件建库。
     MemoryGraphBuildResponse:
       properties:
         scope_id:
@@ -5141,6 +5798,59 @@ components:
           default: ''
       type: object
       title: MergeClustersRequest
+    MergePeopleRequest:
+      properties:
+        target_person_id:
+          type: string
+          title: Target Person Id
+          default: ''
+        source_person_ids:
+          items:
+            type: string
+          type: array
+          title: Source Person Ids
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      title: MergePeopleRequest
+      description: '把 ``source_person_ids`` 并进 ``target_person_id``。
+
+
+        ``name`` 可省：省略时保留目标的名字，目标没有名字时取第一个有名字的来源。
+
+        空 id 与 ``MergeClustersRequest`` 同理判在用例里（400），不交给 pydantic（422）。'
+    MergePeopleResponse:
+      properties:
+        entity:
+          $ref: '#/components/schemas/PersonPayload'
+        merged_person_ids:
+          items:
+            type: string
+          type: array
+          title: Merged Person Ids
+        moved_face_count:
+          type: integer
+          title: Moved Face Count
+        moved_relationship_count:
+          type: integer
+          title: Moved Relationship Count
+        dropped_relationship_count:
+          type: integer
+          title: Dropped Relationship Count
+      type: object
+      required:
+      - entity
+      - merged_person_ids
+      - moved_face_count
+      - moved_relationship_count
+      - dropped_relationship_count
+      title: MergePeopleResponse
+      description: '合并后的目标人物与这次搬动的规模。计数供界面提示，不是审计——审计在
+
+        ``entity_revisions``。'
     MessageSummary:
       properties:
         id:
@@ -5400,6 +6110,37 @@ components:
         ``feedback`` 允许 ``None``：**清空反馈与没写过反馈是同一件事**，用 ``None`` 表达
 
         比空串准确（``PortraitRepository.set_feedback`` 的签名也是 ``str | None``）。'
+    PostprocessProgressView:
+      properties:
+        state:
+          type: string
+          title: State
+          default: idle
+        stage:
+          type: string
+          title: Stage
+          default: ''
+        events_done:
+          type: integer
+          title: Events Done
+          default: 0
+        events_total:
+          type: integer
+          title: Events Total
+          default: 0
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+        next_attempt_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Attempt At
+      type: object
+      title: PostprocessProgressView
+      description: 第二段：整册后处理。阶段与事件计数用于解释“为什么还没结束”。
     ProgressEventPayload:
       properties:
         text:
@@ -5866,6 +6607,96 @@ components:
       - entity
       - aliases
       title: RenamePersonResponse
+    RotationCard:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        asset_id:
+          type: string
+          title: Asset Id
+        media_kind:
+          type: string
+          title: Media Kind
+        title:
+          type: string
+          title: Title
+          default: ''
+        summary:
+          type: string
+          title: Summary
+          default: ''
+        time_label:
+          type: string
+          title: Time Label
+          default: ''
+        place_label:
+          type: string
+          title: Place Label
+          default: ''
+        related_asset_count:
+          type: integer
+          title: Related Asset Count
+          default: 0
+        poster_url:
+          type: string
+          title: Poster Url
+        play_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Play Url
+      type: object
+      required:
+      - event_id
+      - asset_id
+      - media_kind
+      - poster_url
+      title: RotationCard
+    RotationResponse:
+      properties:
+        sequence_id:
+          type: string
+          title: Sequence Id
+        day:
+          type: string
+          title: Day
+        cursor:
+          type: integer
+          title: Cursor
+        has_more:
+          type: boolean
+          title: Has More
+        empty_reason:
+          type: string
+          title: Empty Reason
+          default: ''
+        media:
+          items:
+            $ref: '#/components/schemas/RotationCard'
+          type: array
+          title: Media
+          default: []
+      type: object
+      required:
+      - sequence_id
+      - day
+      - cursor
+      - has_more
+      title: RotationResponse
+    RotationViewedRequest:
+      properties:
+        sequence_id:
+          type: string
+          title: Sequence Id
+        event_id:
+          type: string
+          title: Event Id
+      type: object
+      required:
+      - sequence_id
+      - event_id
+      title: RotationViewedRequest
     RunInsightsRequest:
       properties:
         scope_id:
@@ -6285,6 +7116,25 @@ components:
       - conversation_id
       - status
       title: StartTurnResponse
+    TimelineCalendarResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        unknown_count:
+          type: integer
+          title: Unknown Count
+          default: 0
+        years:
+          items:
+            $ref: '#/components/schemas/CalendarYear'
+          type: array
+          title: Years
+      type: object
+      required:
+      - scope_id
+      - years
+      title: TimelineCalendarResponse
     TimelineDay:
       properties:
         date:
@@ -6292,7 +7142,7 @@ components:
           title: Date
         events:
           items:
-            $ref: '#/components/schemas/TimelineEvent'
+            $ref: '#/components/schemas/TimelineEventSummary'
           type: array
           title: Events
       type: object
@@ -6341,6 +7191,14 @@ components:
             $ref: '#/components/schemas/TimelinePhoto'
           type: array
           title: Photos
+        timeline_date:
+          type: string
+          title: Timeline Date
+          default: ''
+        scope_id:
+          type: string
+          title: Scope Id
+          default: ''
       type: object
       required:
       - id
@@ -6355,6 +7213,58 @@ components:
       - confidence
       - photos
       title: TimelineEvent
+    TimelineEventSummary:
+      properties:
+        id:
+          type: string
+          title: Id
+        title:
+          type: string
+          title: Title
+        time_start:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Time Start
+        time_end:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Time End
+        place:
+          type: string
+          title: Place
+        admin_district:
+          type: string
+          title: Admin District
+        summary:
+          type: string
+          title: Summary
+        representative_asset_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Representative Asset Id
+        representative_media_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Representative Media Type
+        asset_count:
+          type: integer
+          title: Asset Count
+          default: 0
+      type: object
+      required:
+      - id
+      - title
+      - time_start
+      - time_end
+      - place
+      - admin_district
+      - summary
+      title: TimelineEventSummary
+      description: 按日列表的紧凑卡片：代表素材与关联素材总数，不展开全部照片。
     TimelinePhoto:
       properties:
         asset_id:
@@ -6413,6 +7323,23 @@ components:
         status:
           type: string
           title: Status
+        execution_state:
+          type: string
+          title: Execution State
+          default: ''
+        attempt_no:
+          type: integer
+          title: Attempt No
+          default: 0
+        waiting_reason:
+          type: string
+          title: Waiting Reason
+          default: ''
+        next_retry_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Retry At
         public_progress:
           items:
             $ref: '#/components/schemas/ProgressEventPayload'
@@ -6483,6 +7410,23 @@ components:
       - attachments
       - created_at
       title: TurnSummary
+    UploadAcceptedResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        asset_id:
+          type: string
+          title: Asset Id
+        status:
+          type: string
+          title: Status
+          default: accepted
+      type: object
+      required:
+      - job_id
+      - asset_id
+      title: UploadAcceptedResponse
     ValidationError:
       properties:
         loc:
@@ -6868,28 +7812,81 @@ components:
       - video_asset_id
       - scenes
       title: VideoScenesResponse
-    CreateSpaceRequest:
+    sentrix__api__schemas__import_jobs__ImportProgressResponse:
       properties:
-        id:
-          type: string
-          maxLength: 255
-          minLength: 1
-          pattern: ^[A-Za-z0-9_.-]+$
-          title: Id
-        name:
-          type: string
-          maxLength: 255
-          minLength: 1
-          title: Name
-        kind:
-          type: string
-          enum:
-          - household
-          - benchmark
-          title: Kind
-          default: household
+        library:
+          $ref: '#/components/schemas/LibraryProgressView'
+        postprocess:
+          $ref: '#/components/schemas/PostprocessProgressView'
       type: object
       required:
-      - id
-      - name
-      title: CreateSpaceRequest
+      - library
+      - postprocess
+      title: ImportProgressResponse
+    sentrix__api__schemas__timeline__ImportProgressResponse:
+      properties:
+        operation_id:
+          type: string
+          title: Operation Id
+        scope_id:
+          type: string
+          title: Scope Id
+        status:
+          type: string
+          title: Status
+        stage:
+          type: string
+          title: Stage
+        total:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total
+        completed:
+          type: integer
+          title: Completed
+        imported:
+          type: integer
+          title: Imported
+        deduplicated:
+          type: integer
+          title: Deduplicated
+        failed:
+          type: integer
+          title: Failed
+        current_file:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current File
+        updated_at:
+          type: string
+          title: Updated At
+        sequence:
+          type: integer
+          title: Sequence
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        observed_at:
+          type: string
+          title: Observed At
+      type: object
+      required:
+      - operation_id
+      - scope_id
+      - status
+      - stage
+      - total
+      - completed
+      - imported
+      - deduplicated
+      - failed
+      - current_file
+      - updated_at
+      - sequence
+      - error
+      - observed_at
+      title: ImportProgressResponse

@@ -36,6 +36,7 @@ from sentrix.domain.identity.ports import (
     FamilyGraphRepository,
     MomentRepository,
     PersonCropRenderer,
+    PersonMergeRepository,
     PersonPreviewRenderer,
     PersonVision,
     PortraitRepository,
@@ -141,6 +142,7 @@ from sentrix.infrastructure.persistence.repositories.moments import SqliteMoment
 from sentrix.infrastructure.persistence.repositories.participants import (
     SqliteEventParticipantRepository,
 )
+from sentrix.infrastructure.persistence.repositories.person_merge import SqlitePersonMergeRepository
 from sentrix.infrastructure.persistence.repositories.portraits import (
     SqlitePortraitRepository,
 )
@@ -342,6 +344,8 @@ class Container:
     moment_repository: MomentRepository
     relationship_repository: RelationshipRepository
     family_graph_repository: FamilyGraphRepository
+    # 人物级合并（名录里「这几个是同一个人」）。一次事务改挂全部派生行，见端口 docstring。
+    person_merge_repository: PersonMergeRepository
     portrait_repository: PortraitRepository
 
     chat_model: ChatModel
@@ -566,6 +570,7 @@ class Container:
             moment_repository=SqliteMomentRepository(database),
             relationship_repository=SqliteRelationshipRepository(database),
             family_graph_repository=family,
+            person_merge_repository=SqlitePersonMergeRepository(database),
             portrait_repository=SqlitePortraitRepository(database),
             chat_model=OpenAIChatModel(
                 settings.vlm_base_url,
