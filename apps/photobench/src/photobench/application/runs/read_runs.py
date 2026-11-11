@@ -406,6 +406,9 @@ class ReadRuns:
             if isinstance(live, dict):
                 live["history_enabled"] = False
                 live["history"] = []
+                for device in (live.get("devices") or {}).values():
+                    device["history_enabled"] = False
+                    device["history"] = []
         elif include_history and isinstance(live, dict) and live.get("statistics_mode") == "streaming_v1":
             attach_recorded_history(live, self._store.read_gpu_sample_lines(run_id))
         elif include_history and isinstance(live, dict):

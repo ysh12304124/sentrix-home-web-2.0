@@ -141,7 +141,14 @@ def test_disabled_history_reads_also_skip_legacy_and_previously_recorded_runs(
     state = {
         "run_id": "r",
         "status": "completed",
-        "telemetry_live": {"latest": {"temperature_c": 60}, "history": [{"t": 1}, {"t": 2}]},
+        "telemetry_live": {
+            "latest": {"temperature_c": 60},
+            "history": [{"t": 1}, {"t": 2}],
+            "devices": {
+                "0": {"history": [{"t": 1}], "latest": {"temperature_c": 60}},
+                "1": {"history": [{"t": 2}], "latest": {"temperature_c": 40}},
+            },
+        },
         "phases": {"gpu_metrics": {"temperature_c": {"peak": 95, "p95": 90}}},
     }
     if recorded_mode is not None:
@@ -151,6 +158,10 @@ def test_disabled_history_reads_also_skip_legacy_and_previously_recorded_runs(
     result = _reader(store, history_reads_enabled=False).get_run("r", include_history=True)
     assert result["history_mode"] == "latest"
     assert result["telemetry_live"]["history"] == []
+    assert all(
+        d["history"] == [] and d["history_enabled"] is False
+        for d in result["telemetry_live"]["devices"].values()
+    )
     assert result["phases"] == state["phases"]
     assert store.load_state("r") == state
 
@@ -242,8 +253,8 @@ def test_decimation_keeps_actual_gaps_without_inventing_gaps_from_stride():
 
 
 def test_integrated_streaming_statistics_and_previews_are_separate_per_gpu():
-    from photobench.domain.runs.telemetry_summary import DeviceTelemetrySummary
     from photobench.domain.runs.analysis import apply_live_sample
+    from photobench.domain.runs.telemetry_summary import DeviceTelemetrySummary
 
     summary = DeviceTelemetrySummary()
     live = {}
