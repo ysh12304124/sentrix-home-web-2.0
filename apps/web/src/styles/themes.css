@@ -263,7 +263,7 @@
 :root[data-ui-theme] .app-shell .person-card { background: var(--ui-surface); border-color: var(--ui-line); }
 :root[data-ui-theme] .app-shell .person-card.selected { border-color: var(--ui-accent); background: var(--ui-soft); }
 :root[data-ui-theme] .app-shell .family-tab { font-size: 14px; font-weight: 600; }
-:root[data-ui-theme] .app-shell .family-tab.active { color: var(--ui-accent); border-bottom-color: var(--ui-accent); }
+:root[data-ui-theme] .app-shell .family-tab.active { background: var(--ui-accent); color: var(--ui-on-accent); border-bottom-color: var(--ui-accent); }
 :root[data-ui-theme] .app-shell .family-tabs { border-color: var(--ui-line); }
 :root[data-ui-theme] .app-shell .library-summary { background: var(--ui-surface); overflow: hidden; }
 :root[data-ui-theme] .app-shell .asset-info { padding: 12px; }

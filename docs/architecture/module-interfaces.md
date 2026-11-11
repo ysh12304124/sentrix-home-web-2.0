@@ -308,6 +308,12 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `FamilyGraphRepository` | `:1039` | ~16 | `SqliteFamilyGraphRepository` |
 | `SpaceRepository` | `domain/spaces/ports.py:19` | `ensure/list_all/get` | `SqliteSpaceRepository` |
 
+空间登记：`POST /api/v1/memory-spaces` 接收 `{id,name,kind}`（kind 为 household/benchmark），
+幂等返回空间元数据；既有同 ID 不同用途返回 409，不自动改写。新 benchmark 空间的
+`include_in_people=0`，沿用既有人物展示过滤规则。PhotoBench 新建评测在种身份和导入前
+通过 `SentrixClient.ensure_space` 显式登记，失败停止后续阶段；reuse 不登记、不重分类。
+产品导入不根据空间名猜测用途，既有 `ensure` 的不覆盖语义不变。
+
 **必须保持的顺序/事务语义**
 
 | 端口 | 规则 |
@@ -947,6 +953,14 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 | `custom_judge_prompt.json` | 自定义评分提示词 |
 | run 请求字段 | 单轮覆盖 judge URL/model |
 
+本地 `make dev` / `make photobench-dev` 在 Darwin 上默认导出 mac profile，
+其它平台保持 server；显式环境变量/命令行覆盖优先。只影响开发启动目标，
+不修改 Settings、生产或历史运行快照默认语义。旧运行续跑仍继承原预算。
+
+`make web-dev` 默认导出既有 `SENTRIX_PREVIEW_TARGET=http://127.0.0.1:8191`；
+目标为本机 8191 时，既有 `VITE_LEGACY_LOCAL_AUTH` 默认 1，其它代理目标默认 0。
+显式环境变量/命令行值优先。仅影响此开发目标，不改变 Vite 配置、应用认证逻辑或生产构建。
+
 ---
 
 ## 7. 多人协作流程
@@ -1362,3 +1376,12 @@ GT图片解析：单次与双次分析共用comparison_inputs，按Judge的typed
 AI比较证据响应：AnalysisBackend.evidence支持ai_compare，返回job_id/index/sides；sides的left/right分别包含对比时冻结的index/source/item/qa/gt_images/evidence_locations，引用路径来自原pair-evidence。缺配对404、尚未生成证据400；原rules响应不变。ComparisonEvidenceSnapshot/ComparisonEvidenceSide纳入GET证据端点OpenAPI联合类型。comparison_evidence_ids提供嵌套调用稳定ID，NodeRecord供单次和双次轨迹共用，前端新comparison/ComparisonJourney/ComparisonFindings分别负责类型对齐、双轨迹、引用结论展示。
 
 AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=html)返回ValueError（API沿既有错误映射返回400）。JSON/CSV及其他报告导出不变。AI辅助分析区默认折叠。
+
+### 2026-11-10 独立 API 的上传消费
+
+`POST /media/uploads` 在独立 API 和体验实例都会创建持久导入任务，因此
+`Container.build_import_executor()` 在两种模式均装配。已有 SQLite 认领、租约、围栏、
+依赖门槛与并发限制保持不变；同步 `/imports` 不自动转为队列任务。
+`experience_mode` 继续控制控制面认证、问答执行器和启动媒体对账清理，不能为修复上传
+而在独立 API 上直接开启整个体验模式。统计 `processing` 仍含排队和依赖等待状态，
+前端文案明确为“排队或处理中”，不把已接收宣称为正在推理。

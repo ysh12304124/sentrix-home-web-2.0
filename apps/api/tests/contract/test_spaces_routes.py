@@ -53,3 +53,45 @@ def test_every_space_carries_the_columns_its_readers_need(settings: Settings) ->
     created_at = datetime.fromisoformat(space["created_at"])
     assert created_at.tzinfo is not None
     assert abs((datetime.now(UTC) - created_at).total_seconds()) < 300
+
+
+def test_benchmark_registration_hides_people_and_survives_import_ensure(client: TestClient) -> None:
+    payload = {"id": "test-scope", "name": "Test scope", "kind": "benchmark"}
+    first = client.post("/api/v1/memory-spaces", json=payload)
+    assert first.status_code == 200
+    assert client.post("/api/v1/memory-spaces", json=payload).json() == first.json()
+    container = client.app.state.container
+    # 导入和种身份仍会调用默认 ensure；不能把预登记的用途和可见性改回来。
+    container.spaces.ensure("test-scope", "test-scope")
+    with container.database.connect() as connection, connection:
+        row = connection.execute(
+            "SELECT kind, include_in_people FROM memory_spaces WHERE id='test-scope'"
+        ).fetchone()
+        assert tuple(row) == ("benchmark", 0)
+        connection.execute(
+            "INSERT INTO entities (id,scope_id,entity_type,canonical_name,status,created_at,updated_at)"
+            " VALUES ('test-person','test-scope','person','测试人物','confirmed',"
+            " '2026-11-09T00:00:00+00:00','2026-11-09T00:00:00+00:00')"
+        )
+    assert client.get("/api/v1/people").json()["people"] == []
+    assert client.get("/api/v1/family-graph", params={"scope_id": ""}).json()["people"] == []
+    # 测试人物与空间均保留；定向读取人物仍可供评测使用。
+    assert container.entity_repository.get("test-person") is not None
+    assert container.spaces.get("test-scope").kind == "benchmark"
+
+
+def test_registration_cannot_reclassify_an_existing_household(client: TestClient) -> None:
+    container = client.app.state.container
+    container.spaces.ensure("home-default", "家庭")
+    response = client.post(
+        "/api/v1/memory-spaces", json={"id": "home-default", "name": "test", "kind": "benchmark"}
+    )
+    assert response.status_code == 409
+    assert container.spaces.get("home-default").kind == "household"
+    with container.database.connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT include_in_people FROM memory_spaces WHERE id='home-default'"
+            ).fetchone()[0]
+            == 1
+        )

@@ -67,7 +67,8 @@ export function PersonDetail({
   const [aliasesLoading, setAliasesLoading] = useState(false);
   const [aliasText, setAliasText] = useState("");
 
-  const others = people.filter((item) => item.id !== person.id);
+  const others = people.filter((item) => item.id !== person.id && item.scope_id === person.scope_id);
+  const relationTarget = others.find((item) => item.id === targetId);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,14 +164,14 @@ export function PersonDetail({
 
   function submitRelation(event: FormEvent) {
     event.preventDefault();
-    if (targetId === "") return;
+    if (relationTarget === undefined) return;
     const choice = CHOICES[predicateIndex] ?? CHOICES[0];
     void run(() =>
       putFamilyRelationship({
         scopeId: person.scope_id,
         subjectEntityId: person.id,
         predicate: choice.predicate,
-        objectEntityId: targetId,
+        objectEntityId: relationTarget.id,
         inversePredicate: choice.inversePredicate,
       }),
     );
@@ -299,8 +300,11 @@ export function PersonDetail({
           </ul>
         )}
 
-        {others.length === 0 ? null : (
+        {others.length === 0 ? (
+          <p className="detail-empty">当前记忆空间暂无其他人物可建立关系。</p>
+        ) : (
           <form className="detail-form" onSubmit={submitRelation}>
+            <p className="detail-empty">仅显示同一记忆空间的人物。</p>
             <div className="detail-relation-row">
               <select
                 aria-label="关系"
@@ -315,7 +319,7 @@ export function PersonDetail({
               </select>
               <select
                 aria-label="对方"
-                value={targetId}
+                value={relationTarget?.id ?? ""}
                 onChange={(event) => setTargetId(event.target.value)}
               >
                 <option value="">选择对方…</option>
@@ -326,7 +330,7 @@ export function PersonDetail({
                 ))}
               </select>
             </div>
-            <button type="submit" className="button primary small" disabled={busy || targetId === ""}>
+            <button type="submit" className="button primary small" disabled={busy || relationTarget === undefined}>
               建立关系
             </button>
           </form>

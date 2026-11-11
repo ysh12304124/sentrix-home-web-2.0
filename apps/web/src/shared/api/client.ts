@@ -996,12 +996,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
-/**
- * 记忆空间（相册）列表。
- *
- * 形状对齐 1.0 的消费处 `src/app.js:1161`：`spaceResult[0].value.spaces || []`，
- * 即后端给 `{spaces: [...]}`。四个字段就是 `memory_spaces` 的四列，没有派生字段。
- */
+/** 显式登记空间用途；已存在的空间不允许在此接口重分类。 */
+export interface MemorySpaceCreateRequest {
+  id: string;
+  name: string;
+  kind?: "household" | "benchmark";
+}
+
+/** 记忆空间（相册）列表项；列表响应为 {spaces: [...]}。 */
 export interface MemorySpace {
   id: string;
   name: string;

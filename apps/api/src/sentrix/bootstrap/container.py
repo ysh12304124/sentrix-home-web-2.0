@@ -619,9 +619,7 @@ class Container:
         )
 
     def build_import_executor(self):
-        """体验实例的导入执行器；旧实例返回 None。"""
-        if not self.settings.experience_mode:
-            return None
+        """消费上传接口创建的持久作业，包括独立本地 API 实例。"""
         from sentrix.bootstrap.import_wiring import (
             build_import_assets,
             build_media_postprocess,

@@ -23,6 +23,9 @@ vi.mock("../../shared/api/client", async (importOriginal) => {
     mergeFaceClusters: vi.fn(),
     splitFaceCluster: vi.fn(),
     renamePerson: vi.fn(),
+    getPerson: vi.fn().mockResolvedValue({ entity: { aliases: [] } }),
+    getPersonPortrait: vi.fn().mockResolvedValue(null),
+    putFamilyRelationship: vi.fn(),
   };
 });
 
@@ -161,6 +164,40 @@ describe("图谱 tab", () => {
       expect(container.querySelector(".graph-shell, .graph-empty")).not.toBeNull();
     });
   }
+
+  it("全部相册中创建同空间关系后，详情、计数与关系图都从刷新结果更新", async () => {
+    const base = realShapeGraph();
+    const dad = { ...base.people[0], display_name: "爸爸" };
+    const son = { ...base.people[1], display_name: "儿子" };
+    const other = { ...base.people[2], scope_id: "album2" };
+    const graph = { ...base, scope_id: "", people: [dad, son, other], scope_ids: ["album1", "album2"] };
+    const rows = [
+      relationRow(dad.id, "父亲", "儿子", son.id),
+      relationRow(son.id, "儿子", "父亲", dad.id),
+    ];
+    vi.mocked(client.putFamilyRelationship).mockImplementation(async () => {
+      vi.mocked(client.getFamilyGraph).mockResolvedValue({ ...graph, relationships: rows });
+      return rows;
+    });
+    const { container } = mount(graph, `/?person=${dad.id}`);
+    await screen.findByRole("complementary");
+    fireEvent.change(screen.getByLabelText("对方"), { target: { value: son.id } });
+    fireEvent.click(screen.getByRole("button", { name: "建立关系" }));
+
+    await screen.findByText("3 人 · 1 条已确认关系");
+    expect(client.putFamilyRelationship).toHaveBeenCalledWith({
+      scopeId: "album1",
+      subjectEntityId: dad.id,
+      predicate: "父亲",
+      objectEntityId: son.id,
+      inversePredicate: "儿子",
+    });
+    expect(client.getFamilyGraph).toHaveBeenLastCalledWith("");
+    expect(container.querySelectorAll(".detail-relations li")).toHaveLength(1);
+    await openGraph(container);
+    expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(2);
+  });
 
   it("没有已确认关系时图谱为空，只显示一行提示", async () => {
     const { container } = mount();

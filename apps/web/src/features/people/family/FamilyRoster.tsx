@@ -102,7 +102,7 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
           <EmptyState
             symbol="◎"
             title="还没有可显示的人物"
-            description="导入照片并跑一次家庭图谱推断后，这里会出现人物卡片。"
+            description="先在「添加资料」导入真实照片，再到「待确认的人物」确认身份。确认人物后，可在人物详情中建立关系。"
           />
         ) : (
           <EmptyState

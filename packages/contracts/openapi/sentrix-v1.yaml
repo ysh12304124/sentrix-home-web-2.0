@@ -1725,6 +1725,33 @@ paths:
                   type: array
                 type: object
                 title: Response List Memory Spaces Api V1 Memory Spaces Get
+    post:
+      tags:
+      - spaces
+      summary: Create Memory Space
+      operationId: create_memory_space_api_v1_memory_spaces_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSpaceRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+                title: Response Create Memory Space Api V1 Memory Spaces Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/person-insights/run:
     post:
       tags:
@@ -6841,3 +6868,28 @@ components:
       - video_asset_id
       - scenes
       title: VideoScenesResponse
+    CreateSpaceRequest:
+      properties:
+        id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.-]+$
+          title: Id
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        kind:
+          type: string
+          enum:
+          - household
+          - benchmark
+          title: Kind
+          default: household
+      type: object
+      required:
+      - id
+      - name
+      title: CreateSpaceRequest

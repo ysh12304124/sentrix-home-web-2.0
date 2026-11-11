@@ -1,4 +1,10 @@
+from dataclasses import replace
+from io import BytesIO
+from types import SimpleNamespace
+
 import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
 
 from sentrix.bootstrap.container import MIGRATIONS_DIR, Container
 from sentrix.config import Settings
@@ -16,6 +22,34 @@ def test_container_builds_all_adapters(tmp_path, monkeypatch):
     assert container.settings is settings
     assert container.database.path == settings.database_path
     assert container.database.migrations_dir.name == "migrations"
+
+
+def test_local_upload_jobs_are_consumed_without_experience_mode(isolated_app):
+    container = replace(
+        isolated_app.state.container,
+        model_health=SimpleNamespace(check=lambda: (True, "")),
+    )
+    assert not container.settings.experience_mode
+    isolated_app.state.container = container
+    executor = container.build_import_executor()
+    assert executor is not None
+    payload = BytesIO()
+    Image.new("RGB", (32, 32), "blue").save(payload, format="PNG")
+    client = TestClient(isolated_app)
+    response = client.post(
+        "/api/v1/media/uploads",
+        files={"file": ("local.png", payload.getvalue(), "image/png")},
+        headers={"Idempotency-Key": "local-upload-worker"},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+    assert container.import_jobs.get(job_id).status == "accepted"
+    assert executor._run_once()
+    job = container.import_jobs.get(job_id)
+    assert job.status == "completed", job.error_message
+    assert job.attempts == 1
+    assert container.asset_repository.get(job.asset_id).status.value == "processed"
+    assert container.observation_repository.list_by_asset(job.asset_id)
 
 
 def test_database_healthy_reports_false_when_dir_missing(tmp_path, monkeypatch):
