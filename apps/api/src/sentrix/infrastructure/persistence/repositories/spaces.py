@@ -22,11 +22,10 @@ class SqliteSpaceRepository:
         now = datetime.now(UTC).isoformat()
         with self._database.connect() as connection, connection:
             connection.execute(
-                "INSERT INTO memory_spaces"
-                " (id, name, kind, status, include_in_people, created_at, updated_at)"
-                " VALUES (?, ?, ?, 'active', ?, ?, ?)"
+                "INSERT INTO memory_spaces (id, name, kind, status, created_at, updated_at)"
+                " VALUES (?, ?, ?, 'active', ?, ?)"
                 " ON CONFLICT(id) DO NOTHING",
-                (scope_id, name, kind, int(kind != "benchmark"), now, now),
+                (scope_id, name, kind, now, now),
             )
         return scope_id
 

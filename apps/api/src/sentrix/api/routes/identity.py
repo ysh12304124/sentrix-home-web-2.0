@@ -55,8 +55,6 @@ from sentrix.api.schemas.identity import (
     FaceClusterSummary,
     FaceCropRef,
     MergeClustersRequest,
-    MergePeopleRequest,
-    MergePeopleResponse,
     PersonDetailResponse,
     PersonListResponse,
     PersonPayload,
@@ -66,7 +64,6 @@ from sentrix.api.schemas.identity import (
     SeedIdentityResponse,
     SplitClusterRequest,
 )
-from sentrix.application.identity.merge_people import MergePeople
 from sentrix.application.identity.name_person import NamePerson
 from sentrix.application.identity.observe_appearance import ObserveAppearance
 from sentrix.application.identity.read_entity_detail import EntityDetail, ReadEntityDetail
@@ -179,16 +176,6 @@ def _name_person(container: Container) -> NamePerson:
         faces=container.face_repository,
         entities=container.entity_repository,
         review=_review_cluster(container),
-    )
-
-
-def _merge_people(container: Container) -> MergePeople:
-    return MergePeople(
-        entities=container.entity_repository,
-        faces=container.face_repository,
-        merges=container.person_merge_repository,
-        events=_confirmed_person_events(container),
-        appearance=_observe_appearance(container),
     )
 
 
@@ -897,31 +884,6 @@ def batch_confirm_people(
     return BatchConfirmResponse(confirmed=confirmed, failed=failed, count=len(confirmed))
 
 
-@router.post("/people/merge")
-def merge_people(
-    payload: MergePeopleRequest, container: Container = Depends(get_container)
-) -> MergePeopleResponse:
-    """把几个人物并成一个（名录里的手动合并）。
-
-    与 ``POST /face-clusters/merge`` 的区别：那条是簇级、不许合并两个已确认的人；这条
-    是人物级，由用户指定保留谁、叫什么，提及、关系、归属、画像一并改挂。错误码沿用簇审阅
-    那一族：参数不成立 400、人不存在 404、跨空间/已被合并过/同名冲突 409。
-    """
-    result = _merge_people(container)(
-        target_person_id=payload.target_person_id,
-        source_person_ids=payload.source_person_ids,
-        name=payload.name,
-    )
-    refresh_memory_graph(container, result.entity.scope_id)
-    return MergePeopleResponse(
-        entity=_person_payload(container, result.entity),
-        merged_person_ids=list(result.merged_person_ids),
-        moved_face_count=result.moved_face_count,
-        moved_relationship_count=result.moved_relationship_count,
-        dropped_relationship_count=result.dropped_relationship_count,
-    )
-
-
 # ---- 身份预置 --------------------------------------------------------------------
 
 
@@ -1062,12 +1024,6 @@ async def seed_person_identity(
     except NoSeedFacesError as error:
         # 1.0 在路由上抛 422（``app.py:2345``）：请求是好的，是这几张图里没有人脸。
         raise UnprocessableError(str(error)) from error
-    # 样本照片上刚写了提及：按实例预置时它们是相册里的照片，所在事件的参与者要跟着刷新，
-    # 否则事件页与按人找事件看不到这个人（确认簇那条路在用例里做同一件事）。
-    seeded_observations = sorted(
-        {item.observation_id for item in container.face_repository.list_instances(result.cluster_id)}
-    )
-    _confirmed_person_events(container).refresh_participants(seeded_observations)
     refresh_memory_graph(container, scope_id)
     return SeedIdentityResponse(
         entity_id=result.entity_id,

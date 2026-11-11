@@ -420,30 +420,19 @@ def test_the_chain_runs_every_phase_in_order_and_completes():
     assert writer.last_state()["run_id"] == "run_test"
 
 
-def test_the_scope_is_registered_as_benchmark_before_any_identity_or_assets():
+def test_the_scope_is_named_after_the_run_and_never_created_by_its_own_endpoint():
+    """2.0 **没有** ``POST /api/memory-spaces``：空间由导入路径内部的 ``ensure`` 建。
+
+    这条断言必须是「没有那个调用」而不是「scope_id 非空」——后者在一个仍然偷偷
+    建了空间的实现里同样成立（那个实现会让 2.0 多出一个没人用的空间）。
+    """
     execution, client, _writer, _lifecycle, _albums = _execution()
     state = execution.execute(_request())
-    names = client.call_names()
-    assert names.index("ensure_space") < names.index("seed_person") < names.index("import_album")
-    registration = next(kwargs for name, kwargs in client.calls if name == "ensure_space")
-    assert registration["kind"] == "benchmark"
-    assert registration["scope_id"] == state["scope_id"]
+    assert not any("memory-space" in str(kwargs) for _name, kwargs in client.calls)
     assert state["scope_id"].startswith("PhotoBench-")
     assert state["scope_id"] == state["scope_name"]
     assert state["scope_source"] == "created_by_import"
-    assert state["phases"]["scope_setup"]["created_by"] == "explicit_registration"
-
-
-def test_failed_scope_registration_stops_before_seeding_or_import(monkeypatch):
-    execution, client, _writer, _lifecycle, _albums = _execution()
-
-    def fail(**_):
-        raise RuntimeError("registration unavailable")
-
-    monkeypatch.setattr(client, "ensure_space", fail)
-    state = execution.execute(_request())
-    assert state["status"] == "failed"
-    assert not {"seed_person", "import_album", "start_conversation"}.intersection(client.call_names())
+    assert state["phases"]["scope_setup"]["created_by"] == "import_ensure_space"
 
 
 def test_identity_seed_sends_each_face_and_the_declared_relationships():
@@ -1680,11 +1669,10 @@ def test_reuse_skips_the_import_phases_and_keeps_the_existing_scope():
     ``scope_attach / qa_eval / aggregate``。2.0 自 S9b-2 起只接 full，
     ``RUN_MODES`` 直接拒绝 reuse——而**66 分钟的导入**正是复用要省掉的那件事。
     """
-    execution, client, *_ = _execution()
+    execution, *_ = _execution()
 
     state = execution.execute(_request(mode="reuse", scope_id="PhotoBench-20260101-000000-album-qwen"))
 
-    assert "ensure_space" not in client.call_names()
     assert state["mode"] == "reuse"
     assert state["scope_source"] == "reused"
     assert state["scope_id"] == "PhotoBench-20260101-000000-album-qwen"

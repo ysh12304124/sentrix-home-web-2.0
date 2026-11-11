@@ -42,7 +42,6 @@ from sentrix.domain.identity.models import (
     is_pending_cluster_name,
 )
 from sentrix.infrastructure.persistence.database import Database
-from sentrix.infrastructure.persistence.repositories.search_terms import sync_person_bridge
 
 _ENTITY_COLUMNS = (
     "id, scope_id, entity_type, canonical_name, status, family_role, summary, confidence,"
@@ -945,40 +944,7 @@ class SqliteEntityRepository:
                     REVISION_SOURCE_USER_RENAME,
                     (),
                 )
-                # 同一个事务里把观察上的人物快照改成新名字。快照存的是**名字**，它是检索
-                # 人物条件、实体通道兜底、记忆图人物节点、家庭图谱洞察证据与照片预览
-                # 「people」的共同输入；只改 ``entities`` 的话，已确认的人一改名，他所有
-                # 照片上记的还是旧名，按新名字什么都查不到。pending 的人没有快照，
-                # 这一步对他们是空操作。
-                self._rename_in_person_snapshots(connection, entity_id, name)
         return self.get(entity_id)
-
-    @staticmethod
-    def _rename_in_person_snapshots(connection: sqlite3.Connection, entity_id: str, name: str) -> int:
-        """把 ``people_json`` 里 ``entity_id`` 是这个人的条目改成新名字，返回改了几条观察。
-
-        改过的观察在同一个事务里刷 ``person_bridge`` 投影：全部相册按人召回读的是投影，
-        只改快照的话按新名字仍然查不到。
-        """
-        rows = connection.execute(
-            "SELECT id, people_json FROM observations WHERE instr(people_json, ?) > 0",
-            (entity_id,),
-        ).fetchall()
-        changed: list[str] = []
-        for row in rows:
-            people = _decode_list(row["people_json"])
-            touched = False
-            for item in people:
-                if isinstance(item, dict) and item.get("entity_id") == entity_id and item.get("name") != name:
-                    item["name"] = name
-                    touched = True
-            if touched:
-                connection.execute(
-                    "UPDATE observations SET people_json = ? WHERE id = ?", (_encode(people), row["id"])
-                )
-                changed.append(str(row["id"]))
-        sync_person_bridge(connection, changed)
-        return len(changed)
 
     # ---- 提及桥 ------------------------------------------------------------------
 
@@ -1030,11 +996,6 @@ class SqliteEntityRepository:
         写的是**另一个聚合的表**，这一点是有意的：``people_json`` 是身份层在观察上的投影，
         它没有自己的写入用例，跟着提及一起写才不会出现「有提及、快照里没人」。已存在就不
         重复追加，所以重复调用幂等。
-
-        快照写完在**同一个事务里**重写这条观察的 ``person_bridge`` 词法投影
-        （``sync_person_bridge``）。1.0 与 2.0 早先都只在导入时写投影，那时还没人被确认，
-        于是 ``person_bridge`` 恒为空，实体通道全靠扫观察兜底——而兜底在「全部相册」下
-        不跑。投影跟着快照一起提交，两者才不会分叉。
         """
         row = connection.execute(
             "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
@@ -1042,18 +1003,12 @@ class SqliteEntityRepository:
         if row is None:
             return
         people = _decode_list(row["people_json"])
-        current = {"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status}
-        existing = [item for item in people if isinstance(item, dict) and item.get("entity_id") == entity.id]
-        if not existing:
-            people.append(current)
-        # 已有这条就把名字与状态对齐到当前实体：快照里留着旧名，按现在的名字就查不到。
-        for item in existing:
-            item.update(name=current["name"], status=current["status"])
+        if not any(isinstance(item, dict) and item.get("entity_id") == entity.id for item in people):
+            people.append({"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status})
         connection.execute(
             "UPDATE observations SET people_json = ? WHERE id = ?",
             (_encode(people), observation_id),
         )
-        sync_person_bridge(connection, (observation_id,))
 
     # ---- 事件关联 ----------------------------------------------------------------
 

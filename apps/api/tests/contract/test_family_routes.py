@@ -137,14 +137,6 @@ def test_only_people_appear_and_the_pending_one_gets_the_family_graph_placeholde
     assert by_id["mom"]["portrait"] is None
 
 
-def test_each_person_carries_its_entity_status(family_client: TestClient) -> None:
-    """名录同时列出待确认与已确认的人；界面靠 ``status`` 决定给「确认身份」还是「改名」。"""
-    by_id = {item["id"]: item for item in _people(family_client)}
-
-    assert by_id["mom"]["status"] == "confirmed"
-    assert by_id["kid"]["status"] == "pending"
-
-
 def test_representative_media_comes_from_faces_not_from_observations(family_client: TestClient) -> None:
     """**这张表走人脸，不走观察。**
 
@@ -494,57 +486,6 @@ def test_a_relationship_built_over_http_shows_up_in_the_graph(family_client: Tes
 
     assert {item["predicate"] for item in body["relationships"]} == {"母亲", "儿子"}
     assert {item["id"] for item in body["people"]} == {"mom", "kid"}
-
-
-@pytest.mark.parametrize("include_other", [True, False])
-def test_all_scopes_returns_relationships_from_visible_people_spaces(
-    family_client: TestClient, include_other: bool
-) -> None:
-    """全部相册必须读回各空间的关系，且不能泄漏被排除空间的人物与关系。"""
-    assert _put_relationship(family_client).status_code == 200
-    with _db(family_client).connect() as connection, connection:
-        connection.execute(
-            "INSERT INTO entities (id, scope_id, entity_type, canonical_name, status,"
-            " created_at, updated_at) VALUES ('other_kid', ?, 'person', '邻居孩子',"
-            " 'confirmed', ?, ?)",
-            (OTHER, NOW, NOW),
-        )
-    assert (
-        _put_relationship(
-            family_client, scope_id=OTHER, subject_entity_id="neighbour", object_entity_id="other_kid"
-        ).status_code
-        == 200
-    )
-    with _db(family_client).connect() as connection, connection:
-        connection.execute(
-            "UPDATE memory_spaces SET include_in_people = ? WHERE id = ?", (int(include_other), OTHER)
-        )
-
-    body = family_client.get("/api/v1/family-graph", params={"scope_id": ""}).json()
-
-    visible_scopes = {HOME, OTHER} if include_other else {HOME}
-    assert body["scope_id"] == ""
-    assert set(body["scope_ids"]) == visible_scopes
-    assert {item["scope_id"] for item in body["relationships"]} == visible_scopes
-    assert len(body["relationships"]) == (4 if include_other else 2)
-    people_ids = {item["id"] for item in body["people"]}
-    assert people_ids == ({"mom", "kid", "neighbour", "other_kid"} if include_other else {"mom", "kid"})
-    assert all(
-        item["subject_entity_id"] in people_ids and item["object_entity_id"] in people_ids
-        for item in body["relationships"]
-    )
-    # 指定相册仍保持原有隔离。
-    scoped = family_client.get("/api/v1/family-graph", params={"scope_id": HOME}).json()
-    assert {item["scope_id"] for item in scoped["relationships"]} == {HOME}
-
-
-def test_cross_scope_relationship_is_rejected_without_writing(family_client: TestClient) -> None:
-    response = _put_relationship(family_client, object_entity_id="neighbour")
-
-    assert response.status_code == 400
-    assert response.json()["message"] == "family graph entities must belong to the same memory space"
-    with _db(family_client).connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM family_relationships").fetchone()[0] == 0
 
 
 # ---- 推断运行（S7b2 · T313） ------------------------------------------------------

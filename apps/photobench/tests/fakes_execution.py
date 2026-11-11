@@ -103,10 +103,6 @@ class FakeSentrixClient:
         self._record("diagnostics", timeout=timeout)
         return getattr(self, "runtime_diagnostics", {})
 
-    def ensure_space(self, *, scope_id: str, name: str, kind: str, timeout: int = 30) -> dict[str, Any]:
-        self._record("ensure_space", scope_id=scope_id, name=name, kind=kind, timeout=timeout)
-        return {"id": scope_id, "name": name, "kind": kind}
-
     def seed_person(
         self,
         *,

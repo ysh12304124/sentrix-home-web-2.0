@@ -11,36 +11,9 @@
 而不是裸数组。照搬它，从 1.0 迁过来的前端代码不用改消费方式。
 """
 
-from typing import Literal
-
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
-
-from sentrix.api.errors import ConflictError
 
 router = APIRouter(tags=["spaces"])
-
-
-class CreateSpaceRequest(BaseModel):
-    id: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_.-]+$")
-    name: str = Field(min_length=1, max_length=255)
-    kind: Literal["household", "benchmark"] = "household"
-
-
-@router.post("/memory-spaces")
-def create_memory_space(payload: CreateSpaceRequest, request: Request) -> dict[str, str]:
-    repository = request.app.state.container.spaces
-    repository.ensure(payload.id, payload.name, kind=payload.kind)
-    space = repository.get(payload.id)
-    if space is None or space.kind != payload.kind:
-        raise ConflictError("memory space already exists with a different kind")
-    return {
-        "id": space.id,
-        "name": space.name,
-        "kind": space.kind,
-        "status": space.status,
-        "created_at": space.created_at,
-    }
 
 
 @router.get("/memory-spaces")
