@@ -1,3 +1,4 @@
+import { ProcessDiagnostics, type ProcessDiagnostic } from "./ProcessDiagnostics.tsx";
 import { OPEN_PROFILE, ATM_PROFILE } from '../../lib/scoring.ts';
 import { ChoiceMatchingResult, EvaluationResult, EvaluationTypeBadge, evaluationReason } from "../../components/EvaluationResult.tsx";
 import { ItemScoringResults } from '../../components/ScoringResults.tsx';
@@ -123,7 +124,7 @@ export function QaItemCard({
         <strong>{s.display_question || conversationTurns(detail)[0]?.message || s.question}</strong>
         {Number(s.conversation_turn_count || conversationTurns(detail).length) > 1 ? <span className="qa-dialogue-badge">{s.conversation_turn_count || conversationTurns(detail).length} 轮对话</span> : null}
         <EvaluationTypeBadge value={summary.evaluation || summary.evaluation_result || summary.judge} />
-        {summary.profile_scores && Object.keys(summary.profile_scores).length ? Object.entries(summary.profile_scores).map(([profile, judge]) => {
+        {summary.profile_scores && Object.keys(summary.profile_scores).length ? Object.entries(summary.profile_scores).filter(([, judge]) => judge.status !== "not_collected").map(([profile, judge]) => {
           const value = typeof judge.score === 'number' && Number.isFinite(judge.score) ? judge.score : null;
           const label = profile === OPEN_PROFILE ? '开放式' : profile === ATM_PROFILE ? 'QS' : profile;
           const status = value !== null ? profile === OPEN_PROFILE ? value + '/2 分' : (value * 100).toFixed(1) + '%'
@@ -189,6 +190,7 @@ function QaItemDetail({
   const turns = conversationTurns(detail);
   const chain = itemLayerChain(detail, albumId);
   const taskJudge = dict(detail.task_judge);
+  const isAtm = albumId.startsWith("atm-") || Boolean(dict(detail.evaluation).source_qtype);
   const evidenceJudge = dict(detail.evidence_judge);
   // 两个媒体区：候选 vs 显式交付，分开取、分开渲染。
   const recallMedia = toolRecallMedia(detail, albumId);
@@ -207,17 +209,18 @@ function QaItemDetail({
         {detail.benchmark_group && !detail.ability_family_ids?.some(id => id === "H" || id === "I") ? <span>{taxonomyLabel(detail.benchmark_group)}</span> : null}
         {(detail.ability_family_ids || []).filter(id => id === "H" || id === "I").map(id => <span key={id}>{abilityLabel(id, detail.ability_taxonomy_version)}</span>)}
         {(detail.ability_primary_ids || []).map(id => <span key={id}>{abilityLabel(id[0], detail.ability_taxonomy_version)} · {abilityLabel(id, detail.ability_taxonomy_version)}</span>)}
-        {detail.task_type ? <span>{taxonomyLabel(detail.task_type)}</span> : null}
+        {!isAtm && detail.task_type ? <span>{taxonomyLabel(detail.task_type)}</span> : null}
         {detail.question_type ? <span>{taxonomyLabel(detail.question_type)}</span> : null}
         {detail.angle ? <span>{detail.angle}</span> : null}
         {detail.difficulty ? <span>{taxonomyLabel(detail.difficulty)}</span> : null}
-        {detail.answerability ? <span>{taxonomyLabel(detail.answerability)}</span> : null}
-        {(detail.tags ?? []).map((tag) => (
+        {!isAtm && detail.answerability ? <span>{taxonomyLabel(detail.answerability)}</span> : null}
+        {(detail.tags ?? []).filter(tag => !isAtm || !/^(action|answerability|task):/.test(tag)).map((tag) => (
           <span key={tag} className="qa-run-tag">
             {tag}
           </span>
         ))}
       </div>
+      <ProcessDiagnostics value={detail.process_diagnostics as ProcessDiagnostic | undefined} />
       <ItemScoringResults results={detail.scoring_results} diagnostics={detail.diagnostic_results} current={detail.profile_scores} definition={detail.evaluation} />
       {!detail.profile_scores && <details><summary>历史评分</summary><EvaluationResult value={detail.evaluation_result || detail.judge} definition={detail.evaluation} showChoiceMatching={!detail.choice_matching_result} />{detail.choice_matching_result != null && <ChoiceMatchingResult value={detail.choice_matching_result} definition={detail.evaluation} standalone />}</details>}
       <section className="qa-layer-chain">
@@ -249,9 +252,9 @@ function QaItemDetail({
           <p>{esc(detail.final_answer) || esc(detail.answer) || esc(detail.error) || "未完成"}</p>
           <div className="capability-grid">
             <span>
-              <small>{turns.length > 1 ? "最终一轮回答行为" : "回答行为"}</small>
+              <small>{isAtm ? "公共行为诊断（评测端）" : turns.length > 1 ? "最终一轮回答行为" : "回答行为"}</small>
               <b>{taskJudge.correct === true ? "符合预期" : taskJudge.correct === false ? "不符合预期" : "未评分"}</b>
-              <small>{taskDecisionLabel(detail)}</small>
+              {!isAtm && <small>{taskDecisionLabel(detail)}</small>}
             </span>
             <span>
               <small>媒体检索</small>
@@ -390,7 +393,7 @@ function QaItemDetail({
             </div>
           </div>
         )}
-        <DebugTracePanel detail={detail} modelLabel={modelLabel} />
+        <div id={`process-log-${detail.qa_id}`}><DebugTracePanel detail={detail} modelLabel={modelLabel} /></div>
       </section>
       <div className="item-footer">
         <button className="judge-details-trigger" type="button" onClick={() => onOpenJudgeInput(detail)}>

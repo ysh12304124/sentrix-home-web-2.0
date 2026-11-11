@@ -4,7 +4,7 @@ import type { EChartsOption, EChartsType } from "echarts";
 import type { Run } from "../../../api/types.ts";
 import { fmtMemory } from "../../../lib/format.ts";
 import {
-  gpuMetricsView, RESOURCE_MEMORY_FIELDS, telemetryChart, telemetryLiveState,
+  gpuMetricsView, RESOURCE_MEMORY_FIELDS, telemetryChart, telemetryDeviceView, telemetryLiveState,
   telemetryNumber, telemetryObservationRows, telemetryPlatform, telemetrySampleCount,
 } from "../../../lib/telemetry.ts";
 
@@ -174,12 +174,18 @@ function resourceStatistics(stats: Point | undefined, format: (value: unknown) =
   )}</>;
 }
 export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) {
-  const live = telemetryLiveState(run);
-  const stats = gpuMetricsView(run);
+  const all = telemetryLiveState(run);
+  const devices = Object.keys(all.devices ?? {});
+  const [selection, setSelection] = useState<{ runId: unknown; key: string } | null>(null);
+  const primary = all.device_index == null ? devices[0] : String(all.device_index);
+  const deviceKey = selection && selection.runId === run?.run_id && devices.includes(selection.key) ? selection.key : primary;
+  const scoped = useMemo(() => deviceKey === undefined ? run : telemetryDeviceView(run, deviceKey), [run, deviceKey]);
+  const live = telemetryLiveState(scoped);
+  const stats = gpuMetricsView(scoped);
   const latest: Point = live.latest ?? {};
-  const history = useMemo(() => telemetryChart(run)?.history ?? [], [run]);
+  const history = useMemo(() => telemetryChart(scoped)?.history ?? [], [scoped]);
   const snapshots = !Array.isArray(live.history) || live.history.length < 2;
-  const sampledDown = telemetrySampleCount(run) > history.length;
+  const sampledDown = telemetrySampleCount(scoped) > history.length;
   const isMac = telemetryPlatform(latest) === "apple_unified" || live.source === "apple_unified";
   const fields = isMac
     ? [...RESOURCE_MEMORY_FIELDS.slice(0, 3), ["整机显存（参考）", "device_gpu_memory_mib"] as const]
@@ -192,14 +198,18 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
     : GRAPHS[0]!, [isMac]);
   const revision = JSON.stringify([history, snapshots, sampledDown, isMac]);
   const [extra, setExtra] = useState(false);
-  const sampleCount = telemetrySampleCount(run);
-  const diagnostics = telemetryObservationRows(run);
+  const sampleCount = telemetrySampleCount(scoped);
+  const diagnostics = telemetryObservationRows(scoped);
   if (!sampleCount && !diagnostics.length) return null;
   return <details open className="phase-card result-phase-card gpu-result-card live-telemetry-card">
     <summary className="phase-title"><b>实时资源遥测</b><span className={`phase-status ${live.status === "running" ? "running" : "completed"}`}>
       {live.status === "running" ? "实时更新中" : live.status === "stop_pending" ? "停止未确认" : "已停止"}
     </span></summary>
-    <p className="metric-calc-time">内存与显存统一用 GiB 展示。产品包含主模型及其他产品进程，各项不相加。</p>
+    {devices.length > 1 ? <label className="telemetry-device-select">显卡 <select aria-label="遥测显卡" value={deviceKey}
+      onChange={event => setSelection({ runId: run?.run_id, key: event.target.value })}>
+      {devices.map(key => <option key={key} value={key}>{key === "unidentified" ? "显卡编号未记录" : `GPU ${key}`}{key === primary ? "（默认）" : ""}</option>)}
+    </select><small className="muted"> 曲线、当前值和统计均对应所选显卡；内存仍为整机／进程内存。</small></label> : null}
+    <p className="metric-calc-time">内存与显存统一用 GiB 展示，产品包含主模型及其他产品进程，各项不相加。</p>
     {live.history_enabled === false ? <p className="muted">历史曲线已关闭，仅覆盖保存最新读数。全程峰值、均值持续累计。</p> : null}
     {live.statistics_mode === "streaming_v1" ? <p className="muted">采用增量统计，P50/P95 未记录。均值按有效采样间隔加权，缺失及超过 3 秒的间隔不计入。</p> : null}
     <div className="phase-metrics live-telemetry-metrics">{fields.map(([label, key]) =>
@@ -220,6 +230,7 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
       ? `完整测评过程，${sampleCount} 个采样点，绘制 ${history.length} 点。`
       : `当前遥测窗口，绘制 ${history.length} 点，整轮已采集 ${sampleCount} 点。`}
       {!snapshots ? "图表抽样可能省略短暂变化；汇总统计取本轮有效采样，缩放不改变统计。" : ""}</small></> : null}
+    {devices.length > 1 ? <small className="muted">各显卡分别采样，整轮共 {all.raw_samples_count} 条显卡记录；默认优先显示主模型所在显卡。</small> : null}
     <details onToggle={event => setExtra(event.currentTarget.open)}>
       <summary>利用率、温度与功率</summary>
       <p className="muted">功率范围：{POWER_LABELS[latest.power_scope || stats.power_scope] ?? "未记录"}。不同设备的功率范围可能不同。</p>

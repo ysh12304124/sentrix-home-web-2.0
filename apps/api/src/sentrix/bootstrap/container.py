@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sentrix.application.identity.person_directory import EntityPersonDirectory
+from sentrix.application.media.track_pipeline import TrackPipeline
 from sentrix.config import Settings
 from sentrix.domain.assistant.ports import (
     ChatModel,
@@ -119,6 +120,7 @@ from sentrix.infrastructure.models.legacy import (
 from sentrix.infrastructure.models.reranker import BgeSidecarReranker
 from sentrix.infrastructure.models.wemm import WeMMSidecarEmbedder
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.pipeline_receipts import SqlitePipelineReceipts
 from sentrix.infrastructure.persistence.repositories.appearance import SqliteAppearanceRepository
 from sentrix.infrastructure.persistence.repositories.asset_places import SqliteAssetPlaceRepository
 from sentrix.infrastructure.persistence.repositories.assets import (
@@ -250,6 +252,7 @@ class Container:
 
     operation_control: OperationControl
     import_progress: ImportProgressStore
+    pipeline_tracker: TrackPipeline
     asset_repository: AssetRepository
     observation_repository: ObservationRepository
     media_storage: MediaStorage
@@ -484,6 +487,7 @@ class Container:
             database=database,
             operation_control=InProcessOperationControl(),
             import_progress=InProcessImportProgressStore(),
+            pipeline_tracker=TrackPipeline(SqlitePipelineReceipts(database)),
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,
             observation_repository=observations,

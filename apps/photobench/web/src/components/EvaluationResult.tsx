@@ -15,6 +15,8 @@ export function EvaluationTypeBadge({value}: {value: unknown}) {
 function scoringExplanation(value: unknown): string {
   const d = obj(value);
   if (d.scorer === "answer_quality") return "开放式回答：Judge 根据问题、参考答案与模型回答按 0 / 1 / 2 分评价回答质量。选项匹配由独立的 ATM-Bench式QS 评分记录展示。";
+  if (d.scorer === "number") return "数值题：Judge 对照原问题与参考答案匹配数值或日期，程序计 0 / 1 分。";
+  if (d.scorer === "list") return "列表召回题：模型交付口径QS（主QS）使用正式交付集合；工具候选口径QS使用工具候选全集。两者均与同一冻结GT计算Jaccard。";
   if (d.scorer === "atm_number") return "数值题：按 ATM 官方数值规则计主分；语义辅分单独展示。";
   if (d.scorer === "atm_list") return "列表召回题：按实际交付的图片 / 视频 ID 集合计算主分；工具累计召回单列展示。";
   if (d.source_qtype === "open_end" || d.scorer === "atm_open") return "开放问答题：Judge 按回答内容判 0 / 1 分；媒体交付和工具证据另列指标。";
@@ -74,10 +76,26 @@ export function EvaluationResult({value, definition, showChoiceMatching = true}:
     {showChoiceMatching && (["choice", "choice_judge"].includes(String(r.scorer)) || r.matched_option != null || Array.isArray(r.comparisons)) && <ChoiceMatchingResult value={r} definition={d} />}
     {Object.keys(metrics).length > 0 && <div className="evaluation-table-wrap"><table><thead><tr><th>集合</th><th>Recall</th><th>Jaccard</th><th>Precision</th><th>F1</th></tr></thead><tbody>{["delivery", "tools"].map(k => {const m = obj(metrics[k]); return <tr key={k}><td>{k === "delivery" ? "模型交付" : "工具累计召回"}</td>{["recall", "jaccard", "precision", "f1"].map(v => <td key={v}>{pct(m[v])}</td>)}</tr>;})}</tbody></table></div>}
     {Object.keys(metrics).length > 0 && <details className="evaluation-disclosure"><summary>GT、预测、交集与差集</summary><pre>{JSON.stringify(metrics, null, 2)}</pre></details>}
+    {r.list_comparison != null && <ListAnswerComparison value={r.list_comparison} />}
     {r.number_aux != null && <p>LLM 数值辅分 {pct(obj(r.number_aux).score)} · 与官方分{r.number_aux_disagrees === true ? "不一致" : r.number_aux_disagrees === false ? "一致" : "尚不可比较"}</p>}
     {(r.number_aux != null || r.semantic_aux != null) && <details className="evaluation-disclosure"><summary>辅分与归一化依据</summary><pre>{JSON.stringify(r.number_aux || r.semantic_aux, null, 2)}</pre></details>}
     <small>协议 {String(r.version || r.rule_version || d.version || "未记录")} · 模型 {String(r.judge_model || (["media_set", "atm_list", "list", "atm_number"].includes(String(r.scorer)) ? "确定性评分" : "未记录"))}</small>
   </section>;
+}
+
+function ListAnswerComparison({value}: {value: unknown}) {
+  const r = obj(value), text = obj(r.answer_text);
+  const labels: Record<string, string> = {range_not_expanded:'正文包含编号范围，尚未展开', unresolved_ids:'存在无法唯一映射的编号', no_explicit_media_ids:'正文没有可提取的媒体编号', missing_frozen_target:'缺少冻结目标集合'};
+  return <details className="evaluation-disclosure" aria-label="正文编号对照"><summary>正文编号对照（历史对比，不计入QS）</summary>
+    <div className="evaluation-table-wrap"><table><thead><tr><th>列表来源</th><th>与同一GT的Jaccard</th><th>用途</th></tr></thead><tbody>
+      <tr><td>模型正式交付</td><td>{pct(r.model_delivery_jaccard)}</td><td>主QS</td></tr>
+      <tr><td>工具候选全集</td><td>{pct(r.tool_candidate_jaccard)}</td><td>工具候选口径QS</td></tr>
+      <tr><td>回答正文明确编号</td><td>{text.status === 'available' ? pct(text.score) : '无法完整计算'}</td><td>只读诊断</td></tr>
+    </tbody></table></div>
+    <p className="muted small">只提取正文实际出现的媒体ID和可唯一映射的photo编号。未提及的工具候选和附件不补入正文集合；编号范围不自动展开。此项不修改召回列表或历史分数，也不复现历史脚本的全部文本拆分规则。</p>
+    {text.status !== 'available' && <p>{labels[String(text.reason)] || '正文编号记录不完整'}。</p>}
+    <pre>{JSON.stringify(text, null, 2)}</pre>
+  </details>;
 }
 export function EvaluationSummary({value}: {value: unknown}) {
   const r = obj(value); if (!r.count) return null;

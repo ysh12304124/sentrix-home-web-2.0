@@ -34,7 +34,7 @@ from collections.abc import Callable
 from typing import Any
 
 from photobench.domain.runs.analysis import validated_telemetry_sample
-from photobench.domain.runs.telemetry_summary import TelemetrySummary
+from photobench.domain.runs.telemetry_summary import DeviceTelemetrySummary
 from photobench.domain.runtime.metrics import RESOURCE_TELEMETRY_VERSION, finite_number
 from photobench.domain.runtime.ports import ManagedTelemetryWork, OwnedTelemetryWork, TelemetryProvider
 
@@ -85,7 +85,7 @@ class GpuSampler:
         self.publish_interval = publish_interval
         self.history_enabled = history_enabled
         self.samples: list[dict[str, Any]] = []
-        self._summary = TelemetrySummary()
+        self._summary = DeviceTelemetrySummary()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sample_lock = threading.Lock()
@@ -108,7 +108,7 @@ class GpuSampler:
             raise RuntimeError("sampler is already running")
         self._stop.clear()
         self.samples = []
-        self._summary = TelemetrySummary()
+        self._summary = DeviceTelemetrySummary()
         self._source = ""
         self._previous_callback_seconds = 0.0
         self._callback_error = self._last_callback_failure = self._last_publisher_failure = None

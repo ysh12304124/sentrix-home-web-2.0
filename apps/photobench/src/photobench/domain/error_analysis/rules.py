@@ -28,7 +28,7 @@ def quality_bucket(judge: dict[str, Any] | None) -> int | None:
     return judge_bucket_for_summary(judge)
 
 
-RULE_VERSION = 13
+RULE_VERSION = 14
 TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
 NORMAL = {"answered", "answered_with_gap", "policy_refusal"}
 LABELS = {
@@ -591,6 +591,13 @@ def case_from_item(item: Mapping[str, Any], index: int) -> dict[str, Any]:
         str(item.get("task_type")), str(item.get("question_type"))
     )
     dimension_labels["test_scenario"] = sorted({v for t in turn_rows for v in t["test_scenarios"]})
+    if item.get("benchmark_id") == "atm-bench" or (item.get("evaluation") or {}).get("source_qtype"):
+        for field in ("answerability", "expected_action", "test_scenario"):
+            dimension_labels[field] = ["unknown"]
+            source_labels.pop(field, None)
+        for native_turn in turn_rows:
+            native_turn["answerability"] = ["unknown"]
+            native_turn["test_scenarios"] = ["unknown"]
     dimension_labels.update(ability_dimensions(item))
     dimension_labels["ability_taxonomy_version"] = saved_labels(item.get("ability_taxonomy_version"))
     dimensions = {k: " / ".join(values) for k, values in dimension_labels.items()}

@@ -10,6 +10,8 @@ from typing import Any
 from photobench.domain.runs.analysis import (
     GPU_AGGREGATE_KEYS,
     _is_telemetry_series_key,
+    _primary_telemetry_device,
+    _telemetry_device_key,
     aggregate_gpu_samples,
     validated_telemetry_sample,
 )
@@ -211,53 +213,100 @@ class TelemetrySummary:
         return result
 
 
+class DeviceTelemetrySummary:
+    """Keep one fixed-size accumulator per GPU; never mix GPU rows."""
+
+    def __init__(self) -> None:
+        self.devices: dict[str, TelemetrySummary] = {}
+
+    @property
+    def counters(self) -> dict[str, _Counter]:
+        return next(iter(self.devices.values())).counters if self.devices else {}
+
+    def add(self, sample: dict[str, Any]) -> None:
+        self.devices.setdefault(_telemetry_device_key(sample), TelemetrySummary()).add(sample)
+
+    def snapshot(self) -> dict[str, Any]:
+        devices = {key: value.snapshot() for key, value in self.devices.items()}
+        if not devices:
+            return TelemetrySummary().snapshot()
+        if set(devices) == {"unidentified"}:
+            return devices["unidentified"]
+        selected = _primary_telemetry_device(devices)
+        return {
+            **devices[selected],
+            "devices": devices,
+            "device_index": self.devices[selected].latest.get("index"),
+            "raw_samples_count": sum(value.count for value in self.devices.values()),
+        }
+
+
+class _HistoryPreview:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.points: list[dict[str, Any]] = []
+        self.stride, self.count = 1, 0
+        self.latest: dict[str, Any] | None = None
+        self.previous_t: float | None = None
+        self.previous_validity: tuple[bool, ...] | None = None
+        self.pending_gap = False
+
+    def add(self, item: dict[str, Any]) -> None:
+        timestamp = finite_number(item.get("_t"))
+        validity = tuple(finite_number(item.get(key)) is not None for key in GPU_AGGREGATE_KEYS)
+        self.pending_gap |= (
+            timestamp is not None and self.previous_t is not None and timestamp - self.previous_t > 3
+        ) or (self.previous_validity is not None and validity != self.previous_validity)
+        self.previous_t, self.previous_validity = timestamp, validity
+        self.latest = {
+            "t": item.get("_t"),
+            "phase": item.get("phase", "unassigned"),
+            "phase_label": item.get("phase_label", "未分配阶段"),
+            "gap_before": self.pending_gap,
+            **{key: value for key, value in item.items() if _is_telemetry_series_key(key)},
+        }
+        if self.count % self.stride == 0:
+            self.points.append(self.latest)
+            self.pending_gap = False
+            if len(self.points) >= self.limit:
+                for index in range(2, len(self.points), 2):
+                    self.points[index]["gap_before"] |= self.points[index - 1]["gap_before"]
+                if len(self.points) % 2 == 0:
+                    self.pending_gap |= self.points[-1]["gap_before"]
+                self.points = self.points[::2]
+                self.stride *= 2
+        self.count += 1
+
+    def project(self, live: dict[str, Any]) -> None:
+        points = list(self.points)
+        if self.latest is not None and (not points or points[-1] is not self.latest):
+            points.append(self.latest)
+        live.update(history=points, history_resolution="uniform_stride", history_samples_read=self.count)
+
+
 def attach_recorded_history(live: dict[str, Any], lines: Iterable[str], limit: int = 240) -> None:
-    """Decimate a disk stream; saved whole-run metrics remain authoritative."""
-    points: list[dict[str, Any]] = []
-    stride, count = 1, 0
-    latest: dict[str, Any] | None = None
-    previous_t: float | None = None
-    previous_validity: tuple[bool, ...] | None = None
-    pending_gap = False
+    """One bounded preview per GPU; persisted whole-run metrics stay authoritative."""
+    previews: dict[str, _HistoryPreview] = {}
     try:
         for line in lines:
             try:
                 raw = json.loads(line)
             except (TypeError, ValueError):
                 continue
-            if not isinstance(raw, dict):
-                continue
-            item, _ = validated_telemetry_sample(raw)
-            timestamp = finite_number(item.get("_t"))
-            validity = tuple(finite_number(item.get(key)) is not None for key in GPU_AGGREGATE_KEYS)
-            pending_gap |= (
-                timestamp is not None and previous_t is not None and timestamp - previous_t > 3
-            ) or (previous_validity is not None and validity != previous_validity)
-            previous_t, previous_validity = timestamp, validity
-            latest = {
-                "t": item.get("_t"),
-                "phase": item.get("phase", "unassigned"),
-                "phase_label": item.get("phase_label", "未分配阶段"),
-                "gap_before": pending_gap,
-                **{key: value for key, value in item.items() if _is_telemetry_series_key(key)},
-            }
-            if count % stride == 0:
-                points.append(latest)
-                pending_gap = False
-                if len(points) >= limit:
-                    # A discarded point may contain a real gap or missing-value
-                    # transition. Keep that break on the next retained segment.
-                    for index in range(2, len(points), 2):
-                        points[index]["gap_before"] |= points[index - 1]["gap_before"]
-                    if len(points) % 2 == 0:
-                        pending_gap |= points[-1]["gap_before"]
-                    points = points[::2]
-                    stride *= 2
-            count += 1
+            if isinstance(raw, dict):
+                item, _ = validated_telemetry_sample(raw)
+                previews.setdefault(_telemetry_device_key(item), _HistoryPreview(limit)).add(item)
     except (OSError, UnicodeError) as error:
         live["history_read_error"] = f"{type(error).__name__}: {error}"
-    if latest is not None and (not points or points[-1] is not latest):
-        points.append(latest)
-    live["history"] = points
-    live["history_resolution"] = "uniform_stride"
-    live["history_samples_read"] = count
+    if set(previews) <= {"unidentified"}:
+        previews.get("unidentified", _HistoryPreview(limit)).project(live)
+        return
+    devices = live.setdefault("devices", {})
+    for key, preview in previews.items():
+        preview.project(devices.setdefault(key, {}))
+    selected = str(live.get("device_index"))
+    if selected not in previews:
+        selected = _primary_telemetry_device(devices)
+    live["history"] = devices[selected]["history"]
+    live["history_samples_read"] = sum(p.count for p in previews.values())
+    live["history_resolution"] = "uniform_stride_per_device"

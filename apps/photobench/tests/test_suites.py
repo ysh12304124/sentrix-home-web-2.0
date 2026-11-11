@@ -651,6 +651,50 @@ def test_resume_rejects_a_run_without_a_scope_checkpoint(tmp_path: Path):
     assert "no memory-space checkpoint" in str(excinfo.value)
 
 
+def test_resume_rejects_unfinished_pipeline_before_starting_agents(tmp_path):
+    saved = _cancelled_state(scope_build={"status": "incomplete"}, items=[])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="incomplete build"):
+        suites.resume_run("run-1")
+    assert not suites._active
+
+
+def test_explicit_pipeline_recovery_freezes_source_ids_and_qa_without_touching_original(tmp_path):
+    import copy
+
+    saved = _cancelled_state(
+        scope_build={"status": "incomplete"},
+        pipeline_asset_ids=["a", "b"],
+        items=[],
+        phases={"identity_seed": {"status": "done"}, "photo_import": {"status": "done"}},
+    )
+    original = copy.deepcopy(saved)
+    captured = []
+    gate = threading.Event()
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=(lambda request: captured.append(request) or FakeExecution(request, gate)),
+    )
+    try:
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+        request = captured[0]
+        assert request.recover_pipeline and request.recovery_asset_ids == ("a", "b")
+        assert request.frozen_qa_snapshot == original["qa_snapshot"]
+        assert saved == original
+    finally:
+        gate.set()
+
+
+@pytest.mark.parametrize("checkpoint", [[], ["a"]])
+def test_pipeline_recovery_requires_completed_import_checkpoint(tmp_path, checkpoint):
+    saved = _cancelled_state(scope_build={"status": "incomplete"}, pipeline_asset_ids=checkpoint)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="complete asset import checkpoint"):
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+    assert not suites._active
+
+
 def test_resume_carries_only_the_finished_items_and_reuses_the_scope(tmp_path: Path):
     """续跑只带**跑完的**题；``scheduled`` / ``running`` 的留给这一轮重跑。
 
@@ -713,7 +757,12 @@ def test_resume_inherits_topology_and_budgets_instead_of_current_configuration(t
         "embedding": {"mode": "split_text_image", "image_url": "http://original:8103"},
         "product_settings": {"deployment_profile": "mac"},
         "product_build_revision": "original-product-release",
-        "execution_budgets": {"import_timeout": 86400, "qa_concurrency": 2, "turn_timeout": 700},
+        "execution_budgets": {
+            "import_timeout": 86400,
+            "pipeline_timeout": 43200,
+            "qa_concurrency": 2,
+            "turn_timeout": 700,
+        },
     }
 
     def factory(request):
@@ -727,6 +776,7 @@ def test_resume_inherits_topology_and_budgets_instead_of_current_configuration(t
         assert request.sentrix_url == "http://original:8291"
         assert request.runtime_snapshot.connection()["embedding"] == saved["runtime_snapshot"]["embedding"]
         assert (request.import_timeout, request.qa_concurrency, request.turn_timeout) == (86400, 2, 700)
+        assert request.pipeline_timeout == 43200
         assert request.snapshot_source == "resumed_run"
         assert request.runtime_snapshot.connection()["required_build_revision"] == "original-product-release"
     finally:

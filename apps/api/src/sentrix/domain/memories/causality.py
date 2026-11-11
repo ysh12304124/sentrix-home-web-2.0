@@ -148,8 +148,11 @@ def signals_prompt(pairs: tuple[CausalPair, ...]) -> str:
         lines.append("")
     lines.extend(
         (
-            "Return exactly one compact JSON object per pair:",
-            "{results: [{pair_id, has_causal, edge_type, confidence, reason}]}",
+            f"Return one compact JSON object with a results array containing exactly {len(pairs)} entries.",
+            f"Include each pair_id in {list(range(len(pairs)))} exactly once, in order.",
+            "JSON structure example (values illustrate types, not the verdict):",
+            '{"results":[{"pair_id":0,"has_causal":false,"edge_type":"NONE",'
+            '"confidence":0.0,"reason":"无"}]}',
             "edge_type must be exactly LEADS_TO, ENABLES, or NONE.",
             "reason: Chinese, at most 12 characters; use 无 when has_causal=false.",
             "Do not add explanations, markdown, or missing fields.",

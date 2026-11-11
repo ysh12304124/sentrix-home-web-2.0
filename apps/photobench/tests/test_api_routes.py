@@ -73,6 +73,22 @@ def test_get_runs_lists_the_scan_result(client: TestClient):
     assert body["scan"] == {"state": "ready", "scanned": 1, "total": 1, "error": None}
 
 
+def test_process_diagnostics_api_item_and_exports_share_derived_observations(client: TestClient):
+    path = client.app.state.container.settings.results_root / "run-a" / "run.json"
+    original = path.read_bytes()
+    report = client.get("/api/v1/runs/run-a/process-diagnostics").json()
+    assert report["summary"]["analyzed_qa"] == 1
+    assert report["summary"]["agent_calls"] == report["summary"]["judge_calls"] == 0
+    expected = report["items"][0]
+    for profile in ("", "photobench_open_v1", "atm_qs_v1"):
+        item = client.get("/api/v1/runs/run-a/items/0", params={"scoring_profile": profile}).json()
+        assert item["item"]["process_diagnostics"] == expected
+    assert path.read_bytes() == original
+    derived = path.parent.parent / ".process-diagnostics" / "run-a.json"
+    assert json.loads(derived.read_text()) == report
+    assert client.get("/api/v1/runs/missing/process-diagnostics").status_code == 404
+
+
 def test_a_bad_page_number_is_a_400_with_the_1_0_message(client: TestClient):
     """1.0 ``:7652`` 的 ``ValueError("page and page_size must be integers")`` → 400。"""
     response = client.get("/api/v1/runs?page=x")

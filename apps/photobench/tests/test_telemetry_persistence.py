@@ -41,7 +41,7 @@ def test_sampling_and_publishing_never_copy_or_persist_question_traces(history_e
     state.persist = lambda **kwargs: pytest.fail("telemetry requested a full checkpoint")
     sample = execution._sample_writer(state)
     for index in range(100):
-        sample({"index": index, "temperature_c": 50})
+        sample({"index": 0, "temperature_c": 50})
     execution._publish_partial_gpu_metrics(state, {"samples_count": 100})
     assert len(writer.gpu_samples) == (100 if history_enabled else 0)
     assert state.data["telemetry_live"]["history_enabled"] is history_enabled
@@ -92,6 +92,32 @@ def test_wrong_session_ignored_and_reset_removes_sidecar(tmp_path):
     assert "telemetry_live" not in store.load_overview("r")
     writer.reset_gpu_samples("r")
     assert not (tmp_path / "r" / "telemetry-live.json").exists()
+
+
+def test_full_read_reconstructs_device_identity_without_rewriting_historical_files(tmp_path):
+    from test_multi_gpu_telemetry import rows
+
+    writer, store = FileResultWriter(tmp_path), FileRunStore(tmp_path)
+    state = {
+        **_running(),
+        "status": "completed",
+        "items": [],
+        "telemetry_live": {"status": "stopped", "samples_count": 8},
+        "phases": {"gpu_metrics": {"status": "done", "samples_count": 8}},
+    }
+    writer.write_snapshot("r", state)
+    for point in rows():
+        writer.append_gpu_sample("r", point)
+    before = {p: p.read_bytes() for p in (tmp_path / "r").iterdir() if p.is_file()}
+    reader = ReadRuns(store, RunIndex(), _NoQaMetadata(), SimpleNamespace(), lambda: "unused")
+    result = reader.get_run("r", include_history=True)
+    assert result["telemetry_live"]["latest"]["index"] == 0
+    assert result["telemetry_live"]["samples_count"] == 4
+    assert result["telemetry_live"]["raw_samples_count"] == 8
+    assert result["phases"]["gpu_metrics"]["model_process_gpu_memory_mib"]["mean"] == 6126
+    assert result["telemetry_live"]["devices"]["1"]["latest"]["model_process_gpu_memory_mib"] == 0
+    assert store.load_state("r") == state
+    assert {p: p.read_bytes() for p in before} == before
 
 
 def test_live_disk_full_preserves_last_view_and_answer_checkpoint(tmp_path, monkeypatch):

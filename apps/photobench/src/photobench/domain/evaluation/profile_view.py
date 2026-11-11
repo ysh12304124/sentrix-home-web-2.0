@@ -6,6 +6,7 @@ import copy
 from collections.abc import Mapping
 from typing import Any, cast
 
+from photobench.domain.evaluation.list_comparison import list_answer_comparison
 from photobench.domain.evaluation.media import saved_media_metrics
 from photobench.domain.evaluation.profiles import (
     ATM,
@@ -14,6 +15,7 @@ from photobench.domain.evaluation.profiles import (
     evaluation_turn,
     result_key,
     scoring_summary,
+    tool_list_score,
     valid_result,
 )
 
@@ -42,6 +44,9 @@ def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]
         (r for r in (state.get("qa_snapshot") or {}).get("rows") or [] if str(r["qa_id"]) == qa_id), {}
     )
     turn = evaluation_turn(row)
+    original: Mapping[str, Any] = next(
+        (i for i in state.get("items") or [] if str(i.get("qa_id")) == qa_id), {}
+    )
     results = {}
     for profile in LABELS:
         batch = select_batch(state, profile)
@@ -50,6 +55,12 @@ def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]
         valid = valid_result(value)
         results[profile] = {
             **{k: copy.deepcopy(v) for k, v in value.items() if k not in {"requests", "history"}},
+            "tool_list_score": tool_list_score(row.get("evaluation") or {}, value)
+            if profile == ATM and (row.get("evaluation") or {}).get("scorer") in {"media_set", "atm_list"}
+            else None,
+            "list_comparison": list_answer_comparison(row.get("evaluation") or {}, original, turn, value)
+            if profile == ATM
+            else None,
             "profile_id": profile,
             "batch_id": batch_id,
             "turn_index": turn,
@@ -173,6 +184,11 @@ def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") 
                 "media_metrics": copy.deepcopy(value["media_metrics"])
                 if "media_metrics" in value
                 else saved_media_metrics(rows.get(qa_id, {}), original, index),
+                "list_comparison": list_answer_comparison(
+                    (rows.get(qa_id, {}) or {}).get("evaluation") or {}, original, index, value
+                )
+                if profile == ATM
+                else None,
             }
 
         def apply(record: dict[str, Any], index: int, qa_id: str = qa_id) -> None:

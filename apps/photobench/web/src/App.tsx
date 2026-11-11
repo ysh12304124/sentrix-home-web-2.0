@@ -101,7 +101,7 @@ export function App({ initialLoading = false }: AppProps) {
       judge_provider_id:configApi.judgeProviderId, ...(configApi.judgeApiKeyDirty ? {judge_api_key:configApi.judgeApiKey}: {})},
   });
   /** 逐题状态唯一实例；`QaResults` 与记忆面板共享（见文件头 1）。 */
-  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge, scoringQuery:runs.readQuery });
+  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge });
   qaRef.current = qa;
 
   const [selectedAlbum, setSelectedAlbum] = useState("album3-14");
@@ -136,6 +136,9 @@ export function App({ initialLoading = false }: AppProps) {
   });
 
   const [startScoring, setStartScoring] = useState(defaultScoring);
+  useEffect(() => {
+    setStartScoring(defaultScoring(selectedAlbum));
+  }, [selectedAlbum]);
   const [deleteScopeAfterRun, setDeleteScopeAfterRun] = useState(false);
   const [suiteRunning, setSuiteRunning] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxTarget | null>(null);
@@ -443,8 +446,6 @@ export function App({ initialLoading = false }: AppProps) {
             <QaResults
               activeRun={runs.activeRun}
               qa={qa}
-              readProfile={runs.readProfile}
-              onReadProfileChange={value => {runs.setReadProfile(value);runs.setReadBatch('');}}
               resultRef={runs.runDetailRef}
               onOpenMedia={setLightbox}
             />

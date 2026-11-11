@@ -512,3 +512,114 @@ def test_legacy_overview_adapts_scoring_and_media_without_rewriting_snapshot(tmp
     assert overview["summary"]["media_ranking"]["recall_at_5"] == 1
     assert overview["summary"]["media_ranking"]["included"] == 1
     assert all((run / name).read_bytes() == data for name, data in originals.items())
+
+
+def test_committed_overview_labels_list_sources_without_loading_answer_state(tmp_path, monkeypatch):
+    _write(tmp_path, "basis", _state("basis"))
+    reader = _read_runs(tmp_path)
+    overview = FileRunStore(tmp_path).load_overview("basis")
+    batch = {"profile_id": "atm_qs_v1", "total_score": 0, "batch_id": "b"}
+    overview["summary"]["scoring"] = {
+        "profiles": {"atm_qs_v1": batch},
+        "batches": {"b": batch},
+        "diagnostic_judge_calls": 17,
+    }
+    path = tmp_path / "basis/metadata.json"
+    path.write_text(json.dumps({"overview": overview}))
+    before = path.read_bytes()
+    monkeypatch.setattr(reader, "_state", lambda *args: pytest.fail("Overview must stay lightweight"))
+    actual = reader.get_run("basis", include_history=False)["summary"]["scoring"]
+    assert actual["profiles"]["atm_qs_v1"]["list_source"] == "model_delivery"
+    assert actual["batches"]["b"]["text_ids_are_diagnostic_only"] is True
+    assert actual["profiles"]["atm_qs_v1"]["total_score"] == 0
+    assert actual["diagnostic_judge_calls"] == 17 and path.read_bytes() == before
+
+
+def test_default_profile_read_projects_diagnostics_and_preserves_both_scores(tmp_path):
+    from test_scoring_profiles import ATM, OPEN, scoring_targets, setup, state, task
+
+    snapshot = state()
+    snapshot["scoring_profiles"] = [OPEN, ATM]
+    service, batches, _, _ = setup(snapshot, [OPEN, ATM], [task(), {"score": 0}, {"accuracy": True}])
+    snapshot["primary_scoring_batch_ids"] = [batch["batch_id"] for batch in batches]
+    for batch in batches:
+        service.score(batch, scoring_targets(snapshot, batch, "all")[0])
+    snapshot["items"][0]["task_judge"] = {"status": "pending_judge"}
+    _write(tmp_path, "r", snapshot)
+    before = (tmp_path / "r/run.json").read_bytes()
+    reader = _read_runs(tmp_path)
+    detail = reader.get_run_item("r", 0)["item"]
+    assert detail["task_judge"].get("status") != "pending_judge"
+    assert detail["task_judge"]["actual_action"] == "answer"
+    assert detail["profile_scores"][OPEN]["score"] == 0
+    assert detail["profile_scores"][ATM]["score"] == 1
+    assert set(detail["profile_scores"]) == {OPEN, ATM}
+    assert (tmp_path / "r/run.json").read_bytes() == before
+
+
+def test_atm_tags_remain_native_and_raw_adapter_fields_stay_available():
+    from photobench.domain.runs.analysis import hydrate_qa_metadata
+
+    raw = {
+        "qa_id": "q",
+        "benchmark_id": "atm-bench",
+        "answerability": "answerable",
+        "expected_action": "answer",
+        "evaluation": {"source_qtype": "number"},
+        "tags": ["native", "answerability:answerable", "action:answer"],
+    }
+    projected = hydrate_qa_metadata(raw, {})
+    assert projected["tags"] == ["native"]
+    assert projected["answerability"] == "answerable"
+    assert raw["tags"] == ["native", "answerability:answerable", "action:answer"]
+
+
+def test_old_committed_summary_exposes_tool_qs_without_writing_original_files(tmp_path):
+
+    from test_scoring_profiles import ATM, media, setup, state
+
+    from photobench.domain.evaluation.profiles import result_key, summarize_batches
+    from photobench.domain.runs.exports import export_sft, export_traces
+    from photobench.infrastructure.results.store import read_entry
+
+    snapshot = state("atm_list", target_media_refs=[media("a.jpg")])
+    _, batches, _, _ = setup(snapshot, [ATM])
+    batch = batches[0]
+    snapshot.update(scoring_profiles=[ATM], primary_scoring_batch_ids=[batch["batch_id"]])
+    snapshot["scoring_results"] = {
+        result_key(batch["batch_id"], "q", 0): {
+            "qa_id": "q",
+            "turn_index": 0,
+            "batch_id": batch["batch_id"],
+            "profile_id": ATM,
+            "purpose": "list",
+            "status": "completed",
+            "score": 0,
+            "max_score": 1,
+            "media_metrics": {"tools": {"status": "available", "predicted": ["image:a.jpg", "video:b"]}},
+        }
+    }
+    from photobench.infrastructure.results.store import write_committed_snapshot
+
+    write_committed_snapshot(tmp_path / "r", snapshot)
+    # Emulate a committed pre-feature metadata view.
+    run_dir = tmp_path / "r"
+    from photobench.infrastructure.results.store import committed_path
+
+    meta_path = committed_path(run_dir, "metadata.json")
+    metadata = json.loads(meta_path.read_text())
+    for section in (metadata["entry"], metadata["overview"]):
+        scoring = section["summary"]["scoring"]
+        for summary in [*scoring["profiles"].values(), *scoring["batches"].values()]:
+            summary.pop("tool_list_qs", None)
+    meta_path.write_text(json.dumps(metadata))
+    originals = {str(p): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
+    expected = summarize_batches(snapshot)[batch["batch_id"]]["tool_list_qs"]
+    entry = read_entry(run_dir)
+    assert entry["summary"]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    detail = _read_runs(tmp_path).get_run("r", include_history=False)
+    assert detail["summary"]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert export_traces(snapshot)[0]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert export_sft(snapshot)["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert expected["total_score"] == 0.5
+    assert all(Path(name).read_bytes() == content for name, content in originals.items())

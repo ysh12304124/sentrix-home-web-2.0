@@ -28,14 +28,17 @@ from urllib.parse import quote
 from photobench.application.runs.index import RunIndex
 from photobench.domain.datasets.ports import QaMetadataSource
 from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
+from photobench.domain.error_analysis.process import process_for_qa, run_process
 from photobench.domain.evaluation.profile_view import (
     choice_matching_result,
     item_profile_results,
     item_scores,
+    primary_profile_state,
     profile_state,
 )
+from photobench.domain.evaluation.profiles import scoring_source_metadata
 from photobench.domain.http.ports import JsonHttpClient
-from photobench.domain.results.ports import RunReadViews, RunRevisions, RunStore
+from photobench.domain.results.ports import ProcessDiagnosticStore, RunReadViews, RunRevisions, RunStore
 from photobench.domain.runs import analysis
 from photobench.domain.runs.task_history import execution_metadata, task_families
 from photobench.domain.runs.telemetry_summary import attach_recorded_history
@@ -376,9 +379,19 @@ class ReadRuns:
         if (
             result.get("primary_scoring_batch_ids")
             and result.get("status") not in {"pending", "running", "cancelling"}
-            and result["summary"].get("profile_media_version") != 1
+            and (
+                result["summary"].get("profile_media_version") != 1
+                or any(
+                    b.get("profile_id") == "atm_qs_v1" and "tool_list_qs" not in b
+                    for b in ((result["summary"].get("scoring") or {}).get("batches") or {}).values()
+                )
+            )
         ):
             result["summary"] = analysis.effective_summary(self._state(run_id))
+        result["summary"] = {
+            **result["summary"],
+            "scoring": scoring_source_metadata(result["summary"].get("scoring") or {}),
+        }
         result["run_valid"] = result["summary"]["run_valid"]
         result.setdefault("read_revision", revision or None)
         result["history_mode"] = "full" if include_history else "checkpoint"
@@ -414,6 +427,12 @@ class ReadRuns:
                     self._projections.popitem(last=False)
         return result
 
+    def get_process_diagnostics(self, run_id: str) -> dict[str, Any]:
+        result = run_process(self._state(run_id))
+        if isinstance(self._store, ProcessDiagnosticStore):
+            self._store.save_process_diagnostics(run_id, result)
+        return result
+
     def get_reviews(self, run_id: str) -> dict[str, Any]:
         """``GET /api/runs/{id}/reviews``（1.0 ``get_reviews`` ``:4976``）。"""
         return self._store.read_reviews(run_id)
@@ -439,7 +458,7 @@ class ReadRuns:
     ) -> dict[str, Any]:
         """``GET /api/runs/{id}/items``（1.0 ``get_run_items`` ``:6441``）。"""
         with self._item_locks[hash(run_id) % len(self._item_locks)]:
-            cached = profile_state(self._state(run_id), scoring_profile, scoring_batch)
+            cached = primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch))
             state = {**cached, "items": [dict(item) for item in cached.get("items") or []]}
             self._hydrate_legacy_gt_images(state)
             qa_metadata = self._qa_index(state)
@@ -575,7 +594,7 @@ class ReadRuns:
     ) -> dict[str, Any]:
         """``GET /api/runs/{id}/items/{index}``（1.0 ``get_run_item`` ``:6528``）。"""
         with self._item_locks[hash(run_id) % len(self._item_locks)]:
-            cached = profile_state(self._state(run_id), scoring_profile, scoring_batch)
+            cached = primary_profile_state(profile_state(self._state(run_id), scoring_profile, scoring_batch))
             state = {**cached, "items": [dict(item) for item in cached.get("items") or []]}
             self._hydrate_legacy_gt_images(state)
             items = state.get("items") or []
@@ -589,6 +608,7 @@ class ReadRuns:
             item["scoring_results"] = item_scores(cached, str(item.get("qa_id")))
             item["profile_scores"] = item_profile_results(cached, str(item.get("qa_id")))
             item["choice_matching_result"] = choice_matching_result(cached, str(item.get("qa_id")))
+            item["process_diagnostics"] = process_for_qa(cached, str(item.get("qa_id")))
             item["diagnostic_results"] = [
                 v
                 for v in (cached.get("diagnostic_results") or {}).values()

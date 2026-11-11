@@ -189,3 +189,21 @@ def test_api_accepts_type_filter_for_view_export_and_ai_scope():
         scope="filter",
         filters={"scoring_question_type": "number"},
     ).filters == {"scoring_question_type": "number"}
+
+
+def test_atm_native_labels_do_not_claim_adapter_actions_are_dataset_annotations():
+    from photobench.domain.error_analysis.rules import case_from_item
+
+    item = {
+        "qa_id": "atm-q",
+        "question": "unknown",
+        "benchmark_id": "atm-bench",
+        "evaluation": {"scorer": "atm_open", "source_qtype": "open_end"},
+        "answerability": "insufficient_evidence",
+        "expected_action": "refuse",
+    }
+    case = case_from_item(item, 0)
+    assert case["dimensions"]["scoring_question_type"] == "open_end"
+    assert case["dimensions"]["answerability"] == "unknown"
+    assert case["dimensions"]["test_scenario"] == "unknown"
+    assert "answerability" not in case["source_labels"]

@@ -387,6 +387,24 @@ def test_cancel_contract_distinguishes_request_from_worker_exit(client, kind):
     control = client.app.state.container.operation_control
     path = "/api/v1/assistant/turns/example/cancel" if kind == "turn" else "/api/v1/imports/example/cancel"
     assert client.post(path).status_code == 404
+    if kind == "turn":
+        from datetime import UTC, datetime
+
+        from sentrix.domain.assistant.models import TurnRecord, TurnStatus
+
+        conversation = make_conversation(client)
+        now = datetime.now(UTC)
+        client.app.state.container.turn_repository.create(
+            TurnRecord(
+                id="example",
+                conversation_id=conversation["id"],
+                scope_id="album1",
+                question="test",
+                status=TurnStatus.PENDING,
+                created_at=now,
+                updated_at=now,
+            )
+        )
     control.start(kind + ":example")
     try:
         for _ in range(2):
@@ -463,6 +481,80 @@ def test_worker_start_failure_records_terminal_failure_and_releases_capacity(cli
     assert record["termination_reason"] == "worker_start_failed"
     cleanup = client.post(f"/api/v1/assistant/turns/{record['id']}/cancel").json()
     assert cleanup["cleanup_status"] == "stopped"
+
+
+def test_standard_mode_executes_two_turns_concurrently(client):
+    import threading
+
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    delegate = client.app.state.container.chat_model
+
+    class BlockedModel:
+        def complete(self, messages, tools):
+            if not release.is_set():
+                entered.wait(timeout=5)
+                assert release.wait(5)
+            return delegate.complete(messages, tools)
+
+    assert not client.app.state.container.settings.experience_mode
+    client.app.state.container = dataclasses.replace(client.app.state.container, chat_model=BlockedModel())
+    turns = []
+    try:
+        for _ in range(2):
+            conversation = make_conversation(client)
+            turns.append(start_turn(client, conversation["id"]))
+        entered.wait(timeout=5)
+    finally:
+        release.set()
+    for turn in turns:
+        assert poll_until_terminal(client, turn["turn_id"])["status"] != "pending"
+
+
+def test_experience_mode_leaves_execution_to_persistent_executor(client, monkeypatch):
+    import threading
+
+    container = client.app.state.container
+    client.app.state.container = dataclasses.replace(
+        container, settings=container.settings.model_copy(update={"experience_mode": True})
+    )
+
+    original_start = threading.Thread.start
+
+    def unexpected_thread(thread):
+        if thread.name.startswith("turn-"):
+            raise AssertionError("experience route must not launch a second worker")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", unexpected_thread)
+    conversation = make_conversation(client)
+    turn = start_turn(client, conversation["id"])
+    record = container.turn_repository.get(turn["turn_id"])
+    assert record.status.value == "pending"
+    assert record.attempt_no == 0
+
+
+def test_completed_idempotent_submission_does_not_restart_worker(client, monkeypatch):
+    import threading
+
+    conversation = make_conversation(client)
+    path = f"/api/v1/assistant/conversations/{conversation['id']}/turns"
+    kwargs = {"json": {"message": "你好"}, "headers": {"Idempotency-Key": "repeat"}}
+    first = client.post(path, **kwargs).json()
+    poll_until_terminal(client, first["turn_id"])
+
+    original_start = threading.Thread.start
+
+    def unexpected_thread(thread):
+        if thread.name.startswith("turn-"):
+            raise AssertionError("completed turn must not execute again")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", unexpected_thread)
+    second = client.post(path, **kwargs)
+    assert second.status_code == 202
+    assert second.json()["turn_id"] == first["turn_id"]
+    assert len(client.get(f"/api/v1/assistant/conversations/{conversation['id']}").json()["turns"]) == 1
 
 
 def test_include_debug_puts_the_exact_model_calls_in_the_turn_trace(client: TestClient):

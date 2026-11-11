@@ -12,22 +12,25 @@ export function ScoringResults({summary}: {summary:unknown}) {
       const complete = typeof result.total_score === 'number';
       const value = complete ? result.total_score : result.normalized_mean;
       const isOpen = id === OPEN_PROFILE;
+      const tools = obj(result.tool_list_qs);
       const displayValue = isOpen
         ? typeof result.scored_mean === 'number' ? result.scored_mean.toFixed(2) + ' / 2.00 分' : '—'
         : typeof value === 'number' ? percent(value) : '—';
       const valueLabel = isOpen
         ? complete ? '回答质量均分' : '已评分回答质量均分'
-        : complete ? 'QS总分' : '已评分QS均值';
+        : complete ? '模型交付口径QS（主QS）' : '已评分模型交付口径QS均值';
       return <article className='scoring-metric-card' key={id} aria-label={label}>
         <header className='scoring-result-head'><b>{label}</b><span className={'phase-status ' + (complete ? 'completed' : collected ? 'partial' : '')}>{!collected ? '未运行采集' : complete ? '已完成' : '未完成'}</span></header>
         {!collected ? <div className='scoring-result-empty'>选择该标准并补评后，将显示得分与覆盖率。</div> : <>
           <div className='scoring-value-row'><strong>{displayValue}</strong><span>{valueLabel}</span></div>
           <div className='scoring-coverage'><span>覆盖率 {String(result.scored)}/{String(result.total)} · {percent(result.coverage)}</span><progress aria-label={label+'评分覆盖率'} max={1} value={typeof result.coverage === 'number' ? result.coverage : 0} /></div>
+          {!isOpen && <p className='scoring-result-note'>主QS：列表题使用模型正式交付列表的Jaccard。</p>}
+          {!isOpen && Object.keys(tools).length > 0 && <div className='scoring-tool-qs' aria-label='工具候选口径QS'><div className='scoring-value-row'><strong>{percent(typeof tools.total_score === 'number' ? tools.total_score : tools.scored_mean)}</strong><span>{typeof tools.total_score === 'number' ? '工具候选口径QS' : '已评分工具候选口径QS均值'}</span></div><p>覆盖率 {String(tools.scored)}/{String(tools.total)} · {percent(tools.coverage)}；列表题 {String(tools.list_scored)}/{String(tools.list_count)}。仅列表题替换为工具候选全集的Jaccard，其余题沿用同批次分数，逐题等权。</p></div>}
           {Number(result.diagnostic_pending) > 0 && <p className='scoring-pending'>公共诊断待完成 {String(result.diagnostic_pending)} 项，评分覆盖率单独计算。</p>}
           <details className='scoring-result-details'><summary>评分版本与配置</summary><dl>
             <div><dt>题集</dt><dd>{String(result.qa_set || '-')}</dd></div>
             <div><dt>规则版本</dt><dd>{String(result.rule_version || '-')}</dd></div>
-            <div><dt>Judge</dt><dd>{String(judge.model || '-')}</dd></div>
+            <div><dt>Judge</dt><dd>{judge.model === 'mix' ? 'mix（混合Judge）' : String(judge.model || '-')}</dd></div>
             <div><dt>GT辅助</dt><dd>{gt.gt_metadata_mode === 'image_metadata_v1' ? gt.use_gt_images ? '图片＋对应拍摄时间与可读地点' : '关闭（图片及拍摄资料均不附加）' : <>图片{gt.use_gt_images ? '开启' : '关闭'} · {gt.gt_metadata_mode === 'readable_v1' ? '拍摄时间与可读地点（历史文字协议）' : '历史元数据' + (gt.use_gt_metadata ? '开启' : '关闭')}</>}</dd></div>
             {Boolean(gt.use_gt_metadata) && ['readable_v1','image_metadata_v1'].includes(String(gt.gt_metadata_mode)) && <div className='scoring-config-wide'><dt>地点标注</dt><dd>{String(gt.annotation_version || '未记录')} · <code>{String(gt.mapping_sha256 || '无映射记录')}</code></dd></div>}
             <div><dt>实际Judge请求</dt><dd>{String(result.judge_calls || 0)} 次</dd></div>
@@ -37,7 +40,7 @@ export function ScoringResults({summary}: {summary:unknown}) {
         </>}
       </article>;
     })}
-  </div><p className='scoring-result-note'>开放式回答由Judge按0/1/2评分，展示原始均分，满分2.00分。ATM-Bench式QS按题等权平均，以百分比展示；选择与数值题使用Judge匹配。未评齐时均值仅包含已评分题目，覆盖率表示评分完成比例，完整总分需覆盖全部题目。媒体召回率在公共诊断指标中单独展示。跨测评比较需核对题集、规则版本、Judge和GT配置。</p></section>;
+  </div><p className='scoring-result-note'>开放式回答由Judge按0/1/2评分，展示原始均分，满分2.00分。ATM-Bench式QS按题等权平均，以百分比展示；选择与数值题使用Judge匹配。未评齐时均值仅包含已评分题目，完整总分需覆盖全部题目。模型交付口径QS使用正式交付集合；工具候选口径QS仅将列表题替换为工具候选全集，与同一GT计算Jaccard，不取R@5。媒体召回率单独展示。跨测评比较需核对题集、规则版本、Judge和GT配置。</p><details className='scoring-result-details'><summary>列表题与历史评分如何对比</summary><p>当前主QS按模型正式交付的媒体集合计分；工具候选口径QS按工具找到的全部候选计分。历史782题记录从最终回答正文提取媒体ID，已有内部ID先按真实映射还原，再计算Jaccard；正文里没有的媒体不从工具或附件补入。逐题的“正文编号对照”只分析当前回答中能确定映射的编号，不计入两种QS。它未复现历史脚本的全部文本拆分规则，不能直接当成历史总分。</p></details></section>;
 }
 export function ItemScoringResults({results, diagnostics, current, definition}: {results:unknown; diagnostics?:unknown; current?:unknown; definition?:unknown}) {
   const rows = Array.isArray(results) ? results.map(obj) : [];
@@ -48,9 +51,11 @@ export function ItemScoringResults({results, diagnostics, current, definition}: 
         const selected = rows.filter(r => r.profile_id === id);
         const latest = obj(obj(current)[id]);
         const isOpen = id === OPEN_PROFILE;
+        if (!selected.length && (!Object.keys(latest).length || latest.status === 'not_collected')) return null;
         return <article className={'item-score-card ' + (isOpen ? 'is-open-score' : 'is-qs-score')} key={id} aria-label={label}>
           <header className='item-score-card-head'><span className='item-score-mark' aria-hidden='true'>{isOpen ? '01' : 'QS'}</span><div><h5>{isOpen ? '开放式回答' : 'ATM-Bench式QS'}</h5><p>{isOpen ? 'Judge · 0 / 1 / 2 分' : '按题型规则评分'}</p></div></header>
           {Object.keys(latest).length ? latest.status === 'not_collected' ? <p className='item-score-empty'>未运行采集</p> : <EvaluationResult value={latest} definition={definition} /> : !selected.length ? <p className='item-score-empty'>未运行采集</p> : null}
+          {!isOpen && latest.purpose === 'list' && <p className='item-list-scores'>模型交付列表Jaccard：{typeof latest.score === 'number' ? latest.score.toFixed(3) : '未采集'} · 工具召回列表Jaccard：{typeof latest.tool_list_score === 'number' ? latest.tool_list_score.toFixed(3) : '未采集'}。主QS使用模型交付列表。</p>}
           {!!selected.length && <details className='score-history'><summary>评分调用与历史记录（{selected.length}条）</summary>{selected.map(r => {
             const scored = typeof r.score === 'number';
             const status = scored ? '已评分' : r.status === 'failed' || r.status === 'error' ? '评分失败' : r.status === 'running' ? '评分中' : '待评分';

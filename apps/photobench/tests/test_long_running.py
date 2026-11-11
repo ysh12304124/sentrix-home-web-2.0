@@ -368,12 +368,46 @@ def test_resumed_execution_also_releases_registry(tmp_path):
     assert resumed["run_id"] not in suites._active
 
 
+def test_delete_run_after_persistence_failure_uses_terminal_process_state(tmp_path):
+    FileResultWriter(tmp_path).write_snapshot("r", {**_state("r"), "status": "running"})
+    index = RunIndex()
+    index.upsert({"run_id": "r", "status": "failed", "persistence": {"status": "failed"}})
+    suites = _suites(tmp_path, store=FileRunStore(tmp_path), writer=FileResultWriter(tmp_path), index=index)
+
+    assert suites.delete_run("r") == {"deleted": True, "run_id": "r"}
+    assert not (tmp_path / "r").exists()
+    assert index.entry("r") is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {},
+        {"status": "failed"},
+        {"status": "failed", "persistence": {"status": "stop_pending"}},
+        {"status": "running", "persistence": {"status": "failed"}},
+        {"status": "failed", "persistence": {"status": "failed"}, "cleanup": {"status": "stop_pending"}},
+    ],
+)
+def test_delete_does_not_treat_unconfirmed_or_unstopped_runs_as_terminal(tmp_path, entry):
+    from photobench.domain.errors import InvalidRequestError
+
+    FileResultWriter(tmp_path).write_snapshot("r", {**_state("r"), "status": "running"})
+    index = RunIndex()
+    index.upsert({"run_id": "r", **entry})
+    suites = _suites(tmp_path, store=FileRunStore(tmp_path), writer=FileResultWriter(tmp_path), index=index)
+    with pytest.raises(InvalidRequestError):
+        suites.delete_run("r")
+    assert (tmp_path / "r").exists()
+
+
 def test_active_workers_prevent_deletion(tmp_path):
     from photobench.domain.errors import InvalidRequestError
 
     gate = threading.Event()
     suites = _suites(tmp_path, gate=gate)
     run_id = suites.start_suite({"album_id": "album-x", "qa_set": "qa-1", "models": ["qwen"]})["run_ids"][0]
+    suites._index.upsert({"run_id": run_id, "status": "failed", "persistence": {"status": "failed"}})
     try:
         with pytest.raises(InvalidRequestError, match="workers have stopped"):
             suites.delete_run(run_id)

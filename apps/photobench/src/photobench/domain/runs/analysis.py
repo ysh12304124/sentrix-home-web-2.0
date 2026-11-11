@@ -1965,6 +1965,7 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
     return {
         "index": index,
         "qa_id": item.get("qa_id"),
+        "benchmark_id": item.get("benchmark_id"),
         **{key: item[key] for key in ABILITY_FIELDS if key in item},
         "question": item.get("question"),
         "task_type": item.get("task_type"),
@@ -2049,6 +2050,9 @@ def hydrate_qa_metadata(item: dict[str, Any], qa_metadata: dict[str, dict[str, A
         "expected_action": "action",
     }
     tags = [str(tag).strip() for tag in (hydrated.get("tags") or []) if str(tag).strip()]
+    if hydrated.get("benchmark_id") == "atm-bench" or (hydrated.get("evaluation") or {}).get("source_qtype"):
+        tag_fields = {}
+        tags = [tag for tag in tags if not tag.startswith(("action:", "answerability:", "task:"))]
     for field, prefix in tag_fields.items():
         value = str(hydrated.get(field) or "").strip()
         if value:
@@ -2300,6 +2304,16 @@ def publish_full_sample_phase_stats(result: dict[str, Any], live: dict[str, Any]
     for key, value in stats.items():
         if value:
             gpu[key] = value
+    if live.get("devices"):
+        gpu.update(
+            device_index=live.get("device_index"),
+            raw_samples_count=live["raw_samples_count"],
+            samples_count=live["samples_count"],
+            devices={
+                key: {"samples_count": view["samples_count"], **view["field_stats"]}
+                for key, view in live["devices"].items()
+            },
+        )
     phases["gpu_metrics"] = gpu
     result["phases"] = phases
 
@@ -2316,6 +2330,7 @@ def _is_telemetry_series_key(key: str) -> bool:
         or key.startswith(("runtime_", "kv_cache_"))
         or key
         in {
+            "index",
             "protocol_version",
             "resource_metrics",
             "resource_missing_reasons",
@@ -2354,24 +2369,75 @@ def _is_telemetry_series_key(key: str) -> bool:
     )
 
 
-def attach_gpu_sample_history(live: dict[str, Any], lines: Iterable[str]) -> None:
-    """1.0 ``:5411`` 的 ``_attach_gpu_sample_history``；入参从文件路径换成原始行。
+def _telemetry_device_key(sample: dict[str, Any]) -> str:
+    index = sample.get("index")
+    return str(index) if type(index) is int and index >= 0 else "unidentified"
 
-    坏行跳过、整段异常兜底成空表——1.0 的 ``except Exception`` 口径照搬：遥测是增强，
-    它读坏了不该让整个 run 打不开。
-    """
+
+def _primary_telemetry_device(devices: dict[str, Any]) -> str:
+    """Prefer the card running the main model; retain the first card on ties."""
+
+    def rank(view: dict[str, Any]) -> tuple[float, float]:
+        peak = view.get("peak") or view
+        values = []
+        for key in ("model_process_gpu_memory_mib", "product_stack_gpu_memory_mib"):
+            value = peak.get(key)
+            if isinstance(value, dict):
+                value = value.get("peak")
+            number = finite_number(value)
+            values.append(number if number is not None else -1.0)
+        return values[0], values[1]
+
+    return max(devices, key=lambda key: rank(devices[key]))
+
+
+def _telemetry_device_groups(samples: Sequence[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    if not any(_telemetry_device_key(sample) != "unidentified" for sample in samples):
+        return {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for sample in samples:
+        groups.setdefault(_telemetry_device_key(sample), []).append(sample)
+    return groups
+
+
+def attach_gpu_sample_history(live: dict[str, Any], lines: Iterable[str]) -> None:
+    """Project raw samples by device, preserving the source JSONL unchanged."""
+    samples = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(item, dict):
+            samples.append(item)
+    groups = _telemetry_device_groups(samples)
+    if not groups:
+        _attach_device_history(live, samples)
+        return
+    devices: dict[str, Any] = {}
+    for key, rows in groups.items():
+        view = {"status": live.get("status"), "source": live.get("source"), "scopes": live.get("scopes")}
+        _attach_device_history(view, rows)
+        view.pop("_full_sample_stats", None)
+        devices[key] = view
+    selected = _primary_telemetry_device(devices)
+    live.update(devices[selected])
+    live.update(
+        devices=devices,
+        device_index=devices[selected]["latest"].get("index"),
+        raw_samples_count=len(samples),
+        _full_sample_stats=devices[selected]["field_stats"],
+    )
+
+
+def _attach_device_history(live: dict[str, Any], samples: Sequence[dict[str, Any]]) -> None:
+    """Build one device's curve and statistics from validated raw observations."""
     history: list[dict[str, Any]] = []
     latest: dict[str, Any] = {}
     peak: dict[str, Any] = {}
     rejected: dict[str, int] = {}
     try:
-        for line in lines:
-            try:
-                item = json.loads(line)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if not isinstance(item, dict):
-                continue
+        for item in samples:
             item, invalid = validated_telemetry_sample(item)
             for key in invalid:
                 rejected[key] = rejected.get(key, 0) + 1
@@ -2471,6 +2537,20 @@ GPU_AGGREGATE_KEYS = (
 
 
 def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    groups = _telemetry_device_groups(samples)
+    if not groups:
+        return _aggregate_device_samples(samples)
+    devices = {key: _aggregate_device_samples(rows) for key, rows in groups.items()}
+    selected = _primary_telemetry_device(devices)
+    return {
+        **devices[selected],
+        "device_index": groups[selected][-1].get("index"),
+        "raw_samples_count": len(samples),
+        "devices": devices,
+    }
+
+
+def _aggregate_device_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """1.0 ``GpuSampler.aggregate``（``:1785``）的纯函数版。
 
     **为什么能从采样器里搬出来。** 1.0 里它读 ``self.samples`` 并 ``isinstance`` 判
@@ -2693,8 +2773,37 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def apply_live_sample(
-    live: dict[str, Any], sample: dict[str, Any], phase: str, phase_label: str, *,
-    tail: int = 240, record_history: bool = True,
+    live: dict[str, Any],
+    sample: dict[str, Any],
+    phase: str,
+    phase_label: str,
+    *,
+    tail: int = 240,
+    record_history: bool = True,
+) -> None:
+    key = _telemetry_device_key(sample)
+    if key == "unidentified" and not live.get("devices"):
+        _apply_device_sample(live, sample, phase, phase_label, tail=tail, record_history=record_history)
+        return
+    devices = live.setdefault("devices", {})
+    view = devices.setdefault(key, {})
+    _apply_device_sample(view, sample, phase, phase_label, tail=tail, record_history=record_history)
+    selected = _primary_telemetry_device(devices)
+    live.update(devices[selected])
+    live.update(
+        device_index=devices[selected]["latest"].get("index"),
+        raw_samples_count=sum(device["samples_count"] for device in devices.values()),
+    )
+
+
+def _apply_device_sample(
+    live: dict[str, Any],
+    sample: dict[str, Any],
+    phase: str,
+    phase_label: str,
+    *,
+    tail: int,
+    record_history: bool = True,
 ) -> None:
     """把一条采样并进 run.json 的 ``telemetry_live``（1.0 ``_persist_gpu_sample`` 中段，
     ``:2110``–``:2208``）。

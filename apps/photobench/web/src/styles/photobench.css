@@ -1423,3 +1423,8 @@ details.qa-results-body[open] > summary::before { content:"▾ "; }
 .item-score-card .evaluation-panel { border: 0; margin: 0; padding: 14px 15px; box-shadow: none; background: transparent; }
 .score-history { margin: 0; padding: 0 15px 15px; font-size: 12px; }
 @media (max-width: 700px) { .execution-history { padding: 14px; } .execution-history-head label { width: 100%; display: block; } .execution-history select { display: block; width: 100%; margin-top: 8px; } }
+
+.scoring-tool-qs { margin-top:12px; padding:10px 12px; border:1px solid #dce3f0; border-radius:8px; background:#f6f8fc; }
+.scoring-tool-qs .scoring-value-row { margin:0 0 4px; }
+.scoring-tool-qs .scoring-value-row>strong { font-size:22px; }
+.scoring-tool-qs p,.item-list-scores { margin:4px 0; color:var(--muted); font-size:11px; line-height:1.6; }

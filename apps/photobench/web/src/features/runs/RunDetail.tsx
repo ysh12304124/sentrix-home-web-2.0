@@ -1,3 +1,4 @@
+import { ProcessDiagnosticsOverview } from "../qa/ProcessDiagnostics.tsx";
 import { scoreChoices } from "../analysis/presentation.ts";
 import { OPEN_PROFILE, PROFILE_LABELS } from "../../lib/scoring.ts";
 /**
@@ -152,6 +153,7 @@ export function RunDetail({
           </details> : null}
           <KeyMetrics run={activeRun} />
           <ExecutionHistory run={activeRun} />
+          <ProcessDiagnosticsOverview key={activeRun.run_id} runId={activeRun.run_id} />
           <ErrorAnalysisPanel key={[activeRun.run_id,activeRun.selected_scoring_profile,activeRun.selected_scoring_batch].join(":")} scoringProfile={OPEN_PROFILE} scoringBatch={String(activeRun.selected_scoring_batch || "")} runId={activeRun.run_id} terminal={["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status || "")} />
           {memory ? <MemoryLayerPanel key={`memory-${activeRun.run_id}`} {...memory} /> : null}
           <GraphQualityPanel quality={graphQuality ?? null} />

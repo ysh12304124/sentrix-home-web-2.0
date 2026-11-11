@@ -239,3 +239,33 @@ def test_decimation_keeps_actual_gaps_without_inventing_gaps_from_stride():
     attach_recorded_history(live, lines(True))
     assert any(point["gap_before"] for point in live["history"])
     assert len(live["history"]) <= 240
+
+
+def test_integrated_streaming_statistics_and_previews_are_separate_per_gpu():
+    from photobench.domain.runs.telemetry_summary import DeviceTelemetrySummary
+    from photobench.domain.runs.analysis import apply_live_sample
+
+    summary = DeviceTelemetrySummary()
+    live = {}
+    rows = []
+    for t in range(1000):
+        for gpu in (0, 1):
+            row = {
+                "_t": t,
+                "index": gpu,
+                "model_process_gpu_memory_mib": 6000 if gpu == 0 else 0,
+                "power_draw_w": 100 if gpu == 0 else 10,
+                "protocol_version": RESOURCE_TELEMETRY_VERSION,
+            }
+            summary.add(validated_telemetry_sample(row)[0])
+            rows.append(json.dumps(row))
+            apply_live_sample(live, row, "qa", "答题", record_history=False)
+    result = summary.snapshot()
+    assert result["device_index"] == 0 and result["raw_samples_count"] == 2000
+    assert result["devices"]["0"]["power_draw_w"]["mean"] == 100
+    assert result["devices"]["1"]["power_draw_w"]["mean"] == 10
+    assert all(not d["history"] for d in live["devices"].values())
+    attach_recorded_history(live, iter(rows))
+    assert all(len(d["history"]) <= 240 for d in live["devices"].values())
+    assert {p["index"] for p in live["devices"]["0"]["history"]} == {0}
+    assert {p["index"] for p in live["devices"]["1"]["history"]} == {1}

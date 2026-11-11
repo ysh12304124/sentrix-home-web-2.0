@@ -163,7 +163,15 @@ class FakeSentrixClient:
         self._record("process_pipeline", scope_id=scope_id, asset_ids=list(asset_ids), timeout=timeout)
         return {**self.pipeline_result, "scope_id": scope_id}
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
+    def finalize_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        self._record("finalize_pipeline", scope_id=scope_id, asset_ids=list(asset_ids), timeout=timeout)
+        return {**self.pipeline_result, "scope_id": scope_id}
+
+    def recover_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+        self._record("recover_pipeline", scope_id=scope_id, asset_ids=list(asset_ids), timeout=timeout)
+        return {**self.pipeline_result, "scope_id": scope_id}
+
+    def list_assets(self, *, scope_id: str, limit: int | None, timeout: int = 60) -> list[dict[str, Any]]:
         self._record("list_assets", scope_id=scope_id, limit=limit)
         self.poll_count += 1
         if self.poll_limit and self.poll_count > self.poll_limit:

@@ -251,6 +251,9 @@ class RunRequest:
     resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
     import_timeout: int = 7200
+    pipeline_timeout: int = 86400
+    recover_pipeline: bool = False
+    recovery_asset_ids: tuple[str, ...] = ()
     turn_timeout: int = 900
     qa_concurrency: int = 0
     judge_backpressure: bool = True
@@ -300,6 +303,7 @@ def freeze_runtime_request(
         runtime_framework=request.runtime_framework,
         execution_budgets={
             "import_timeout": request.import_timeout,
+            "pipeline_timeout": request.pipeline_timeout,
             "turn_timeout": request.turn_timeout,
             "qa_concurrency": request.qa_concurrency,
             "judge_backpressure": request.judge_backpressure,
@@ -482,6 +486,8 @@ class RunExecution:
             run_id=run_id,
             writer=self.writer,
         )
+        if request.recover_pipeline:
+            state.set("pipeline_asset_ids", list(request.recovery_asset_ids))
         # 取消回收模型时要读它（``_reclaim_model_after_cancel``）。存在 self 上而不是
         # state 里：state 要被 json.dumps 落盘，见 ``_request`` 的注释。
         self._request = request
@@ -540,6 +546,8 @@ class RunExecution:
             ]
         if request.mode == "build":
             phases = [(name, phase) for name, phase in phases if name != "qa_eval"]
+        if request.recover_pipeline:
+            phases.insert(2, ("pipeline_processing", self._phase_processing))
         state.set("status", "running")
         state.set("started_at", now_iso())
         state.set("hardware_snapshots", {"start": self._hardware_snapshot(), "end": None})
@@ -559,6 +567,11 @@ class RunExecution:
                     sampler.sample_once()
                 phase(state, request)
                 state.persist()
+                if (
+                    request.recover_pipeline and name == "pipeline_processing"
+                    and (state.get("phases") or {}).get(name, {}).get("status") != "done"
+                ):
+                    raise RuntimeError("pipeline recovery is incomplete; QA has not started")
             partial = any(
                 bucket.get("status") == "partial" for bucket in (state.get("phases") or {}).values()
             )
@@ -602,11 +615,15 @@ class RunExecution:
                                 "collection_end_reason": terminal_status,
                             },
                         )
-                if request.mode in {"full", "build"}:
+                if request.mode in {"full", "build"} or request.recover_pipeline:
                     build_phases = state.get("phases") or {}
                     build_ready = all(
                         (build_phases.get(key) or {}).get("status") == "done"
-                        for key in ("identity_seed", "photo_import", "pipeline_processing")
+                        for key in (
+                            ("pipeline_processing",)
+                            if request.recover_pipeline
+                            else ("identity_seed", "photo_import", "pipeline_processing")
+                        )
                     )
                     state.set(
                         "scope_build",
@@ -1360,8 +1377,8 @@ class RunExecution:
             )
             state.persist()
             absolute, entry_count = self.albums.import_target(album_id, relative)
-            limit = min(1000, max(1, entry_count))
             explicit_pipeline = bool(getattr(self.client, "supports_explicit_pipeline", False))
+            limit = max(1, entry_count) if explicit_pipeline else min(1000, max(1, entry_count))
             if explicit_pipeline:
                 if getattr(self.client, "supports_live_import_progress", False):
                     result, directory_processed = self._import_album_with_progress(
@@ -1551,7 +1568,7 @@ class RunExecution:
         """
         baseline = 0
         try:
-            baseline = len(self.client.list_assets(scope_id=scope_id, limit=1000, timeout=60))
+            baseline = len(self.client.list_assets(scope_id=scope_id, limit=None, timeout=60))
         except Exception:  # noqa: BLE001 - 旁路进度失败不能影响导入主链
             baseline = 0
 
@@ -1566,7 +1583,7 @@ class RunExecution:
         )
         while not future.done():
             try:
-                visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=3)
+                visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=3)
                 current = max(0, len(visible) - baseline)
                 processed = min(total_media, processed_before + current)
                 state.record_phase("photo_import", "processed_count", processed)
@@ -1629,7 +1646,7 @@ class RunExecution:
         progress_signature: tuple[Any, ...] | None = None
         while True:
             poll_count += 1
-            assets = self.client.list_assets(scope_id=scope_id, limit=1000)
+            assets = self.client.list_assets(scope_id=scope_id, limit=None)
             pending = [item for item in assets if item.get("status") in PIPELINE_PENDING_STATUSES]
             failed = [item for item in assets if item.get("status") in PIPELINE_FAILED_STATUSES]
             processed = [item for item in assets if item.get("status") == "processed"]
@@ -1751,6 +1768,8 @@ class RunExecution:
     def _phase_processing_explicit(self, state: RunState, request: RunRequest) -> None:
         """调用主产品的真实流水线，同时旁路轮询源资产状态用于实时进度。"""
         state.record_phase("pipeline_processing", "execution_mode", "explicit")
+        if request.recover_pipeline:
+            state.record_phase("pipeline_processing", "recovery_mode", "resume_unfinished_sources")
         started = time.perf_counter()
         scope_id = str(state.get("scope_id"))
         asset_ids = [str(value) for value in (state.get("pipeline_asset_ids") or []) if value]
@@ -1775,16 +1794,15 @@ class RunExecution:
         )
         self._persist(str(state.get("run_id")), state)
 
+        process = self.client.recover_pipeline if request.recover_pipeline else self.client.process_pipeline
         future = self._start_phase_request(
-            lambda: self.client.process_pipeline(
-                scope_id=scope_id, asset_ids=asset_ids, timeout=request.import_timeout
-            ),
+            lambda: process(scope_id=scope_id, asset_ids=asset_ids, timeout=request.pipeline_timeout),
             name="sentrix-pipeline",
         )
         while not future.done():
             poll_count += 1
             try:
-                visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=3)
+                visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=3)
                 assets = [item for item in visible if str(item.get("id") or "") in target_ids]
                 processed = [item for item in assets if item.get("status") == "processed"]
                 pending = [item for item in assets if item.get("status") in PIPELINE_PENDING_STATUSES]
@@ -1822,9 +1840,11 @@ class RunExecution:
                 pass
             self._cancel_wait(PIPELINE_POLL_SECONDS)
         result = future.result()
+        state.record_phase("pipeline_processing", "operation_id", result.get("operation_id"))
+        state.record_phase("pipeline_processing", "response", result)
 
         try:
-            visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=60)
+            visible = self.client.list_assets(scope_id=scope_id, limit=None, timeout=60)
             assets = [item for item in visible if str(item.get("id") or "") in target_ids]
             poll_count += 1
         except Exception:  # noqa: BLE001 - 最终状态可由主响应兜底
@@ -2134,7 +2154,7 @@ class RunExecution:
         if health_error:
             raise RuntimeError(f"model service is unhealthy before QA evaluation: {health_error}")
         scope_id = str(state.get("scope_id"))
-        assets = self.client.list_assets(scope_id=scope_id, limit=1000)
+        assets = self.client.list_assets(scope_id=scope_id, limit=None)
         assets_by_name = index_assets_by_name(assets)
         snapshot = state.get("qa_snapshot")
         if not snapshot or "rows" not in snapshot:

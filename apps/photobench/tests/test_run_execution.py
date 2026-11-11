@@ -49,6 +49,71 @@ def test_runtime_freezes_product_revision_separately_from_benchmark_revision(pro
     assert request.runtime_snapshot.connection()["product_build_revision"] == product_revision
 
 
+def test_pipeline_timeout_is_separate_from_asset_import_and_frozen():
+    request = freeze_runtime_request(_request(import_timeout=30, pipeline_timeout=43200), {}, "release")
+    assert request.runtime_snapshot.connection()["execution_budgets"]["pipeline_timeout"] == 43200
+    client = FakeSentrixClient(
+        explicit_pipeline=True, assets=_assets(), pipeline_result={"processed": 2, "memory_graph": {}}
+    )
+    execution, *_ = _execution(client=client)
+    state = RunState(
+        {"run_id": "run_test", "scope_id": "s", "pipeline_asset_ids": ["asset_a", "asset_b"], "phases": {}}
+    )
+    execution._phase_processing_explicit(state, request)
+    calls = [args for name, args in client.calls if name == "process_pipeline"]
+    assert len(calls) == 1 and calls[0]["timeout"] == 43200
+
+
+def test_pipeline_unknown_outcome_preserves_failure_without_replay():
+    from photobench.domain.errors import RequestOutcomeUnknownError
+
+    class UnknownPipeline(FakeSentrixClient):
+        calls_count = 0
+
+        def process_pipeline(self, **kwargs):
+            self.calls_count += 1
+            raise RequestOutcomeUnknownError(method="POST", cause_type="ReadTimeout", attempts=1)
+
+    client = UnknownPipeline(explicit_pipeline=True, assets=_assets())
+    execution, *_ = _execution(client=client)
+    state = RunState(
+        {"run_id": "run_test", "scope_id": "s", "pipeline_asset_ids": ["asset_a", "asset_b"], "phases": {}}
+    )
+    with pytest.raises(RequestOutcomeUnknownError):
+        execution._phase_processing_explicit(state, _request())
+    assert client.calls_count == 1
+
+
+@pytest.mark.parametrize("graph", [{"node_count": 1}, None])
+def test_recovery_finishes_existing_sources_before_qa_and_preserves_receipt(graph):
+    client = FakeSentrixClient(
+        explicit_pipeline=True,
+        assets=_assets(),
+        pipeline_result={"processed": 0, "skipped": 2, "memory_graph": graph, "operation_id": "receipt-1"},
+        turns={"turn_1": [_completed_turn()]},
+    )
+    execution, *_ = _execution(client=client)
+    result = execution.execute(
+        _request(
+            mode="reuse",
+            scope_id="existing",
+            recover_pipeline=True,
+            recovery_asset_ids=("asset_a", "asset_b"),
+        )
+    )
+    names = client.call_names()
+    assert names.count("recover_pipeline") == 1
+    assert not set(names) & {"process_pipeline", "import_album", "import_assets", "seed_person"}
+    phase = result["phases"]["pipeline_processing"]
+    assert phase["response"]["operation_id"] == "receipt-1"
+    if graph is None:
+        assert result["status"] == "failed" and "start_turn" not in names
+        assert result["scope_build"]["status"] == "incomplete"
+    else:
+        assert result["scope_build"]["status"] == "ready"
+        assert names.index("recover_pipeline") < names.index("start_turn")
+
+
 def _manifest() -> dict[str, Any]:
     return {
         "album_id": ALBUM,
@@ -633,6 +698,29 @@ def test_explicit_pipeline_moves_memory_keyframes_and_graph_out_of_photo_import(
     assert pipeline["pipeline_metrics"]["image_count"] == 2
     assert pipeline["pipeline_metrics"]["event_count"] == 1
     assert pipeline["pipeline_metrics"]["event_summary_call_count"] == 1
+
+
+def test_explicit_pipeline_keeps_large_directory_and_complete_asset_inventory():
+    count = 1533
+    manifest = {**_manifest(), "photos": [f"photos/{i}.jpg" for i in range(count)]}
+    albums = FakeAlbums(
+        manifest=manifest, qa_rows=_rows(), files={"faces/1.jpg": b"J"}, directory_entries={"photos": count}
+    )
+    ids = [f"asset_{i}" for i in range(count)]
+    client = FakeSentrixClient(
+        explicit_pipeline=True,
+        assets=_assets(),
+        turns={"turn_1": [_completed_turn()]},
+        import_result={"imported": count, "deduplicated": 0, "asset_ids": ids, "failures": []},
+    )
+    execution, *_ = _execution(client=client, albums=albums)
+    state = execution.execute(_request())
+    imports = [values for name, values in client.calls if name == "import_assets"]
+    assert imports[0]["limit"] == count
+    assert state["phases"]["photo_import"]["scanned_count"] == count
+    pipeline = [values for name, values in client.calls if name == "process_pipeline"]
+    assert pipeline[0]["asset_ids"] == ids
+    assert all(values["limit"] is None for name, values in client.calls if name == "list_assets")
 
 
 def test_pipeline_metrics_count_images_without_videos_or_derived_assets():

@@ -60,6 +60,11 @@ def get_run(
     return get_container(request).runs.get_run(run_id, include_history=False)
 
 
+@router.get("/runs/{run_id}/process-diagnostics")
+def get_process_diagnostics(request: Request, run_id: str) -> dict[str, Any]:
+    return get_container(request).runs.get_process_diagnostics(run_id)
+
+
 @router.get("/runs/{run_id}/items", response_model=RunItemsResponse, response_model_exclude_unset=True)
 def get_run_items(
     request: Request,

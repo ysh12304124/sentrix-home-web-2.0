@@ -144,6 +144,9 @@ export type RunPhases = Record<string, Phase | undefined>;
 export interface TelemetryLive {
   history_enabled?: boolean;
   statistics_mode?: string;
+  devices?: Record<string, TelemetryLive>;
+  device_index?: number | null;
+  raw_samples_count?: number;
   memory_observation_version?: number;
   memory_observations?: Record<string, MemorySourceObservation>;
   memory_dependencies?: Record<string, string[]>;

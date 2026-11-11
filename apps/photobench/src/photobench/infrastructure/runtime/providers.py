@@ -41,15 +41,15 @@ from urllib.parse import urlparse
 
 import httpx
 
-from photobench.domain.runtime.metrics import (
-    RESOURCE_TELEMETRY_VERSION,
-    component_total,
-    physical_memory_used,
-)
 from photobench.domain.deploy.ports import (
     BENCHMARK_GATEWAY_TOKEN_ENV,
     BENCHMARK_GATEWAY_UPSTREAM_ENV,
     BENCHMARK_GATEWAY_URL_ENV,
+)
+from photobench.domain.runtime.metrics import (
+    RESOURCE_TELEMETRY_VERSION,
+    component_total,
+    physical_memory_used,
 )
 from photobench.domain.runtime.ports import LifecycleProvider, RuntimeProviders, TelemetryProvider
 from photobench.infrastructure.runtime.hardware import HostCpuSampler, read_cpu_temperature_c

@@ -158,3 +158,10 @@ class RunReadViews(Protocol):
     def load_overview(self, run_id: str) -> dict[str, Any]: ...
 
     def telemetry_revision(self, run_id: str) -> str: ...
+
+
+@runtime_checkable
+class ProcessDiagnosticStore(Protocol):
+    """Derived observations are stored separately from immutable run snapshots."""
+
+    def save_process_diagnostics(self, run_id: str, diagnostics: dict[str, Any]) -> None: ...

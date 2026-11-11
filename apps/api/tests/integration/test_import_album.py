@@ -197,6 +197,19 @@ def test_limit_caps_the_batch(album: Path):
     assert result.imported == 1
 
 
+def test_asset_staging_imports_a_complete_large_directory(tmp_path):
+    for index in range(1533):
+        (tmp_path / f"{index:04d}.jpg").write_bytes(b"x")
+    importer = StubImporter()
+    result = ImportAlbum(importer=importer).stage_only(
+        AlbumImportRequest(scope_id="large", directory=str(tmp_path), limit=1533)
+    )
+    assert result.imported == 1533
+    assert len(result.asset_ids) == 1533
+    assert importer.staged == [f"{index:04d}.jpg" for index in range(1533)]
+    assert not importer.prepared and not importer.finished
+
+
 def test_missing_directory_is_an_error_not_an_empty_result(tmp_path: Path):
     """目录不存在必须报错：空结果会让「路径写错了」看起来像「相册是空的」。"""
     with pytest.raises(NotADirectoryError):

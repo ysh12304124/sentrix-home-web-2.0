@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, date, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -20,6 +22,7 @@ from sentrix.api.schemas.family import FamilyRunResponse
 from sentrix.api.schemas.operations import OperationCancellationResponse
 from sentrix.api.schemas.timeline import (
     AssetImportBatchResponse,
+    AssetImportRequest,
     CalendarDay,
     CalendarMonth,
     CalendarYear,
@@ -187,9 +190,7 @@ def timeline_calendar(
     has_place: bool = False,
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    index = _read_timeline(container).calendar(
-        scope_id or None, place=place.strip(), has_place=has_place
-    )
+    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
     years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,
@@ -202,10 +203,7 @@ def timeline_calendar(
                     CalendarMonth(
                         month=month.month,
                         count=month.count,
-                        days=[
-                            CalendarDay(date=day.date, count=day.count)
-                            for day in month.days
-                        ],
+                        days=[CalendarDay(date=day.date, count=day.count) for day in month.days],
                     )
                     for month in year.months
                 ],
@@ -369,7 +367,7 @@ def _execute_import(
 
 @router.post("/imports/assets", status_code=201)
 def import_album_assets(
-    request: ImportBatchRequest,
+    request: AssetImportRequest,
     container: Container = Depends(get_container),
 ) -> AssetImportBatchResponse:
     """仅导入媒体资产；重活统一留给 ``POST /pipeline/process``。
@@ -399,6 +397,69 @@ def process_album_pipeline(
     request: PipelineProcessRequest,
     container: Container = Depends(get_container),
 ) -> PipelineProcessResponse:
+    return _tracked_pipeline(request, container, finalize_only=False)
+
+
+@router.post("/pipeline/finalize")
+def finalize_album_pipeline(
+    request: PipelineProcessRequest,
+    container: Container = Depends(get_container),
+) -> PipelineProcessResponse:
+    """Explicit recovery after the original request has stopped; source inference is never repeated."""
+    return _tracked_pipeline(request, container, finalize_only=True)
+
+
+@router.post("/pipeline/recover")
+def recover_album_pipeline(
+    request: PipelineProcessRequest,
+    container: Container = Depends(get_container),
+) -> PipelineProcessResponse:
+    """Explicit recovery after the owning product process has stopped; preserve completed sources."""
+    return _tracked_pipeline(request, container, finalize_only=False, resume_interrupted=True)
+
+
+@router.get("/pipeline/operations/{operation_id}")
+def pipeline_receipt(operation_id: str, container: Container = Depends(get_container)) -> dict[str, Any]:
+    receipt = container.pipeline_tracker.get(operation_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="pipeline receipt not found")
+    return receipt
+
+
+def _tracked_pipeline(
+    request: PipelineProcessRequest,
+    container: Container,
+    *,
+    finalize_only: bool,
+    resume_interrupted: bool = False,
+) -> PipelineProcessResponse:
+    operation_id = request.operation_id or uuid.uuid4().hex
+    request = request.model_copy(update={"operation_id": operation_id})
+    try:
+        result = container.pipeline_tracker.execute(
+            operation_id,
+            request.scope_id,
+            request.asset_ids,
+            "recover" if resume_interrupted else "finalize" if finalize_only else "process",
+            lambda: _execute_pipeline(
+                request,
+                container,
+                finalize_only=finalize_only,
+                resume_interrupted=resume_interrupted,
+            ).model_dump(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return PipelineProcessResponse.model_validate(result)
+
+
+def _execute_pipeline(
+    request: PipelineProcessRequest,
+    container: Container,
+    *,
+    finalize_only: bool,
+    resume_interrupted: bool = False,
+) -> PipelineProcessResponse:
     """同步执行关键帧、记忆构建和图构建，并返回逐阶段耗时。"""
     total_started = time.perf_counter()
     pipeline = ProcessAlbumPipeline(
@@ -407,11 +468,31 @@ def process_album_pipeline(
         summarize_event=_summarize_event(container).execute,
         workers=container.settings.album_workers,
     )
+    existing_event_ids = (
+        tuple(
+            event.id
+            for event in container.event_repository.list_by_scope(
+                request.scope_id, limit=container.event_repository.count_by_scope(request.scope_id)
+            )
+        )
+        if finalize_only or resume_interrupted
+        else ()
+    )
     stage_timings = StageTimings()
     with stage_timings.activate(), stage_timings.measure("pipeline_total"):
         result = pipeline.execute(
-            AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
+            AlbumProcessRequest(
+                scope_id=request.scope_id,
+                asset_ids=tuple(request.asset_ids),
+                finalize_only=finalize_only,
+                resume_interrupted=resume_interrupted,
+                existing_event_ids=existing_event_ids,
+            )
         )
+        if finalize_only and result.failures:
+            raise ValueError("source validation failed during pipeline finalization")
+        if finalize_only and result.summarized != len(set(existing_event_ids)):
+            raise ValueError("some event summaries failed during pipeline finalization")
         timings = dict(result.timings)
 
         with stage_timings.measure("finalize"):
@@ -434,12 +515,18 @@ def process_album_pipeline(
 
             insights_started = time.perf_counter()
             with stage_timings.measure("person_insights"):
-                insights = _maybe_run_insights(container, request.scope_id, result.processed)
+                insights = _maybe_run_insights(
+                    container,
+                    request.scope_id,
+                    len(request.asset_ids) if finalize_only or resume_interrupted else result.processed,
+                )
             timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
         timings["total"] = round(time.perf_counter() - total_started, 3)
 
     timings.update(stage_timings.walls())
     return PipelineProcessResponse(
+        operation_id=request.operation_id,
+        resumed_asset_ids=list(result.resumed_asset_ids),
         scope_id=result.scope_id,
         processed=result.processed,
         skipped=result.skipped,

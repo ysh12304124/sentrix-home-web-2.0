@@ -41,6 +41,11 @@ files = ["apps/api/src/sentrix", "apps/photobench/src", "scripts"]
 module = ["pillow_heif", "yaml", "cn_clip", "cn_clip.*", "Katna", "Katna.*"]
 ignore_missing_imports = true
 
+# Katna has no type stubs; the adapter overrides its one-worker filtering hook.
+[[tool.mypy.overrides]]
+module = ["sentrix.infrastructure.media.svd_katna_scene_planner"]
+disallow_subclassing_any = false
+
 # 地点解析的两个第三方包都没有 py.typed，也没有可用的独立 stub（scipy 有 scipy-stubs，
 # 但它把 cKDTree 也标成 Any，装它只是换一种静音方式）。同一条规则：缺 stub 是环境
 # 事实，集中写在配置里，而不是在每个 import 上散落 # type: ignore。

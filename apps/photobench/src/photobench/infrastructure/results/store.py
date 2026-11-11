@@ -86,11 +86,20 @@ def read_entry(run_dir: Path) -> dict[str, Any]:
             evaluation = (payload.get("overview", {}).get("summary") or {}).get("evaluation_summary")
             if evaluation is not None:
                 entry.setdefault("summary", {})["evaluation_summary"] = evaluation
+            scoring = (entry.get("summary") or {}).get("scoring") or {}
+            if any(
+                batch.get("profile_id") == "atm_qs_v1" and "tool_list_qs" not in batch
+                for batch in (scoring.get("batches") or {}).values()
+            ):
+                from photobench.domain.evaluation.profiles import scoring_summary
+
+                state = json.loads(committed_path(run_dir, "run.json").read_text(encoding="utf-8"))
+                entry.setdefault("summary", {})["scoring"] = scoring_summary(state)
             entry.update(execution_metadata(payload.get("overview") or {}))
             return entry
         path = run_dir / "run.json"
         stat = path.stat()
-        signature = [3, stat.st_ino, stat.st_size, stat.st_mtime_ns]
+        signature = [4, stat.st_ino, stat.st_size, stat.st_mtime_ns]
         index = run_dir / ".photobench-read-index.json"
         try:
             cached = json.loads(index.read_text(encoding="utf-8"))
@@ -200,6 +209,18 @@ class FileRunStore:
         if not run_id or "/" in run_id or "\\" in run_id or run_id in {".", ".."}:
             raise KeyError(run_id)
         return self._root / run_id
+
+    def save_process_diagnostics(self, run_id: str, diagnostics: dict[str, Any]) -> None:
+        run_dir = self._run_dir(run_id)
+        if not run_dir.is_dir():
+            raise KeyError(run_id)
+        path = self._root / ".process-diagnostics"
+        path.mkdir(exist_ok=True)
+        target = path / f"{run_id}.json"
+        with run_lock(run_dir):
+            pending = target.with_suffix(".tmp")
+            _durable_text(pending, json.dumps(diagnostics, ensure_ascii=False))
+            os.replace(pending, target)
 
     def iter_entries(self) -> Iterator[dict[str, Any]]:
         if not self._root.exists():

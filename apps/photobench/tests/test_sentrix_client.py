@@ -71,6 +71,33 @@ def test_list_assets_quotes_the_scope_id():
     assert "scope_id=a%2Fb%20c" in http.calls[0][0]
 
 
+@pytest.mark.parametrize("limit,expected", [(None, 1533), (1200, 1200)])
+def test_list_assets_reads_all_pages_with_stable_offsets(limit, expected):
+    from urllib.parse import parse_qs, urlparse
+
+    class PagedHttp(FakeJsonHttpClient):
+        def _answer(self, url):
+            query = parse_qs(urlparse(url).query)
+            offset, size = int(query["offset"][0]), int(query["limit"][0])
+            assert size <= 500
+            assert query["sort"] == ["created"] and query["order"] == ["asc"]
+            return {
+                "items": [{"id": f"a{i}"} for i in range(offset, min(offset + size, 1533))],
+                "total": 1533,
+            }
+
+    http = PagedHttp()
+    client = HttpxSentrixClient(http, lambda: BASE)
+    assert client.list_assets(scope_id="s1", limit=limit) == [{"id": f"a{i}"} for i in range(expected)]
+    assert len(http.calls) == (expected + 499) // 500
+
+
+def test_list_assets_reports_an_incomplete_page_instead_of_truncating():
+    client, _ = _client({"assets": {"items": [], "total": 1533}})
+    with pytest.raises(RuntimeError, match="资产分页提前结束"):
+        client.list_assets(scope_id="s1", limit=None)
+
+
 def test_seed_person_is_a_single_person_multipart_with_a_joined_alias_string():
     """2.0 只有 ``POST /people/seed``（单人），``aliases`` 是**顿号或逗号分隔的一个
     字符串**（``identity.py:895`` 的 ``_split_terms``）。发成 JSON 数组会被 FastAPI
@@ -120,9 +147,35 @@ def test_split_import_and_pipeline_use_the_explicit_endpoints():
     )
     assert http.calls[1][:3] == (
         f"{BASE}/api/v1/pipeline/process",
-        {"scope_id": "s1", "asset_ids": ["a1", "a2"]},
+        {"scope_id": "s1", "asset_ids": ["a1", "a2"], "operation_id": http.calls[1][1]["operation_id"]},
         "POST",
     )
+    assert len(http.calls[1][1]["operation_id"]) == 32
+
+
+@pytest.mark.parametrize("status", ["completed", "running", "failed"])
+def test_unknown_pipeline_reads_receipt_without_replaying_post(status):
+    from photobench.domain.errors import RequestOutcomeUnknownError
+
+    class UnknownHttp:
+        def __init__(self):
+            self.calls = []
+
+        def request_json(self, url, payload=None, method="GET", timeout=30):
+            self.calls.append((url, method))
+            if method == "POST":
+                raise RequestOutcomeUnknownError(method="POST", cause_type="ReadTimeout", attempts=1)
+            return {"status": status, "result": {"scope_id": "s", "skipped": 2}}
+
+    http = UnknownHttp()
+    client = HttpxSentrixClient(http, lambda: BASE)
+    if status == "completed":
+        assert client.finalize_pipeline(scope_id="s", asset_ids=["a", "b"], timeout=90)["skipped"] == 2
+    else:
+        with pytest.raises(RequestOutcomeUnknownError) as caught:
+            client.finalize_pipeline(scope_id="s", asset_ids=["a", "b"], timeout=90)
+        assert caught.value.facts["operation_id"]
+    assert [method for _, method in http.calls] == ["POST", "GET"]
 
 
 def test_ask_is_two_calls_and_the_turn_poll_uses_the_plural_path():

@@ -156,7 +156,7 @@ def test_frozen_custom_atm_open_template_keeps_original_protocol():
 def test_new_open_profile_freezes_data_only_input_protocol():
     s = state()
     service, batches, http, _ = setup(s, [OPEN], [task(), {"score": 2}])
-    assert batches[0]["config"]["quality_input_version"] == "task_v3"
+    assert batches[0]["config"]["quality_input_version"] == "task_v4"
     service.score(batches[0], scoring_targets(s, batches[0], "all")[0])
     data = json.loads(http.calls[-1]["messages"][1]["content"])
     assert data["question"] == "多少？"
@@ -847,3 +847,168 @@ def test_both_item_profiles_are_latest_and_keep_zero_and_missing_separate():
     missing = item_profile_results(s, "q")[ATM]
     assert missing["score"] is None and missing["status"] == "not_collected"
     assert "matched_option" not in missing
+
+
+def test_tool_list_qs_uses_same_frozen_gt_and_keeps_batches_and_turns_separate():
+    from photobench.domain.evaluation.profiles import result_key
+
+    s = state("atm_list", turns=2, target_media_refs=[media("a.jpg"), media("b.jpg")])
+    row = s["qa_snapshot"]["rows"][0]
+    extra = copy.deepcopy(row)
+    extra.update(qa_id="number", evaluation={"scorer": "atm_number", "applies_to_turn": 0})
+    s["qa_snapshot"]["rows"].append(extra)
+    _, batches, http, _ = setup(s, [ATM])
+    batch = batches[0]
+
+    def value(qa, turn, purpose, score, **extra):
+        return {
+            "qa_id": qa,
+            "turn_index": turn,
+            "batch_id": batch["batch_id"],
+            "profile_id": ATM,
+            "purpose": purpose,
+            "status": "completed",
+            "score": score,
+            "max_score": 1,
+            **extra,
+        }
+
+    results = s.setdefault("scoring_results", {})
+    results[result_key(batch["batch_id"], "q", 0)] = value(
+        "q",
+        0,
+        "list",
+        1,
+        media_metrics={"tools": {"status": "available", "predicted": ["image:a.jpg", "image:b.jpg"]}},
+    )
+    results[result_key(batch["batch_id"], "q", 1)] = value(
+        "q",
+        1,
+        "list",
+        0,
+        media_metrics={
+            "tools": {
+                "status": "available",
+                "jaccard": 1,
+                "target": ["image:wrong-target.jpg"],
+                "predicted": ["image:a.jpg", "video:extra", "image:a.jpg"],
+            }
+        },
+    )
+    results[result_key(batch["batch_id"], "number", 0)] = value("number", 0, "number", 1)
+    summary = summarize_batches(s)[batch["batch_id"]]
+    assert summary["total_score"] == 0.5
+    tools = summary["tool_list_qs"]
+    assert tools["scored"] == 2
+    assert tools["list_count"] == tools["list_scored"] == 1
+    assert tools["total_score"] == pytest.approx((1 / 3 + 1) / 2)
+    before = copy.deepcopy(s)
+    summarize_batches(s)
+    assert s == before
+    assert http.calls == []
+    # The newest, empty batch must not borrow scores or tool candidates from the old one.
+    empty = copy.deepcopy(batch)
+    empty["batch_id"] = "new-empty-batch"
+    s["scoring_batches"].append(empty)
+    latest = summarize_batches(s)[empty["batch_id"]]["tool_list_qs"]
+    assert latest["list_count"] == 1
+    assert latest["scored"] == 0 and latest["total_score"] is None
+
+
+def test_tool_list_qs_keeps_empty_zero_and_missing_candidates_distinct():
+    from photobench.domain.evaluation.profiles import tool_list_qs
+
+    definitions = {"q": {"evaluation": {"scorer": "atm_list", "target_media_refs": [media("a.jpg")]}}}
+    value = {"purpose": "list", "media_metrics": {"tools": {"status": "available", "predicted": []}}}
+    assert tool_list_qs({"q": value}, definitions, 1)["total_score"] == 0
+    for tools in (
+        {"status": "unavailable", "predicted": []},
+        {"status": "available"},
+        {"status": "available", "predicted": [None]},
+    ):
+        value["media_metrics"]["tools"] = tools
+        summary = tool_list_qs({"q": value}, definitions, 1)
+        assert summary["total_score"] is None and summary["coverage"] == 0
+
+
+def test_real_tool_aliases_enter_only_v4_quality_without_changing_delivery():
+    from photobench.domain.evaluation.media import tool_media_aliases
+
+    s = state()
+    item = s["items"][0]
+    record = item["runtime_turns"][0]
+    item["retrieved_candidate_media"] = [media("a.jpg"), media("b.jpg")]
+    preview = {
+        "result_set_id": "rs-real",
+        "preview": [
+            {"handle": "photo_1", "file_name": "a.jpg"},
+            {"handle": "photo_2", "file_name": "b.jpg"},
+            {"handle": "photo_3", "file_name": "missing.jpg"},
+        ],
+    }
+    record.update(
+        answer="photo_1",
+        debug_calls=[
+            {
+                "messages": [
+                    {"role": "tool", "content": json.dumps(preview)},
+                    {"role": "assistant", "content": json.dumps(preview)},
+                ]
+            }
+        ],
+    )
+    record["trace_bundle"] = {"debug_calls": record.pop("debug_calls")}
+    aliases = tool_media_aliases(item, 0)
+    assert aliases == [
+        {"result_set_id": "rs-real", "handle": "photo_1", "media_type": "image", "media_id": "a.jpg"},
+        {"result_set_id": "rs-real", "handle": "photo_2", "media_type": "image", "media_id": "b.jpg"},
+    ]
+    for version in ("task_v3", "task_v4"):
+        current = copy.deepcopy(s)
+        service, batches, http, _ = setup(
+            current, [OPEN], [task(), {"score": 0}], configs={OPEN: {"quality_input_version": version}}
+        )
+        service.score(batches[0], scoring_targets(current, batches[0], "all")[0])
+        payload = http.calls[-1]
+        data = json.loads(payload["messages"][1]["content"])
+        if version == "task_v4":
+            assert data["tool_media_aliases"] == aliases
+            assert data["delivered_media_aliases"] == []
+            assert "工具候选不等于模型已交付" in payload["messages"][0]["content"]
+        else:
+            assert "tool_media_aliases" not in data
+        assert current["items"] == s["items"]
+        assert "tool_media_aliases" not in json.dumps(http.calls[0])
+
+
+def test_tool_aliases_reject_reused_handles_keyframes_and_future_turns():
+    from photobench.domain.evaluation.media import tool_media_aliases
+
+    def call(source, name, **extra):
+        return {
+            "messages": [
+                {
+                    "role": "tool",
+                    "content": json.dumps(
+                        {
+                            "result_set_id": source,
+                            "preview": [{"handle": "photo_1", "file_name": name, **extra}],
+                        }
+                    ),
+                }
+            ]
+        }
+
+    item = {
+        "retrieved_candidate_media": [media("a.jpg"), media("b.jpg")],
+        "runtime_turns": [
+            {"trace_bundle": {"debug_calls": [call("one", "a.jpg")]}},
+            {"trace_bundle": {"debug_calls": [call("two", "b.jpg")]}},
+        ],
+    }
+    assert len(tool_media_aliases(item, 0)) == 1
+    assert tool_media_aliases(item, 1) == []
+    item["runtime_turns"][0]["trace_bundle"]["debug_calls"].append(
+        call("three", "a.jpg", source_kind="video_keyframe")
+    )
+    assert tool_media_aliases(item, 0) == []
