@@ -16,12 +16,8 @@ vi.mock("../../shared/api/client", async (importOriginal) => {
     ...actual,
     getFamilyGraph: vi.fn(),
     listMemorySpaces: vi.fn(),
-    listFaceClusters: vi.fn(),
     listPeople: vi.fn(),
-    confirmFaceCluster: vi.fn(),
     rejectFaceCluster: vi.fn(),
-    mergeFaceClusters: vi.fn(),
-    splitFaceCluster: vi.fn(),
     renamePerson: vi.fn(),
     getPerson: vi.fn().mockResolvedValue({ entity: { aliases: [] } }),
     getPersonPortrait: vi.fn().mockResolvedValue(null),
@@ -93,6 +89,7 @@ function realShapeGraph(): FamilyGraph {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    status: "confirmed",
   }));
   return { scope_id: "album1", run: null, people, scope_ids: ["album1"], relationships: [] };
 }
@@ -102,7 +99,6 @@ function mount(graph: FamilyGraph = realShapeGraph(), search = "/?scope=album1")
     { id: "album1", name: "第一册", kind: "benchmark", status: "active" },
   ]);
   vi.mocked(client.getFamilyGraph).mockResolvedValue(graph);
-  vi.mocked(client.listFaceClusters).mockResolvedValue([]);
   vi.mocked(client.listPeople).mockResolvedValue([]);
   // ScopeProvider 优先读 `?scope=`；设上它，取数才是 album1（而不是「全部相册」）。
   window.history.replaceState(null, "", search);

@@ -300,6 +300,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `PortraitRepository` | `:687` | 6 | `SqlitePortraitRepository` |
 | `MomentRepository` | `:738` | 2 | `SqliteMomentRepository` |
 | `RelationshipRepository` | `:786` | 6 | `SqliteRelationshipRepository` |
+| `PersonMergeRepository` | `domain/identity/ports.py` | `merged_into` / `merge_people`（一个事务改挂来源人物的全部派生行；失败整笔回滚） | `SqlitePersonMergeRepository` |
 | `PersonCropRenderer` | `:849` | `render` | `PillowPersonCropRenderer` |
 | `PersonPreviewRenderer` | `:870` | `render` | `PillowPersonPreviewRenderer` |
 | `PersonVision` | `:891` | 4 | `OpenAIPersonVision` |
@@ -1123,7 +1124,9 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 - 导入支持按 operation_id 协作取消（2026-10-23新增）；仍无持久 batch/job 队列；
 - 无云端大模型入口（评测可配，产品侧不内置）；
 - 记忆画像的模型同步留空；
-- 关系假设 / 角色假设 / 实体合并 / 洞察运行 / 主动建议等能力冻结。
+- 关系假设 / 角色假设 / 实体合并**候选**（系统自动提出的 `entity_merge_candidates`）/ 洞察运行 / 主动建议等能力冻结。
+  2026-11-11 用户裁决新增的是**用户手动发起**的人物级合并（`POST /people/merge`，`PersonMergeRepository`），
+  不建候选表、不做自动推荐；见 `docs/refactor/2026-11-11-people-review-tab-and-merge.md`。
 
 ### 9.4 依赖声明风险
 
