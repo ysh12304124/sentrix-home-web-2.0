@@ -944,7 +944,35 @@ class SqliteEntityRepository:
                     REVISION_SOURCE_USER_RENAME,
                     (),
                 )
+                # 同一个事务里把观察上的人物快照改成新名字。快照存的是**名字**，它是检索
+                # 人物条件、实体通道兜底、记忆图人物节点、家庭图谱洞察证据与照片预览
+                # 「people」的共同输入；只改 ``entities`` 的话，已确认的人一改名，他所有
+                # 照片上记的还是旧名，按新名字什么都查不到。pending 的人没有快照，
+                # 这一步对他们是空操作。
+                self._rename_in_person_snapshots(connection, entity_id, name)
         return self.get(entity_id)
+
+    @staticmethod
+    def _rename_in_person_snapshots(connection: sqlite3.Connection, entity_id: str, name: str) -> int:
+        """把 ``people_json`` 里 ``entity_id`` 是这个人的条目改成新名字，返回改了几条观察。"""
+        rows = connection.execute(
+            "SELECT id, people_json FROM observations WHERE instr(people_json, ?) > 0",
+            (entity_id,),
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            people = _decode_list(row["people_json"])
+            touched = False
+            for item in people:
+                if isinstance(item, dict) and item.get("entity_id") == entity_id and item.get("name") != name:
+                    item["name"] = name
+                    touched = True
+            if touched:
+                connection.execute(
+                    "UPDATE observations SET people_json = ? WHERE id = ?", (_encode(people), row["id"])
+                )
+                changed += 1
+        return changed
 
     # ---- 提及桥 ------------------------------------------------------------------
 
@@ -1003,8 +1031,13 @@ class SqliteEntityRepository:
         if row is None:
             return
         people = _decode_list(row["people_json"])
-        if not any(isinstance(item, dict) and item.get("entity_id") == entity.id for item in people):
-            people.append({"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status})
+        current = {"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status}
+        existing = [item for item in people if isinstance(item, dict) and item.get("entity_id") == entity.id]
+        if not existing:
+            people.append(current)
+        # 已有这条就把名字与状态对齐到当前实体：快照里留着旧名，按现在的名字就查不到。
+        for item in existing:
+            item.update(name=current["name"], status=current["status"])
         connection.execute(
             "UPDATE observations SET people_json = ? WHERE id = ?",
             (_encode(people), observation_id),

@@ -1062,6 +1062,12 @@ async def seed_person_identity(
     except NoSeedFacesError as error:
         # 1.0 在路由上抛 422（``app.py:2345``）：请求是好的，是这几张图里没有人脸。
         raise UnprocessableError(str(error)) from error
+    # 样本照片上刚写了提及：按实例预置时它们是相册里的照片，所在事件的参与者要跟着刷新，
+    # 否则事件页与按人找事件看不到这个人（确认簇那条路在用例里做同一件事）。
+    seeded_observations = sorted(
+        {item.observation_id for item in container.face_repository.list_instances(result.cluster_id)}
+    )
+    _confirmed_person_events(container).refresh_participants(seeded_observations)
     refresh_memory_graph(container, scope_id)
     return SeedIdentityResponse(
         entity_id=result.entity_id,
