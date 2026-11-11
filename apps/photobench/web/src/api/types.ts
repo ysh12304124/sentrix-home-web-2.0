@@ -142,6 +142,8 @@ export type RunPhases = Record<string, Phase | undefined>;
  * 下存在的可空字段。
  */
 export interface TelemetryLive {
+  history_enabled?: boolean;
+  statistics_mode?: string;
   memory_observation_version?: number;
   memory_observations?: Record<string, MemorySourceObservation>;
   memory_dependencies?: Record<string, string[]>;
@@ -313,7 +315,8 @@ export interface Run {
   task_run_ids?: string[];
   execution_versions?: ExecutionVersion[];
   read_revision?: string | null;
-  history_mode?: "full" | "checkpoint" | null;
+  history_mode?: "full" | "checkpoint" | "latest" | null;
+  telemetry_history_enabled?: boolean;
   persistence?: { status?: string; error?: string } | null;
   metrics_contract_version?: number;
   build_revision?: string;

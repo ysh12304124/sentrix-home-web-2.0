@@ -56,11 +56,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from photobench.application.deploy.service import SentrixModelSwitch
-from photobench.domain.deploy.ports import (
-    BENCHMARK_GATEWAY_TOKEN_ENV,
-    BENCHMARK_GATEWAY_UPSTREAM_ENV,
-    BENCHMARK_GATEWAY_URL_ENV,
-)
 from photobench.application.run_execution.gpu_sampler import PHASE_LABELS, GpuSampler
 from photobench.application.run_execution.import_progress import import_with_progress
 from photobench.application.run_execution.judge import InlineImages, JudgeRunner
@@ -69,6 +64,11 @@ from photobench.application.run_execution.state import RunState
 from photobench.config import default_qa_concurrency
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
+from photobench.domain.deploy.ports import (
+    BENCHMARK_GATEWAY_TOKEN_ENV,
+    BENCHMARK_GATEWAY_UPSTREAM_ENV,
+    BENCHMARK_GATEWAY_URL_ENV,
+)
 from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.evaluation.profiles import uses_readable_metadata
 from photobench.domain.evaluation.prompts import evaluation_prompts
@@ -356,6 +356,7 @@ class RunExecution:
     #: 供读侧与运维判断这轮的数字是什么口径（1.0 ``:1977`` 的 ``telemetry_source``）。
     runtime_snapshot: RunRuntimeSnapshot | None = None
     telemetry_source: str = ""
+    telemetry_history_enabled: bool = False
     #: 召回图 → data URL 的实现（要用 PIL）。由装配点注入，application 不许 import PIL。
     inline_images: InlineImages | None = None
     #: 换模型 = 重启 2.0（S9c · T923）：把 2.0 的 ``vlm_base_url`` 对准本轮的端点。
@@ -464,6 +465,7 @@ class RunExecution:
                 "input_integrity": None,
                 "status": "failed",
                 "failed_phase": "initialization",
+                "telemetry_history_enabled": self.telemetry_history_enabled,
                 "fatal_error": str(exc),
                 "created_at": now_iso(),
                 "finished_at": now_iso(),
@@ -505,6 +507,7 @@ class RunExecution:
             on_sample=self._sample_writer(state),
             on_aggregate=lambda metrics: self._publish_partial_gpu_metrics(state, metrics),
             publish_interval=GPU_METRICS_PUBLISH_SECONDS,
+            history_enabled=bool(state.get("telemetry_history_enabled")),
         )
         self._sampler = sampler
         sampling = self._sampling_enabled() and self.telemetry_source != "unavailable"
@@ -720,6 +723,7 @@ class RunExecution:
             # 1.0 ``:1977``：这两个是读侧与运维判断「这轮的数字是什么口径」的入口
             # （``run_list_entry`` 会取它们）。
             "telemetry_source": self.telemetry_source or None,
+            "telemetry_history_enabled": self.telemetry_history_enabled,
             "runtime_framework": request.runtime_framework or "generic",
             "judge_url": request.judge_url
             or (self.judge_settings.judge_url if self.judge_settings else "")
@@ -804,15 +808,9 @@ class RunExecution:
         )
 
     def _sample_writer(self, state: RunState) -> Callable[[dict[str, Any]], None]:
-        """采样回调：打相位标签、追加 JSONL、更新内存实时视图。
+        """更新最新值与全程峰值；仅在本轮启用历史时追加原始 JSONL。
 
-        1.0 ``_persist_gpu_sample``（``:2110``）的三段在这里逐段对应：
-
-        1. **追加 JSONL**（立即落盘，取消/崩溃时才不丢）——``gpu_samples.jsonl`` 是
-           完整曲线的权威来源。
-        2. **更新 ``telemetry_live``**（``domain.runs.analysis.apply_live_sample``）：
-           latest/peak/history/phase_snapshots 的滚动视图，给实时 GPU 卡片看。
-        滚动聚合由采样器的独立发布线程回调，避免空holder绑定及采样锁内全量统计。
+        实时窗口随记录模式关闭或限制为 240 点；独立发布线程覆盖保存瘦快照。
         """
 
         def on_sample(sample: dict[str, Any]) -> None:
@@ -822,13 +820,19 @@ class RunExecution:
             label = PHASE_LABELS.get(phase, phase)
             sample.setdefault("phase", phase)
             sample.setdefault("phase_label", label)
-            persisted = dict(sample)
-            self.writer.append_gpu_sample(state.run_id, persisted)
+            history_enabled = bool(state.get("telemetry_history_enabled", self.telemetry_history_enabled))
+            if history_enabled:
+                self.writer.append_gpu_sample(state.run_id, dict(sample))
             live = state.mutate("telemetry_live")
             with state.lock:
                 if state.data.get("finished_at"):
                     return
-                apply_live_sample(live, sample, phase, label, tail=LIVE_TELEMETRY_TAIL_POINTS)
+                live["history_enabled"] = history_enabled
+                live["statistics_mode"] = "streaming_v1"
+                apply_live_sample(
+                    live, sample, phase, label, tail=LIVE_TELEMETRY_TAIL_POINTS,
+                    record_history=history_enabled,
+                )
                 if sample.get("llama_server_args") and not state.data.get("llama_server_args"):
                     state.data["llama_server_args"] = sample.get("llama_server_args")
 

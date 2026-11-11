@@ -343,7 +343,7 @@ function LegacyTelemetryCard({ run }: TelemetryCardProps) {
       </summary>
       <p className="metric-calc-time">
         测评进行中持续采样；任务失败或取消时保留已采集的最后值与峰值。
-        {live.source === "apple_unified"
+        {live.history_enabled === false ? " 历史曲线已关闭，仅覆盖保存最新读数，全程峰值、均值持续累计。" : live.source === "apple_unified"
           ? live.latest?.memory_accounting === "apple_footprint_resident_v2"
             ? " Mac 展示整机、整套产品及主模型三条内存曲线。整机含驻留缓存；产品与模型按整组进程去重估计驻留量，压缩器实际物理页仅在整机统计。"
             : " Mac 旧版统一内存。五条曲线是整机内存、整套产品占用（footprint+权重映射）、Sentrix 周边、主模型占用（footprint+权重映射），以及 AGXAccelerator 设备级的 GPU 在用统一内存（含其他进程，不能归因给主模型）。"
@@ -362,6 +362,7 @@ function LegacyTelemetryCard({ run }: TelemetryCardProps) {
           </div>
         ))}
       </div>
+      {live.statistics_mode === "streaming_v1" ? <p className="muted">采用增量统计，P50/P95 未记录；均值和峰值覆盖本轮全部有效采样。</p> : null}
       {chartData ? (
         <div className="telemetry-chart">
           <div ref={canvasRef} className="telemetry-chart-canvas" role="img" aria-label="资源占用趋势"></div>

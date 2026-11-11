@@ -300,6 +300,7 @@ class Container:
                 lifecycle=providers.lifecycle,
                 inference=providers.inference,
                 telemetry=providers.telemetry,
+                telemetry_history_enabled=config.telemetry_history_enabled,
                 http=judge_http,
                 judge_settings=judge,
                 telemetry_source=providers.source,
@@ -341,6 +342,7 @@ class Container:
             # 才会在配置被写回之后用上新的地址——与 1.0 的 ``global`` 等价。
             sentrix_url=lambda: config.sentrix_url,
             live_states=run_suites.active_states,
+            history_reads_enabled=config.telemetry_history_enabled,
         )
         reports = RunReports(
             store=run_store,

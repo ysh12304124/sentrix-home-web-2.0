@@ -53,6 +53,37 @@ function emptyRun(): Run {
 }
 
 describe("TelemetryCard · echarts 生命周期（1.0 :1027-1125 / :2824-2837）", () => {
+  it("最新值模式保留数值，关闭曲线和阶段快照替代曲线", () => {
+    const value = run();
+    const { container } = render(<TelemetryCard run={run({
+      telemetry_history_enabled: false, history_mode: "latest",
+      telemetry_live: { ...value.telemetry_live, history_enabled: false, statistics_mode: "streaming_v1",
+        latest: { system_memory_used_mib: 2048 }, history: [],
+        phase_snapshots: { a: { latest: { system_memory_used_mib: 1024 } }, b: { latest: { system_memory_used_mib: 2048 } } },
+      },
+    })} />);
+    expect(container.textContent).toContain("历史曲线已关闭");
+    expect(container.textContent).toContain("P50/P95 未记录");
+    expect(container.textContent).toContain("2.00 GiB");
+    expect(container.querySelector(".telemetry-chart-canvas")).toBeNull();
+    expect(echartsMock.init).not.toHaveBeenCalled();
+  });
+
+  it("新资源协议在最新值模式下显示读数及未记录分位数，不创建图表", () => {
+    const { container } = render(<TelemetryCard run={run({
+      telemetry_history_enabled: false, history_mode: "latest",
+      telemetry_live: { history_enabled: false, statistics_mode: "streaming_v1",
+        samples_count: 50000, latest: {
+          protocol_version: "photobench-resource-telemetry-v1", system_memory_used_mib: 2048,
+        }, history: [],
+      },
+    })} />);
+    expect(container.textContent).toContain("历史曲线已关闭");
+    expect(container.textContent).toContain("P50/P95 未记录");
+    expect(container.textContent).toContain("2.00 GiB");
+    expect(echartsMock.init).not.toHaveBeenCalled();
+  });
+
   it("检查点窗口不能标成完整测评过程，明确曲线点数和时间起点", () => {
     const initial = run();
     const { container } = render(<TelemetryCard run={run({

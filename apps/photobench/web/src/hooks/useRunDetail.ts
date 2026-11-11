@@ -113,6 +113,7 @@ const TERMINAL_STATUSES = new Set(["completed", "completed_with_errors", "failed
 // Full reads cover the entire run at reduced resolution. Between them, append
 // the new raw tail without replacing the beginning of the curve or stale-copying metrics.
 function retainFullHistory(previous: Run | null, payload: Run): Run {
+  if (payload.history_mode === "latest") return payload;
   if (payload.history_mode === "full" || previous?.run_id !== payload.run_id || previous.history_mode !== "full") return payload;
   const history = previous.telemetry_live?.history;
   const tail = payload.telemetry_live?.history;
@@ -197,7 +198,7 @@ export function useRunDetail(options: RunDetailOptions) {
   // 1.0 用 ref 值做同步防重入（`reviewSaving.value` / `rejudgeSubmitting.value` 在
   // 同一 tick 内阻塞二次调用），state 只负责渲染。
   const detailRequest = useRef<{ controller: AbortController; runId: string } | null>(null);
-  const historyRead = useRef<{ runId: string; at: number; lastTime: number; terminal: boolean } | null>(null);
+  const historyRead = useRef<{ runId: string; at: number; lastTime: number; terminal: boolean; enabled: boolean } | null>(null);
   const analysisOpen = useRef(false);
   useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const reviewSavingRef = useRef(false);
@@ -314,6 +315,7 @@ export function useRunDetail(options: RunDetailOptions) {
       const controller = new AbortController();
       const known = historyRead.current?.runId === runId ? historyRead.current : null;
       let full = includeHistory ?? (resetPage || !known || Date.now() - known.at >= FULL_HISTORY_REFRESH_MS);
+      if (known?.enabled === false) full = false;
       detailRequest.current = { controller, runId };
       let payload: Run;
       try {
@@ -325,7 +327,7 @@ export function useRunDetail(options: RunDetailOptions) {
         const firstTailTime = payload.telemetry_live?.history?.[0]?.t;
         // A suspended tab may have missed the rolling window. Re-read the whole
         // timeline rather than inventing a sampling gap. Always finish with a full read.
-        if (!full && ((TERMINAL_STATUSES.has(payload.status || "") && !known?.terminal) ||
+        if (payload.history_mode !== "latest" && !full && ((TERMINAL_STATUSES.has(payload.status || "") && !known?.terminal) ||
             (typeof firstTailTime === "number" && known && firstTailTime > known.lastTime + 3))) {
           full = true;
           payload = await read(true);
@@ -335,6 +337,7 @@ export function useRunDetail(options: RunDetailOptions) {
       }
       if (controller.signal.aborted || activeRunIdRef.current !== runId) return;
       historyRead.current = { runId, at: full ? Date.now() : known?.at ?? 0,
+        enabled: payload.history_mode !== "latest",
         lastTime: Number(payload.telemetry_live?.history?.at(-1)?.t ?? known?.lastTime ?? 0),
         terminal: full ? TERMINAL_STATUSES.has(payload.status || "") : known?.terminal ?? false };
       setActiveRun(previous => retainFullHistory(previous, payload));

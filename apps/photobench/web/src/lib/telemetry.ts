@@ -441,6 +441,7 @@ export interface TelemetryChartData {
  *     `run.telemetry_source` → `run.phases.gpu_metrics.source`）决定画哪几条线，**不来自本返回值**。
  */
 export function telemetryChart(run: unknown): TelemetryChartData | null {
+  if (telemetryLiveState(run).history_enabled === false || dict(run).telemetry_history_enabled === false) return null;
   let history = telemetryHistory(run);
   // Legacy runs may only have phase snapshots. Render a compact phase trend
   // instead of leaving the chart area blank.

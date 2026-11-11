@@ -1358,6 +1358,7 @@ def test_sampling_writes_labelled_samples_and_is_stopped_at_the_end():
         system_memory={"system_memory_used_mib": 4096},
     )
     execution, _client, writer, _lifecycle, _albums = _execution(telemetry=telemetry)
+    execution.telemetry_history_enabled = True
     import photobench.application.run_execution.gpu_sampler as sampler_module
 
     original = sampler_module.GpuSampler.start
@@ -1433,6 +1434,7 @@ def test_partial_publication_does_not_replace_final_metrics(status):
 
 def test_cancelled_run_keeps_partial_telemetry_and_persistence_failure(monkeypatch):
     execution, _client, writer, *_ = _execution()
+    execution.telemetry_history_enabled = True
 
     def fail_write(*args):
         raise OSError("disk full")
@@ -1461,6 +1463,7 @@ def test_a_sample_carries_the_label_of_the_phase_that_was_running():
     from photobench.application.run_execution.state import RunState
 
     execution, _client, writer, _lifecycle, _albums = _execution()
+    execution.telemetry_history_enabled = True
     state = RunState({"current_phase": "qa_eval"}, run_id="run_test")
     execution._sample_writer(state)({"index": 0, "temperature_c": 50.0})
     assert writer.gpu_samples == [

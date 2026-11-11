@@ -35,6 +35,7 @@ RUNTIME_CONNECTION_NAME = "runtime_connection.json"
 JUDGE_PROVIDERS_NAME = "judge_providers.json"
 VLLM_TARGETS_NAME = "vllm_targets.json"
 CUSTOM_JUDGE_PROMPT_NAME = "custom_judge_prompt.json"
+TELEMETRY_CONFIG_NAME = "telemetry.json"
 
 #: 1.0 ``:207`` 的 ``EVIDENCE_JUDGE_ENABLED``。证据判分默认关：它要比对图片，
 #: 每道题都要额外取图 + 一次多模态调用，成本是另外两个判分的数倍。
@@ -104,6 +105,7 @@ class ConfigService:
         # （``:116``）——**必须先于读 judge_api_key**，否则文件里的密钥不会被看到。
         self._load_dotenv()
         self._runtime = self._load_runtime_connection()
+        self.telemetry_history_enabled = self._load_telemetry_history_enabled()
         self.judge_provider_id, self.judge_providers = self._load_judge_providers()
         self.vllm_target_id, self.vllm_targets = self._load_vllm_targets()
 
@@ -133,6 +135,13 @@ class ConfigService:
         self.judge_api_key = os.environ.get("BENCH_JUDGE_API_KEY", default_key)
 
     # -- 读取 ---------------------------------------------------------------
+
+    def _load_telemetry_history_enabled(self) -> bool:
+        config = self._store.read_json(TELEMETRY_CONFIG_NAME)
+        value = config.get("history_enabled", False) if config is not None else False
+        if not isinstance(value, bool):
+            raise InvalidRequestError("telemetry.json: history_enabled must be a JSON boolean")
+        return value
 
     def _load_dotenv(self) -> None:
         """1.0 ``_load_dotenv_file``（``:79``）：把 ``.env.local`` 的键补进 ``os.environ``。
@@ -381,6 +390,8 @@ class ConfigService:
             "vllm_targets": self.vllm_targets,
             "runtime_config": self.public_runtime_connection_config(),
             "runtime_config_file": self._store.path_for(RUNTIME_CONNECTION_NAME),
+            "telemetry_config": {"history_enabled": self.telemetry_history_enabled},
+            "telemetry_config_file": self._store.path_for(TELEMETRY_CONFIG_NAME),
             "judge_model": self.judge_model,
             "judge_prompt": JUDGE_PROMPT,
             "custom_judge_prompt": self.load_custom_judge_prompts().get("answer_quality"),

@@ -375,6 +375,26 @@ it("定期重读全程控制曲线点数，终态自动补齐", async () => {
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 0 }, { t: 20 }]);
 });
 
+it("最新值模式不定期请求全程曲线，终态也不补读历史", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+  const { result } = mount();
+  const latest = runDetail({
+    status: "running", history_mode: "latest", telemetry_history_enabled: false,
+    telemetry_live: { history_enabled: false, samples_count: 50000, latest: { temperature_c: 50 }, history: [] },
+  });
+  apiMock.mockResolvedValue(latest);
+  await act(async () => { await result.current.loadActiveRun(); });
+  clock.mockReturnValue(50000);
+  await act(async () => { await result.current.loadActiveRun(); });
+  apiMock.mockResolvedValue({ ...latest, status: "completed" });
+  await act(async () => { await result.current.loadActiveRun(); });
+  const paths = apiMock.mock.calls.map(([path]) => path).filter(path => path.includes("?include_history="));
+  expect(paths).toEqual([
+    "/runs/r1?include_history=true", "/runs/r1?include_history=false", "/runs/r1?include_history=false",
+  ]);
+  expect(result.current.activeRun?.telemetry_live?.history).toEqual([]);
+});
+
 it("后台暂停错过窗口时补读全程，切换测评不会混入旧曲线", async () => {
   const { result, ref } = mount();
   apiMock.mockResolvedValueOnce(runDetail({ status: "running", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 20 }] } }));

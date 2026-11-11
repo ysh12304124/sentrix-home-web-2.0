@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -51,7 +51,7 @@ class RunStore(Protocol):
         """
         ...
 
-    def read_gpu_sample_lines(self, run_id: str) -> list[str]:
+    def read_gpu_sample_lines(self, run_id: str) -> Iterable[str]:
         """读 ``gpu_samples.jsonl`` 的**原始行**；文件不存在时返回空表。
 
         解析留给 ``domain.runs.analysis.attach_gpu_sample_history``——1.0 是逐行

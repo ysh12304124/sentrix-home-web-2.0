@@ -26,7 +26,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -2354,7 +2354,7 @@ def _is_telemetry_series_key(key: str) -> bool:
     )
 
 
-def attach_gpu_sample_history(live: dict[str, Any], lines: Sequence[str]) -> None:
+def attach_gpu_sample_history(live: dict[str, Any], lines: Iterable[str]) -> None:
     """1.0 ``:5411`` 的 ``_attach_gpu_sample_history``；入参从文件路径换成原始行。
 
     坏行跳过、整段异常兜底成空表——1.0 的 ``except Exception`` 口径照搬：遥测是增强，
@@ -2693,7 +2693,8 @@ def aggregate_gpu_samples(samples: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def apply_live_sample(
-    live: dict[str, Any], sample: dict[str, Any], phase: str, phase_label: str, *, tail: int = 240
+    live: dict[str, Any], sample: dict[str, Any], phase: str, phase_label: str, *,
+    tail: int = 240, record_history: bool = True,
 ) -> None:
     """把一条采样并进 run.json 的 ``telemetry_live``（1.0 ``_persist_gpu_sample`` 中段，
     ``:2110``–``:2208``）。
@@ -2738,16 +2739,19 @@ def apply_live_sample(
         "all_gpu_processes": sample.get("all_processes_scope"),
         "process_attribution": sample.get("process_attribution"),
     }
-    live["history"].append(
-        {
-            "t": sample.get("_t", time.time()),
-            "phase": phase,
-            "phase_label": phase_label,
-            **live["latest"],
-        }
-    )
-    if tail and len(live["history"]) > tail:
-        del live["history"][:-tail]
+    if record_history:
+        live["history"].append(
+            {
+                "t": sample.get("_t", time.time()),
+                "phase": phase,
+                "phase_label": phase_label,
+                **live["latest"],
+            }
+        )
+        if tail and len(live["history"]) > tail:
+            del live["history"][:-tail]
+    else:
+        live["history"] = []
     peak = live.setdefault("peak", {})
     for key in GPU_SAMPLE_FIELDS:
         value = sample.get(key)

@@ -28,8 +28,10 @@ def _view(value=1):
     }
 
 
-def test_sampling_and_publishing_never_copy_or_persist_question_traces():
+@pytest.mark.parametrize("history_enabled", [False, True])
+def test_sampling_and_publishing_never_copy_or_persist_question_traces(history_enabled):
     execution, _, writer, _, _ = _execution()
+    execution.telemetry_history_enabled = history_enabled
 
     class UncopyableTrace:
         def __deepcopy__(self, memo):
@@ -41,14 +43,16 @@ def test_sampling_and_publishing_never_copy_or_persist_question_traces():
     for index in range(100):
         sample({"index": index, "temperature_c": 50})
     execution._publish_partial_gpu_metrics(state, {"samples_count": 100})
-    assert len(writer.gpu_samples) == 100
+    assert len(writer.gpu_samples) == (100 if history_enabled else 0)
+    assert state.data["telemetry_live"]["history_enabled"] is history_enabled
+    assert len(state.data["telemetry_live"]["history"]) == (100 if history_enabled else 0)
     assert not writer.snapshots
     assert writer.telemetry_views[0][1]["gpu_metrics"]["samples_count"] == 100
     assert "items" not in writer.telemetry_views[0][1]
     state.data["finished_at"] = "done"
     sample({"index": 101})
     execution._publish_partial_gpu_metrics(state, {"samples_count": 101})
-    assert len(writer.gpu_samples) == 100
+    assert len(writer.gpu_samples) == (100 if history_enabled else 0)
     assert len(writer.telemetry_views) == 1
 
 

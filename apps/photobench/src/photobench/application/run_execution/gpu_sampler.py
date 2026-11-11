@@ -21,12 +21,8 @@
 1. ``hasattr(self.provider, "system_memory")`` 的那层探测去掉——2.0 的
    ``TelemetryProvider`` 协议里它一定在（S9a 的端口定义），留一个 hasattr 只会让
    「协议少了一个方法」这件事在运行时静默通过。
-2. ``aggregate()`` 在 S9b-3 补上：它**委托给纯函数**
-   ``domain.runs.analysis.aggregate_gpu_samples``（1.0 ``:1785``），自己只负责把
-   ``self.samples`` 递过去。留在采样器上的理由只有一个——调用方
-   （``_phase_gpu_metrics``）手上就是采样器对象，让它去 import 一个 domain 函数会
-   把「采样的状态」与「聚合的算法」的边界画反。
-3. ``samples`` 累积在内存里（1.0 亦然），聚合与实时视图都读它。
+2. aggregate() 从固定大小的增量计数器生成全程统计。
+3. 默认仅保留各 GPU 的最新样本；开启历史后，驻留窗口最多 240 点。
 """
 
 from __future__ import annotations
@@ -37,7 +33,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from photobench.domain.runs.analysis import aggregate_gpu_samples, validated_telemetry_sample
+from photobench.domain.runs.analysis import validated_telemetry_sample
+from photobench.domain.runs.telemetry_summary import TelemetrySummary
 from photobench.domain.runtime.metrics import RESOURCE_TELEMETRY_VERSION, finite_number
 from photobench.domain.runtime.ports import ManagedTelemetryWork, OwnedTelemetryWork, TelemetryProvider
 
@@ -72,6 +69,7 @@ class GpuSampler:
         on_sample: Callable[[dict[str, Any]], None] | None = None,
         on_aggregate: Callable[[dict[str, Any]], None] | None = None,
         publish_interval: float = 2.0,
+        history_enabled: bool = False,
     ) -> None:
         if (
             not math.isfinite(interval)
@@ -85,7 +83,9 @@ class GpuSampler:
         self.on_sample = on_sample
         self.on_aggregate = on_aggregate
         self.publish_interval = publish_interval
+        self.history_enabled = history_enabled
         self.samples: list[dict[str, Any]] = []
+        self._summary = TelemetrySummary()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sample_lock = threading.Lock()
@@ -108,6 +108,7 @@ class GpuSampler:
             raise RuntimeError("sampler is already running")
         self._stop.clear()
         self.samples = []
+        self._summary = TelemetrySummary()
         self._source = ""
         self._previous_callback_seconds = 0.0
         self._callback_error = self._last_callback_failure = self._last_publisher_failure = None
@@ -355,8 +356,6 @@ class GpuSampler:
             sample["non_torch_gib"] = memory_profile.get("non_torch_gib")
             sample["cuda_graph_gib"] = memory_profile.get("cuda_graph_gib")
             sample, _rejected = validated_telemetry_sample(sample)
-            with self._samples_lock:
-                self.samples.append(sample)
             if self.on_sample:
                 callback_started = time.monotonic()
                 try:
@@ -368,16 +367,18 @@ class GpuSampler:
                     self._callback_failures += 1
                 finally:
                     self._previous_callback_seconds = time.monotonic() - callback_started
+            with self._samples_lock:
+                self._summary.add(sample)
+                if not self.history_enabled:
+                    self.samples = [item for item in self.samples if item.get("index") != sample.get("index")]
+                self.samples.append(sample)
+                del self.samples[:-240]
 
     def aggregate(self) -> dict[str, Any]:
-        """把已累积的样本收成曲线统计（1.0 ``GpuSampler.aggregate`` ``:1785``）。
-
-        算法在 ``domain.runs.analysis.aggregate_gpu_samples``——**采样器只做转发**，
-        这样聚合逻辑能在一个没有线程、没有 provider 的用例里逐字段被钉住。
-        """
+        """读取全程增量统计和采样完整性诊断，不重扫历史。"""
         with self._samples_lock:
-            snapshot = list(self.samples)
-        result = aggregate_gpu_samples(snapshot)
+            result = self._summary.snapshot()
+        result["history_enabled"] = self.history_enabled
         result["sampling_integrity"] = {
             "callback_failures": self._callback_failures,
             "last_callback_failure": self._last_callback_failure,

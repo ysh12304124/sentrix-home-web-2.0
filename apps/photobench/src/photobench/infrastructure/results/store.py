@@ -299,14 +299,15 @@ class FileRunStore:
         except (OSError, json.JSONDecodeError, AttributeError):
             return {"reviews": {}}
 
-    def read_gpu_sample_lines(self, run_id: str) -> list[str]:
+    def read_gpu_sample_lines(self, run_id: str) -> Iterator[str]:
         run_dir = self._run_dir(run_id)
         if not run_dir.is_dir():
             raise KeyError(run_id)
         path = run_dir / "gpu_samples.jsonl"
         if not path.is_file():
-            return []
-        return path.read_text(encoding="utf-8").splitlines()
+            return
+        with path.open(encoding="utf-8") as handle:
+            yield from handle
 
 
 class FileResultWriter:

@@ -169,7 +169,7 @@ function formatResource(value: unknown, unit: string): string {
 }
 function resourceStatistics(stats: Point | undefined, format: (value: unknown) => string) {
   const value = (key: string) => telemetryNumber(stats?.[key]) === null ? "未记录" : format(stats![key]);
-  return <>{[["采样峰值", "peak"], ["P50", "p50"], ["P95", "p95"]].map(([label, key]) =>
+  return <>{[["采样峰值", "peak"], ["均值", "mean"], ["P50", "p50"], ["P95", "p95"]].map(([label, key]) =>
     <span key={key} style={{ whiteSpace: "nowrap" }}>{label} {value(key)}</span>
   )}</>;
 }
@@ -199,7 +199,9 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
     <summary className="phase-title"><b>实时资源遥测</b><span className={`phase-status ${live.status === "running" ? "running" : "completed"}`}>
       {live.status === "running" ? "实时更新中" : live.status === "stop_pending" ? "停止未确认" : "已停止"}
     </span></summary>
-    <p className="metric-calc-time">内存与显存统一用 GiB 展示，每项颜色不同，背景色区分阶段。悬浮图例可单独查看一项。产品包含主模型及其他产品进程，各项不相加。</p>
+    <p className="metric-calc-time">内存与显存统一用 GiB 展示。产品包含主模型及其他产品进程，各项不相加。</p>
+    {live.history_enabled === false ? <p className="muted">历史曲线已关闭，仅覆盖保存最新读数。全程峰值、均值持续累计。</p> : null}
+    {live.statistics_mode === "streaming_v1" ? <p className="muted">采用增量统计，P50/P95 未记录。均值按有效采样间隔加权，缺失及超过 3 秒的间隔不计入。</p> : null}
     <div className="phase-metrics live-telemetry-metrics">{fields.map(([label, key]) =>
       <div className="phase-metric" key={key}><span>{label}</span>
         <strong>{telemetryNumber(latest[key]) === null ? "未采集" : fmtMemory(latest[key])}</strong>
@@ -213,15 +215,15 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
           <small>{resourceStatistics(stats[key], value => formatResource(value, unit))}</small>
         </div>)}
     </div>
-    <ResourceGraph {...{ graph, history, snapshots, sampledDown, revision }} />
+    {live.history_enabled !== false ? <><ResourceGraph {...{ graph, history, snapshots, sampledDown, revision }} />
     <small className="muted">{snapshots ? "阶段快照，横轴为序号。" : run?.history_mode === "full"
       ? `完整测评过程，${sampleCount} 个采样点，绘制 ${history.length} 点。`
       : `当前遥测窗口，绘制 ${history.length} 点，整轮已采集 ${sampleCount} 点。`}
-      {!snapshots ? `${run?.history_mode === "full" ? "横轴从本轮首个采样点计时。" : ""}峰值、P50、P95取本轮有效采样，缩放不改变统计。` : ""}</small>
+      {!snapshots ? "图表抽样可能省略短暂变化；汇总统计取本轮有效采样，缩放不改变统计。" : ""}</small></> : null}
     <details onToggle={event => setExtra(event.currentTarget.open)}>
       <summary>利用率、温度与功率</summary>
       <p className="muted">功率范围：{POWER_LABELS[latest.power_scope || stats.power_scope] ?? "未记录"}。不同设备的功率范围可能不同。</p>
-      {extra ? GRAPHS.slice(1).map(graph => <ResourceGraph key={graph.title} {...{ graph, history, snapshots, sampledDown, revision }} />) : null}
+      {extra && live.history_enabled !== false ? GRAPHS.slice(1).map(graph => <ResourceGraph key={graph.title} {...{ graph, history, snapshots, sampledDown, revision }} />) : null}
     </details>
     <details className="metric-definition-panel"><summary>指标说明与采集状态</summary>
       <div className="resource-definition-table-wrap" role="region" aria-label="各平台主模型内存与显存采集方法" tabIndex={0}>

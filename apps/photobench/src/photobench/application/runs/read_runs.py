@@ -38,6 +38,7 @@ from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunReadViews, RunRevisions, RunStore
 from photobench.domain.runs import analysis
 from photobench.domain.runs.task_history import execution_metadata, task_families
+from photobench.domain.runs.telemetry_summary import attach_recorded_history
 
 #: 详情/题目两条路径会各解析一次同一个 run.json。最大的一个 447 MB、解析 2.03 s，
 #: 前端翻页会把同一份反复解析成几十次。1.0 靠「全部常驻内存」绕过这件事（代价是
@@ -91,8 +92,11 @@ class ReadRuns:
         http: JsonHttpClient,
         sentrix_url: Callable[[], str],
         live_states: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        *,
+        history_reads_enabled: bool = True,
     ) -> None:
         self._store = store
+        self._history_reads_enabled = history_reads_enabled
         self._versions = store if isinstance(store, RunRevisions) else None
         self._views = store if isinstance(store, RunReadViews) else None
         self._state_weights: dict[str, int] = {}
@@ -384,7 +388,14 @@ class ReadRuns:
             # 直接改会把内存里那份运行状态改脏（1.0 的注释就是这个意思，``:5370``）。
             result["telemetry_live"] = copy.deepcopy(live)
         live = result.get("telemetry_live")
-        if include_history and isinstance(live, dict):
+        if not self._history_reads_enabled or result.get("telemetry_history_enabled") is False:
+            result["history_mode"] = "latest"
+            if isinstance(live, dict):
+                live["history_enabled"] = False
+                live["history"] = []
+        elif include_history and isinstance(live, dict) and live.get("statistics_mode") == "streaming_v1":
+            attach_recorded_history(live, self._store.read_gpu_sample_lines(run_id))
+        elif include_history and isinstance(live, dict):
             analysis.attach_gpu_sample_history(live, self._store.read_gpu_sample_lines(run_id))
             analysis.publish_full_sample_phase_stats(result, live)
         if (

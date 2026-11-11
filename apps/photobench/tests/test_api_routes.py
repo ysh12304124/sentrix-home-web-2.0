@@ -25,7 +25,7 @@ TARGETS = {
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def client(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[TestClient]:
     config_root = tmp_path / "config"
     config_root.mkdir()
     (config_root / "runtime_connection.json").write_text(
@@ -33,6 +33,9 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     )
     (config_root / "judge_providers.json").write_text(json.dumps(PROVIDERS), encoding="utf-8")
     (config_root / "vllm_targets.json").write_text(json.dumps(TARGETS), encoding="utf-8")
+    (config_root / "telemetry.json").write_text(
+        json.dumps({"history_enabled": getattr(request, "param", False)}), encoding="utf-8"
+    )
 
     results_root = tmp_path / "results"
     (results_root / "run-a").mkdir(parents=True)
@@ -378,6 +381,7 @@ def test_explicit_historical_score_derivation_is_consistent_and_does_not_rewrite
     assert path.read_bytes() == raw
 
 
+@pytest.mark.parametrize("client", [True], indirect=True)
 def test_memory_component_freshness_survives_raw_store_to_http_projection(client: TestClient):
     container = client.app.state.container
     directory = container.settings.results_root / "run-a"
@@ -440,3 +444,14 @@ def test_memory_component_freshness_survives_raw_store_to_http_projection(client
         == state["phases"]["gpu_metrics"]["sampling_integrity"]
     )
     assert (directory / "gpu_samples.jsonl").read_text() == raw
+
+
+def test_default_http_detail_skips_raw_history(client: TestClient, monkeypatch):
+    container = client.app.state.container
+    monkeypatch.setattr(
+        container.run_store, "read_gpu_sample_lines", lambda _: pytest.fail("raw history opened")
+    )
+    for include_history in (0, 1):
+        body = client.get(f"/api/v1/runs/run-a?include_history={include_history}").json()
+        assert body["history_mode"] == "latest"
+    assert container.config.telemetry_history_enabled is False
