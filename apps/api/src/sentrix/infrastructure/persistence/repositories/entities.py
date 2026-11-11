@@ -42,6 +42,7 @@ from sentrix.domain.identity.models import (
     is_pending_cluster_name,
 )
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.repositories.search_terms import sync_person_bridge
 
 _ENTITY_COLUMNS = (
     "id, scope_id, entity_type, canonical_name, status, family_role, summary, confidence,"
@@ -1024,6 +1025,11 @@ class SqliteEntityRepository:
         写的是**另一个聚合的表**，这一点是有意的：``people_json`` 是身份层在观察上的投影，
         它没有自己的写入用例，跟着提及一起写才不会出现「有提及、快照里没人」。已存在就不
         重复追加，所以重复调用幂等。
+
+        快照写完在**同一个事务里**重写这条观察的 ``person_bridge`` 词法投影
+        （``sync_person_bridge``）。1.0 与 2.0 早先都只在导入时写投影，那时还没人被确认，
+        于是 ``person_bridge`` 恒为空，实体通道全靠扫观察兜底——而兜底在「全部相册」下
+        不跑。投影跟着快照一起提交，两者才不会分叉。
         """
         row = connection.execute(
             "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
@@ -1042,6 +1048,7 @@ class SqliteEntityRepository:
             "UPDATE observations SET people_json = ? WHERE id = ?",
             (_encode(people), observation_id),
         )
+        sync_person_bridge(connection, (observation_id,))
 
     # ---- 事件关联 ----------------------------------------------------------------
 
