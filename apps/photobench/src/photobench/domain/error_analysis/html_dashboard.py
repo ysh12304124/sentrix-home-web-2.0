@@ -161,6 +161,18 @@ def retrieval_quality_counts(cases: Sequence[dict[str, Any]], channel: str) -> d
     return {"cells": cells, "valid": sum(cells.values()), "excluded": excluded}
 
 
+def retrieval_heat(share: float) -> str:
+    """A shared 0–100% sequential scale, independent of category and card."""
+    palette = ((239, 246, 255), (168, 202, 232), (85, 147, 197), (40, 105, 165), (22, 69, 118))
+    position = share * (len(palette) - 1)
+    index = min(int(position), len(palette) - 2)
+    fraction = position - index
+    rgb = tuple(
+        round(a + (b - a) * fraction) for a, b in zip(palette[index], palette[index + 1], strict=True)
+    )
+    return "#" + "".join(f"{value:02x}" for value in rgb)
+
+
 def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: bool) -> str:
     title = (
         ("候选检索" if channel == "candidate" else "最终交付")
@@ -177,22 +189,47 @@ def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: 
         hit: sum(cells[hit, score] for score in ((1, 2) if partial else (2,))) for hit in (True, False)
     }
     groups = {hit: sum(cells[hit, score] for score in (0, 1, 2)) for hit in (True, False)}
-    body = '<div class="retrieval-matrix" role="table" aria-label="' + esc(title) + '">'
-    body += '<div role="row" class="matrix-row"><span role="columnheader">主评分 ↓ / 媒体 →</span>'
-    body += '<b role="columnheader">命中GT</b><b role="columnheader">未命中GT</b></div>'
-    for passed, label in ((False, "未达标"), (True, "正确" if partial else "满分")):
-        body += '<div role="row" class="matrix-row"><b role="rowheader">' + label + "</b>"
-        for hit in (True, False):
+    passed_label = "正确" if partial else "满分"
+    body = '<p class="matrix-guide">面积 = 题数占比 · 颜色越深，占比越高</p>'
+    body += '<div class="matrix-axis"><span>命中GT</span><span>未命中GT</span></div>'
+    body += (
+        '<div class="retrieval-matrix" role="group" aria-label="' + esc(title) + '" '
+        f'style="grid-template-columns:minmax(0,{groups[True]}fr) minmax(0,{groups[False]}fr)">'
+    )
+    legend: dict[tuple[bool, bool], str] = {}
+    for hit in (True, False):
+        # Column width × within-column height = the cell's share of all valid QAs.
+        body += (
+            '<div class="matrix-column" '
+            f'style="grid-template-rows:minmax(0,{correct[hit]}fr) '
+            f'minmax(0,{groups[hit] - correct[hit]}fr)">'
+        )
+        for passed, label in ((True, passed_label), (False, "未达标")):
             n = correct[hit] if passed else groups[hit] - correct[hit]
             name = ("命中" if hit else "未命中") + " · " + label
+            color = retrieval_heat(n / total)
+            description = f"{name}：{n}题，占有效样本{rate(n, total)}"
+            focus = ' tabindex="0"' if n else ""
             body += (
-                f'<div role="cell" class="matrix-cell {"hit" if hit else "miss"}'
+                f'<div role="img" class="matrix-cell {"hit" if hit else "miss"}'
                 f' {"correct" if passed else "wrong"}" data-count="{n}" '
-                f'aria-label="{name}：{n}题，占有效样本{rate(n, total)}">'
-                f"<span>{name}</span><strong>{rate(n, total)}</strong><small>{n} / {total}题</small></div>"
+                f'style="background:{color};color:{"white" if n / total >= 0.6 else "#163853"}"'
+                f'{focus} title="{description}" aria-label="{description}">'
+                f'<div class="matrix-cell-content"><span>{name}</span>'
+                f"<strong>{rate(n, total)}</strong><small>{n} / {total}题</small></div></div>"
+            )
+            legend[hit, passed] = (
+                f'<li><i style="background:{color}" aria-hidden="true"></i>'
+                f"<span>{name}<small>{n} / {total}题</small></span><b>{rate(n, total)}</b></li>"
             )
         body += "</div>"
-    body += '</div><div class="matrix-conditions">'
+    body += (
+        '</div><div class="matrix-scale" aria-label="颜色按有效样本占比使用统一0%至100%色阶">'
+        '<span>0%</span><i aria-hidden="true"></i><span>100%</span></div>'
+        '<ul class="matrix-legend">'
+        + "".join(legend[hit, passed] for passed in (True, False) for hit in (True, False))
+        + '</ul><div class="matrix-conditions">'
+    )
     for hit in (True, False):
         body += (
             "<div><span>"

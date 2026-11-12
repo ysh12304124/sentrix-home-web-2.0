@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+from collections import Counter
+from html.parser import HTMLParser
 from typing import Any
 
 import pytest
@@ -10,6 +12,7 @@ from test_error_analysis import item, report
 
 from photobench.domain.error_analysis.exports import export_report
 from photobench.domain.error_analysis.html_dashboard import (
+    retrieval_heat,
     retrieval_quality,
     retrieval_quality_card,
     retrieval_quality_counts,
@@ -140,3 +143,73 @@ def test_zero_sample_and_empty_hit_group_remain_uncovered():
     rendered = retrieval_quality_card(counts, "candidate", partial=False)
     assert "命中组满分率</span><b>未覆盖</b><small>0 / 0题" in rendered
     assert "未命中组满分率</span><b>100.0%</b><small>1 / 1题" in rendered
+
+
+class Mosaic(HTMLParser):
+    def __init__(self, markup: str):
+        super().__init__()
+        self.matrix: dict[str, str | None] = {}
+        self.columns: list[dict[str, str | None]] = []
+        self.cells: list[dict[str, str | None]] = []
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        classes = values.get("class", "").split()
+        if "retrieval-matrix" in classes:
+            self.matrix = values
+        if "matrix-column" in classes:
+            self.columns.append(values)
+        if "matrix-cell" in classes:
+            self.cells.append(values)
+
+
+def test_mosaic_geometry_uses_group_width_and_conditional_height_with_main_diagonal():
+    counts = {
+        "cells": Counter({(True, 2): 177, (True, 0): 258, (False, 2): 11, (False, 0): 185}),
+        "valid": 631,
+        "excluded": {},
+    }
+    markup = retrieval_quality_card(counts, "candidate", partial=False)
+    mosaic = Mosaic(markup)
+    assert mosaic.matrix["style"] == "grid-template-columns:minmax(0,435fr) minmax(0,196fr)"
+    assert [c["style"] for c in mosaic.columns] == [
+        "grid-template-rows:minmax(0,177fr) minmax(0,258fr)",
+        "grid-template-rows:minmax(0,11fr) minmax(0,185fr)",
+    ]
+    # Column-major DOM order: hit/full at top left, miss/fail at bottom right.
+    assert [c["class"] for c in mosaic.cells] == [
+        "matrix-cell hit correct",
+        "matrix-cell hit wrong",
+        "matrix-cell miss correct",
+        "matrix-cell miss wrong",
+    ]
+    assert [c["data-count"] for c in mosaic.cells] == ["177", "258", "11", "185"]
+    assert "11 / 631题" in markup  # Small cells retain a readable external legend.
+    assert 'class="matrix-legend"' in markup
+
+
+def test_heat_darkens_with_share_and_is_shared_across_categories_and_cards():
+    colors = [retrieval_heat(i / 100) for i in range(101)]
+    channels = [tuple(int(color[i : i + 2], 16) for i in (1, 3, 5)) for color in colors]
+    assert colors[0] == "#eff6ff" and colors[-1] == "#164576"
+    assert all(
+        all(x >= y for x, y in zip(a, b, strict=True)) and sum(a) > sum(b)
+        for a, b in zip(channels, channels[1:], strict=False)
+    )
+    counts = {"cells": Counter({(True, 2): 1, (False, 0): 1}), "valid": 2, "excluded": {}}
+    candidate = Mosaic(retrieval_quality_card(counts, "candidate", partial=False))
+    delivery = Mosaic(retrieval_quality_card(counts, "delivery", partial=False))
+    assert candidate.cells[0]["style"] == candidate.cells[3]["style"] == delivery.cells[0]["style"]
+
+
+@pytest.mark.parametrize("hit", [True, False])
+def test_zero_groups_and_cells_have_zero_weight_and_no_keyboard_stop(hit):
+    counts = {"cells": Counter({(hit, 2): 1}), "valid": 1, "excluded": {}}
+    mosaic = Mosaic(retrieval_quality_card(counts, "candidate", partial=False))
+    assert sum(int(c["data-count"]) for c in mosaic.cells) == 1
+    assert sum(c.get("tabindex") == "0" for c in mosaic.cells) == 1
+    for cell in mosaic.cells:
+        if cell["data-count"] == "0":
+            assert "tabindex" not in cell
+    assert "0fr" in mosaic.matrix["style"]
