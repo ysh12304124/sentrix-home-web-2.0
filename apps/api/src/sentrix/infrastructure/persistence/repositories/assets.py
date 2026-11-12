@@ -227,12 +227,15 @@ def _json_facts(value: str | None) -> tuple[ObservationFact, ...]:
     )
 
 
-def _json_people(value: str | None) -> tuple[str, ...]:
+def people_names(value: str | None) -> tuple[str, ...]:
     """``people_json`` → 名字元组。
 
     写入侧（``entities.py`` 的 ``_append_person_snapshot``）存的是
     ``{"entity_id":…, "name":…, "status":…}``；1.0 把它整条 ``str()`` 进了词法投影
     （见 ``domain/retrieval/lexical.py`` 的字段表注释），2.0 只取名字。
+
+    公开是因为 ``search_terms.sync_person_bridge`` 在**同一个事务里**直接从这一列
+    重写 ``person_bridge`` 行：两处必须是同一个解析，否则「快照里有、投影里没有」。
     """
     try:
         parsed = json.loads(value or "[]")
@@ -249,15 +252,15 @@ def _json_people(value: str | None) -> tuple[str, ...]:
 
 
 def people_snapshot(value: str | None) -> tuple[PeopleSnapshotEntry, ...]:
-    """``people_json`` → 带绑定状态的条目。**只解析，不校验**（与 ``_json_people`` 同）。
+    """``people_json`` → 带绑定状态的条目。**只解析，不校验**（与 ``people_names`` 同）。
 
     写入侧存的是 ``{"entity_id":…, "name":…, "status":…}``；模型自报的那一批可能只是
-    字符串（``_json_people`` 两种都吃）。两种都收成同一个形状：
+    字符串（``people_names`` 两种都吃）。两种都收成同一个形状：
 
     - dict → ``name`` 取 ``name``，``entity_id`` 取 ``entity_id``；
     - 裸字符串 → ``name`` 是它，``entity_id`` 是空串。
 
-    **不去重。** ``_json_people`` 去重是因为它产出的是给人看的名字表；这里产出的是
+    **不去重。** ``people_names`` 去重是因为它产出的是给人看的名字表；这里产出的是
     「这张照片里有几个说不上名字的人」，去重会把这个计数改小——而 1.0 的
     ``sum(1 for p in people_values if not ...)`` 是在**原始列表**上数的。
     """
@@ -308,7 +311,7 @@ def row_to_observation(row: sqlite3.Row) -> Observation:
         ocr_text=row["ocr_text"] or "",
         objects=_json_list(row["objects_json"]),
         clothing=_json_list(row["clothing_json"]),
-        people=_json_people(row["people_json"]),
+        people=people_names(row["people_json"]),
         facts=_json_facts(row["facts_json"]),
         revision=row["revision"],
     )
@@ -392,7 +395,7 @@ class SqliteObservationRepository:
 
         不复用 ``list_by_asset`` 再挑第一条：那个按 ``created_at DESC`` 排（1.0 这里是
         ``updated_at DESC``），而且它会把整行观察读出来解析一遍——这里要的是**原始 JSON
-        里的 entity_id 那一位**，而 ``row_to_observation`` 走的 ``_json_people``
+        里的 entity_id 那一位**，而 ``row_to_observation`` 走的 ``people_names``
         恰好把它丢了。读整行再解析等于把丢掉的东西再从原始列里捞一次，绕。
         """
         with self._database.connect() as connection:
