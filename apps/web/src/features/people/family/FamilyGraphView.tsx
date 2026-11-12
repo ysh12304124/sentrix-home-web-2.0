@@ -44,9 +44,10 @@ import {
 import {
   membershipLabel,
   membershipOf,
+  myRoleOptions,
   personDisplayName,
-  relationChoices,
 } from "./membership";
+import { RelationRoleFields } from "./RelationEditor";
 
 /** 命中另一个节点的半径：比节点本身松一点，拖拽时不必精确压中圆心。 */
 const DROP_RADIUS = NODE_RADIUS * 1.8;
@@ -481,28 +482,25 @@ function EdgeEditor({
   onChanged: () => Promise<void>;
   onClose: () => void;
 }) {
-  const choices = relationChoices();
-  const currentIndex = choices.findIndex(
-    (choice) =>
-      choice.predicate === edge.predicate &&
-      choice.inversePredicate === edge.inverse_predicate,
-  );
-  const [choiceIndex, setChoiceIndex] = useState(currentIndex);
+  // 「subject 是 object 的 predicate」：subject 是对方、object 是「我」，与详情里建关系同一种说法。
+  const [role, setRole] = useState(myRoleOptions(edge.predicate).length > 0 ? edge.predicate : "");
+  const [myRole, setMyRole] = useState(edge.inverse_predicate);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const options = myRoleOptions(role);
+  const effectiveMyRole = options.length === 1 ? options[0] : options.includes(myRole) ? myRole : "";
 
   async function save() {
-    const choice = choices[choiceIndex];
-    if (choice === undefined || scopeId === "") return;
+    if (role === "" || effectiveMyRole === "" || scopeId === "") return;
     setBusy(true);
     setError(null);
     try {
       await putFamilyRelationship({
         scopeId,
         subjectEntityId: edge.subject,
-        predicate: choice.predicate,
+        predicate: role,
         objectEntityId: edge.object,
-        inversePredicate: choice.inversePredicate,
+        inversePredicate: effectiveMyRole,
       });
       await onChanged();
       onClose();
@@ -535,27 +533,28 @@ function EdgeEditor({
   return (
     <section className="graph-toolbar" role="region" aria-label="编辑关系">
       <strong>
-        {subjectName} · {edge.predicate} → {objectName}
+        {subjectName} 是 {objectName} 的{edge.predicate}
       </strong>
-      <select
-        aria-label="关系类型"
-        value={choiceIndex}
-        onChange={(event) => setChoiceIndex(Number(event.target.value))}
-      >
-        {choiceIndex < 0 ? <option value={-1}>当前关系不在词表里，请重新选择</option> : null}
-        {choices.map((choice, index) => (
-          <option key={choice.label} value={index}>
-            {choice.label}
-          </option>
-        ))}
-      </select>
+      {role === "" ? <span className="detail-empty">当前关系不在词表里，请重新选择。</span> : null}
+      <RelationRoleFields
+        otherName={subjectName}
+        selfName={objectName}
+        role={role}
+        myRole={effectiveMyRole}
+        onRole={(next) => {
+          setRole(next);
+          setMyRole("");
+        }}
+        onMyRole={setMyRole}
+        disabled={busy}
+      />
       <button
         type="button"
         className="button primary small"
-        disabled={busy || choiceIndex < 0 || scopeId === ""}
+        disabled={busy || role === "" || effectiveMyRole === "" || scopeId === ""}
         onClick={() => void save()}
       >
-        保存谓词
+        保存关系
       </button>
       <button
         type="button"

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FamilyMembershipPayload(BaseModel):
@@ -100,6 +100,10 @@ class FamilyPersonPayload(BaseModel):
     # ``pending`` / ``confirmed``。待确认的人在名录里与已确认的人并列显示，界面靠它区分
     # 「确认身份」与「改名」两种动作。
     status: str
+    # 用户起的其他称呼（不含内部簇名）。名录与选人列表按别名搜索。
+    aliases: list[str] = Field(default_factory=list)
+    # 用户标成「路人」：名录收进偶遇面孔区；人脸与照片都还在，取消即恢复。
+    hidden: bool = False
 
 
 class FamilyGraphResponse(BaseModel):

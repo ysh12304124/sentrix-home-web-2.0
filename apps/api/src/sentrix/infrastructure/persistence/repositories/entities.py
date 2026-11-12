@@ -26,6 +26,7 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_PENDING,
     ENTITY_STATUS_REJECTED,
     ENTITY_TYPE_PERSON,
+    PERSON_HIDDEN_PROPERTY_KEY,
     PROPERTY_SOURCE_USER,
     PROPERTY_STATUS_ACTIVE,
     PROPERTY_STATUS_PENDING,
@@ -891,6 +892,11 @@ class SqliteEntityRepository:
         return key
 
     # ---- 别名与改名 --------------------------------------------------------------
+
+    def person_hidden(self, entity_id: str) -> bool:
+        with self._database.connect() as connection:
+            row = self._current_property(connection, entity_id, PERSON_HIDDEN_PROPERTY_KEY)
+        return row is not None and _decode(row["value_json"]) is True
 
     def person_aliases(self, entity_id: str) -> tuple[str, ...]:
         with self._database.connect() as connection:

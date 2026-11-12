@@ -4889,6 +4889,15 @@ components:
         status:
           type: string
           title: Status
+        aliases:
+          items:
+            type: string
+          type: array
+          title: Aliases
+        hidden:
+          type: boolean
+          title: Hidden
+          default: false
       type: object
       required:
       - id

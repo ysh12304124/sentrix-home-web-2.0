@@ -338,6 +338,8 @@ class SqliteFamilyGraphRepository:
                             appearance_count=int((count or {"count": 0})["count"] or 0),
                             representative_media=tuple(dict(row) for row in media),
                             status=entity.status,
+                            aliases=self._entities.person_aliases(entity.id),
+                            hidden=self._entities.person_hidden(entity.id),
                         )
                     )
         return people

@@ -89,6 +89,8 @@ function realShapeGraph(): FamilyGraph {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    aliases: [],
+    hidden: false,
     status: "confirmed",
   }));
   return { scope_id: "album1", run: null, people, scope_ids: ["album1"], relationships: [] };
@@ -128,7 +130,7 @@ describe("/people 名人录（F7 §0 真实形状）", () => {
     });
     // 「有没有内容」由人数决定，关系条数为 0 不算空——这正是 1.0 画空图的那个坑。
     expect(screen.queryByText("还没有可显示的人物")).toBeNull();
-    expect(screen.getByText("8 人 · 0 条已确认关系")).toBeTruthy();
+    expect(screen.getByText("8 位人物 · 0 条已确认关系")).toBeTruthy();
     // 默认视图是名录（计划书裁决②），图谱 tab 此时不该被卸载掉门槛
     expect(screen.getByRole("tab", { name: "人物" }).getAttribute("aria-selected")).toBe("true");
   });
@@ -177,16 +179,19 @@ describe("图谱 tab", () => {
     });
     const { container } = mount(graph, `/?person=${dad.id}`);
     await screen.findByRole("complementary");
-    fireEvent.change(screen.getByLabelText("对方"), { target: { value: son.id } });
+    // 「儿子 是 爸爸 的儿子」→ 反向有父亲/母亲两项，选「父亲」。
+    fireEvent.click(container.querySelector(`[data-option-id="${son.id}"]`) as Element);
+    fireEvent.change(screen.getByLabelText("关系"), { target: { value: "儿子" } });
+    fireEvent.click(screen.getByRole("radio", { name: "父亲" }));
     fireEvent.click(screen.getByRole("button", { name: "建立关系" }));
 
-    await screen.findByText("3 人 · 1 条已确认关系");
+    await screen.findByText("3 位人物 · 1 条已确认关系");
     expect(client.putFamilyRelationship).toHaveBeenCalledWith({
       scopeId: "album1",
-      subjectEntityId: dad.id,
-      predicate: "父亲",
-      objectEntityId: son.id,
-      inversePredicate: "儿子",
+      subjectEntityId: son.id,
+      predicate: "儿子",
+      objectEntityId: dad.id,
+      inversePredicate: "父亲",
     });
     expect(client.getFamilyGraph).toHaveBeenLastCalledWith("");
     expect(container.querySelectorAll(".detail-relations li")).toHaveLength(1);

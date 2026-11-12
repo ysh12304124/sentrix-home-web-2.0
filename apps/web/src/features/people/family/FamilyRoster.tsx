@@ -6,6 +6,10 @@
  *
  * 筛选里的 `unknown` 与 `family`/`friend` 平级，不是兜底分组——待归类的人必须和别的
  * 人一样出现在默认列表里（筛选 `all` 时），这正是 F7 要修的那条。
+ *
+ * 2026-11-12 起名录分三层（`strangers.ts`）：**我的人物**（已确认）→ **可能认识**（待确认
+ * 但已有名字或反复出现）→ **偶遇面孔**（1～2 次的待确认面孔与标为路人的人，默认收起）。
+ * 此前只按出现次数折叠，确认过的家人会被折起来，出现 3 次的路人却铺在最前面。
  */
 
 import { useMemo, useState } from "react";
@@ -14,7 +18,9 @@ import type { FamilyPerson, FamilyMembershipValue } from "../../../shared/api/cl
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { MergePeopleDialog } from "./MergePeopleDialog";
 import { PersonCard } from "./PersonCard";
-import { isNamed, membershipLabel, membershipOf, personDisplayName } from "./membership";
+import { membershipLabel, membershipOf } from "./membership";
+import { StrangerTray } from "./StrangerTray";
+import { matchPerson, sortPeople, splitByTier, TIER_LABELS } from "./strangers";
 
 type Filter = "all" | FamilyMembershipValue;
 
@@ -25,32 +31,25 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
   { value: "unknown", label: membershipLabel("unknown") },
 ];
 
-/** 排序：有名的在前 → 出现次数降序 → id 升序。**稳定**，不用 localeCompare 的随机性。 */
-function sortPeople(people: readonly FamilyPerson[]): FamilyPerson[] {
-  return [...people].sort((a, b) => {
-    const namedA = isNamed(a) ? 0 : 1;
-    const namedB = isNamed(b) ? 0 : 1;
-    if (namedA !== namedB) return namedA - namedB;
-    if (a.appearance_count !== b.appearance_count) return b.appearance_count - a.appearance_count;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-}
-
 interface Props {
   readonly people: FamilyPerson[];
   readonly selectedId: string | null;
   readonly onSelect: (personId: string) => void;
   /** 手动合并成功后调用（参数是保留的人）。不给就不显示「合并人物」入口。 */
   readonly onMerged?: (targetId: string) => void | Promise<void>;
+  /** 偶遇面孔的批量整理（标为路人 / 移除）完成后重拉。不给就不显示「批量整理」。 */
+  readonly onChanged?: () => Promise<void>;
 }
 
-export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) {
+export function FamilyRoster({ people, selectedId, onSelect, onMerged, onChanged }: Props) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   // 合并模式：卡片变成勾选；勾满两个以上、且同一相册，才能打开确认框。
   const [merging, setMerging] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [confirming, setConfirming] = useState(false);
+  // 偶遇面孔区「合并为同一人」交过来的人；与合并模式的勾选互不干扰。
+  const [trayMerge, setTrayMerge] = useState<FamilyPerson[] | null>(null);
 
   const pickedPeople = picked
     .map((id) => people.find((person) => person.id === id))
@@ -78,24 +77,30 @@ export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) 
     return base;
   }, [people]);
 
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return sortPeople(people).filter((person) => {
-      if (filter !== "all" && membershipOf(person) !== filter) return false;
-      if (needle === "") return true;
-      return personDisplayName(person).toLowerCase().includes(needle);
-    });
-  }, [people, query, filter]);
+  const visible = useMemo(
+    () =>
+      sortPeople(people).filter((person) => {
+        if (filter !== "all" && membershipOf(person) !== filter) return false;
+        return matchPerson(person, query) !== undefined;
+      }),
+    [people, query, filter],
+  );
+  const tiers = useMemo(() => splitByTier(visible), [visible]);
+  const searching = query.trim() !== "" || filter !== "all";
 
-  // 默认视图不主动铺开「只出现一两次」的人；搜索或筛选时全部展开，否则搜到了却藏在
-  // 折叠区里等于没搜到。
-  const collapsedMode = query.trim() === "" && filter === "all";
-  const frequent = collapsedMode
-    ? visible.filter((person) => person.appearance_count > 2)
-    : visible;
-  const rare = collapsedMode
-    ? visible.filter((person) => person.appearance_count <= 2)
-    : [];
+  const grid = (items: readonly FamilyPerson[]) => (
+    <ul className="person-grid">
+      {items.map((person) => (
+        <PersonCard
+          key={person.id}
+          person={person}
+          selected={isSelected(person.id)}
+          onSelect={cardSelect}
+          picking={merging}
+        />
+      ))}
+    </ul>
+  );
 
   return (
     <section className="family-roster">
@@ -104,7 +109,7 @@ export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) 
           type="search"
           className="roster-search"
           aria-label="搜索人物"
-          placeholder="搜名字…"
+          placeholder="搜名字或别名…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -167,6 +172,17 @@ export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) 
         />
       ) : null}
 
+      {trayMerge !== null && onMerged !== undefined ? (
+        <MergePeopleDialog
+          people={trayMerge}
+          onCancel={() => setTrayMerge(null)}
+          onMerged={async (targetId) => {
+            setTrayMerge(null);
+            await onMerged(targetId);
+          }}
+        />
+      ) : null}
+
       {visible.length === 0 ? (
         people.length === 0 ? (
           <EmptyState
@@ -195,42 +211,41 @@ export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) 
         )
       ) : (
         <>
-          {frequent.length === 0 ? null : (
-            <ul className="person-grid">
-              {frequent.map((person) => (
-                <PersonCard
-                  key={person.id}
-                  person={person}
-                  selected={isSelected(person.id)}
-                  onSelect={cardSelect}
-                  picking={merging}
-                />
-              ))}
-            </ul>
+          <section className="roster-tier" aria-label={TIER_LABELS.known}>
+            <h3 className="roster-tier-title">
+              {TIER_LABELS.known} <span>{tiers.known.length}</span>
+            </h3>
+            {tiers.known.length === 0 ? (
+              <p className="detail-empty">
+                {searching ? "已确认的人里没有匹配的。" : "还没有确认过的人物。先从下面「可能认识」里认出几个人。"}
+              </p>
+            ) : (
+              grid(tiers.known)
+            )}
+          </section>
+          {tiers.likely.length === 0 ? null : (
+            <section className="roster-tier likely" aria-label={TIER_LABELS.likely}>
+              <h3 className="roster-tier-title">
+                {TIER_LABELS.likely} <span>{tiers.likely.length}</span>
+              </h3>
+              <p className="roster-tier-hint">这些面孔在照片里反复出现或已有名字，点开即可确认身份。</p>
+              {grid(tiers.likely)}
+            </section>
           )}
-          {rare.length === 0 ? null : (
-            <details className="roster-rare">
-              <summary>
-                出现 2 次及以下的人物 · {rare.length} 人
-                <small>展开查看</small>
-              </summary>
-              <ul className="person-grid">
-                {rare.map((person) => (
-                  <PersonCard
-                    key={person.id}
-                    person={person}
-                    selected={isSelected(person.id)}
-                    onSelect={cardSelect}
-                    picking={merging}
-                  />
-                ))}
-              </ul>
-            </details>
-          )}
+          <StrangerTray
+            people={tiers.passerby}
+            forceOpen={searching}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            merging={merging}
+            isPicked={(id) => picked.includes(id)}
+            onPick={togglePick}
+            onMerge={(items) => setTrayMerge(items)}
+            onChanged={onChanged}
+          />
           <p className="roster-count">
             共 {people.length} 人
-            {rare.length > 0 ? `，其中 ${rare.length} 人已折叠` : ""}
-            {visible.length === people.length ? "" : `，当前显示 ${visible.length} 人`}
+            {searching ? `，当前显示 ${visible.length} 人` : ""}
           </p>
         </>
       )}

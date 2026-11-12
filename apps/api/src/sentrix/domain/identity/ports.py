@@ -608,6 +608,10 @@ class EntityRepository(Protocol):
 
     def person_aliases(self, entity_id: str) -> tuple[str, ...]: ...
 
+    def person_hidden(self, entity_id: str) -> bool:
+        """用户是否把这个人标成了路人（``PERSON_HIDDEN_PROPERTY_KEY`` 的当前值为真）。"""
+        ...
+
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:
         """整表替换别名，空串与重复项被清掉。实体不存在时返回空。"""
         ...

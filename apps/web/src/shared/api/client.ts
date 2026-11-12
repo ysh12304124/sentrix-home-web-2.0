@@ -798,6 +798,14 @@ export async function setEntityProperty(
   );
 }
 
+/**
+ * 标为路人 / 取消。存成通用实体属性 `hidden`（后端 `PERSON_HIDDEN_PROPERTY_KEY`），
+ * 不拒绝人脸分组、不删任何数据；`GET /family-graph` 把它读回成 `FamilyPerson.hidden`。
+ */
+export async function setPersonHidden(entityId: string, hidden: boolean): Promise<void> {
+  await setEntityProperty(entityId, "hidden", hidden);
+}
+
 // ---- 人物证据 -------------------------------------------------------------------
 
 export interface EntityDetailAsset {
@@ -1251,6 +1259,10 @@ export interface FamilyPerson {
    * 只改名不确认的人进不了问答与按人找照片，所以详情据此给「确认身份」而不是「改名」。
    */
   status: string;
+  /** 用户起的其他称呼。名录与选人列表按别名也能搜到人。 */
+  aliases: string[];
+  /** 用户标成「路人」：名录收进偶遇面孔区。人脸与照片都还在，取消即恢复。 */
+  hidden: boolean;
 }
 
 export interface FamilyRelationship {

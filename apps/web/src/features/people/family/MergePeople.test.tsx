@@ -27,6 +27,8 @@ function person(overrides: Partial<FamilyPerson> = {}): FamilyPerson {
     avatar_face_instance_id: null,
     appearance_count: 5,
     representative_media: [],
+    aliases: [],
+    hidden: false,
     status: "confirmed",
     ...overrides,
   };
@@ -170,7 +172,7 @@ describe("详情里的「与其他人合并…」", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "与其他人合并…" }));
-    const candidates = document.querySelector(".detail-merge-candidates") as HTMLElement;
+    const candidates = document.querySelector(".person-picker-list") as HTMLElement;
     expect(candidates.textContent).toContain("妈妈");
     expect(candidates.textContent).not.toContain("别处的人");
 

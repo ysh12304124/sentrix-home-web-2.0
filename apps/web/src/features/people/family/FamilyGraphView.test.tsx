@@ -24,6 +24,8 @@ function person(id: string, name: string): FamilyPerson {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    aliases: [],
+    hidden: false,
     status: "confirmed",
   };
 }
@@ -73,11 +75,13 @@ describe("关系图点边编辑", () => {
     fireEvent.click(edge as Element);
 
     const editor = await screen.findByRole("region", { name: "编辑关系" });
-    expect(editor.textContent).toContain("爸爸 · 父亲 → 儿子");
+    // 整句：subject 是 object 的 predicate。
+    expect(editor.textContent).toContain("爸爸 是 儿子 的父亲");
 
-    // 词表第 9 项是「朋友 → 朋友」（索引 8）
-    fireEvent.change(screen.getByLabelText("关系类型"), { target: { value: "8" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存谓词" }));
+    // 「朋友」的反向只有「朋友」一项，界面直接填上，不再多问。
+    fireEvent.change(screen.getByLabelText("关系"), { target: { value: "朋友" } });
+    expect(editor.textContent).toContain("将记录：爸爸 是 儿子 的朋友；儿子 是 爸爸 的朋友");
+    fireEvent.click(screen.getByRole("button", { name: "保存关系" }));
 
     await waitFor(() => {
       expect(client.putFamilyRelationship).toHaveBeenCalledWith({

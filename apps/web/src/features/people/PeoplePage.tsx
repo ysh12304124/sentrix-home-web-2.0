@@ -27,6 +27,7 @@ import { FamilyRoster } from "./family/FamilyRoster";
 import { confirmedRelationships } from "./family/graphLayout";
 import { PersonDetail } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
+import { splitByTier } from "./family/strangers";
 import { useFamilyGraph } from "./family/useFamilyGraph";
 import { PersonInsights } from "./PersonInsights";
 
@@ -51,6 +52,16 @@ export function PeoplePage() {
    * 显示成「2 条」。布局与详情面板都走了 `dedupeRelationships`，这里对齐它们。
    */
   const edgeCount = confirmedRelationships(relationships).length;
+  const tiers = splitByTier(people);
+  // 只报非零的层：没有待认识的面孔时，页头不必挂一个「0 位可能认识」。
+  const summary = [
+    `${tiers.known.length} 位人物`,
+    tiers.likely.length > 0 ? `${tiers.likely.length} 位可能认识` : null,
+    tiers.passerby.length > 0 ? `${tiers.passerby.length} 张偶遇面孔` : null,
+    `${edgeCount} 条已确认关系`,
+  ]
+    .filter((item) => item !== null)
+    .join(" · ");
   const selectedId = searchParams.get("person");
   const selected = people.find((person) => person.id === selectedId) ?? null;
 
@@ -113,7 +124,7 @@ export function PeoplePage() {
           </button>
         ))}
         <span className="family-tabs-note">
-          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条已确认关系`}
+          {state === "loading" ? "正在读取…" : summary}
         </span>
       </div>
 
@@ -132,6 +143,7 @@ export function PeoplePage() {
               people={people}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
+              onChanged={refresh}
               onMerged={async (targetId) => {
                 await refresh();
                 selectPerson(targetId);

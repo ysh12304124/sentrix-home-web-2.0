@@ -39,10 +39,23 @@
 
 .insight-person { display: flex; align-items: center; gap: 10px; }
 .insight-avatar { width: 48px; height: 48px; flex: none; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: var(--mint); color: var(--green); font-weight: 800; }
-.roster-rare { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); }
-.roster-rare > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted); font-size: 12px; }
-.roster-rare > summary small { color: var(--faint); }
-.roster-rare .person-grid { margin-top: 14px; }
+/* 名录三层：我的人物 / 可能认识 / 偶遇面孔（strangers.ts） */
+.roster-tier { margin-top: 18px; }
+.roster-tier:first-of-type { margin-top: 4px; }
+.roster-tier-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 13px; color: var(--ink); }
+.roster-tier-title span { color: var(--muted); font-size: 11px; font-weight: 600; }
+.roster-tier-hint { margin: -4px 0 10px; color: var(--muted); font-size: 11px; }
+.roster-tier.likely { padding-top: 14px; border-top: 1px solid var(--line); }
+.stranger-tray { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.stranger-tray > details > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; color: var(--muted); font-size: 12px; }
+.stranger-tray > details > summary small { color: var(--faint); }
+.stranger-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; font-size: 11px; color: var(--muted); }
+.stranger-notice { margin: 8px 0 0; color: var(--green); font-size: 11px; }
+.stranger-grid { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
+.stranger-face { position: relative; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 10px; cursor: pointer; }
+.stranger-face:hover { border-color: var(--green); }
+.stranger-face.checked, .stranger-face.selected { border-color: var(--green); box-shadow: 0 0 0 1px var(--green) inset; }
+.stranger-face .person-card-check { position: absolute; top: 4px; right: 4px; }
 .detail-aliases { margin: 0 0 12px; color: var(--muted); font-size: 11px; }
 .detail-portrait { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
 .graph-empty { padding: 24px 4px; }
@@ -113,8 +126,6 @@
 .detail-empty { color: var(--muted); font-size: 11px; }
 .detail-relations { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .detail-relations li { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 12px; }
-.detail-relation-row { display: flex; gap: 8px; }
-.detail-relation-row select { flex: 1; }
 .detail-media { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
 .detail-media li { width: 92px; }
 .detail-media img { width: 92px; height: 92px; object-fit: cover; border-radius: 10px; display: block; }
@@ -148,10 +159,35 @@
 
 .detail-merge-picker { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
 .detail-merge-picker input { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font: inherit; color: var(--ink); background: var(--surface); }
-.detail-merge-candidates { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow: auto; }
-.detail-merge-candidates button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); text-align: left; font-size: 12px; color: var(--ink); }
-.detail-merge-candidates button:hover { border-color: var(--green); }
-.detail-merge-candidates small { margin-left: auto; color: var(--muted); font-size: 10px; }
+/* 选人列表（建关系选对方 / 合并选同一人） */
+.person-picker { display: flex; flex-direction: column; gap: 6px; }
+.person-picker input[type="search"] { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font: inherit; color: var(--ink); background: var(--surface); }
+.person-picker > .text-button { align-self: flex-start; }
+.person-picker-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow: auto; }
+.person-picker-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); text-align: left; font-size: 12px; color: var(--ink); cursor: pointer; }
+.person-picker-item:hover { border-color: var(--green); }
+.person-picker-item.selected { border-color: var(--green); box-shadow: 0 0 0 1px var(--green) inset; }
+.person-picker-name { display: flex; flex-direction: column; min-width: 0; }
+.person-picker-alias { color: var(--muted); font-size: 10px; }
+.person-picker-tags { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.person-picker-tags small { color: var(--muted); font-size: 10px; }
+.person-tag { display: inline-flex; align-items: center; min-height: 18px; padding: 0 7px; border-radius: 999px; border: 1px dashed var(--faint); color: var(--muted); font-size: 10px; }
+.person-tag.passerby { border-style: solid; }
+/* 建关系：整句选称谓 */
+.relation-form h4 { margin: 8px 0 0; font-size: 12px; color: var(--ink); }
+.relation-fields { display: flex; flex-direction: column; gap: 8px; }
+/* `.detail-form label` 把 label 排成竖列（0,1,1），这里要横排成一句话，所以选择器带上 .detail-form/.graph-toolbar 提权。 */
+.relation-line, .detail-form .relation-line { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--ink); }
+.relation-line select { flex: 1 1 120px; min-width: 0; }
+.relation-choice, .detail-form .relation-choice { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--ink); }
+.relation-choice.active, .detail-form .relation-choice.active { border-color: var(--green); color: var(--green); }
+.detail-form .relation-choice input { margin: 0; padding: 0; border: 0; }
+.relation-preview { margin: 0; padding: 6px 10px; border-radius: 8px; background: var(--soft); color: var(--muted); font-size: 11px; }
+.relation-sentence { flex: 1; min-width: 0; }
+.relation-role { margin-left: 2px; color: var(--green); }
+.detail-warning { margin: 0; padding: 6px 10px; border-radius: 8px; background: var(--peach); color: var(--ink); font-size: 11px; }
+.detail-actions { display: flex; gap: 8px; align-items: center; }
+.detail-hint { color: var(--faint); font-size: 10px; }
 .detail-merge-picker > .button { align-self: flex-start; }
 
 .detail-confirm-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; font-size: 11px; color: var(--muted); }

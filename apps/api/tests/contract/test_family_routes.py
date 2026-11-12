@@ -145,6 +145,43 @@ def test_each_person_carries_its_entity_status(family_client: TestClient) -> Non
     assert by_id["kid"]["status"] == "pending"
 
 
+def test_marking_a_person_as_a_passerby_shows_up_as_hidden_and_can_be_undone(
+    family_client: TestClient,
+) -> None:
+    """「标为路人」走通用属性写入；名录投影读成 ``hidden``，再写 false 就回来。"""
+    assert {item["id"]: item["hidden"] for item in _people(family_client)} == {
+        "mom": False,
+        "kid": False,
+    }
+
+    response = family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": True})
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in _people(family_client)}
+    assert by_id["kid"]["hidden"] is True
+    assert by_id["mom"]["hidden"] is False
+    # 只是不铺开，不是拒绝：这个人还在名录里，状态不变。
+    assert by_id["kid"]["status"] == "pending"
+
+    family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": False})
+    assert {item["id"]: item["hidden"] for item in _people(family_client)}["kid"] is False
+
+
+def test_only_a_literal_true_hides_a_person(family_client: TestClient) -> None:
+    """属性值的类型不固定；只有布尔真才算隐藏，``"false"`` 之类的串不算。"""
+    family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": "false"})
+
+    assert {item["id"]: item["hidden"] for item in _people(family_client)}["kid"] is False
+
+
+def test_each_person_carries_the_aliases_the_user_gave(family_client: TestClient) -> None:
+    """名录与选人列表要按别名搜人，投影直接带上别名，不必逐个拉详情。"""
+    family_client.put("/api/v1/entities/mom/properties/aliases", json={"value": ["老妈", "阿娟"]})
+
+    by_id = {item["id"]: item for item in _people(family_client)}
+    assert by_id["mom"]["aliases"] == ["老妈", "阿娟"]
+    assert by_id["kid"]["aliases"] == []
+
+
 def test_representative_media_comes_from_faces_not_from_observations(family_client: TestClient) -> None:
     """**这张表走人脸，不走观察。**
 

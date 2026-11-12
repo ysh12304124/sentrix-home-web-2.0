@@ -31,6 +31,8 @@ const STUB = {
   avatar_face_instance_id: null,
   representative_media: [] as FamilyPerson["representative_media"],
   status: "confirmed",
+  aliases: [] as string[],
+  hidden: false,
 };
 
 function person(id: string, overrides: Partial<FamilyPerson> = {}): FamilyPerson {
