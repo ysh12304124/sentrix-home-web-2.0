@@ -185,8 +185,10 @@ def test_mosaic_geometry_uses_group_width_and_conditional_height_with_main_diago
         "matrix-cell miss wrong",
     ]
     assert [c["data-count"] for c in mosaic.cells] == ["177", "258", "11", "185"]
-    assert "11 / 631题" in markup  # Small cells retain a readable external legend.
-    assert 'class="matrix-legend"' in markup
+    assert mosaic.cells[2]["title"] == "未命中 · 满分：11题，占有效样本1.7%"
+    assert mosaic.cells[2]["aria-label"] == mosaic.cells[2]["title"]
+    assert mosaic.cells[2]["tabindex"] == "0"
+    assert 'class="matrix-legend"' not in markup
 
 
 def test_heat_darkens_with_share_and_is_shared_across_categories_and_cards():

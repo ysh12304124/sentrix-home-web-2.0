@@ -196,7 +196,6 @@ def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: 
         '<div class="retrieval-matrix" role="group" aria-label="' + esc(title) + '" '
         f'style="grid-template-columns:minmax(0,{groups[True]}fr) minmax(0,{groups[False]}fr)">'
     )
-    legend: dict[tuple[bool, bool], str] = {}
     for hit in (True, False):
         # Column width × within-column height = the cell's share of all valid QAs.
         body += (
@@ -218,17 +217,11 @@ def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: 
                 f'<div class="matrix-cell-content"><span>{name}</span>'
                 f"<strong>{rate(n, total)}</strong><small>{n} / {total}题</small></div></div>"
             )
-            legend[hit, passed] = (
-                f'<li><i style="background:{color}" aria-hidden="true"></i>'
-                f"<span>{name}<small>{n} / {total}题</small></span><b>{rate(n, total)}</b></li>"
-            )
         body += "</div>"
     body += (
         '</div><div class="matrix-scale" aria-label="颜色按有效样本占比使用统一0%至100%色阶">'
         '<span>0%</span><i aria-hidden="true"></i><span>100%</span></div>'
-        '<ul class="matrix-legend">'
-        + "".join(legend[hit, passed] for passed in (True, False) for hit in (True, False))
-        + '</ul><div class="matrix-conditions">'
+        '<div class="matrix-conditions">'
     )
     for hit in (True, False):
         body += (

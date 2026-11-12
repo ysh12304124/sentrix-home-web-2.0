@@ -127,12 +127,6 @@ justify-content:center;text-align:center;overflow:hidden;pointer-events:none}
 .matrix-scale{display:flex;gap:8px;align-items:center;margin:9px 0 14px;font-size:11px;color:var(--muted)}
 .matrix-scale i{flex:1;height:6px;border-radius:3px;background:linear-gradient(to right,
 #eff6ff,#a8cae8 25%,#5593c5 50%,#2869a5 75%,#164576)}
-.matrix-legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;
-list-style:none;padding:0;margin:0 0 12px}
-.matrix-legend li{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:7px;align-items:start;
-font-size:12px;font-variant-numeric:tabular-nums}.matrix-legend i{width:10px;height:10px;margin-top:5px;
-border-radius:2px;box-shadow:inset 0 0 0 1px #16385318}
-.matrix-legend small{display:block;color:var(--muted);font-size:11px}.matrix-legend b{font-size:14px}
 .matrix-conditions{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding-top:10px}
 .matrix-conditions>div{background:#f5f7fa;border-radius:8px;padding:12px}
 .matrix-conditions span,.matrix-conditions small{display:block;font-size:12px;color:var(--muted)}
