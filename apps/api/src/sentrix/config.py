@@ -72,6 +72,7 @@ class Settings(BaseSettings):
                 "reranker_url",
                 "rerank_top_k",
                 "agent_wall_time_s",
+                "agent_turn_workers",
                 "chat_timeout_s",
                 "vlm_timeout_s",
                 "agent_max_steps",
@@ -142,6 +143,10 @@ class Settings(BaseSettings):
     # 单个 Agent 回合的墙钟上限。180 是 153（GPU）的默认；Mac/CPU 上 4 并发时
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0
+    # Product defaults to one; isolated QA can opt into bounded concurrency.
+    agent_turn_workers: int = Field(
+        default=1, ge=1, le=64, validation_alias="SENTRIX_AGENT_TURN_MAX_WORKERS"
+    )
     agent_max_steps: int = Field(default=8, ge=3)
     agent_max_tool_calls: int = Field(default=6, ge=0)
     vlm_generation_profile: Literal["legacy", "qwen35_nonthinking"] = "legacy"

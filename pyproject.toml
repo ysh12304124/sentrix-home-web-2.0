@@ -66,6 +66,7 @@ module = ["benchmark_orchestrator"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = ["apps/api/src", "apps/photobench/src"]
 # 两个 app 的测试都进默认收集：PhotoBench 的用例不能被「记得单独跑」这件事决定跑不跑。
 testpaths = ["apps/api/tests", "apps/photobench/tests"]
 addopts = "-q --strict-markers"

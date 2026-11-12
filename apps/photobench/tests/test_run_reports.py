@@ -738,3 +738,13 @@ def test_export_sft_keeps_every_2_0_debug_call_and_builds_samples():
     assert out["count"] == 4
     assert out["samples"][0]["messages"][-1] == {"role": "assistant", "content": "P"}
     assert out["samples"][-1]["step"] == "step_8"
+
+
+def test_unjudged_answers_are_not_counted_as_incorrect():
+    out = memory_effectiveness.memory_effectiveness(_mem_state([
+        {"judge": {"score": 2}}, {"judge": {"score": 0}},
+        {"judge": {"score": None, "judge_status": "failed"}},
+    ]), [])
+    correctness = out["details"]["answer_correctness"]
+    assert correctness["exact_accuracy"] == 0.5
+    assert correctness["unjudged"] == 1

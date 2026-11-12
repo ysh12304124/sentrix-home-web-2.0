@@ -619,6 +619,7 @@ class Container:
             dependencies_ready=self.dependencies_ready,
             operation_control=self.operation_control,
             result_sets=self.result_set_repository,
+            max_workers=self.settings.agent_turn_workers,
         )
 
     def build_import_executor(self):

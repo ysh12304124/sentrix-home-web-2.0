@@ -20,7 +20,21 @@ if [ ! -x "$PYTHON" ]; then
   exit 1
 fi
 
+export PYTHONPATH="$PROJ/apps/api/src:$PROJ/apps/photobench/src${PYTHONPATH:+:$PYTHONPATH}"
+
 export SENTRIX_DEPLOYMENT_PROFILE="${SENTRIX_DEPLOYMENT_PROFILE:-mac}"
+# Apple SystemConfiguration may route loopback URLs through the desktop proxy.
+# Keep Sentrix, model sidecars, and the tunneled Judge endpoint on direct loopback.
+export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
+export no_proxy="${no_proxy:-$NO_PROXY}"
+export PHOTOBENCH_AGENT_CHAT_TIMEOUT_S="${PHOTOBENCH_AGENT_CHAT_TIMEOUT_S:-300}"
+export PHOTOBENCH_AGENT_TURN_MAX_WORKERS="${PHOTOBENCH_AGENT_TURN_MAX_WORKERS:-8}"
+export PHOTOBENCH_VLM_CONTEXT_TOKENS="${PHOTOBENCH_VLM_CONTEXT_TOKENS:-16384}"
+export PHOTOBENCH_AGENT_WALL_TIME_S="${PHOTOBENCH_AGENT_WALL_TIME_S:-900}"
+export SENTRIX_CHAT_TIMEOUT_S="$PHOTOBENCH_AGENT_CHAT_TIMEOUT_S"
+export SENTRIX_AGENT_TURN_MAX_WORKERS="$PHOTOBENCH_AGENT_TURN_MAX_WORKERS"
+export SENTRIX_VLM_CONTEXT_TOKENS="$PHOTOBENCH_VLM_CONTEXT_TOKENS"
+export SENTRIX_AGENT_WALL_TIME_S="$PHOTOBENCH_AGENT_WALL_TIME_S"
 export SENTRIX_EXPERIENCE_MODE="${SENTRIX_EXPERIENCE_MODE:-true}"
 export SENTRIX_DATA_DIR="${SENTRIX_DATA_DIR:-$PROJ/data}"
 export SENTRIX_EMBEDDING_SCHEME="${SENTRIX_EMBEDDING_SCHEME:-legacy}"
@@ -34,15 +48,16 @@ export PHOTOBENCH_DATA_ROOT="${PHOTOBENCH_DATA_ROOT:-}"
 export PHOTOBENCH_CONFIG_ROOT="${PHOTOBENCH_CONFIG_ROOT:-$PROJ/apps/photobench/config}"
 export PHOTOBENCH_RESULTS_ROOT="${PHOTOBENCH_RESULTS_ROOT:-$SENTRIX_DATA_DIR/photobench-results}"
 export PHOTOBENCH_WEB_DIST_ROOT="${PHOTOBENCH_WEB_DIST_ROOT:-$PROJ/apps/photobench/web/dist}"
-export PHOTOBENCH_SENTRIX_API_URL="${PHOTOBENCH_SENTRIX_API_URL:-http://127.0.0.1:8191}"
+export PHOTOBENCH_SENTRIX_API_URL="${PHOTOBENCH_SENTRIX_API_URL:-http://127.0.0.1:18223}"
+export PHOTOBENCH_SENTRIX_API_PORT="${PHOTOBENCH_SENTRIX_API_PORT:-18223}"
+export PHOTOBENCH_SENTRIX_DATA_DIR="${PHOTOBENCH_SENTRIX_DATA_DIR:-$PROJ/data/photobench-sentrix}"
+export PHOTOBENCH_SENTRIX_EXPERIENCE_MODE="false"
 export PHOTOBENCH_SENTRIX_REPO_ROOT="$PROJ"
-export PHOTOBENCH_SENTRIX_START_COMMAND="$PYTHON -m uvicorn --factory sentrix.main:create_app --host 127.0.0.1 --port 8191 --app-dir apps/api/src"
+export PHOTOBENCH_SENTRIX_START_COMMAND="${PHOTOBENCH_SENTRIX_START_COMMAND:-$PYTHON -m uvicorn --factory sentrix.main:create_app --host 127.0.0.1 --port $PHOTOBENCH_SENTRIX_API_PORT --app-dir apps/api/src}"
 
-# Pass product settings to PhotoBench's model-switch restart path. The same
-# environment must survive a benchmark-triggered restart of the upload API.
-export PHOTOBENCH_SENTRIX_DATA_DIR="$SENTRIX_DATA_DIR"
-export PHOTOBENCH_SENTRIX_EXPERIENCE_MODE="$SENTRIX_EXPERIENCE_MODE"
-export PHOTOBENCH_SENTRIX_API_PORT="8191"
+# Pass product settings to PhotoBench's model-switch restart path. PhotoBench
+# uses its own unrestricted API and data root so evaluation does not change the
+# upload/chat album or hit experience-mode-only route restrictions.
 export PHOTOBENCH_SENTRIX_VLM_BASE_URL="$SENTRIX_VLM_BASE_URL"
 export PHOTOBENCH_SENTRIX_EMBEDDING_SCHEME="$SENTRIX_EMBEDDING_SCHEME"
 export PHOTOBENCH_SENTRIX_TEXT_EMBEDDER_URL="$SENTRIX_TEXT_EMBEDDER_URL"
@@ -101,7 +116,8 @@ for endpoint in \
   fi
 done
 
-if ! wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 3; then
+MAIN_SENTRIX_API_URL="http://127.0.0.1:8191"
+if ! wait_http "$MAIN_SENTRIX_API_URL/api/v1/health" 3; then
   if lsof -nP -iTCP:8191 -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port 8191 is occupied by an unhealthy service; refusing to stop an unknown process" >&2
     exit 1
@@ -116,6 +132,10 @@ if ! wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 3; then
     SENTRIX_VLM_BASE_URL="$SENTRIX_VLM_BASE_URL" \
     SENTRIX_TEXT_EMBEDDER_URL="$SENTRIX_TEXT_EMBEDDER_URL" \
     SENTRIX_LEGACY_CLIP_URL="$SENTRIX_LEGACY_CLIP_URL" \
+    SENTRIX_AGENT_TURN_MAX_WORKERS="$PHOTOBENCH_AGENT_TURN_MAX_WORKERS" \
+    SENTRIX_CHAT_TIMEOUT_S="$PHOTOBENCH_AGENT_CHAT_TIMEOUT_S" \
+    SENTRIX_VLM_CONTEXT_TOKENS="$PHOTOBENCH_VLM_CONTEXT_TOKENS" \
+    SENTRIX_AGENT_WALL_TIME_S="$PHOTOBENCH_AGENT_WALL_TIME_S" \
     FACE_PROVIDERS="$FACE_PROVIDERS" \
     RETINAFACE_PROVIDERS="$RETINAFACE_PROVIDERS" \
     PYTHONPATH="$PROJ/apps/api/src" \
@@ -123,36 +143,110 @@ if ! wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 3; then
       --host 127.0.0.1 --port 8191 --app-dir apps/api/src \
       > "$PROJ/logs/api.log" 2>&1 < /dev/null &
 fi
-wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 120 || {
+wait_http "$MAIN_SENTRIX_API_URL/api/v1/health" 120 || {
   tail -60 "$PROJ/logs/api.log" >&2 || true
-  echo "Sentrix API did not become ready" >&2
+  echo "Sentrix upload/chat API did not become ready" >&2
   exit 1
 }
-if ! curl -fsS "$PHOTOBENCH_SENTRIX_API_URL/api/v1/internal/status" >/dev/null 2>&1; then
+if ! curl -fsS "$MAIN_SENTRIX_API_URL/api/v1/internal/status" >/dev/null 2>&1; then
   echo "Sentrix API is up but experience mode/import executor is not enabled" >&2
   exit 1
 fi
-# Register the already running local API with PhotoBench. Matching endpoint,
-# embedding and product settings prevents a 487 run using the current model from
-# needlessly restarting the upload/chat API. A later intentional model switch
-# still uses the reproducible command/environment configured above.
+# Start a separate non-experience API for PhotoBench. Its database and media
+# root are isolated from the user's upload/chat album.
+if ! wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 3; then
+  if lsof -nP -iTCP:"$PHOTOBENCH_SENTRIX_API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Port $PHOTOBENCH_SENTRIX_API_PORT is occupied by an unhealthy service; refusing to stop it" >&2
+    exit 1
+  fi
+  mkdir -p "$PROJ/logs" "$PHOTOBENCH_SENTRIX_DATA_DIR"
+  echo "Starting isolated PhotoBench Sentrix API on $PHOTOBENCH_SENTRIX_API_PORT"
+  nohup env \
+    SENTRIX_DEPLOYMENT_PROFILE="$SENTRIX_DEPLOYMENT_PROFILE" \
+    SENTRIX_EXPERIENCE_MODE=false \
+    SENTRIX_DATA_DIR="$PHOTOBENCH_SENTRIX_DATA_DIR" \
+    SENTRIX_EMBEDDING_SCHEME="$SENTRIX_EMBEDDING_SCHEME" \
+    SENTRIX_VLM_BASE_URL="$SENTRIX_VLM_BASE_URL" \
+    SENTRIX_TEXT_EMBEDDER_URL="$SENTRIX_TEXT_EMBEDDER_URL" \
+    SENTRIX_LEGACY_CLIP_URL="$SENTRIX_LEGACY_CLIP_URL" \
+    FACE_PROVIDERS="$FACE_PROVIDERS" \
+    RETINAFACE_PROVIDERS="$RETINAFACE_PROVIDERS" \
+    PYTHONPATH="$PROJ/apps/api/src" \
+    "$PYTHON" -m uvicorn --factory sentrix.main:create_app \
+      --host 127.0.0.1 --port "$PHOTOBENCH_SENTRIX_API_PORT" --app-dir apps/api/src \
+      > "$PROJ/logs/photobench-api.log" 2>&1 < /dev/null &
+fi
+wait_http "$PHOTOBENCH_SENTRIX_API_URL/api/v1/health" 120 || {
+  tail -60 "$PROJ/logs/photobench-api.log" >&2 || true
+  echo "Isolated PhotoBench Sentrix API did not become ready" >&2
+  exit 1
+}
+if ! curl -fsS "$PHOTOBENCH_SENTRIX_API_URL/api/v1/diagnostics" >/dev/null 2>&1; then
+  echo "PhotoBench Sentrix API must expose diagnostics (experience mode must be disabled)" >&2
+  exit 1
+fi
+# Persist the benchmark API URL before PhotoBench starts, keeping run snapshots
+# and model-switch management pointed at this separate service.
+"$PYTHON" - \
+  "$PHOTOBENCH_CONFIG_ROOT/runtime_connection.json" \
+  "$PHOTOBENCH_CONFIG_ROOT/judge_providers.json" \
+  "$PHOTOBENCH_SENTRIX_API_URL" \
+  "$SENTRIX_VLM_BASE_URL" \
+  "$SENTRIX_TEXT_EMBEDDER_URL" \
+  "$SENTRIX_LEGACY_CLIP_URL" <<'PY'
+import json
+import sys
+from pathlib import Path
+from urllib.request import urlopen
+
+path, providers_path = Path(sys.argv[1]), Path(sys.argv[2])
+value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+sentrix_url, model_base_url, text_url, image_url = (arg.rstrip("/") for arg in sys.argv[3:])
+value.setdefault("model_base_url", model_base_url)
+value.setdefault("endpoint_model", "")
+value.setdefault("embedding", {"mode": "split_text_image", "image_url": image_url, "text_url": text_url})
+value.setdefault("product_settings", {"deployment_profile": "mac", "agent_wall_time_s": 600, "chat_timeout_s": 180})
+if not value["endpoint_model"]:
+    try:
+        with urlopen(value["model_base_url"].rstrip("/") + "/models", timeout=5) as response:
+            models = json.load(response)
+        entries = models.get("data") or models.get("models") or []
+        if entries:
+            value["endpoint_model"] = str(entries[0].get("id") or entries[0].get("name") or entries[0].get("model") or "")
+    except Exception as exc:  # noqa: BLE001 — fail clearly if endpoint identity cannot be read
+        raise SystemExit(f"could not read model identity from {value['model_base_url']}: {exc}") from exc
+value["sentrix_url"] = sentrix_url
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+if not providers_path.is_file():
+    example = providers_path.with_name("judge_providers.example.json")
+    providers = json.loads(example.read_text(encoding="utf-8"))
+    providers["default_provider_id"] = "local-mlx"
+    providers["providers"]["local-mlx"].update(
+        {"url": value["model_base_url"], "model": value["endpoint_model"], "api_key": ""}
+    )
+    providers_path.write_text(json.dumps(providers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+# Register the existing benchmark API so a run on the current model does not
+# restart it; intentional model changes use the isolated command/environment.
 "$PYTHON" - "$PROJ/apps/photobench/logs/sentrix-process.json" "$PHOTOBENCH_SENTRIX_API_URL" "$PHOTOBENCH_CONFIG_ROOT/runtime_connection.json" <<'PY'
 import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 record_path = Path(sys.argv[1])
 api_url = sys.argv[2].rstrip("/")
 runtime_path = Path(sys.argv[3])
 pids = subprocess.run(
-    ["lsof", "-ti", "tcp:8191", "-sTCP:LISTEN"],
+    ["lsof", "-ti", f"tcp:{urlparse(api_url).port}", "-sTCP:LISTEN"],
     check=True,
     capture_output=True,
     text=True,
 ).stdout.split()
 if len(pids) != 1 or not pids[0].isdigit():
-    raise SystemExit(f"expected one local Sentrix listener on 8191, found {pids}")
+    raise SystemExit(f"expected one local Sentrix listener for {api_url}, found {pids}")
 config = json.loads(runtime_path.read_text(encoding="utf-8"))
 if str(config.get("sentrix_url", "")).rstrip("/") != api_url:
     raise SystemExit(f"PhotoBench runtime config points to another Sentrix API: {config.get('sentrix_url')}")
@@ -186,5 +280,7 @@ wait_http "http://127.0.0.1:$PHOTOBENCH_PORT/api/v1/manifests" 90 || {
 }
 
 echo "Sentrix:   $PHOTOBENCH_SENTRIX_API_URL"
+"$PYTHON" "$PROJ/scripts/deploy/start_local_album_control.py"
+echo "Album: http://127.0.0.1:8210/ (album / benchmark accounts)"
 echo "PhotoBench: http://127.0.0.1:$PHOTOBENCH_PORT"
 echo "Dataset:    $PHOTOBENCH_DATA_ROOT/album3-max-video10 (487 QA)"

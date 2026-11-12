@@ -38,7 +38,7 @@ from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
-from photobench.domain.evaluation.profile_view import profile_state
+from photobench.domain.evaluation.profile_view import primary_profile_state, profile_state
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunRevisions, RunStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
@@ -109,7 +109,13 @@ class RunReports:
 
     def _state(self, run_id: str) -> dict[str, Any]:
         """不存在抛 ``KeyError``（HTTP 层映射成 404）。"""
-        return self._store.load_state(run_id)
+        saved = self._store.load_state(run_id)
+        projected = primary_profile_state(saved)
+        # Scoring receipts supersede legacy pending_judge placeholders. Preserve
+        # execution telemetry (e.g. agent2_trace) while using the primary batch.
+        if projected is not saved:
+            projected["summary"] = {**saved.get("summary", {}), **projected.get("summary", {})}
+        return projected
 
     def _assets(self, scope_id: str) -> tuple[list[dict[str, Any]] | None, str]:
         """取 scope 的资产清单。

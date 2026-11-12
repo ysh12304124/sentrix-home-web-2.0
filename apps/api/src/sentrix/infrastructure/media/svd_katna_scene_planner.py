@@ -222,8 +222,7 @@ def _shot_groups(
         right_time, right_image = frames[right_index]
         similarity = float(np.clip(np.dot(descriptors[left_index], descriptors[right_index]), -1.0, 1.0))
         energy = float(
-            np.linalg.norm(low_rank[right_index] - low_rank[left_index])
-            / np.sqrt(max(1, low_rank.shape[1]))
+            np.linalg.norm(low_rank[right_index] - low_rank[left_index]) / np.sqrt(max(1, low_rank.shape[1]))
         )
         small_left = cv2.resize(left_image, (96, 54), interpolation=cv2.INTER_AREA)
         small_right = cv2.resize(right_image, (96, 54), interpolation=cv2.INTER_AREA)
@@ -262,14 +261,12 @@ def _shot_groups(
     # The low thresholds catch hard cuts; histogram-only cuts catch similar
     # geometry with a major palette change. Nearby detections are coalesced.
     raw_cuts = [
-        item for item in transitions
+        item
+        for item in transitions
         if (
             (float(item["histogram_distance"]) >= 0.22 and float(item["pixel_difference"]) >= 0.045)
             or float(item["histogram_distance"]) >= 0.30
-            or (
-                float(item["pixel_difference"]) >= 0.15
-                and float(item["novelty"]) >= 0.4
-            )
+            or (float(item["pixel_difference"]) >= 0.15 and float(item["novelty"]) >= 0.4)
         )
     ]
     cuts: list[dict[str, float | int | bool]] = []
@@ -364,19 +361,14 @@ class SVDKatnaScenePlanner:
         raw_selected = _katna_select([first], 1)
         if last_index > 0:
             raw_selected.extend(_katna_select([last], 1))
-        interior_candidates = [
-            item for item in candidates
-            if 0 < int(item["frame_index"]) < last_index
-        ]
+        interior_candidates = [item for item in candidates if 0 < int(item["frame_index"]) < last_index]
         groups, transitions, cut_thresholds = _shot_groups(frames, interior_candidates, representation)
         shot_rows: list[dict[str, object]] = []
         for shot_number, group in enumerate(groups, start=1):
             start_index = int(group[0]["frame_index"])
             end_index = int(group[-1]["frame_index"])
             internal_transitions = [
-                item
-                for item in transitions
-                if start_index <= int(item["left_index"]) < end_index
+                item for item in transitions if start_index <= int(item["left_index"]) < end_index
             ]
             mean_similarity = (
                 float(np.mean([float(item["similarity"]) for item in internal_transitions]))

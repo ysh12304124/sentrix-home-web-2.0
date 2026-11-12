@@ -164,6 +164,7 @@ export function MemoryEffectivenessTable({
           <span>事件上下文 {quality?.event_context_count} 个</span>
         </div>
       ) : null}
+      {ready && quality?.note ? <p className="muted">{quality.note}</p> : null}
       {ready ? (
         <div className="memory-effect-table-wrap">
           <table className="memory-effect-table">

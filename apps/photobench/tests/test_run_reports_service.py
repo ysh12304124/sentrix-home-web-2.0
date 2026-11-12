@@ -277,3 +277,60 @@ def test_keyframe_analysis_uses_the_same_memo(tmp_path: Path) -> None:
     # 两个面板的缓存键必须分开：同一次修订下，记忆有效性不能把关键帧的结果顶掉。
     reports.memory_effectiveness("run-1")
     assert len(http.calls) == 2
+
+
+@pytest.mark.parametrize("score", [0, 1, 2])
+def test_reports_use_primary_profile_receipts_not_pending_legacy_judge(tmp_path, score):
+    from test_scoring_profiles import setup, state, task
+
+    from photobench.domain.evaluation.profiles import OPEN, scoring_targets
+
+    saved = state()
+    service, batches, _, _ = setup(saved, [OPEN], [task(), {"score": score}])
+    service.score(batches[0], scoring_targets(saved, batches[0], "all")[0])
+    saved.update(
+        scope_id="scope-1", scoring_profiles=[OPEN], primary_scoring_batch_ids=[batches[0]["batch_id"]]
+    )
+    saved["summary"] = {"agent2_trace": {"requirement_status_counts": {"satisfied": 1}}}
+    saved["items"][0].update(
+        judge={"score": None, "reason": "pending_judge"},
+        gt_media=[{"asset_id": "a1", "media_type": "image"}],
+        retrieved_candidate_media=[{"asset_id": "a1", "media_type": "image"}],
+        tool_trace=[
+            {
+                "tool": "search_memories",
+                "status": "ok",
+                "result": {
+                    "returned_asset_ids": ["a1"],
+                    "preview": [{"asset_id": "a1", "event_context": {"id": "event-1"}}],
+                },
+            }
+        ],
+    )
+    store = _write(tmp_path, "r", saved)
+    out = _reports(store, FakeJsonHttpClient({"/assets?": {"items": [_image("a1")]}})).memory_effectiveness(
+        "r"
+    )
+    correctness = out["details"]["answer_correctness"]
+    assert correctness[{2: "correct", 1: "partial", 0: "incorrect"}[score]] == 1
+    assert correctness["unjudged"] == 0
+    assert out["details"]["raw_media_returned_assets"] == 1
+    assert out["data_quality"]["event_context_count"] == 1
+    assert out["details"]["requirement_status_counts"] == {"satisfied": 1}
+    assert store.load_state("r")["items"][0]["judge"]["score"] is None
+
+
+def test_missing_primary_receipt_does_not_reuse_a_legacy_score(tmp_path):
+    from test_scoring_profiles import setup, state
+
+    from photobench.domain.evaluation.profiles import OPEN
+
+    saved = state()
+    _, batches, _, _ = setup(saved, [OPEN])
+    saved.update(scoring_profiles=[OPEN], primary_scoring_batch_ids=[batches[0]["batch_id"]])
+    store = _write(tmp_path, "r", saved)
+    out = _reports(store, FakeJsonHttpClient()).memory_effectiveness("r")
+    correctness = out["details"]["answer_correctness"]
+    assert correctness["correct"] == 0
+    assert correctness["unjudged"] == 1
+    assert correctness["exact_accuracy"] is None
