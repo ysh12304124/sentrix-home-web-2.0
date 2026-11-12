@@ -50,6 +50,7 @@ from sentrix.domain.identity.models import (
     SemanticClaimRecord,
     SemanticProfileRecord,
 )
+from sentrix.domain.identity.person_merge import PersonMergeOutcome, PersonMergePlan
 
 
 class FaceDetector(Protocol):
@@ -1262,5 +1263,32 @@ class FamilyGraphRepository(Protocol):
         """这个 scope 所属那张图里的全部 scope（``ORDER BY scope_id``）。
 
         **没并过图的 scope 返回它自己一个**——不是空列表。调用方据此遍历。
+        """
+        ...
+
+
+class PersonMergeRepository(Protocol):
+    """人物合并的写面：把来源人物名下的全部数据改挂到目标人物。SQL 在
+    ``repositories/person_merge.py``。
+
+    **一次 ``merge_people`` 是一个事务**（硬规则 9）：人脸簇与实例、提及、观察快照、
+    事件参与者、关系（通用表与家庭图谱两套）、家庭归属与画像、外观证据、人物瞬间、
+    实体本身的名字/状态与双边审计，要么全部改完，要么一行不动。半途失败留下
+    「照片挂到了新人、关系还连着旧人」的状态，界面上看不出来，检索却会分叉。
+
+    仓储**不做任何判断**：名字、状态、别名都由 ``plan_person_merge`` 决定好放在
+    计划里。重算类的后续（原型、外观取样、事件重分段）不在事务里——它们是幂等的
+    重算，失败可重跑，放进事务只会让一次合并卡在模型调用上。
+    """
+
+    def merged_into(self, entity_id: str) -> str | None:
+        """这个人此前被并进了谁；没被合并过返回 ``None``。用于幂等重放的判定。"""
+        ...
+
+    def merge_people(self, plan: PersonMergePlan) -> PersonMergeOutcome:
+        """照计划搬数据。来源实体置 ``superseded``（不物理删除，审计与外键都留得住）。
+
+        关系边的取舍：两人之间的边是自环，作废；目标与同一个第三人已有有效边时，
+        保留用户锁定的那一组，都没锁定或都锁定时保留目标的，另一组作废。
         """
         ...

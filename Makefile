@@ -133,6 +133,9 @@ photobench-web-check: ## PhotoBench 前端门禁：同 web-check 四步
 	cd apps/photobench/web && npx vitest run
 	cd apps/photobench/web && npx vite build
 
+# 本地两个服务必须使用一致的部署预设；只影响开发入口，显式环境/命令行值优先。
+dev photobench-dev: export SENTRIX_DEPLOYMENT_PROFILE ?= $(if $(filter Darwin,$(shell uname -s)),mac,server)
+
 dev: ## 起 2.0 API（8191）
 	$(PY) -m uvicorn --factory sentrix.main:create_app --host 0.0.0.0 --port 8191 --app-dir apps/api/src
 
@@ -141,7 +144,12 @@ dev: ## 起 2.0 API（8191）
 photobench-dev: ## 起 2.0 PhotoBench（8772）
 	$(PY) -m uvicorn --factory photobench.main:create_app --host 0.0.0.0 --port 8772 --app-dir apps/photobench/src
 
-web-dev: ## 起 2.0 Web（4274）
+# 本地开发默认直连 make dev 的 8191；显式指定控制面时保持账号认证。
+# 只给此目标导出，不改变 npm/生产构建的认证默认值。
+web-dev: export SENTRIX_PREVIEW_TARGET ?= http://127.0.0.1:8191
+web-dev: export VITE_LEGACY_LOCAL_AUTH ?= $(if $(filter http://127.0.0.1:8191 http://localhost:8191,$(SENTRIX_PREVIEW_TARGET)),1,0)
+
+web-dev: ## 起本地 Web（4274，默认连接 API 8191）
 	cd apps/web && npm run dev -- --port 4274
 
 photobench-web-dev: ## 起 PhotoBench 前端（4276）
