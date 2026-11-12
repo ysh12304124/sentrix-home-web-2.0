@@ -184,6 +184,13 @@ class QueryMemoryFacts:
             # 非分组时才附。
             samples = self._sample_rows(structured_filter)
 
+        applied = dict(structured_filter.applied)
+        # 人物过滤在仓储层落的是实体 id；filters_applied 是回给模型/证据绑定看的，
+        # 需求限定的是人名。留着 id 会让 evidence_binding 把「明明」与
+        # 「entity_xxx」判成 scope 失配，正确答案也落 partial。这里换回请求里
+        # 的人名，内部 id 不进入模型可见结果。
+        if applied.get("person") and request.person:
+            applied["person"] = request.person
         return FactAnswer(
             fact_type=f"{request.subject.value}_{request.operation.value}",
             subject=request.subject,
@@ -193,7 +200,7 @@ class QueryMemoryFacts:
             rows=rows,
             samples=samples,
             filters_applied={
-                **structured_filter.applied,
+                **applied,
                 "scope_id": structured_filter.scope_id,
                 "asset_kind": "original_only",
             },

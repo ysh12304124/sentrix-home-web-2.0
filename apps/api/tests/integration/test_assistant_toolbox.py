@@ -1071,6 +1071,27 @@ def test_memory_facts_without_a_scope_counts_all_albums(toolbox):
     assert outcome.model_visible["value"] == 2
 
 
+def test_memory_facts_reports_the_requested_person_name(toolbox, migrations_ready_db):
+    """filters_applied 里不能把实体 id 当成人物名。
+
+    证据绑定的需求 scope 是「明明」，事实 scope 若写成 ``entity_xxx``，两者会被判成
+    scope 失配，正确答案也只能收 partial。这里钉住回给模型/绑定的那一格是请求里的人名。
+    """
+    add_person(migrations_ready_db, asset_id="asset_0", name="妈妈", people=1)
+
+    outcome = run(
+        toolbox,
+        "query_memory_facts",
+        operation="count",
+        subject="person_appearance",
+        filters={"person": "妈妈"},
+    )
+
+    assert outcome.ok
+    assert outcome.model_visible["filters_applied"]["person"] == "妈妈"
+    assert "entity_" not in str(outcome.model_visible["filters_applied"])
+
+
 def test_memory_facts_rejects_a_person_that_was_never_confirmed(toolbox):
     """**与「这个人不存在」不同，所以不是一个 0 条的统计结果。** 返回 0 会让模型
     理直气壮地说「没有他/她的照片」，而事实是这个名字在本相册里根本没被确认过。"""
