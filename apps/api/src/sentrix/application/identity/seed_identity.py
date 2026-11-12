@@ -176,7 +176,16 @@ class SeedIdentity:
         self._faces.confirm_cluster(cluster.id, entity.id)
 
         for sample, face in chosen:
-            self._store_instance(sample, face, cluster.id, entity.scope_id)
+            instance_id = self._store_instance(sample, face, cluster.id, entity.scope_id)
+            # 预置出来的人一开始就是已确认的，而「这张照片里有他」只有提及与观察快照会记：
+            # 不写的话，他在自己的样本照片上查不到（确认簇那条路 ``ReviewCluster.confirm``
+            # 对每张脸都写提及，这里是同一件事）。按实例预置时样本就是相册里的照片。
+            self._entities.link_confirmed_mention(
+                entity.id,
+                sample.observation_id,
+                face_instance_id=instance_id,
+                confidence=face.confidence,
+            )
         # 回写 member_count 并重算原型。原型是后续在线匹配真正读的东西（没有它，匹配会
         # 退回代表向量），所以这一步不是收尾，是让预置**生效**。
         self._faces.refresh_prototypes(cluster.id)
@@ -200,8 +209,8 @@ class SeedIdentity:
 
     def _store_instance(
         self, sample: _SeedSample, face: FaceDetection, cluster_id: str, scope_id: str
-    ) -> None:
-        """落一条实例 + 它的权威向量。两处的 ``pose`` 都取自样本，不在这里重算。"""
+    ) -> str:
+        """落一条实例 + 它的权威向量，返回实例 id。两处的 ``pose`` 都取自样本，不在这里重算。"""
         embedding = normalize_embedding(face.embedding)
         instance = self._faces.add_instance(
             asset_id=sample.asset_id,
@@ -222,7 +231,7 @@ class SeedIdentity:
             sharpness=face.sharpness,
         )
         if not embedding:
-            return
+            return instance.id
         self._vectors.upsert(
             VectorRecord(
                 scope_id=scope_id,
@@ -240,6 +249,7 @@ class SeedIdentity:
                 },
             )
         )
+        return instance.id
 
 
 def _detection_of(record: FaceInstanceRecord) -> FaceDetection:

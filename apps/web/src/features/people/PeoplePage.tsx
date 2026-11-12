@@ -1,9 +1,13 @@
 /**
  * 人物与关系。对应 1.0 `src/app.js:648` 的 `peopleView()`。
  *
- * 三个 tab：**名录（默认） / 关系图谱 / 待确认簇**。默认是名录不是图谱，依据是实测：
+ * 三个 tab：**人物（默认） / 关系 / 人物介绍**。默认是名录不是图谱，依据是实测：
  * 刚导入的相册跑出来的图是 8 个孤点（计划书 §0）；1.0 的默认恰恰是图谱，这是 F7
  * 要改的第一件事。
+ *
+ * 原来的「待确认的人物」tab 已移除（2026-11-11）：名录本来就列出待确认的人，两边重复；
+ * 它独有的动作挪进了人物详情（确认身份 / 这不是一个人物），簇级合并换成名录里的
+ * 人物级手动合并（`POST /people/merge`）。
  *
  * **不加新路由**：人物详情走 `?person=<id>`（计划书 §1 裁决③）。理由很实在——
  * `app/router.test.tsx:51` 钉死「路由数 == 导航项数 == 页面文件数」，加一条参数路由
@@ -24,15 +28,13 @@ import { confirmedRelationships } from "./family/graphLayout";
 import { PersonDetail } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
 import { useFamilyGraph } from "./family/useFamilyGraph";
-import { PeopleView } from "./PeopleView";
 import { PersonInsights } from "./PersonInsights";
 
-type View = "roster" | "graph" | "review" | "insights";
+type View = "roster" | "graph" | "insights";
 
 const TABS: readonly { value: View; label: string }[] = [
   { value: "roster", label: "人物" },
   { value: "graph", label: "关系" },
-  { value: "review", label: "待确认的人物" },
   { value: "insights", label: "人物介绍" },
 ];
 
@@ -126,7 +128,15 @@ export function PeoplePage() {
           {state === "loading" ? (
             <p className="empty">正在读取人物…</p>
           ) : (
-            <FamilyRoster people={people} selectedId={selectedId} onSelect={(id) => selectPerson(id)} />
+            <FamilyRoster
+              people={people}
+              selectedId={selectedId}
+              onSelect={(id) => selectPerson(id)}
+              onMerged={async (targetId) => {
+                await refresh();
+                selectPerson(targetId);
+              }}
+            />
           )}
 
         </Section>
@@ -149,33 +159,6 @@ export function PeoplePage() {
         </Section>
       ) : null}
 
-      {view === "review" ? (
-        <Section kicker="待确认的人物" title="先确认是谁，再进入长期记忆">
-          <PeopleView
-            scopeId={scopeId}
-            onConfirmSubmit={(clusterId) =>
-              void reportClientEvent({
-                eventName: "people.confirm_submit",
-                result: "started",
-                operationId: newOperationId(),
-                scopeId,
-                entityId: clusterId,
-              })
-            }
-            onConfirmResult={(clusterId, ok) =>
-              void reportClientEvent({
-                eventName: "people.confirm_result",
-                result: ok ? "ok" : "failed",
-                operationId: newOperationId(),
-                scopeId,
-                entityId: clusterId,
-                errorCode: ok ? undefined : "unknown",
-              })
-            }
-          />
-        </Section>
-      ) : null}
-
       {view === "insights" ? (
         <Section kicker="人物介绍" title="看看系统记得的这个人，像不像他">
           <PersonInsights scopeId={scopeId} />
@@ -191,6 +174,7 @@ export function PeoplePage() {
           relateTarget={relateTo}
           onClose={() => selectPerson(null)}
           onChanged={refresh}
+          onRedirect={(id) => selectPerson(id)}
         />
       )}
 

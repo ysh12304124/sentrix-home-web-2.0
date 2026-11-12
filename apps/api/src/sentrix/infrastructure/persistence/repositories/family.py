@@ -337,6 +337,7 @@ class SqliteFamilyGraphRepository:
                             avatar_face_instance_id=avatar["id"] if avatar else None,
                             appearance_count=int((count or {"count": 0})["count"] or 0),
                             representative_media=tuple(dict(row) for row in media),
+                            status=entity.status,
                         )
                     )
         return people

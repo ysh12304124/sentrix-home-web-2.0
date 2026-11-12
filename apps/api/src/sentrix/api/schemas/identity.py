@@ -119,6 +119,29 @@ class RenamePersonResponse(BaseModel):
     aliases: list[str]
 
 
+class MergePeopleRequest(BaseModel):
+    """把 ``source_person_ids`` 并进 ``target_person_id``。
+
+    ``name`` 可省：省略时保留目标的名字，目标没有名字时取第一个有名字的来源。
+    空 id 与 ``MergeClustersRequest`` 同理判在用例里（400），不交给 pydantic（422）。
+    """
+
+    target_person_id: str = ""
+    source_person_ids: list[str] = Field(default_factory=list)
+    name: str | None = None
+
+
+class MergePeopleResponse(BaseModel):
+    """合并后的目标人物与这次搬动的规模。计数供界面提示，不是审计——审计在
+    ``entity_revisions``。"""
+
+    entity: PersonPayload
+    merged_person_ids: list[str]
+    moved_face_count: int
+    moved_relationship_count: int
+    dropped_relationship_count: int
+
+
 class BatchConfirmItem(BaseModel):
     # 同样不加约束：缺 person_id / name 的条目要**逐件失败**（1.0 的 ``failed`` 数组），
     # 而不是让整批请求 422——那会把其余选中的条目一起丢掉。

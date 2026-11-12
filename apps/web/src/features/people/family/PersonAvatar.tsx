@@ -1,5 +1,5 @@
 /**
- * 人物头像。真图走人脸裁剪接口，没有脸退回首字圆形——与 `PeopleView` 的兜底同一形状。
+ * 人物头像。真图走人脸裁剪接口，没有脸退回首字圆形。
  */
 
 import { faceInstanceCropUrl, type FamilyPerson } from "../../../shared/api/client";
