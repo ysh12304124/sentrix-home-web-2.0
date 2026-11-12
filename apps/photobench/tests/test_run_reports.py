@@ -741,10 +741,88 @@ def test_export_sft_keeps_every_2_0_debug_call_and_builds_samples():
 
 
 def test_unjudged_answers_are_not_counted_as_incorrect():
-    out = memory_effectiveness.memory_effectiveness(_mem_state([
-        {"judge": {"score": 2}}, {"judge": {"score": 0}},
-        {"judge": {"score": None, "judge_status": "failed"}},
-    ]), [])
+    out = memory_effectiveness.memory_effectiveness(
+        _mem_state(
+            [
+                {"judge": {"score": 2}},
+                {"judge": {"score": 0}},
+                {"judge": {"score": None, "judge_status": "failed"}},
+            ]
+        ),
+        [],
+    )
     correctness = out["details"]["answer_correctness"]
     assert correctness["exact_accuracy"] == 0.5
     assert correctness["unjudged"] == 1
+
+
+def test_delivery_stats_are_typed_and_do_not_depend_on_judge():
+    import copy
+
+    items = [
+        {
+            "gt_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v1", "media_type": "video"},
+            ],
+            "predicted_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v2", "media_type": "video"},
+            ],
+            "retrieved_candidate_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v1", "media_type": "video"},
+            ],
+            "judge": {"score": 2},
+        },
+        {
+            "gt_media": [{"asset_id": "v1", "media_type": "video"}],
+            "predicted_media": [{"asset_id": "k1", "media_type": "image"}],
+            "retrieved_candidate_media": [{"asset_id": "k1", "media_type": "image"}],
+            "judge": {"score": None},
+        },
+        {
+            "gt_media": [{"asset_id": "v1", "media_type": "video"}],
+            "predicted_media": [],
+            "answerability": "unanswerable",
+        },
+    ]
+    assets = [_video("v1"), _video("v2"), _keyframe("k1", "v1")]
+
+    def stats(rows):
+        return memory_effectiveness.memory_effectiveness(_mem_state(rows), assets)["details"][
+            "delivery_statistics"
+        ]
+
+    result = stats(items)
+    assert result["image"]["eligible_items"] == result["image"]["delivered_items"] == 1
+    assert result["video_keyframe"] == {
+        "eligible_items": 2,
+        "candidate_hit_items": 1,
+        "candidate_unrecorded_items": 0,
+        "candidate_hit_rate": 0.5,
+        "delivered_items": 1,
+        "not_delivered_items": 1,
+        "extra_delivery_items": 1,
+        "unrecorded_items": 0,
+        "delivery_rate": 0.5,
+    }
+    changed = copy.deepcopy(items)
+    for row in changed:
+        row["judge"] = {"score": 0}
+    assert stats(changed) == result
+
+
+def test_missing_delivery_record_is_not_counted_as_no_delivery():
+    out = memory_effectiveness.memory_effectiveness(
+        _mem_state(
+            [
+                {"gt_media": [{"asset_id": "v1", "media_type": "video"}]},
+            ]
+        ),
+        [_video("v1")],
+    )
+    delivery = out["details"]["delivery_statistics"]["video_keyframe"]
+    assert delivery["delivery_rate"] is None
+    assert delivery["unrecorded_items"] == 1
+    assert delivery["not_delivered_items"] == 0

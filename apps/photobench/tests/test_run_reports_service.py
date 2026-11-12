@@ -334,3 +334,47 @@ def test_missing_primary_receipt_does_not_reuse_a_legacy_score(tmp_path):
     assert correctness["correct"] == 0
     assert correctness["unjudged"] == 1
     assert correctness["exact_accuracy"] is None
+
+
+def test_video_comparison_counts_receipts_and_rejects_stale_answers(tmp_path):
+    saved = _state(items=[{"qa_id": "q", "question": "问题", "reference_answer": "参考", "answer": "回答"}])
+    store = _write(tmp_path, "run-1", saved)
+    reports = _reports(store, FakeJsonHttpClient())
+    assert reports.video_comparison("run-1")["status"] == "not_available"
+    path = tmp_path / "run-1" / "video-objective-comparison.json"
+    receipt = {
+        "current_run_id": "run-1",
+        "baseline_run_id": "previous",
+        "summary": {"old_keyframe_hit": 99},
+        "questions": [
+            {
+                "qa_id": "q",
+                "question": "问题",
+                "reference_answer": "参考",
+                "new_answer": "回答",
+                "old_keyframe_hit": False,
+                "new_keyframe_hit": True,
+                "old_correct_video_delivered": True,
+                "new_correct_video_delivered": False,
+            }
+        ],
+    }
+    path.write_text(json.dumps(receipt))
+    result = reports.video_comparison("run-1")
+    assert result["status"] == "ready"
+    assert result["metrics"][0] == {
+        "name": "候选中找到对应视频关键帧",
+        "old": 0,
+        "new": 1,
+        "total": 1,
+        "gained": 1,
+        "lost": 0,
+    }
+    assert result["metrics"][1]["lost"] == 1
+    receipt["questions"][0]["new_answer"] = "不同回答"
+    path.write_text(json.dumps(receipt))
+    assert reports.video_comparison("run-1")["status"] == "stale"
+    receipt["current_run_id"] = "another-run"
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="different run"):
+        reports.video_comparison("run-1")

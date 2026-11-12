@@ -40,7 +40,7 @@ from urllib.parse import quote
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.evaluation.profile_view import primary_profile_state, profile_state
 from photobench.domain.http.ports import JsonHttpClient
-from photobench.domain.results.ports import RunRevisions, RunStore
+from photobench.domain.results.ports import RunRevisions, RunStore, RunVideoComparisonStore
 from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
 
 #: 2.0 的 REST 前缀。1.0 是 ``/api``。
@@ -195,6 +195,66 @@ class RunReports:
         if cache_key is not None:
             self._memo_put(cache_key, result)
         return result
+
+    def video_comparison(self, run_id: str) -> dict[str, Any]:
+        if not isinstance(self._store, RunVideoComparisonStore):
+            return {"status": "not_available"}
+        document = self._store.read_video_comparison(run_id)
+        if document is None:
+            return {"status": "not_available"}
+        state = self._state(run_id)
+        if document.get("current_run_id") != run_id:
+            raise ValueError("comparison belongs to a different run")
+        current = {item["qa_id"]: item for item in state.get("items", [])}
+        rows = document.get("questions") or []
+        ids = [row["qa_id"] for row in rows]
+        if not rows or len(ids) != len(set(ids)):
+            raise ValueError("comparison questions must be nonempty and unique")
+        for row in rows:
+            item = current.get(row["qa_id"], {})
+            if (
+                row.get("question") != item.get("question")
+                or row.get("reference_answer") != item.get("reference_answer")
+                or row.get("new_answer") != item.get("answer")
+                or item.get("answerability") == "unanswerable"
+            ):
+                return {"status": "stale", "reason": "对照记录与当前问题或回答不一致，请重新生成对照"}
+            for field in (
+                "old_keyframe_hit",
+                "new_keyframe_hit",
+                "old_correct_video_delivered",
+                "new_correct_video_delivered",
+            ):
+                if not isinstance(row.get(field), bool):
+                    raise ValueError("comparison outcomes must be explicit booleans")
+        # Recompute UI counts from persisted per-question receipts, not hand-entered totals.
+        metrics = []
+        for name, field in (
+            ("候选中找到对应视频关键帧", "keyframe_hit"),
+            ("最终交付正确视频素材", "correct_video_delivered"),
+        ):
+            old = sum(row["old_" + field] for row in rows)
+            new = sum(row["new_" + field] for row in rows)
+            metrics.append(
+                {
+                    "name": name,
+                    "old": old,
+                    "new": new,
+                    "total": len(rows),
+                    "gained": sum(not row["old_" + field] and row["new_" + field] for row in rows),
+                    "lost": sum(row["old_" + field] and not row["new_" + field] for row in rows),
+                }
+            )
+        return {
+            "status": "ready",
+            "run_id": run_id,
+            "baseline_run_id": document.get("baseline_run_id"),
+            "definition": (document.get("summary") or {}).get("definition"),
+            "limitation": (document.get("summary") or {}).get("limitation"),
+            "source_sha256": document.get("source_sha256", {}),
+            "metrics": metrics,
+            "questions": rows,
+        }
 
     def memory_effectiveness(self, run_id: str) -> dict[str, Any]:
         cache_key = (

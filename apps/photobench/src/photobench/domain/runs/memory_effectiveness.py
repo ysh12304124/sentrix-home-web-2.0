@@ -690,6 +690,99 @@ def memory_effectiveness(
         "该指标是证据结果有效性，不是记忆库覆盖率。",
     }
 
+    def delivery_row(media_type: str) -> dict[str, Any]:
+        eligible = delivered = missed = extra = unknown = 0
+        candidate_hits = candidate_unknown = 0
+
+        def kind(ref: Mapping[str, Any]) -> str:
+            aid = str(ref.get("asset_id") or ref.get("id") or "")
+            if (
+                aid in parent_of_kf
+                or ref.get("source_keyframe_asset_id")
+                or ref.get("source_video_asset_id")
+                or ref.get("media_kind") == KEYFRAME_KIND
+            ):
+                return "video"
+            return str(
+                ref.get("media_type")
+                or ("video" if ref.get("video_id") else "image" if ref.get("image_id") else "")
+            )
+
+        for item in items:
+            if item.get("answerability") == "unanswerable":
+                continue
+            gt = [
+                ref
+                for ref in item.get("gt_media") or []
+                if isinstance(ref, Mapping) and kind(ref) == media_type
+            ]
+            if not gt:
+                continue
+            eligible += 1
+            gt_ids, gt_tokens = _tokens(gt)
+            if media_type == "video":
+                if "retrieved_candidate_media" not in item and "retrieved_candidate_images" not in item:
+                    candidate_unknown += 1
+                else:
+                    candidates = [
+                        ref
+                        for ref in item.get("retrieved_candidate_media")
+                        or item.get("retrieved_candidate_images")
+                        or []
+                        if isinstance(ref, Mapping)
+                        and (
+                            ref.get("source_keyframe_asset_id")
+                            or str(ref.get("asset_id") or ref.get("id") or "") in parent_of_kf
+                            or ref.get("media_kind") == KEYFRAME_KIND
+                        )
+                    ]
+                    if matched(gt_ids, gt_tokens, *_tokens(candidates)):
+                        candidate_hits += 1
+            if "predicted_media" not in item and "predicted_images" not in item:
+                unknown += 1
+                continue
+            predicted = [
+                ref
+                for ref in item.get("predicted_media") or item.get("predicted_images") or []
+                if isinstance(ref, Mapping) and kind(ref) == media_type
+            ]
+            gt_ids, gt_tokens = _tokens(gt)
+            pred_ids, pred_tokens = _tokens(predicted)
+            if matched(gt_ids, gt_tokens, pred_ids, pred_tokens):
+                delivered += 1
+            else:
+                missed += 1
+            if any(not matched(gt_ids, gt_tokens, *_tokens([ref])) for ref in predicted):
+                extra += 1
+        return {
+            "eligible_items": eligible,
+            **(
+                {
+                    "candidate_hit_items": candidate_hits,
+                    "candidate_unrecorded_items": candidate_unknown,
+                    "candidate_hit_rate": round(candidate_hits / eligible, 4)
+                    if eligible and not candidate_unknown
+                    else None,
+                }
+                if media_type == "video"
+                else {}
+            ),
+            "delivered_items": delivered,
+            "not_delivered_items": missed,
+            "extra_delivery_items": extra,
+            "unrecorded_items": unknown,
+            "delivery_rate": round(delivered / eligible, 4) if eligible and not unknown else None,
+        }
+
+    delivery_statistics = {
+        "image": delivery_row("image"),
+        "video_keyframe": delivery_row("video"),
+        "event": {"status": "not_recorded", "reason": "缺少可对齐的事件 GT 与最终交付引用，无法核对"},
+        "definition": "排除不可回答题，按同类型 GT 核对最终交付；关键帧按父视频匹配。"
+        "正确交付=至少交付一份对应 GT 素材；未交付=没有交付对应 GT；"
+        "额外交付=交付了该类型的非 GT 素材，可与正确交付重叠。不使用 Judge 分数。",
+    }
+
     total_trace = sum(tool_counts.values())
     ok_trace = sum(tool_ok.values())
     graph_ready = bool(total_trace and preview_rows and event_ids)
@@ -719,6 +812,7 @@ def memory_effectiveness(
         },
         "levels": levels,
         "details": {
+            "delivery_statistics": delivery_statistics,
             "raw_media_returned_assets": len(preview_asset_ids),
             "raw_media_final_evidence_assets": len(final_evidence_asset_ids),
             "visual_calls": {"total": visual_total, "effective": visual_effective},

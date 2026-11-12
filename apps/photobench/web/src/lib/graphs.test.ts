@@ -255,6 +255,11 @@ const RECALL_ME = {
         matrix: { hit_correct: 2, hit_partial: 1, hit_incorrect: 0, miss_correct: 3, miss_partial: 2, miss_incorrect: 0 },
       },
     },
+    delivery_statistics: {
+      image: {eligible_items: 10, delivered_items: 6, not_delivered_items: 4, extra_delivery_items: 2, unrecorded_items: 0, delivery_rate: 0.6},
+      video_keyframe: {candidate_hit_items: 6, candidate_hit_rate: 0.75, candidate_unrecorded_items: 0, eligible_items: 8, delivered_items: 2, not_delivered_items: 6, extra_delivery_items: 1, unrecorded_items: 0, delivery_rate: 0.25},
+      event: {status: "not_recorded", reason: "缺少事件交付记录"},
+    },
     evidence_effectiveness: {
       tool: {
         image: { effective_items: 3, returned_items: 4, ineffective_items: 1, effective_rate_on_returned: 0.75 },
@@ -322,14 +327,16 @@ describe("memoryRecallMatrices", () => {
     expect(groups?.[1].nodes[2].note).toContain("50.0% 本分支"); // 2/4
   });
 
-  it("L3 的证据有效率按 tool/usage 分块 + 公共 event 块", () => {
-    expect(tool.layers[3].nodes[0].value).toBe("75.0%");
-    expect(tool.layers[3].nodes[0].note).toBe("3/4 有效 · 无效 1");
-    expect(tool.layers[3].nodes[1].value).toBe("50.0%");
-    expect(tool.layers[3].nodes[2].value).toBe("25.0%");
-    expect(tool.layers[3].nodes[2].note).toBe("1/4 有效 · 无效 3");
-    // usage 维度取的是 usage 块，不是 tool 块
-    expect(matrices[1].layers[3].nodes[0].value).toBe("50.0%");
+  it("L3 只展示本次视频的候选命中与最终交付两项", () => {
+    expect(tool.layers[3].name).toBe("视频召回与交付");
+    expect(tool.layers[3].nodes).toHaveLength(2);
+    expect(tool.layers[3].nodes[0].label).toBe("候选中找到对应视频关键帧");
+    expect(tool.layers[3].nodes[0].value).toBe("6/8 题");
+    expect(tool.layers[3].nodes[0].note).toContain("75.0%");
+    expect(tool.layers[3].nodes[1].label).toBe("最终交付正确视频素材");
+    expect(tool.layers[3].nodes[1].value).toBe("2/8 题");
+    expect(tool.layers[3].nodes[1].note).toContain("25.0%");
+    expect(matrices[1].layers[3]).toEqual(tool.layers[3]);
   });
 
   it("usage 维度的 L2 与 tool 不同（划分真的换了维度）", () => {

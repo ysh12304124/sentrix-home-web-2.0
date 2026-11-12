@@ -686,6 +686,15 @@ export interface MemoryEffectiveness {
     };
     /** 错误链诊断：形状未逐字段核实（实测响应被截断），留给消费它的切片收窄。 */
     error_chain_diagnosis?: Record<string, unknown>;
+    delivery_statistics?: {
+      image?: {eligible_items: number; delivered_items: number; not_delivered_items: number;
+        extra_delivery_items: number; unrecorded_items: number; delivery_rate: number | null};
+      video_keyframe?: {candidate_hit_items?: number; candidate_hit_rate?: number | null;
+        candidate_unrecorded_items?: number; eligible_items: number; delivered_items: number; not_delivered_items: number;
+        extra_delivery_items: number; unrecorded_items: number; delivery_rate: number | null};
+      event?: {status: string; reason: string};
+      definition?: string;
+    };
     evidence_effectiveness?: {
       tool?: EvidenceEffectivenessGroup;
       usage?: EvidenceEffectivenessGroup;
