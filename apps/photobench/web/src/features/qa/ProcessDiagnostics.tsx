@@ -30,31 +30,37 @@ const STATUS: Record<string, string> = {
 export function ProcessDiagnostics({ value }: { value: ProcessDiagnostic | undefined }) {
   if (!value) return null;
   return <details className="process-diagnostics">
-    <summary>答题过程诊断</summary>
-    <Context value={value.scoring_context}/>
-    <p className="muted">
-      原始执行标记：{value.original_answered_with_gap ? 'answered_with_gap' : '未标记 answered_with_gap'}。
-      以下为保存日志的观测，语义结论需复核，不改正式评分。
-    </p>
-    <table className="data-table">
-      <thead><tr><th>对话轮／集合用途</th><th>目标／候选命中</th><th>正式交付</th></tr></thead>
-      <tbody>{value.chain.map((chain, index) => <tr key={index}>
-        <td>第{chain.turn_index + 1}轮 · {chain.purpose === 'answer_target' ? '列表评分答案目标' : '公共检索证据'}</td>
-        <td>{chain.target.length} / {chain.candidate_status === 'confirmed' ? chain.hits.length : '记录不足'}</td>
-        <td>{chain.delivery_status === 'confirmed' ? chain.delivered.length : '记录不足'}</td>
-      </tr>)}</tbody>
-    </table>
-    <details><summary>查看候选、命中与交付集合</summary>
+    <summary className="diagnostic-heading"><span>答题过程诊断</span><small>{value.chain.length} 组检索记录 · {value.findings.length} 条观测</small></summary>
+    <div className="diagnostic-body">
+    <p className="diagnostic-description">依据已保存日志分析；语义结论需复核，正式评分保留原记录。</p>
+    <div className="diagnostic-chain-grid" aria-label="检索与交付记录">
+      {value.chain.map((chain, index) => <article className="diagnostic-chain" key={index}>
+        <header><span className="diagnostic-turn">第 {chain.turn_index + 1} 轮</span><b>{chain.purpose === 'answer_target' ? '列表评分答案目标' : '公共检索证据'}</b></header>
+        <dl>
+          <div><dt>目标数</dt><dd>{chain.target.length}</dd></div>
+          <div><dt>候选命中</dt><dd>{chain.candidate_status === 'confirmed' ? chain.hits.length : <small>记录不足</small>}</dd></div>
+          <div><dt>正式交付</dt><dd>{chain.delivery_status === 'confirmed' ? chain.delivered.length : <small>记录不足</small>}</dd></div>
+        </dl>
+      </article>)}
+    </div>
+    <details className="diagnostic-disclosure"><summary>查看候选、命中与交付集合</summary>
       <pre className="json-preview">{JSON.stringify(value.chain, null, 2)}</pre>
     </details>
-    {value.findings.length ? value.findings.map((finding, index) => <details key={index}>
-      <summary>{STATUS[finding.status]} · {finding.label}</summary>
+    {value.findings.length ? value.findings.map((finding, index) => <details className="diagnostic-finding" key={index}>
+      <summary><span className={`diagnostic-status ${finding.status}`}>{STATUS[finding.status]}</span><span>{finding.label}</span></summary>
+      <div className="diagnostic-finding-body">
       <p>{finding.message}</p>
       <p>依据：{finding.sources.join('；')}</p>
       <pre className="json-preview">{JSON.stringify(finding, null, 2)}</pre>
       <a href={`#process-log-${value.qa_id}`}>跳到本题执行日志</a>
-    </details>) : <p>本规则未确认缺口；答案质量评分另行展示。</p>}
-    <small className="muted">规则 {value.rule_version} · 答卷指纹 {value.answer_fingerprint}</small>
+      </div>
+    </details>) : <p className="diagnostic-description">本规则未确认缺口；答案质量评分另行展示。</p>}
+    <details className="diagnostic-disclosure diagnostic-provenance"><summary>诊断来源与规则</summary>
+      <Context value={value.scoring_context}/>
+      <p>原始执行标记：<code>{value.original_answered_with_gap ? 'answered_with_gap' : '未标记 answered_with_gap'}</code></p>
+      <p>规则 <code>{value.rule_version}</code> · 答卷指纹 <code>{value.answer_fingerprint}</code></p>
+    </details>
+    </div>
   </details>;
 }
 

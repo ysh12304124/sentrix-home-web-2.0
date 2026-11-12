@@ -44,8 +44,9 @@ export function ScoringResults({summary}: {summary:unknown}) {
 }
 export function ItemScoringResults({results, diagnostics, current, definition}: {results:unknown; diagnostics?:unknown; current?:unknown; definition?:unknown}) {
   const rows = Array.isArray(results) ? results.map(obj) : [];
-  return <section className='item-scoring-results' aria-label='分标准评分记录'>
-    <header className='item-scoring-heading'><h4>分标准评分记录</h4><span>同一回答 · 独立计分</span></header>
+  return <details className='item-scoring-results' aria-label='分标准评分记录' open>
+    <summary className='item-scoring-heading'><h4>分标准评分记录</h4><span>同一回答 · 独立计分</span></summary>
+    <div className='item-scoring-body'>
     <div className='item-scoring-grid'>
       {Object.entries(PROFILE_LABELS).map(([id,label]) => {
         const selected = rows.filter(r => r.profile_id === id);
@@ -68,5 +69,6 @@ export function ItemScoringResults({results, diagnostics, current, definition}: 
       })}
     </div>
     <div className='item-scoring-diagnostics'><ScoringRequestLog requests={diagnostics} title='公共诊断记录（相同配置复用）' /></div>
-  </section>;
+    </div>
+  </details>;
 }

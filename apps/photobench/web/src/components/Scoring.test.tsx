@@ -117,6 +117,7 @@ describe('独立评分标准', () => {
       {key:'qs',profile_id:ATM_PROFILE,batch_id:'qs-batch',turn_index:0,status:'completed',score:0,max_score:1,is_evaluation_turn:true,reason:'QS理由'},
     ]}/>);
     const cards=screen.getAllByRole('article');
+    expect(container.querySelector<HTMLDetailsElement>('.item-scoring-results')?.open).toBe(true);
     expect(cards).toHaveLength(2);
     expect(within(cards[0]).getByText('开放式回答')).toBeTruthy();
     expect(within(cards[1]).getByText('ATM-Bench式QS')).toBeTruthy();
