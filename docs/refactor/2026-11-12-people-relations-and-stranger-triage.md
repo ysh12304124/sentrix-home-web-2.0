@@ -1,6 +1,6 @@
 # 人物页：别名编辑、关系建立与陌生人分流
 
-分支：`feat/people-relations-and-stranger-triage`（基于 `feat/people-page-and-person-data-fixes`，叠在 PR #30 上）。
+分支：`feat/people-relations-and-stranger-triage`（基于已合入 PR #30 的 main）。
 
 ## 1. 别名 / 姓名编辑
 
