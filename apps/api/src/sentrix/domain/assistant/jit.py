@@ -105,10 +105,9 @@ def _select_offered(
             continue
         offered.update(tools if has_result_set else tools - _PHOTO_LEVEL_TOOLS)
 
-    if has_result_set and page_available:
-        # **翻页是一次性能力。** 生产固定「检索 = 页宽 = 6」，一次给全，这个工具
-        # 根本不会出现；若未来提高检索上限，第 2 页从第 ``PAGE_SIZE+1`` 张起直到
-        # 结束，成功翻过一次后由调用方把 ``page_available`` 置假，工具物理消失。
-        offered.add("get_result_page")
+    # ``get_result_page`` 不再 advertise：检索固定返回 6 张、页宽也是 6，一次就取完，
+    # 这个工具在真实流量里从来没有被成功使用过；发出去只会让弱模型在被拒的翻页上
+    # 浪费步数。工具定义与 handler 保留，历史调用仍走原有错误路径。
+    _ = page_available
 
     return tuple(spec for spec in TOOL_SPECS if spec.name in offered)
