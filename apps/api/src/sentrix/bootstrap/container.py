@@ -28,6 +28,7 @@ from sentrix.config import Settings
 from sentrix.domain.assistant.ports import (
     ChatModel,
     ConversationRepository,
+    GenerationHealthProbe,
     PersonDirectory,
     ResultSetRepository,
     TurnEventBroker,
@@ -296,7 +297,7 @@ class Container:
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
     # ``/health`` 一路回 ok。没有这一格，降级在运维侧不可见。
     embedding_health: EmbeddingHealthProbe
-    model_health: ModelGenerationHealth
+    model_health: GenerationHealthProbe
 
     # 时间线（S4）。地点是纯离线的：区县走 PyGeoCN 的面，乡镇/村庄走 GeoNames 的
     # 最近邻点，运行时零网络依赖。

@@ -85,6 +85,14 @@ class ChatModel(Protocol):
     def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply: ...
 
 
+class GenerationHealthProbe(Protocol):
+    """主模型生成能力的健康探测与最近状态。"""
+
+    def check(self) -> tuple[bool, str]: ...
+
+    def describe(self) -> dict[str, object]: ...
+
+
 @runtime_checkable
 class StructuredChatModel(Protocol):
     """**可选**能力：用 JSON Schema 约束解码。
@@ -137,15 +145,81 @@ class TurnRepository(Protocol):
 
     def create(self, record: TurnRecord) -> None: ...
 
+    def create_with_user_message(
+        self, record: TurnRecord, *, message_id: str
+    ) -> tuple[TurnRecord, bool]: ...
+
     def get(self, turn_id: str) -> TurnRecord | None: ...
 
     def claim(self, turn_id: str, updated_at: datetime) -> bool:
         """把 ``pending`` 置为 ``running``。返回是否抢到——并发只允许一个执行者。"""
         ...
 
-    def append_event(self, turn_id: str, event: ProgressEvent) -> None: ...
+    def claim_due(
+        self, *, now: datetime, lease_s: int, turn_id: str | None = None
+    ) -> TurnRecord | None: ...
 
-    def events_after(self, turn_id: str, step_index: int) -> Sequence[ProgressEvent]: ...
+    def wake_waiting(self, *, now: datetime) -> int: ...
+
+    def record_failure(self, turn_id: str, fence: int, *, now: datetime) -> int | None: ...
+
+    def finish_with_fence(
+        self,
+        turn_id: str,
+        *,
+        fence: int,
+        now: datetime,
+        status: str,
+        termination_reason: str,
+    ) -> bool: ...
+
+    def heartbeat(self, turn_id: str, fence: int, *, now: datetime, lease_s: int) -> bool: ...
+
+    def set_execution_state(
+        self,
+        turn_id: str,
+        fence: int,
+        *,
+        now: datetime,
+        execution_state: str,
+        waiting_reason: str = "",
+        next_retry_at: datetime | None = None,
+        pending: bool = False,
+    ) -> bool: ...
+
+    def request_cancel(self, turn_id: str, *, now: datetime) -> bool: ...
+
+    def append_event(
+        self,
+        turn_id: str,
+        event: ProgressEvent,
+        *,
+        fence: int,
+        attempt_no: int,
+        now: datetime,
+    ) -> int | None: ...
+
+    def events_after(
+        self, turn_id: str, event_seq: int
+    ) -> Sequence[tuple[int, int, ProgressEvent]]: ...
+
+    def finish_with_message(
+        self,
+        turn_id: str,
+        *,
+        fence: int,
+        now: datetime,
+        status: str,
+        termination_reason: str,
+        answer: str,
+        attachments: Sequence[Attachment],
+        requirements: Sequence[Mapping[str, Any]],
+        retrieved_candidates: Sequence[str],
+        trace: Mapping[str, Any],
+        message_id: str,
+        conversation_id: str,
+        scope_id: str,
+    ) -> bool: ...
 
     def finish(
         self,
@@ -162,6 +236,18 @@ class TurnRepository(Protocol):
     ) -> None: ...
 
     def list_for_conversation(self, conversation_id: str, limit: int) -> Sequence[TurnRecord]: ...
+
+    def list_for_conversation_page(
+        self, conversation_id: str, *, limit: int = 50, cursor: str = ""
+    ) -> tuple[Sequence[TurnRecord], bool, str | None]: ...
+
+    def oldest_active_updated_at(self) -> str | None: ...
+
+    def status_counts(self) -> dict[str, int]: ...
+
+    def list_active(self, *, limit: int = 20) -> Sequence[TurnRecord]: ...
+
+    def list_recent(self, *, limit: int = 20) -> Sequence[TurnRecord]: ...
 
 
 class ResultSetRepository(Protocol):

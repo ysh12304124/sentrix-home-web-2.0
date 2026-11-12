@@ -400,7 +400,7 @@ def test_progress_events_are_persisted_in_order(env):
 
     result = run_turn.run(turn_id)
 
-    events = turns.events_after(turn_id, 0)
+    events = [event for _seq, _attempt, event in turns.events_after(turn_id, 0)]
     assert [event.step_index for event in events] == list(range(1, len(events) + 1))
     assert events[0].kind == "plan"
     assert [event.payload["requirements"][0]["status"] for event in events[:1]] == ["open"]
@@ -420,7 +420,7 @@ def test_the_emitted_events_match_what_was_persisted(env):
 
     run_turn.run(turn_id, emit=emitted.append)
 
-    persisted = turns.events_after(turn_id, 0)
+    persisted = [event for _seq, _attempt, event in turns.events_after(turn_id, 0)]
     assert [(event.step_index, event.text) for event in emitted] == [
         (event.step_index, event.text) for event in persisted
     ]
@@ -630,7 +630,9 @@ def test_a_hard_block_is_visible_in_the_trace(env):
 
     run_turn.run(turn_id)
 
-    hard = [event for event in turns.events_after(turn_id, 0) if (event.payload or {}).get("hard")]
+    hard = [
+        event for _seq, _attempt, event in turns.events_after(turn_id, 0) if (event.payload or {}).get("hard")
+    ]
     assert hard, "硬拦必须留下一条可归因的事件"
     assert hard[0].payload["code"] == "internal_id_leak"
     assert hard[0].kind == "guard"
@@ -869,7 +871,9 @@ def test_a_second_search_is_refused_and_the_model_is_told_to_page(env):
     run_turn.run(turn_id)
 
     assert [name for name, _ in toolbox.calls] == ["search_memories"]
-    refusals = [event for event in turns.events_after(turn_id, 0) if event.status.value == "denied"]
+    refusals = [
+        event for _seq, _attempt, event in turns.events_after(turn_id, 0) if event.status.value == "denied"
+    ]
     assert refusals and "get_result_page" in refusals[0].text
 
 
@@ -1502,7 +1506,9 @@ def test_an_unfaithful_answer_is_pushed_back_once_then_released(env):
     # 没有它，「评审放行的答案」与「评审通过的答案」在轨迹上完全一样，
     # 而评测与排查要区分的正是这两者。
     released = [
-        event for event in _turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _seq, _attempt, event in _turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
     assert len(released) == 1
     assert released[0].kind == "judge"
@@ -1549,7 +1555,9 @@ def test_an_unfaithful_answer_is_released_when_the_judge_spent_the_last_step(env
     # 放行的同时还必须有那条标：没有它，「评审放行的答案」与「评审通过的答案」在轨迹
     # 上完全一样，而评测与排查要区分的正是这两者。
     released = [
-        event for event in _turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _seq, _attempt, event in _turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
     assert len(released) == 1
     assert released[0].payload["possibly_fabricated"] is True
@@ -1674,7 +1682,9 @@ def test_a_faithful_answer_carries_no_soft_release_label(env):
 
     assert len(model.judge_calls) == 1, "评审该被调用一次"
     assert not [
-        event for event in turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _seq, _attempt, event in turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
 
 
@@ -1697,7 +1707,9 @@ def test_a_style_only_problem_does_not_earn_the_label(env):
 
     assert result.answer == "相册里有 2 张海边的照片。", "风格问题不该让回答被退回重写"
     assert not [
-        event for event in turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _seq, _attempt, event in turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
 
 

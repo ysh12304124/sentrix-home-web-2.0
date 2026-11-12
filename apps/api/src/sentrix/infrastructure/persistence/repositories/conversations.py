@@ -116,6 +116,11 @@ class SqliteConversationRepository:
                 " (SELECT id FROM agent_turns WHERE conversation_id = ?)",
                 (conversation_id,),
             )
+            connection.execute(
+                "DELETE FROM agent_turn_events_v2 WHERE turn_id IN"
+                " (SELECT id FROM agent_turns WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
             connection.execute("DELETE FROM agent_turns WHERE conversation_id = ?", (conversation_id,))
             connection.execute(
                 "DELETE FROM agent_conversation_messages WHERE conversation_id = ?",

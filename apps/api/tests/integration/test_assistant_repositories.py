@@ -103,7 +103,7 @@ def test_a_new_message_moves_the_conversation_to_the_top(conversations):
     ]
 
 
-def test_deleting_a_conversation_removes_its_messages_and_turns(conversations, turns):
+def test_deleting_a_conversation_removes_its_messages_and_turns(conversations, turns, migrations_ready_db):
     """删对话不删记忆，但对话自己的消息与回合必须一起走干净。"""
     conversation = conversations.create(scope_id="album1", title="对话", created_at=NOW)
     record = TurnRecord(
@@ -116,6 +116,8 @@ def test_deleting_a_conversation_removes_its_messages_and_turns(conversations, t
         updated_at=NOW,
     )
     turns.create(record)
+    claimed = turns.claim_due(now=NOW, lease_s=60, turn_id="turn_1")
+    assert claimed is not None
     turns.append_event(
         "turn_1",
         ProgressEvent(
@@ -124,7 +126,16 @@ def test_deleting_a_conversation_removes_its_messages_and_turns(conversations, t
             status=ProgressStatus.COMPLETE,
             text="已确认需要哪些证据。",
         ),
+        fence=claimed.fence,
+        attempt_no=claimed.attempt_no,
+        now=NOW,
     )
+    with migrations_ready_db.connect() as connection, connection:
+        connection.execute(
+            "INSERT INTO agent_turn_events (turn_id, step_index, payload_json)"
+            " SELECT turn_id, event_seq, payload_json FROM agent_turn_events_v2 WHERE turn_id = ?",
+            ("turn_1",),
+        )
     conversations.add_message(
         conversation_id=conversation.id,
         scope_id="album1",
@@ -139,6 +150,40 @@ def test_deleting_a_conversation_removes_its_messages_and_turns(conversations, t
     assert conversations.list_messages(conversation.id, 10) == []
     assert turns.get("turn_1") is None
     assert turns.events_after("turn_1", 0) == []
+    with migrations_ready_db.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agent_turn_events").fetchone()[0] == 0
+
+
+def test_deleting_a_conversation_preserves_other_conversations_events(conversations, turns):
+    conversation_ids = []
+    for number in range(2):
+        conversation = conversations.create(scope_id="album1", title="对话", created_at=NOW)
+        conversation_ids.append(conversation.id)
+        turn_id = f"turn_{number}"
+        turns.create(make_turn(turn_id, conversation_id=conversation.id))
+        claimed = turns.claim_due(now=NOW, lease_s=60, turn_id=turn_id)
+        assert claimed is not None
+        turns.append_event(
+            turn_id,
+            ProgressEvent(
+                step_index=1,
+                stage=ProgressStage.PLANNING,
+                status=ProgressStatus.COMPLETE,
+                text=f"对话 {number}",
+            ),
+            fence=claimed.fence,
+            attempt_no=claimed.attempt_no,
+            now=NOW,
+        )
+
+    preserved = turns.events_after("turn_1", 0)
+    assert len(preserved) == 1
+    assert conversations.delete(conversation_ids[0], NOW) is True
+    assert conversations.delete(conversation_ids[0], NOW) is False
+    assert turns.events_after("turn_0", 0) == []
+    assert turns.events_after("turn_1", 0) == preserved
+    assert conversations.get(conversation_ids[1]) is not None
+    assert turns.get("turn_1") is not None
 
 
 # ---- 回合 -------------------------------------------------------------------
@@ -168,6 +213,8 @@ def test_claim_flips_pending_to_running_exactly_once(turns, conversations):
 def test_events_are_replayed_by_step_index(turns, conversations):
     conversation = conversations.create(scope_id="album1", title="对话", created_at=NOW)
     turns.create(make_turn("turn_1", conversation_id=conversation.id))
+    claimed = turns.claim_due(now=NOW, lease_s=60, turn_id="turn_1")
+    assert claimed is not None
     for index in range(1, 4):
         turns.append_event(
             "turn_1",
@@ -178,9 +225,15 @@ def test_events_are_replayed_by_step_index(turns, conversations):
                 text=f"第 {index} 步",
                 payload={"n": index},
             ),
+            fence=claimed.fence,
+            attempt_no=claimed.attempt_no,
+            now=NOW,
         )
 
-    replay = turns.events_after("turn_1", 1)
+    stored = turns.events_after("turn_1", 1)
+    assert [seq for seq, _attempt, _event in stored] == [2, 3]
+    assert [attempt for _seq, attempt, _event in stored] == [claimed.attempt_no, claimed.attempt_no]
+    replay = [event for _seq, _attempt, event in stored]
 
     assert [event.step_index for event in replay] == [2, 3]
     assert replay[0].text == "第 2 步"

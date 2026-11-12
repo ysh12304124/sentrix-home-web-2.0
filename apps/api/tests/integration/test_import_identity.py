@@ -111,6 +111,9 @@ class FakeStorage:
         path.write_bytes(content)
         return path
 
+    def copy_from_path(self, asset_id: str, file_name: str, source_path: Path) -> Path:
+        return self.store(asset_id, file_name, source_path.read_bytes())
+
 
 class FakeMetadata:
     def read(self, path: Path) -> tuple[Any, GpsPoint | None, Any]:

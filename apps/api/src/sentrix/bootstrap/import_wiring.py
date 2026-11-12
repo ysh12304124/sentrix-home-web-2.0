@@ -427,7 +427,7 @@ def _face_enroller(container: Container) -> EnrollFaces:
 
 def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
     index = IndexObservationText(
-        embedder=container.text_embedder, vectors=container.vector_repository
+        embedder=container.text_embedder, vectors=container.text_vector_repository
     )
 
     def run(observation: Observation, event_id: str | None) -> int:

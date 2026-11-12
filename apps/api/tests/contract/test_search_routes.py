@@ -264,6 +264,16 @@ def test_the_endpoint_reports_only_the_channels_that_have_hits(channel_client: T
     assert "metadata" not in reported, "没有正向结构化条件时 metadata 通道不该有召回信号"
 
 
+def test_album_text_vectors_use_the_text_repository(channel_client: TestClient):
+    container = channel_client.app.state.container
+
+    assert container.text_vector_repository.count(space=scheme.SEMANTIC_SPACE) == 2
+    assert container.text_vector_repository.count(space=scheme.EPISODIC_SPACE) >= 2
+    assert container.vector_repository.count(space=scheme.SEMANTIC_SPACE) == 0
+    assert container.vector_repository.count(space=scheme.EPISODIC_SPACE) == 0
+    assert container.vector_repository.count(space=scheme.VISUAL_SPACE) == 2
+
+
 def test_search_without_a_scope_covers_every_album(scripted_client: TestClient) -> None:
     """**空 scope = 全部相册**，与资料库、时间线同一形状，但根因深一层。
 
