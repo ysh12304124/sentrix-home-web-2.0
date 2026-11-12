@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from sentrix.domain.assistant.evidence_ledger import EvidenceLedger, EvidenceType
+from sentrix.domain.assistant.evidence_ledger import EvidenceLedger, EvidenceType, RequirementStatus
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS, ToolSpec
 
 #: 三个照片级工具都要一个**来自当前结果集**的 handle（``result_set_id`` 是它们的必填
@@ -81,6 +81,15 @@ def _select_offered(
         return ()
 
     open_types = {item.evidence_type for item in ledger.open_requirements()}
+    # 视觉细节与图内文字是可选需求：检索前被 _PHOTO_LEVEL_TOOLS 挡住，检索后
+    # 由执行阶段根据预览决定是否调用。不做这一步，模型在预览不足时也没有工具可用。
+    open_types.update(
+        item.evidence_type
+        for item in ledger.requirements
+        if item.evidence_type in (EvidenceType.VISUAL_OBSERVATION, EvidenceType.VISIBLE_TEXT)
+        and not item.required
+        and item.status is RequirementStatus.OPEN
+    )
     offered = {FINAL_ANSWER_TOOL}
 
     # 检索是唯一的入口，而 ``max_search_calls = 1``：一次成功的检索之后，
