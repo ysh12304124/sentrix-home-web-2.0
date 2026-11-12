@@ -67,6 +67,34 @@ def test_keyframe_of_the_gt_video_counts_as_hitting_that_video():
     assert out["retrieval"]["candidate_precision"] == 1.0
 
 
+def test_video_candidate_source_keyframe_id_drives_keyframe_metrics():
+    """Persisted video candidates put the parent in asset_id and the frame separately."""
+    candidate = {"asset_id": "v1", "source_keyframe_asset_id": "k1", "media_type": "video"}
+    out = keyframe_analysis.keyframe_analysis(
+        _state(items=[_one_item([candidate], predicted=[candidate])]),
+        [_video("v1"), _keyframe("k1", "v1")],
+    )
+    assert out["retrieval"]["video_parent_recall"] == 1.0
+    assert out["retrieval"]["candidate_keyframes"] == 1
+    assert out["retrieval"]["candidate_precision"] == 1.0
+    assert out["retrieval"]["predicted_keyframes"] == 1
+    assert out["retrieval"]["predicted_precision"] == 1.0
+
+
+def test_search_trace_asset_ids_count_as_retrieved_keyframe_candidates():
+    """Older persisted traces have result.asset_ids but no observation.preview."""
+    item = _one_item([], score=2)
+    item["tool_trace"] = [{"tool": "search_memories", "result": {"asset_ids": ["k1"]}}]
+    out = keyframe_analysis.keyframe_analysis(
+        _state(items=[item]),
+        [_video("v1"), _keyframe("k1", "v1")],
+    )
+    assert out["retrieval"]["candidate_keyframes"] == 1
+    assert out["retrieval"]["candidate_precision"] == 1.0
+    assert out["retrieval"]["video_parent_recall"] == 1.0
+    assert out["usefulness"]["qa_with_keyframe"] == 1
+
+
 def test_a_keyframe_of_another_video_does_not_hit():
     """同一个代码路径，只把父级换掉，结论必须翻转——否则上面的断言什么也没证明。"""
     out = keyframe_analysis.keyframe_analysis(
