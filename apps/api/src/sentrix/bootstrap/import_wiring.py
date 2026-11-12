@@ -427,7 +427,9 @@ def _face_enroller(container: Container) -> EnrollFaces:
 
 def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
     index = IndexObservationText(
-        embedder=container.text_embedder, vectors=container.vector_repository
+        # 文本向量必须写 text_vectors；写成 memory_vectors 时写入成功但
+        # RetrieveTextAnn 读 text_vectors，所有用户的文本检索都会返回空。
+        embedder=container.text_embedder, vectors=container.text_vector_repository
     )
 
     def run(observation: Observation, event_id: str | None) -> int:
