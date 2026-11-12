@@ -12,12 +12,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 
 import {
+  batchConfirmPeople,
   deleteFamilyRelationship,
   deliveredPhotoThumbUrl,
   getPerson,
   getPersonPortrait,
-  mergePeople,
   putFamilyRelationship,
+  rejectFaceCluster,
   renamePerson,
   setEntityProperty,
   setFamilyMembership,
@@ -25,16 +26,20 @@ import {
   type FamilyPerson,
   type FamilyRelationship,
 } from "../../../shared/api/client";
+import { newOperationId, reportClientEvent } from "../../../shared/clientEvents";
 import { describeReviewError } from "../reviewErrors";
 import { confirmedRelationships } from "./graphLayout";
 import {
+  FAMILY_ROLES,
   isNamed,
+  isPendingPerson,
   membershipLabel,
   membershipOf,
   personDisplayName,
   relationChoices,
   MEMBERSHIP_VALUES,
 } from "./membership";
+import { MergePeopleDialog } from "./MergePeopleDialog";
 import { PersonAvatar } from "./PersonAvatar";
 
 const CHOICES = relationChoices();
@@ -47,6 +52,10 @@ interface Props {
   readonly onChanged: () => Promise<void>;
   /** 图上拖拽落到人身上时预选的对方；普通点开是 null。 */
   readonly relateTarget?: string | null;
+  /**
+   * 确认时后端按同名并进了另一个已确认的人：详情要跟过去，而不是停在一个已不存在的人上。
+   */
+  readonly onRedirect?: (personId: string) => void;
 }
 
 export function PersonDetail({
@@ -56,11 +65,19 @@ export function PersonDetail({
   onClose,
   onChanged,
   relateTarget = null,
+  onRedirect,
 }: Props) {
+  const pending = isPendingPerson(person);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 未命名的人不把占位文案「未确认姓名人物」预填进输入框——那句话不是名字。
   const [name, setName] = useState(isNamed(person) ? personDisplayName(person) : "");
-  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [familyRole, setFamilyRole] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+  // 「与其他人合并…」：先挑一个人（同空间），再进与名录共用的确认框。
+  const [mergePicking, setMergePicking] = useState(false);
+  const [mergeQuery, setMergeQuery] = useState("");
+  const [mergeWith, setMergeWith] = useState<FamilyPerson | null>(null);
   // 人物画像来自「人物介绍」那套画像表；没有时显示「无」，不回退到家庭侧的手写介绍。
   const [portraitText, setPortraitText] = useState<string | null>(null);
   const [aliases, setAliases] = useState<string[]>([]);
@@ -70,10 +87,15 @@ export function PersonDetail({
   const [aliasesLoading, setAliasesLoading] = useState(false);
   const [aliasText, setAliasText] = useState("");
 
-  const others = people.filter((item) => item.id !== person.id);
+  const others = people.filter((item) => item.id !== person.id && item.scope_id === person.scope_id);
   // 未命名人物在关系下拉里全都叫「未确认姓名人物」，选错人的概率比选对还高。
   // 关系只允许连到已经有名字的人；未命名的人先在人物卡上命名。
   const relationTargets = others.filter(isNamed);
+  const relationTarget = relationTargets.find((item) => item.id === targetId);
+  const mergeNeedle = mergeQuery.trim().toLowerCase();
+  const mergeCandidates = [...others]
+    .filter((item) => mergeNeedle === "" || personDisplayName(item).toLowerCase().includes(mergeNeedle))
+    .sort((a, b) => b.appearance_count - a.appearance_count);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,6 +133,7 @@ export function PersonDetail({
         label: outgoing ? edge.predicate : edge.inverse_predicate,
       };
     });
+
   const hasRelationWithTarget = edges.some((edge) => edge.otherId === targetId);
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
@@ -134,6 +157,60 @@ export function PersonDetail({
       const result = await renamePerson(person.id, name);
       setAliases(result.aliases);
     });
+  }
+
+  /**
+   * 确认身份：**不是改名**。改名只动 `canonical_name`，实体仍是 pending——没有提及、
+   * 没有事件参与者，问答与按人找照片都看不到他（2026-11-11 「王王」就是这么丢的）。
+   *
+   * 走 `POST /people/batch-confirm` 的单件形式：它对有簇的人交给簇确认（写提及、外观、
+   * 事件投影），同名时并进已有的人；回执里的 `entity_id` 与本人不同就说明被并走了。
+   */
+  function submitConfirm(event: FormEvent) {
+    event.preventDefault();
+    let mergedInto: string | null = null;
+    // 原「待确认的人物」页的两条埋点挪到这里：确认入口换了位置，漏斗口径不变。
+    void reportClientEvent({
+      eventName: "people.confirm_submit",
+      result: "started",
+      operationId: newOperationId(),
+      scopeId: person.scope_id,
+      entityId: person.id,
+    });
+    void run(async () => {
+      const result = await batchConfirmPeople([
+        { person_id: person.id, name, family_role: familyRole === "" ? null : familyRole },
+      ]);
+      const failure = result.failed[0];
+      if (failure !== undefined) throw new Error(failure.error);
+      const outcome = result.confirmed[0];
+      if (outcome !== undefined && outcome.entity_id !== person.id) mergedInto = outcome.entity_id;
+    }).then((ok) => {
+      void reportClientEvent({
+        eventName: "people.confirm_result",
+        result: ok ? "ok" : "failed",
+        operationId: newOperationId(),
+        scopeId: person.scope_id,
+        entityId: person.id,
+        errorCode: ok ? undefined : "unknown",
+      });
+      if (ok && mergedInto !== null) onRedirect?.(mergedInto);
+    });
+  }
+
+  /**
+   * 「这不是一个人物」：拒绝它的人脸分组。后端删的是候选实体，人脸实例与原始照片都留着。
+   * 只对待确认的人开放——已确认的人后端会回 409，界面上也不给这个按钮。
+   */
+  async function rejectPerson() {
+    const ok = await run(async () => {
+      const detail = await getPerson(person.id);
+      const cluster = detail.clusters.find((item) => item.status !== "rejected");
+      if (cluster === undefined) throw new Error("这个人物没有可移除的人脸分组");
+      await rejectFaceCluster(cluster.id);
+    });
+    setRejecting(false);
+    if (ok) onClose();
   }
 
   /**
@@ -170,8 +247,7 @@ export function PersonDetail({
 
   function submitRelation(event: FormEvent) {
     event.preventDefault();
-    if (targetId === "") return;
-    if (!relationTargets.some((item) => item.id === targetId)) {
+    if (relationTarget === undefined) {
       setError("请先把对方命名，再建立关系。");
       return;
     }
@@ -181,19 +257,10 @@ export function PersonDetail({
         scopeId: person.scope_id,
         subjectEntityId: person.id,
         predicate: choice.predicate,
-        objectEntityId: targetId,
+        objectEntityId: relationTarget.id,
         inversePredicate: choice.inversePredicate,
       }),
     );
-  }
-
-  function submitMerge(event: FormEvent) {
-    event.preventDefault();
-    if (mergeTargetId === "") return;
-    void run(async () => {
-      await mergePeople(mergeTargetId, person.id);
-      onClose();
-    });
   }
 
   const currentMembership: FamilyMembershipValue = membershipOf(person);
@@ -205,6 +272,7 @@ export function PersonDetail({
         <div>
           <strong>{personDisplayName(person)}</strong>
           <small>
+            {pending ? "待确认 · " : ""}
             {membershipLabel(currentMembership)} · 出现 {person.appearance_count} 次
             {person.membership?.locked === true ? " · 已锁定" : ""}
           </small>
@@ -222,19 +290,77 @@ export function PersonDetail({
 
       <section className="detail-section">
         <h3>身份</h3>
-        <form className="detail-form" onSubmit={submitRename}>
-          <label>
-            姓名
-            <input
-              value={name}
-              placeholder="给这个人起个名字"
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <button type="submit" className="button ghost small" disabled={busy}>
-            保存姓名
-          </button>
-        </form>
+        {pending ? (
+          <form className="detail-form" onSubmit={submitConfirm}>
+            <p className="detail-empty">
+              这是系统从照片里整理出的面孔，确认后才会进入问答和按人找照片。
+            </p>
+            <label>
+              姓名
+              <input
+                value={name}
+                placeholder="这个人是谁？"
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label>
+              家庭角色（可选）
+              <select
+                aria-label="家庭角色"
+                value={familyRole}
+                onChange={(event) => setFamilyRole(event.target.value)}
+              >
+                <option value="">暂不填写</option>
+                {FAMILY_ROLES.map((role) => (
+                  <option key={role} value={role}>
+                    {role}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="submit" className="button primary small" disabled={busy || name.trim() === ""}>
+              确认身份
+            </button>
+          </form>
+        ) : (
+          <form className="detail-form" onSubmit={submitRename}>
+            <label>
+              姓名
+              <input value={name} onChange={(event) => setName(event.target.value)} />
+            </label>
+            <button type="submit" className="button ghost small" disabled={busy}>
+              保存姓名
+            </button>
+          </form>
+        )}
+
+        {pending ? (
+          rejecting ? (
+            <div className="detail-confirm-row" role="group" aria-label="确认移除">
+              <span>移除后这些面孔不再作为人物出现，原始照片不受影响。</span>
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={busy}
+                onClick={() => void rejectPerson()}
+              >
+                确定移除
+              </button>
+              <button type="button" className="button ghost small" onClick={() => setRejecting(false)}>
+                取消
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="button ghost small"
+              disabled={busy}
+              onClick={() => setRejecting(true)}
+            >
+              这不是一个人物
+            </button>
+          )
+        ) : null}
 
         {aliasesOpen ? (
           <form className="detail-form" onSubmit={submitAliases}>
@@ -266,6 +392,65 @@ export function PersonDetail({
           <p className="detail-aliases">别名：{aliases.join("、")}</p>
         )}
 
+        {others.length === 0 ? null : mergePicking ? (
+          <div className="detail-merge-picker">
+            <input
+              type="search"
+              aria-label="搜索要合并的人物"
+              placeholder="和谁是同一个人？搜名字…"
+              value={mergeQuery}
+              onChange={(event) => setMergeQuery(event.target.value)}
+            />
+            {mergeCandidates.length === 0 ? (
+              <p className="detail-empty">没有匹配的人物。</p>
+            ) : (
+              <ul className="detail-merge-candidates">
+                {mergeCandidates.map((item) => (
+                  <li key={item.id}>
+                    <button type="button" disabled={busy} onClick={() => setMergeWith(item)}>
+                      <PersonAvatar person={item} size="sm" />
+                      <span>{personDisplayName(item)}</span>
+                      <small>出现 {item.appearance_count} 次</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={() => {
+                setMergePicking(false);
+                setMergeQuery("");
+              }}
+            >
+              取消合并
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="button ghost small"
+            disabled={busy}
+            onClick={() => setMergePicking(true)}
+          >
+            与其他人合并…
+          </button>
+        )}
+
+        {mergeWith === null ? null : (
+          <MergePeopleDialog
+            people={[person, mergeWith]}
+            onCancel={() => setMergeWith(null)}
+            onMerged={async (keptId) => {
+              setMergeWith(null);
+              setMergePicking(false);
+              await onChanged();
+              if (keptId !== person.id) onRedirect?.(keptId);
+            }}
+          />
+        )}
+
         <label className="detail-field">
           家庭归属
           <select
@@ -289,39 +474,6 @@ export function PersonDetail({
             {portraitText === null ? "正在读取…" : portraitText === "" ? "无" : portraitText}
           </p>
         </div>
-      </section>
-
-      <section className="detail-section">
-        <h3>合并人物</h3>
-        <p className="detail-empty">
-          如果下面这个人和当前人物是同一个人，合并后保留对方的名字、画像和关系。
-        </p>
-        {others.length === 0 ? null : (
-          <form className="detail-form" onSubmit={submitMerge}>
-            <label>
-              合并到
-              <select
-                aria-label="合并到人物"
-                value={mergeTargetId}
-                onChange={(event) => setMergeTargetId(event.target.value)}
-              >
-                <option value="">选择要保留的人…</option>
-                {others.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {personDisplayName(item)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="submit"
-              className="button ghost small"
-              disabled={busy || mergeTargetId === ""}
-            >
-              合并并保留对方
-            </button>
-          </form>
-        )}
       </section>
 
       <section className="detail-section">
@@ -362,6 +514,7 @@ export function PersonDetail({
           <p className="detail-empty">先把对方命名后，才能建立关系。</p>
         ) : (
           <form className="detail-form" onSubmit={submitRelation}>
+            <p className="detail-empty">仅显示同一记忆空间的人物。</p>
             <div className="detail-relation-row">
               <select
                 aria-label="关系"
@@ -376,7 +529,7 @@ export function PersonDetail({
               </select>
               <select
                 aria-label="对方"
-                value={targetId}
+                value={relationTarget?.id ?? ""}
                 onChange={(event) => setTargetId(event.target.value)}
               >
                 <option value="">选择对方…</option>
@@ -390,7 +543,7 @@ export function PersonDetail({
             <p className="detail-empty">
               选择「父亲 → 儿子」表示：当前人物是对方的父亲，对方是当前人物的儿子。
             </p>
-            <button type="submit" className="button primary small" disabled={busy || targetId === ""}>
+            <button type="submit" className="button primary small" disabled={busy || relationTarget === undefined}>
               {hasRelationWithTarget ? "更新关系" : "建立关系"}
             </button>
           </form>

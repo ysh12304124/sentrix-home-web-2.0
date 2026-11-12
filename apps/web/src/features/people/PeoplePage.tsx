@@ -1,9 +1,13 @@
 /**
  * 人物与关系。对应 1.0 `src/app.js:648` 的 `peopleView()`。
  *
- * 三个 tab：**名录（默认） / 关系图谱 / 待确认簇**。默认是名录不是图谱，依据是实测：
+ * 三个 tab：**人物（默认） / 关系 / 人物介绍**。默认是名录不是图谱，依据是实测：
  * 刚导入的相册跑出来的图是 8 个孤点（计划书 §0）；1.0 的默认恰恰是图谱，这是 F7
  * 要改的第一件事。
+ *
+ * 原来的「待确认的人物」tab 已移除（2026-11-11）：名录本来就列出待确认的人，两边重复；
+ * 它独有的动作挪进了人物详情（确认身份 / 这不是一个人物），簇级合并换成名录里的
+ * 人物级手动合并（`POST /people/merge`）。
  *
  * **不加新路由**：人物详情走 `?person=<id>`（计划书 §1 裁决③）。理由很实在——
  * `app/router.test.tsx:51` 钉死「路由数 == 导航项数 == 页面文件数」，加一条参数路由
@@ -124,7 +128,15 @@ export function PeoplePage() {
           {state === "loading" ? (
             <p className="empty">正在读取人物…</p>
           ) : (
-            <FamilyRoster people={people} selectedId={selectedId} onSelect={(id) => selectPerson(id)} />
+            <FamilyRoster
+              people={people}
+              selectedId={selectedId}
+              onSelect={(id) => selectPerson(id)}
+              onMerged={async (targetId) => {
+                await refresh();
+                selectPerson(targetId);
+              }}
+            />
           )}
 
         </Section>
@@ -162,6 +174,7 @@ export function PeoplePage() {
           relateTarget={relateTo}
           onClose={() => selectPerson(null)}
           onChanged={refresh}
+          onRedirect={(id) => selectPerson(id)}
         />
       )}
 

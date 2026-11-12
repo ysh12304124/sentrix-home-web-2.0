@@ -100,17 +100,6 @@ class SplitClusterRequest(BaseModel):
     face_instance_id: str = ""
 
 
-class MergePeopleRequest(BaseModel):
-    """人物合并：保留 ``target_entity_id``，把 ``source_entity_id`` 并进去。"""
-
-    target_entity_id: str = ""
-    source_entity_id: str = ""
-
-
-class MergePeopleResponse(BaseModel):
-    entity: PersonPayload
-
-
 class PersonListResponse(BaseModel):
     people: list[PersonPayload]
 
@@ -128,6 +117,29 @@ class RenamePersonRequest(BaseModel):
 class RenamePersonResponse(BaseModel):
     entity: PersonPayload
     aliases: list[str]
+
+
+class MergePeopleRequest(BaseModel):
+    """把 ``source_person_ids`` 并进 ``target_person_id``。
+
+    ``name`` 可省：省略时保留目标的名字，目标没有名字时取第一个有名字的来源。
+    空 id 与 ``MergeClustersRequest`` 同理判在用例里（400），不交给 pydantic（422）。
+    """
+
+    target_person_id: str = ""
+    source_person_ids: list[str] = Field(default_factory=list)
+    name: str | None = None
+
+
+class MergePeopleResponse(BaseModel):
+    """合并后的目标人物与这次搬动的规模。计数供界面提示，不是审计——审计在
+    ``entity_revisions``。"""
+
+    entity: PersonPayload
+    merged_person_ids: list[str]
+    moved_face_count: int
+    moved_relationship_count: int
+    dropped_relationship_count: int
 
 
 class BatchConfirmItem(BaseModel):

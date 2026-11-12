@@ -25,13 +25,11 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_CONFIRMED,
     ENTITY_STATUS_PENDING,
     ENTITY_STATUS_REJECTED,
-    ENTITY_STATUS_SUPERSEDED,
     ENTITY_TYPE_PERSON,
     PROPERTY_SOURCE_USER,
     PROPERTY_STATUS_ACTIVE,
     PROPERTY_STATUS_PENDING,
     RETIRED_CANDIDATE_SUMMARY,
-    REVISION_SOURCE_USER_MERGE,
     REVISION_SOURCE_USER_RENAME,
     ClusterState,
     EntityDecoration,
@@ -44,6 +42,7 @@ from sentrix.domain.identity.models import (
     is_pending_cluster_name,
 )
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.repositories.search_terms import sync_person_bridge
 
 _ENTITY_COLUMNS = (
     "id, scope_id, entity_type, canonical_name, status, family_role, summary, confidence,"
@@ -955,149 +954,40 @@ class SqliteEntityRepository:
                     REVISION_SOURCE_USER_RENAME,
                     (),
                 )
+                # 同一个事务里把观察上的人物快照改成新名字。快照存的是**名字**，它是检索
+                # 人物条件、实体通道兜底、记忆图人物节点、家庭图谱洞察证据与照片预览
+                # 「people」的共同输入；只改 ``entities`` 的话，已确认的人一改名，他所有
+                # 照片上记的还是旧名，按新名字什么都查不到。pending 的人没有快照，
+                # 这一步对他们是空操作。
+                self._rename_in_person_snapshots(connection, entity_id, name)
         return self.get(entity_id)
 
-    def merge_person_into(self, target_entity_id: str, source_entity_id: str) -> EntityRecord:
-        """把 source 人物并入 target，保留 target 的名字与画像。
+    @staticmethod
+    def _rename_in_person_snapshots(connection: sqlite3.Connection, entity_id: str, name: str) -> int:
+        """把 ``people_json`` 里 ``entity_id`` 是这个人的条目改成新名字，返回改了几条观察。
 
-        用户已经确认的两个人合并不是聚类猜测：它明确表示「这两个名字是同一个人」。
-        因此这里直接搬走所有以实体 id 为外键的子行，并把 source 标成 superseded。
-        搬移顺序固定：先 ``UPDATE OR IGNORE`` 再删残留，避免撞唯一键时把 source 的
-        证据整批丢掉。
+        改过的观察在同一个事务里刷 ``person_bridge`` 投影：全部相册按人召回读的是投影，
+        只改快照的话按新名字仍然查不到。
         """
-        if target_entity_id == source_entity_id:
-            raise ValueError("cannot merge an entity into itself")
-        target = self.get(target_entity_id)
-        source = self.get(source_entity_id)
-        if (
-            target is None
-            or source is None
-            or target.entity_type != ENTITY_TYPE_PERSON
-            or source.entity_type != ENTITY_TYPE_PERSON
-        ):
-            raise ValueError("both merge endpoints must be person entities")
-        if (target.scope_id or DEFAULT_SCOPE_ID) != (source.scope_id or DEFAULT_SCOPE_ID):
-            raise ValueError("persons must belong to the same memory space")
-
-        # 旧名字要留在 target 的别名里，否则合并后无法再用旧名检索。
-        aliases = list(self.person_aliases(target.id))
-        for value in (*self.person_aliases(source.id), source.canonical_name):
-            if value and not is_pending_cluster_name(value) and value not in aliases:
-                aliases.append(value)
-        if aliases:
-            self.set_person_aliases(target.id, aliases)
-
-        now = _now()
-        with self._database.connect() as connection, connection:
-            for table, column in (
-                ("entity_mentions", "entity_id"),
-                ("event_participants", "person_id"),
-                ("event_entities", "entity_id"),
-                ("person_appearance_evidence", "person_id"),
-                ("person_moments", "person_id"),
-            ):
+        rows = connection.execute(
+            "SELECT id, people_json FROM observations WHERE instr(people_json, ?) > 0",
+            (entity_id,),
+        ).fetchall()
+        changed: list[str] = []
+        for row in rows:
+            people = _decode_list(row["people_json"])
+            touched = False
+            for item in people:
+                if isinstance(item, dict) and item.get("entity_id") == entity_id and item.get("name") != name:
+                    item["name"] = name
+                    touched = True
+            if touched:
                 connection.execute(
-                    f"UPDATE OR IGNORE {table} SET {column} = ? WHERE {column} = ?",
-                    (target.id, source.id),
+                    "UPDATE observations SET people_json = ? WHERE id = ?", (_encode(people), row["id"])
                 )
-                connection.execute(f"DELETE FROM {table} WHERE {column} = ?", (source.id,))
-
-            connection.execute(
-                "INSERT OR IGNORE INTO entity_observations"
-                " (entity_id, observation_id, confidence, source, created_at)"
-                " SELECT ?, observation_id, confidence, source, created_at"
-                " FROM entity_observations WHERE entity_id = ?",
-                (target.id, source.id),
-            )
-            connection.execute("DELETE FROM entity_observations WHERE entity_id = ?", (source.id,))
-
-            # 关系表没有唯一约束：先搬两端，再把合并后变成自环的边退休。
-            for table in ("relationships", "family_relationships"):
-                state_column = "status" if table == "relationships" else "state"
-                connection.execute(
-                    f"UPDATE {table} SET subject_entity_id = ? WHERE subject_entity_id = ?",
-                    (target.id, source.id),
-                )
-                connection.execute(
-                    f"UPDATE {table} SET object_entity_id = ? WHERE object_entity_id = ?",
-                    (target.id, source.id),
-                )
-                connection.execute(
-                    f"UPDATE {table} SET {state_column} = 'superseded', updated_at = ?"
-                    " WHERE subject_entity_id = ? AND object_entity_id = ?",
-                    (now, target.id, target.id),
-                )
-
-            # 归属/画像：target 没有生效行才搬，否则 source 的行退休，避免两行同时生效。
-            for table, state_column in (
-                ("family_person_memberships", "state"),
-                ("family_person_portraits", "state"),
-            ):
-                has_target = connection.execute(
-                    f"SELECT 1 FROM {table} WHERE entity_id = ? AND {state_column} = 'effective' LIMIT 1",
-                    (target.id,),
-                ).fetchone()
-                if has_target is None:
-                    connection.execute(
-                        f"UPDATE {table} SET entity_id = ? WHERE entity_id = ?",
-                        (target.id, source.id),
-                    )
-                else:
-                    connection.execute(
-                        f"UPDATE {table} SET {state_column} = 'superseded', updated_at = ?"
-                        " WHERE entity_id = ? AND {state_column} = 'effective'".format(
-                            state_column=state_column
-                        ),
-                        (now, source.id),
-                    )
-
-            # 属性：target 已有同名 key 就保留 target 的，source 的退休；否则整体搬过去。
-            keys = connection.execute(
-                "SELECT DISTINCT property_key FROM entity_properties"
-                " WHERE entity_id = ? AND status IN ('active', 'pending')",
-                (source.id,),
-            ).fetchall()
-            for row in keys:
-                key = str(row["property_key"])
-                target_has = connection.execute(
-                    "SELECT 1 FROM entity_properties WHERE entity_id = ? AND property_key = ?"
-                    " AND status IN ('active', 'pending') LIMIT 1",
-                    (target.id, key),
-                ).fetchone()
-                if target_has is None:
-                    connection.execute(
-                        "UPDATE entity_properties SET entity_id = ?"
-                        " WHERE entity_id = ? AND property_key = ?",
-                        (target.id, source.id, key),
-                    )
-                else:
-                    connection.execute(
-                        "UPDATE entity_properties SET status = 'superseded', updated_at = ?"
-                        " WHERE entity_id = ? AND property_key = ?"
-                        " AND status IN ('active', 'pending')",
-                        (now, source.id, key),
-                    )
-
-            connection.execute(
-                "UPDATE entities SET status = ?, summary = ?, updated_at = ? WHERE id = ?",
-                (
-                    ENTITY_STATUS_SUPERSEDED,
-                    f"{source.summary}（已合并到 {target.canonical_name}）".strip(),
-                    now,
-                    source.id,
-                ),
-            )
-
-        self.record_revision(
-            target.id,
-            "merged_person",
-            source.id,
-            None,
-            source=REVISION_SOURCE_USER_MERGE,
-        )
-        merged = self.get(target.id)
-        assert merged is not None
-        return merged
+                changed.append(str(row["id"]))
+        sync_person_bridge(connection, changed)
+        return len(changed)
 
     # ---- 提及桥 ------------------------------------------------------------------
 
@@ -1149,6 +1039,11 @@ class SqliteEntityRepository:
         写的是**另一个聚合的表**，这一点是有意的：``people_json`` 是身份层在观察上的投影，
         它没有自己的写入用例，跟着提及一起写才不会出现「有提及、快照里没人」。已存在就不
         重复追加，所以重复调用幂等。
+
+        快照写完在**同一个事务里**重写这条观察的 ``person_bridge`` 词法投影
+        （``sync_person_bridge``）。1.0 与 2.0 早先都只在导入时写投影，那时还没人被确认，
+        于是 ``person_bridge`` 恒为空，实体通道全靠扫观察兜底——而兜底在「全部相册」下
+        不跑。投影跟着快照一起提交，两者才不会分叉。
         """
         row = connection.execute(
             "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
@@ -1156,12 +1051,18 @@ class SqliteEntityRepository:
         if row is None:
             return
         people = _decode_list(row["people_json"])
-        if not any(isinstance(item, dict) and item.get("entity_id") == entity.id for item in people):
-            people.append({"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status})
+        current = {"entity_id": entity.id, "name": entity.canonical_name, "status": entity.status}
+        existing = [item for item in people if isinstance(item, dict) and item.get("entity_id") == entity.id]
+        if not existing:
+            people.append(current)
+        # 已有这条就把名字与状态对齐到当前实体：快照里留着旧名，按现在的名字就查不到。
+        for item in existing:
+            item.update(name=current["name"], status=current["status"])
         connection.execute(
             "UPDATE observations SET people_json = ? WHERE id = ?",
             (_encode(people), observation_id),
         )
+        sync_person_bridge(connection, (observation_id,))
 
     # ---- 事件关联 ----------------------------------------------------------------
 

@@ -160,6 +160,7 @@ def _person_payload(person: FamilyPersonProjection) -> FamilyPersonPayload:
             )
             for item in person.representative_media
         ],
+        status=person.status,
     )
 
 
@@ -175,6 +176,10 @@ def family_graph(
     """
     repository = container.family_graph_repository
     scope_ids = repository.graph_scope_ids(scope_id)
+    people = repository.family_graph_people(scope_ids)
+    if not scope_id:
+        # 全部相册的人物来自多个空间；关系也必须按这些可见人物的实际空间读取。
+        scope_ids = list(dict.fromkeys(person.scope_id for person in people))
     latest = repository.latest_run(scope_id)
     people = repository.family_graph_people(scope_ids)
     # 「全部相册」传的是空 scope：`graph_scope_ids("")` 只回 `[""]`，但 people 会

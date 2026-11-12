@@ -285,3 +285,38 @@ def test_search_without_a_scope_covers_every_album(scripted_client: TestClient) 
         "空 scope 必须跨两个相册"
     )
     assert [item["asset"]["id"] for item in one_album["items"]] == [album1_id]
+
+
+def test_person_condition_recalls_across_all_albums(scripted_client: TestClient):
+    """不传 scope（全部相册）时，人物条件照样经实体通道召回该人的照片。
+
+    修之前实体通道在全部相册下恒为 0：``person_bridge`` 投影只在导入时写、确认人物
+    不刷它，而扫观察快照的兜底在 scope 为空时不跑。评测空间（``include_in_people = 0``）
+    里同名的人不进全部相册。
+    """
+    container = scripted_client.app.state.container
+    with container.database.connect() as connection, connection:
+        connection.execute(
+            "INSERT INTO memory_spaces (id, name, include_in_people, created_at, updated_at)"
+            " VALUES ('bench', 'bench', 0, '2026-01-01', '2026-01-01')"
+        )
+    home_id = import_photo(scripted_client, jpeg_bytes("red"), scope_id="album1")
+    bench_id = import_photo(scripted_client, jpeg_bytes("red"), scope_id="bench")
+    for scope, asset_id in (("album1", home_id), ("bench", bench_id)):
+        person = container.entity_repository.create_person("王王", status="confirmed", scope_id=scope)
+        (observation,) = [
+            item
+            for item in container.observation_repository.list_scope(scope, limit=10)
+            if item.asset_id == asset_id
+        ]
+        container.entity_repository.link_confirmed_mention(person.id, observation.id)
+
+    body = scripted_client.get("/api/v1/search", params={"q": "王王", "person": "王王"}).json()
+
+    entity_trace = next(trace for trace in body["channel_trace"] if trace["channel"] == "entity")
+    assert entity_trace["candidate_count"] == 1
+    # 只断言实体通道：视觉通道在全部相册下本来就跨所有空间召回（不在这次的修复范围），
+    # 评测副本那张图可以经视觉进来，但不该带 ``entity``。
+    entity_hits = [item["asset"]["id"] for item in body["items"] if "entity" in item["channels"]]
+    assert entity_hits == [home_id]
+    assert body["items"][0]["asset"]["id"] == home_id
