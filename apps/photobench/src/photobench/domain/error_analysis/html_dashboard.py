@@ -203,7 +203,7 @@ def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: 
             f'style="grid-template-rows:minmax(0,{correct[hit]}fr) '
             f'minmax(0,{groups[hit] - correct[hit]}fr)">'
         )
-        for passed, label in ((True, passed_label), (False, "未达标")):
+        for passed, label in ((True, passed_label), (False, "未满分")):
             n = correct[hit] if passed else groups[hit] - correct[hit]
             name = ("命中" if hit else "未命中") + " · " + label
             color = retrieval_heat(n / total)

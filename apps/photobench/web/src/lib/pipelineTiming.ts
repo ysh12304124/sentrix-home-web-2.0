@@ -6,6 +6,16 @@ const record = (value: unknown): Values => value && typeof value === "object" ? 
 const seconds = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
+/** 阶段经过时间按整秒显示，长任务按天拆分。 */
+export function elapsedDuration(value: number | null): string {
+  if (value === null) return "未记录";
+  const total = Math.floor(value);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor(total % 86400 / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  return `${days ? `${days}天` : ""}${hours ? `${hours}小时` : ""}${minutes ? `${minutes}分` : ""}${total % 60}秒`;
+}
+
 export function pipelineDuration(value: number | null): string {
   if (value === null) return "未记录";
   if (value < 60) return fmtSeconds(value);

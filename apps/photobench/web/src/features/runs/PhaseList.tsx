@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Phase, Run } from "../../api/types.ts";
 import { EXECUTION_PHASES } from "../../lib/constants.ts";
 import { phaseErrorDetails, phaseErrorSummary, phaseSummary } from "../../lib/details.ts";
-import { phaseElapsed, pipelineDuration, pipelineTimingView } from "../../lib/pipelineTiming.ts";
+import { elapsedDuration, phaseElapsed, pipelineDuration, pipelineTimingView } from "../../lib/pipelineTiming.ts";
 import type { PipelineTimingGroup } from "../../lib/pipelineTiming.ts";
 import { qaProgress } from "../../lib/qaProgress.ts";
 import { statusLabel } from "../../lib/format.ts";
@@ -100,8 +100,11 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
           const label = reuse && phaseDef.key === "scope_setup" ? "连接已有相册"
             : reuse && phaseDef.key === "model_deploy" ? "模型连接" : phaseDef.label;
           const start = typeof phase?.started_at === "string" ? Date.parse(phase.started_at) : NaN;
-          const displayPhase = !terminal && phase?.status === "running" && Number.isFinite(start)
+          const livePhase = !terminal && phase?.status === "running" &&
+            !(phaseDef.key === "qa_eval" && (qa.copiedAnswers || activeRun.rejudge));
+          const displayPhase = livePhase && Number.isFinite(start)
             ? { ...phase, total_seconds: Math.max(0, (now - start) / 1000) } : phase;
+          const qaClock = phaseDef.key === "qa_eval" ? phaseElapsed(displayPhase) : null;
           const legacyImport = activeRun.phases?.photo_import;
           const processingDetails = !skipped && phaseDef.key === "pipeline_processing" &&
             legacyImport?.execution_mode !== "explicit" && legacyImport?.progress?.current_directory
@@ -154,6 +157,10 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
                 <p>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count)}</p>
                 <p>文件登记、去重、元数据读取与预览准备；媒体处理见流水线。</p>
               </details> : phaseDef.key === "qa_eval" ? <div className="phase-summary">
+                <p className="phase-elapsed">{qa.copiedAnswers ? "源任务阶段 · " : ""}
+                  {qaClock?.seconds != null
+                    ? `${qaClock.label === "已用时间" && !livePhase ? "记录耗时" : qaClock.label} ${elapsedDuration(qaClock.seconds)}`
+                    : status === "pending" ? "尚未开始" : "耗时未记录"}</p>
                 {qa.copiedAnswers ? <><p>复用答卷 {qa.agentRatio} · 有效评分 {qa.validRatio}</p>
                   <p className="muted small">阶段日志来自源任务，源任务答题 {qa.sourceAgentRatio}。</p></>
                   : activeRun.rejudge ? <p>首次答题进度 {String(phase?.progress?.completed ?? "未记录")}/{String(phase?.progress?.total ?? activeRun.qa_count ?? "—")}</p>

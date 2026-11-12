@@ -60,7 +60,8 @@ def test_candidate_and_delivery_use_distinct_saved_sets_and_conditional_denomina
     full = retrieval_quality_card(candidate, "candidate", partial=False)
     partial = retrieval_quality_card(candidate, "candidate", partial=True)
     assert 'aria-label="命中 · 满分：1题，占有效样本16.7%"' in full
-    assert 'aria-label="命中 · 未达标：2题，占有效样本33.3%"' in full
+    assert 'aria-label="命中 · 未满分：2题，占有效样本33.3%"' in full
+    assert "未达标" not in full
     assert "命中组满分率</span><b>33.3%</b><small>1 / 3题" in full
     assert "命中组正确率</span><b>66.7%</b><small>2 / 3题" in partial
     delivered = retrieval_quality_card(delivery, "delivery", partial=False)

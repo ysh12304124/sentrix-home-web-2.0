@@ -13,6 +13,51 @@ function activeRun(phases: Run["phases"]): Run {
   return { run_id: "r1", phases };
 }
 
+describe("QA 阶段耗时", () => {
+  const qaClock = (container: HTMLElement) => container.querySelector(".execution-phase-list .phase-elapsed")?.textContent;
+
+  it("运行时跨天计时，结束后使用阶段起止并停止增长", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-13T00:00:00Z"));
+    const phase = {status: "running", started_at: "2026-11-11T23:59:59Z"};
+    const {container, rerender} = render(<PhaseList activeRun={{run_id: "r", status: "running", phases: {qa_eval: phase}}} />);
+    expect(qaClock(container)).toBe("已用时间 1天1秒");
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(qaClock(container)).toBe("已用时间 1天3秒");
+    rerender(<PhaseList activeRun={{run_id: "r", status: "completed_with_errors", finished_at: "2026-11-14T00:00:00Z",
+      phases: {qa_eval: {...phase, status: "partial", finished_at: "2026-11-13T00:00:03Z", total_seconds: 1}},
+      rejudge: {status: "completed", started_at: "2026-11-14T00:00:00Z"}}} />);
+    expect(qaClock(container)).toBe("实际总耗时 1天4秒");
+    act(() => { vi.advanceTimersByTime(10000); });
+    expect(qaClock(container)).toBe("实际总耗时 1天4秒");
+  });
+
+  it("旧记录保留耗时，缺时标不使用任务结束时间补算", () => {
+    const {container, rerender} = render(<PhaseList activeRun={{run_id: "r", status: "interrupted",
+      phases: {qa_eval: {status: "running", total_seconds: 123}}}} />);
+    expect(qaClock(container)).toBe("记录耗时 2分3秒");
+    rerender(<PhaseList activeRun={{run_id: "r", status: "failed", finished_at: "2026-11-13T00:00:00Z",
+      phases: {qa_eval: {status: "failed", started_at: "2026-11-12T00:00:00Z"}}}} />);
+    expect(qaClock(container)).toBe("耗时未记录");
+    rerender(<PhaseList activeRun={{run_id: "r", phases: {}}} />);
+    expect(qaClock(container)).toBe("尚未开始");
+  });
+
+  it("复用答卷标明源任务耗时，补评期间首次执行记录保持固定", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-13T00:00:00Z"));
+    const run: Run = {run_id: "r", source_run_id: "source", status: "running", phases: {
+      qa_eval: {status: "running", started_at: "2026-11-12T00:00:00Z", total_seconds: 12},
+    }};
+    const {container, rerender} = render(<PhaseList activeRun={run} />);
+    expect(qaClock(container)).toBe("源任务阶段 · 记录耗时 12秒");
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(qaClock(container)).toBe("源任务阶段 · 记录耗时 12秒");
+    rerender(<PhaseList activeRun={{...run, source_run_id: undefined, rejudge: {status: "running"}}} />);
+    expect(qaClock(container)).toBe("记录耗时 12秒");
+  });
+});
+
 describe("阶段卡（1.0 :3099-3129）", () => {
   it("隔离小样区分答卷与源任务日志", () => {
     const {container} = render(<PhaseList activeRun={{run_id:'sample', source_run_id:'full',
