@@ -406,6 +406,14 @@ class SqliteEventRepository:
             )
             # 上面是 OR IGNORE：两事件共有的观察已经在 target 上，这里把剩下的删掉。
             connection.execute("DELETE FROM event_observations WHERE event_id = ?", (source_event_id,))
+            # 人物瞬间（``person_moments``）也指向 events(id)。参与者与 ``event_entities``
+            # 由调用方先 ``rehome`` 过，这张表没人搬：漏掉它，下面的 DELETE 就撞外键——
+            # 2026-11-11 确认真实相册里的人物时，重分段就是在这里失败的。它的唯一键
+            # ``(person_id, observation_id, prompt_version)`` 不含 event_id，直接改挂不会冲突。
+            connection.execute(
+                "UPDATE person_moments SET event_id = ? WHERE event_id = ?",
+                (target_event_id, source_event_id),
+            )
             connection.execute("DELETE FROM events WHERE id = ?", (source_event_id,))
             starts = [value for value in (target.time_start, source.time_start) if value is not None]
             ends = [value for value in (target.time_end, source.time_end) if value is not None]

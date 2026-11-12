@@ -16,9 +16,7 @@
                           调用者**。管理器没配时记 ``not_applicable``——1.0 用
                           ``use_cloud_model`` 表达同一件事，2.0 没有云端模型这个概念，
                           判据换成「有没有 manager_url」。
-``scope_setup``           **没有 HTTP 调用**：2.0 的空间由导入时内部 ``ensure``
-                          （``application/media/import_assets.py:249``）。这里只决定
-                          scope_id 与名字。
+``scope_setup``           导入前显式登记 benchmark 空间；reuse 只绑定既有空间。
 ``scope_attach``          删。它是 reuse 模式的入口，而 reuse 依赖写侧路由（S9b-3）。
 ``identity_seed``         逐个 ``POST /people/seed``（1.0 的 ``seed-batch`` 在 2.0 不存在）
                           + ``POST /relationships/batch``。
@@ -523,8 +521,7 @@ class RunExecution:
         # 再赌一次（2026-10-10 那轮 WeMM 侧车就是在导入之后没的）。
         #
         # ``scope_setup`` 留着：它是**绑定**那一件事的位置（1.0 的 ``scope_attach``），
-        # 且它自己不发请求（空间由导入路径内部 ``_ensure_space`` 建），所以复用时要的
-        # 那句「这一轮绑在哪个 scope 上」正好有地方记。
+        # reuse 不重建或修改空间，只记录「这一轮绑在哪个 scope 上」。
         if request.mode == "reuse":
             phases: list[tuple[str, Callable[[RunState, RunRequest], None]]] = [
                 ("model_deploy", self._phase_model_deploy),
@@ -664,8 +661,8 @@ class RunExecution:
     def _default_scope_id(self, album_id: str, model_profile: str) -> str:
         """1.0 ``:2646``：``PhotoBench-{时间戳}-{album}-{模型}``，截到 100 字符。
 
-        2.0 里这个名字同时是 **scope id**（``_ensure_space(scope_id, scope_id)``
-        ``import_assets.py:496``）——1.0 的 ``POST /api/memory-spaces`` 收 ``{name}``
+        2.0 里这个名字同时是 **scope id**（在 scope_setup 显式登记用途）
+        ——1.0 的 ``POST /api/memory-spaces`` 收 ``{name}``
         并由服务端造 id。所以这里生成的就是 id 本身，读侧看到的 ``scope_id`` 与
         ``scope_name`` 会是同一个串（1.0 是两个不同的值）。**这条差异登记在行为基线里**：
         靠 scope 名字做正则解析的下游（1.0 的 ``_build_reuse_bases`` ``:1073``）在 2.0
@@ -1226,23 +1223,21 @@ class RunExecution:
     # ---- scope_setup --------------------------------------------------------
 
     def _phase_scope_setup(self, state: RunState, request: RunRequest) -> None:
-        """**没有 HTTP 调用。** 1.0 ``:2643`` 调 ``POST /api/memory-spaces`` 建空间；
-        2.0 没有这个端点——空间由导入路径内部的 ``_ensure_space`` 建
-        （``application/media/import_assets.py:249`` / ``:495``，``ensure(id, id)``，
-        幂等 upsert），``POST /people/seed`` 那条路也会先 ``spaces.ensure``
-        （``api/routes/identity.py:963``）。
-
-        所以这个相位只确认 id 已经有名字。真正确认空间存在的证据在
-        ``identity_seed`` 与 ``photo_import`` 两次调用成功——**那两次调用的前提
-        就是空间能被 ensure 出来**。
-        """
+        """先登记空间用途再种人物/导入；失败阻断后续阶段，避免落成家庭空间。"""
+        if request.mode != "reuse":
+            space = self.client.ensure_space(
+                scope_id=str(state.get("scope_id")),
+                name=str(state.get("scope_name")),
+                kind="benchmark",
+            )
+            if space.get("id") != state.get("scope_id") or space.get("kind") != "benchmark":
+                raise RuntimeError("benchmark memory space registration was not confirmed")
         state.phase_done(
             "scope_setup",
             {
                 "scope_id": state.get("scope_id"),
                 "scope_name": state.get("scope_name"),
-                "created_by": "import_ensure_space",
-                "note": "2.0 的空间由导入/种身份的内部 ensure 创建，本相位不发请求",
+                "created_by": "existing_scope" if request.mode == "reuse" else "explicit_registration",
             },
         )
 

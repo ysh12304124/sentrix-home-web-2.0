@@ -24,6 +24,7 @@ function person(id: string, name: string): FamilyPerson {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    status: "confirmed",
   };
 }
 

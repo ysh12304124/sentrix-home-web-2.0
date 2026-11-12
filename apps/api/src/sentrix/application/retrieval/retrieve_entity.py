@@ -16,6 +16,12 @@
 兜底不是给「1.0 的投影写坏了」补的（虽然它确实是坏的，见
 ``domain/retrieval/lexical.py`` 的字段表注释）——投影是派生数据，它可能还没建起来
 （老库、投影重建中途），而观察上的快照是**权威**的那一份。
+
+**全部相册（``scope_id`` 为空）只走投影。** 投影跟着人物快照在同一个事务里写
+（``sync_person_bridge``），存量由 ``scripts/backfill_person_bridge.py`` 回填一次，
+所以全部相册下投影就是答案；它只覆盖 ``include_in_people = 1`` 的空间，口径由
+``LexicalSearch.assets_for_person`` 的端口契约给出。兜底仍然只在给了 scope 时跑，
+理由见 ``_from_observations``。
 """
 
 from __future__ import annotations
@@ -81,13 +87,13 @@ class RetrieveEntity:
         **只认 ``=`` 不认子串**：与投影那条路同一个口径，两条路给出不同的答案比两条路
         都慢更糟——同一个查询在一个库上命中、在另一个库上不命中，而差别只在「投影建没建」。
 
-        ``scope_id`` 为空（跨空间查询）时这条兜底**不跑**：1.0 的 ``list_observations``
-        能不带 scope 扫全表，2.0 的 ``ObservationRepository.list_scope`` 要求一个 scope。
-        跨空间的人名查询在 2.0 还没有调用方（``EvidenceRequest`` 总有 scope），所以
-        这里是「不支持」而不是「随便挑一个空间」。真到需要的那天，缺的是仓储上一条
-        跨 scope 的扫描方法，不是这里的一个分支。
+        ``scope_id`` 为空（全部相册）时这条兜底**不跑**：全部相册下的答案由投影给出
+        （它现在跟着快照一起写、存量已回填，并且按 ``include_in_people`` 排除了评测空间）。
+        这里再补一条跨 scope 的全表扫描，要么得在这一层重复「哪些空间算家庭」那条口径，
+        要么会把评测副本里的同一批照片交出来；而它要兜的「投影还没建」在回填之后
+        已经不是全部相册的常态。
         """
-        if scope_id is None:
+        if not scope_id:
             return set()
         found: set[str] = set()
         for observation in self._observations.list_scope(scope_id, limit=FALLBACK_SCAN_LIMIT):

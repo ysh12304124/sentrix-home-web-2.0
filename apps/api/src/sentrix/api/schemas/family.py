@@ -97,6 +97,9 @@ class FamilyPersonPayload(BaseModel):
     avatar_face_instance_id: str | None
     appearance_count: int
     representative_media: list[FamilyRepresentativeMedia]
+    # ``pending`` / ``confirmed``。待确认的人在名录里与已确认的人并列显示，界面靠它区分
+    # 「确认身份」与「改名」两种动作。
+    status: str
 
 
 class FamilyGraphResponse(BaseModel):

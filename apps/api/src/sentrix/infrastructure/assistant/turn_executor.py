@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 import random
 import threading
-import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Callable
 
 from sentrix.domain.assistant.models import TurnStatus
 from sentrix.runtime.turn import turn_attempt
@@ -100,6 +99,14 @@ class TurnExecutor:
                 worked = False
             if not worked:
                 self._stop.wait(POLL_S)
+
+    def run_pending(self, turn_id: str) -> bool:
+        """立即认领指定回合；与后台恢复循环共用租约和围栏。"""
+        record = self._turns.claim_due(now=self._clock(), lease_s=LEASE_S, turn_id=turn_id)
+        if record is None:
+            return False
+        self._execute(record)
+        return True
 
     def _run_once(self) -> bool:
         now = self._clock()

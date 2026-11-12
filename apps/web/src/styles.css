@@ -80,12 +80,9 @@
 /* ---- 人物 / 人脸簇审阅 ---- */
 
 .people { margin-top: 24px; }
-.people-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.people-head h2 { margin: 4px 0 0; font-size: 1.25rem; }
 /* `.section-kicker` 由 `components.css` 定义（绿色小标题）。本文件最后加载，曾经
    用灰色 12px 把它盖掉——区块小标题的层级因此静默变灰。 */
 .result-count { color: #64748b; font-size: 13px; }
-.people-lead { max-width: 46rem; color: #475569; font-size: 14px; }
 .people-confirmed { margin-top: 28px; border-top: 1px solid #e2e8f0; padding-top: 16px; }
 .people-confirmed h3 { font-size: 1rem; margin: 0 0 12px; }
 
@@ -93,39 +90,8 @@
 .cluster-card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .cluster-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .cluster-head strong { display: block; margin-top: 2px; }
-.cluster-pick { display: flex; align-items: center; gap: 6px; color: #64748b; font-size: 12px; white-space: nowrap; }
-.cluster-samples { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
-.cluster-sample { padding: 0; border: 2px solid transparent; border-radius: 8px; background: none; cursor: pointer; line-height: 0; }
-.cluster-sample[aria-pressed="true"] { border-color: #2563eb; }
-.cluster-sample:disabled { cursor: not-allowed; opacity: 0.55; }
-.cluster-sample img { width: 72px; height: 72px; object-fit: cover; border-radius: 6px; display: block; }
 .cluster-meta { margin: 0; color: #64748b; font-size: 12px; }
 .cluster-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .cluster-actions button { padding: 0.4rem 0.75rem; border: 1px solid #8884; border-radius: 8px; background: none; cursor: pointer; }
 .cluster-actions button.primary { background: #2563eb; border-color: #2563eb; color: white; }
 .cluster-actions button:disabled { cursor: not-allowed; opacity: 0.5; }
-.cluster-split { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #2563eb14; border-radius: 8px; padding: 8px; font-size: 13px; }
-.cluster-split button { padding: 0.3rem 0.6rem; border: 1px solid #8884; border-radius: 8px; background: none; cursor: pointer; }
-.cluster-naming { display: flex; flex-direction: column; gap: 8px; }
-.cluster-naming label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #475569; }
-.cluster-naming input, .cluster-naming select { padding: 0.4rem 0.6rem; border: 1px solid #8884; border-radius: 8px; font: inherit; }
-
-.merge-bar { border: 1px solid #2563eb66; background: #2563eb0f; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-.merge-bar h3 { margin: 0 0 6px; font-size: 1rem; }
-.merge-hint { margin: 0 0 10px; color: #475569; font-size: 13px; }
-.merge-choices { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.merge-choices label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.merge-bar button.primary { padding: 0.4rem 0.9rem; border: 1px solid #2563eb; border-radius: 8px; background: #2563eb; color: white; cursor: pointer; }
-.merge-bar button.primary:disabled { cursor: not-allowed; opacity: 0.5; }
-
-.single-clusters { margin-top: 14px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; }
-.single-clusters summary { cursor: pointer; color: #64748b; font-size: 13px; }
-.single-clusters .cluster-grid { margin-top: 12px; }
-
-.person-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.person-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; }
-.person-head small { display: block; color: #64748b; font-size: 12px; }
-.person-row button { padding: 0.35rem 0.7rem; border: 1px solid #8884; border-radius: 8px; background: none; cursor: pointer; }
-.person-rename { display: flex; gap: 8px; align-items: center; }
-.person-rename input { padding: 0.35rem 0.6rem; border: 1px solid #8884; border-radius: 8px; font: inherit; }
-.person-rename button.primary { background: #2563eb; border-color: #2563eb; color: white; }

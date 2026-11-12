@@ -2,6 +2,7 @@ import dataclasses
 import hashlib
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -244,6 +245,9 @@ def fake_embedding_startup(monkeypatch):
     monkeypatch.setattr(
         "sentrix.infrastructure.models.legacy.LegacyEmbeddingHealthProbe.smoke_test", lambda self: (True, "")
     )
+    monkeypatch.setattr(
+        "sentrix.infrastructure.models.generation_health.ModelGenerationHealth.check", lambda self: (True, "")
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -276,6 +280,7 @@ def isolated_app(settings, fake_embedding_startup):
         text_embedder=fake_embedder,
         # 嵌入可用性也必须换掉：真实现会去打 8102 侧车，而契约测试不该依赖它。
         embedding_health=FakeEmbeddingHealth(),
+        model_health=SimpleNamespace(check=lambda: (True, "")),
         vlm_observer=FakeVlmObserver(),
         chat_model=FakeChatModel(),
         face_detector=FakeFaceDetector(),
@@ -291,6 +296,8 @@ def isolated_app(settings, fake_embedding_startup):
         audio_transcriber=None,
         cross_modal_embedder=None,
     )
+    app.state.turn_executor = app.state.container.build_turn_executor()
+    app.state.import_executor = app.state.container.build_import_executor()
     return app
 
 

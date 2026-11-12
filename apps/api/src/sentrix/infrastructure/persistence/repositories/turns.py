@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sentrix.domain.assistant.models import (
@@ -217,7 +217,7 @@ class SqliteTurnRepository:
             )
         return cursor.rowcount > 0
 
-    def claim_due(self, *, now: datetime, lease_s: int) -> TurnRecord | None:
+    def claim_due(self, *, now: datetime, lease_s: int, turn_id: str | None = None) -> TurnRecord | None:
         """认领 pending 或租约过期的 running 回合，尝试号与围栏号各自加一。"""
         stamp = now.isoformat()
         expires = (now + timedelta(seconds=lease_s)).isoformat()
@@ -226,12 +226,13 @@ class SqliteTurnRepository:
             try:
                 row = connection.execute(
                     f"SELECT {_TURN_COLUMNS} FROM agent_turns WHERE "
+                    "(? IS NULL OR id = ?) AND ("
                     "(status = 'pending' AND execution_state <> 'waiting_dependency'"
                     " AND (next_retry_at IS NULL OR next_retry_at <= ?)) "
                     "OR (status = 'pending' AND cancel_requested = 1) "
-                    "OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
+                    "OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?)) "
                     "ORDER BY created_at ASC, rowid ASC LIMIT 1",
-                    (stamp, stamp),
+                    (turn_id, turn_id, stamp, stamp),
                 ).fetchone()
                 if row is None:
                     connection.commit()

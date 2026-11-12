@@ -56,7 +56,6 @@ from sentrix.application.assistant.manage_conversations import (
 )
 from sentrix.application.assistant.run_turn import (
     RunTurn,
-    TurnAlreadyClaimedError,
     TurnRequest,
 )
 from sentrix.bootstrap.assistant_wiring import build_run_turn
@@ -231,21 +230,17 @@ def start_turn(
     manage.ensure_title(conversation_id, payload.message)
 
     broker = container.turn_event_broker
-    # 体验实例由持久执行器认领；普通实例沿用逐回合线程，支持测评并发。
+    # 普通实例逐回合唤起持久执行器，保留测评并发；后台循环负责恢复未完成的回合。
     if not record.status.is_terminal:
         broker.open(record.id)
     if not container.settings.experience_mode and record.status.value == "pending":
+        executor = container.build_turn_executor()
 
         def worker() -> None:
             try:
-                run_turn.run(record.id, emit=lambda event: broker.publish(record.id, event))
-            except TurnAlreadyClaimedError:
-                # 同幂等键重复提交由原执行者负责收尾。
-                return
+                executor.run_pending(record.id)
             except Exception:
                 log.exception("回合执行失败: %s", record.id)
-            broker.finish(record.id)
-            container.operation_control.finish("turn:" + record.id)
 
         try:
             threading.Thread(target=worker, name=f"turn-{record.id}", daemon=True).start()

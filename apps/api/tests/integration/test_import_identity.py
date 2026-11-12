@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -763,3 +764,63 @@ def test_the_stored_pose_bucket_and_validity_do_not_decide_the_match(
     )
     assert cluster == seeded.cluster_id
     assert mentions == 1
+
+
+def _mentions_and_snapshot(db: Database, observation_id: str) -> tuple[list[tuple[str, str]], list[str]]:
+    with db.connect() as connection:
+        mentions = connection.execute(
+            "SELECT entity_id, face_instance_id FROM entity_mentions WHERE observation_id = ? ORDER BY rowid",
+            (observation_id,),
+        ).fetchall()
+        row = connection.execute(
+            "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
+        ).fetchone()
+    names = [item["name"] for item in json.loads(row["people_json"] or "[]")]
+    return [(item["entity_id"], item["face_instance_id"]) for item in mentions], names
+
+
+def test_a_seeded_person_is_recorded_on_every_sample_photo(
+    seeded_db: Database, repos: dict[str, Any], seeder: Any
+) -> None:
+    """预置出来的人一开始就是已确认的：样本照片上要有提及与人物快照，
+    否则他在自己的样本照片上查不到（确认簇那条路对每张脸都写提及）。"""
+    first = seed_photo(seeded_db, "seed_1", path="/tmp/seed_1.jpg")
+    second = seed_photo(seeded_db, "seed_2", path="/tmp/seed_2.jpg")
+    result = seeder(
+        {
+            "/tmp/seed_1.jpg": [face(unit(1.0), quality=0.7)],
+            "/tmp/seed_2.jpg": [face(unit(1.0, 0.1), quality=0.95)],
+        }
+    ).execute(scope_id=SCOPE, name="爸爸", family_role=None, aliases=[], photos=[first, second])
+
+    instances = {item.observation_id: item.id for item in repos["faces"].list_instances(result.cluster_id)}
+    for photo in (first, second):
+        mentions, names = _mentions_and_snapshot(seeded_db, photo.observation_id)
+        assert mentions == [(result.entity_id, instances[photo.observation_id])]
+        assert names == ["爸爸"]
+
+
+def test_seeding_from_a_stored_face_records_the_person_on_that_album_photo(
+    seeded_db: Database, repos: dict[str, Any]
+) -> None:
+    """按实例预置时样本就是相册里的照片：那张照片上要能查到这个人。"""
+    open_scope(seeded_db, INSTANCE_ARM)
+    asset = photo_in_scope(seeded_db, asset_id="family", scope_id=INSTANCE_ARM, path="/tmp/family.jpg")
+    stored_instance(
+        seeded_db,
+        instance_id="fi_mom",
+        asset_id="family",
+        observation_id=asset.observation_id,
+        embedding=unit(1.0),
+    )
+
+    result = SeedIdentity(
+        detector=ExplodingDetector(),
+        faces=repos["faces"],
+        entities=repos["entities"],
+        vectors=repos["vectors"],
+    ).execute(scope_id=INSTANCE_ARM, name="妈妈", family_role=None, aliases=[], face_instance_ids=["fi_mom"])
+
+    mentions, names = _mentions_and_snapshot(seeded_db, asset.observation_id)
+    assert [entity_id for entity_id, _ in mentions] == [result.entity_id]
+    assert names == ["妈妈"]
