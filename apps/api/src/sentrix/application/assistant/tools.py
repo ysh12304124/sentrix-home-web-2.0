@@ -428,6 +428,9 @@ class AssistantToolbox:
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
             "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            # Persist exactly the evidence shown to the model. IDs alone cannot
+            # reconstruct the scene/event provenance used during this turn.
+            "preview": preview,
             "page": page.page,
         }
         if extra:

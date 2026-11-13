@@ -126,6 +126,7 @@ class ExtractVideoScenes:
         self._video_repository = video_repository
         self._keyframes = keyframes
         self._process_image = process_image
+        self._observations = observations
         self._scene_planner = scene_planner
         self._transcriber = transcriber
         self._cross_modal_embedder = cross_modal_embedder

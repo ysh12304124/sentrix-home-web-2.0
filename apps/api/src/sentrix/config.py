@@ -72,6 +72,7 @@ class Settings(BaseSettings):
                 "reranker_url",
                 "rerank_top_k",
                 "agent_wall_time_s",
+                "agent_turn_workers",
                 "chat_timeout_s",
                 "vlm_timeout_s",
                 "agent_max_steps",
@@ -142,6 +143,10 @@ class Settings(BaseSettings):
     # 单个 Agent 回合的墙钟上限。180 是 153（GPU）的默认；Mac/CPU 上 4 并发时
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0
+    # Product defaults to one; isolated QA can opt into bounded concurrency.
+    agent_turn_workers: int = Field(
+        default=1, ge=1, le=64, validation_alias="SENTRIX_AGENT_TURN_MAX_WORKERS"
+    )
     agent_max_steps: int = Field(default=8, ge=3)
     agent_max_tool_calls: int = Field(default=6, ge=0)
     vlm_generation_profile: Literal["legacy", "qwen35_nonthinking"] = "legacy"
@@ -189,6 +194,8 @@ class Settings(BaseSettings):
     upload_quota_bytes: int = 20 * 1024**3
     upload_photo_max_bytes: int = 250 * 1024**2
     upload_video_max_bytes: int = 2 * 1024**3
+    # Server deployments retain a 100 GiB safety buffer; the Mac profile uses
+    # a smaller local-disk buffer unless an operator explicitly overrides it.
     upload_min_free_bytes: int = 100 * 1024**3
     upload_max_inflight: int = 2
     upload_cleanup_grace_s: int = 3600
@@ -205,6 +212,8 @@ class Settings(BaseSettings):
             self.agent_wall_time_s = 600.0 if mac else 180.0
         if "chat_timeout_s" not in self.model_fields_set:
             self.chat_timeout_s = 180.0 if mac else 120.0
+        if mac and "upload_min_free_bytes" not in self.model_fields_set:
+            self.upload_min_free_bytes = 10 * 1024**3
         # **未知方案直接启动失败。** 静默回退到默认会让「配错了」变成「跑的是另一套
         # 模型」——两套模型的向量互不兼容，而检索侧不会报错，只会算不出相似度。
         if self.embedding_scheme not in EMBEDDING_SCHEMES:

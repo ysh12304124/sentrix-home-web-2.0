@@ -226,6 +226,15 @@ class FileRunStore:
             raise KeyError(run_id)
         return value
 
+    def read_video_comparison(self, run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(run_id) / "video-objective-comparison.json"
+        if not path.is_file():
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("invalid video comparison document")
+        return value
+
     def load_overview(self, run_id: str) -> dict[str, Any]:
         run_dir = self._run_dir(run_id)
         with run_lock(run_dir):

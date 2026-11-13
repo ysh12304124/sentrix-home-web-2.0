@@ -372,6 +372,7 @@ export function App({ initialLoading = false }: AppProps) {
         keyframeAnalysisError: runs.keyframeAnalysisError,
         summary: effectiveRunSummary(runs.activeRun),
         chainDetail,
+        onExpandedChange: runs.setAnalysisOpen,
         onOpenChainNode: openChainNode,
         onCloseChainDetail: () => setChainDetail(null),
         onOpenImage: (media: ChainMedia) => {

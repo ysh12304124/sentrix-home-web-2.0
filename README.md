@@ -146,6 +146,11 @@ make ci
 PhotoBench 运行结果在 `apps/photobench/results/<run_id>/`，页面在 8772。
 QA 数据集在 `apps/photobench/datasets/`。
 
+本机双场景（主相册手动上传/AI 记忆对话 + `album3-max-video10` 487QA）启动与验收见
+[`local-mac-upload-and-487qa.md`](docs/runbooks/local-mac-upload-and-487qa.md)。该工作副本使用
+`scripts/deploy/start_local_two_workflows_mac.sh`，评测素材目录和结果目录由本机忽略文件
+`data/local-mac.env` 指定，不会写入 Git。
+
 ---
 
 ## 许可与数据

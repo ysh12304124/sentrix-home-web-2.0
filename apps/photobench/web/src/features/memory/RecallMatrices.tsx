@@ -8,7 +8,7 @@ import { fmtPct } from "../../lib/format.ts";
 import type { RecallMatrix } from "../../lib/graphs.ts";
 
 /** 1.0 `:3243` 的三选一桥接文案。 */
-const BRIDGE_LABELS = ["进入命中判定", "进入 Judge 评分", "汇总为有效性指标"];
+const BRIDGE_LABELS = ["进入命中判定", "进入 Judge 评分", "核对最终素材交付"];
 
 export interface RecallMatricesProps {
   /** = `memoryRecallMatrices(memoryEffectiveness)`；空数组时本节不渲染（1.0 `v-if`）。 */
@@ -92,8 +92,8 @@ export function RecallMatrices({ matrices }: RecallMatricesProps) {
               </div>
             ))}
             <p className="answer-layer-note">
-              口径：{matrix.note}；命中后按 Judge 判定：2 或 1 的有效证据计有效、0 计无效，未命中单独计为未命中。样本量随当前
-              run 变化，不做预设。
+              口径：{matrix.note}。L2 展示 Judge 评分；L3 按实际交付与同类型 GT 核对，不使用 Judge。
+              正确交付表示至少交付一份对应素材，额外交付可与正确交付重叠；未评分题也纳入交付统计，不可回答题排除。
             </p>
           </div>
         ))}

@@ -174,6 +174,12 @@ describe("记忆面板接线（P2 / 1.0 :3147）", () => {
     fireEvent.click(row);
 
     expect(await screen.findByText("记忆层级与有效证据链")).not.toBeNull();
+    await waitFor(() => {
+      const paths = mockApi.mock.calls.map(([path]) => path);
+      expect(paths).toContain("/runs/runX/keyframe-analysis");
+      expect(paths).toContain("/runs/runX/memory-effectiveness");
+      expect(paths).toContain("/runs/runX/graph-quality");
+    });
   });
 });
 
