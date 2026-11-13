@@ -42,7 +42,7 @@ def test_profile_matches_behaviour_baseline():
     assert DEFAULT_PROFILE.max_steps == 8
     assert DEFAULT_PROFILE.max_tool_calls == 6
     assert DEFAULT_PROFILE.wall_time_s == 180.0
-    assert DEFAULT_PROFILE.max_search_calls == 1
+    assert DEFAULT_PROFILE.max_search_calls == 2
 
 
 def test_termination_reason_has_no_empty_member():
