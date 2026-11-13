@@ -121,12 +121,6 @@ SEARCH_MEMORIES = ToolSpec(
                 "type": "string",
                 "description": "检索用的内容词，例如 海边、桥、猫、红色。用用户问题里的实词，不要写整句。",
             },
-            "limit": {
-                "type": "integer",
-                "description": "本次检索保留多少张候选，默认 6、最多 6。",
-                "minimum": 1,
-                "maximum": 6,
-            },
         },
         ["query"],
     ),
@@ -174,7 +168,7 @@ MAX_DELIVERED_PHOTOS = 6
 
 FINAL_ANSWER = ToolSpec(
     name=FINAL_ANSWER_TOOL,
-    brief="给出最终回答并结束本轮；要展示的照片填进 handles。",
+    brief="回答并结束本轮；照片填入 selected_image_handles。",
     description=(
         "给出最终回答并结束本轮。answer 是要说给用户的那段话；"
         "要把照片展示给用户，就在**同一次调用**里把 handle 填进 selected_image_handles。"
@@ -185,15 +179,12 @@ FINAL_ANSWER = ToolSpec(
         {
             "answer": {
                 "type": "string",
-                "description": "给用户的最终回答，用中文。",
+                "description": "给用户的中文回答。",
             },
             "selected_image_handles": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    f"最终确实要展示给用户的 handle（photo_1…），最多 {MAX_DELIVERED_PHOTOS} 张，"
-                    "必须来自当前结果集；不展示照片就填空数组。"
-                ),
+                "description": f"当前结果集中要展示的照片 handle，最多 {MAX_DELIVERED_PHOTOS} 张；不展示填 []。",
                 "maxItems": MAX_DELIVERED_PHOTOS,
             },
         },
@@ -301,7 +292,7 @@ QUERY_MEMORY_FACTS = ToolSpec(
 
 QUERY_PHOTO_PEOPLE = ToolSpec(
     name="query_photo_people",
-    brief="读一张候选照片的已确认人物与未确认同行者。",
+    brief="核对照片的人脸绑定：已确认姓名与未确认人数；不推断亲属关系。",
     description=(
         "读取一张已检索照片自己的已确认人物和未确认同行者。"
         "asset_handle 必须来自当前 search_memories preview；不会把其他候选照片的人名移植过来。"
@@ -314,16 +305,12 @@ QUERY_PHOTO_PEOPLE = ToolSpec(
     ),
     parameters=_object_schema(
         {
-            "result_set_id": {
-                "type": "string",
-                "description": "search_memories 或 get_result_page 返回的结果集 id。",
-            },
             "asset_handle": {
                 "type": "string",
-                "description": "要查的那张照片的 handle（photo_1…），必须来自当前结果集的 preview。",
+                "description": "从预览选择要核对的照片 handle（photo_1…）。",
             },
         },
-        ["result_set_id", "asset_handle"],
+        ["asset_handle"],
     ),
     # 两条都声明，理由见 ``evidence_ledger.EvidenceType.PHOTO_IDENTITY`` 的注释：
     # ``PHOTO_IDENTITY`` 是本工具自己的产物，``PERSON_PROFILE`` 是 1.0 那条
@@ -339,13 +326,13 @@ QUERY_PHOTO_PEOPLE = ToolSpec(
     # ``person_profile`` 的回合里 **13 个**是这么被抢先销账的（有一回它返回
     # ``people: []`` 也照样销），**全 487 题 ``get_person_profile`` 调用 0 次**。
     satisfies=(EvidenceType.PHOTO_IDENTITY,),
-    required=("result_set_id", "asset_handle"),
+    required=("asset_handle",),
 )
 
 
 INSPECT_PHOTO = ToolSpec(
     name="inspect_photo",
-    brief="复核单张照片的视觉细节（物体/衣着/颜色/场景）。昂贵。",
+    brief="先读检索预览中的画面描述；不足以回答所问视觉细节时，才复核这张图片。昂贵。",
     description=(
         "复核已检索照片的视觉细节（物体/衣着/颜色/场景）。"
         "只接受 media_kind=image 的照片或 source_kind=video_keyframe 的图片，不接受视频或音频原件。"
@@ -360,40 +347,36 @@ INSPECT_PHOTO = ToolSpec(
     ),
     parameters=_object_schema(
         {
-            "result_set_id": {
-                "type": "string",
-                "description": "search_memories 或 get_result_page 返回的结果集 id。",
-            },
             "question": {
                 "type": "string",
-                "description": "要用这张图回答的问题，用用户问题里的实词，不要改写成别的意思。",
+                "description": "要从这张图确认的具体问题，保留用户原意。",
             },
             "asset_handle": {
                 "type": "string",
-                "description": "要复核的那张照片的 handle（photo_1…）。省略则用结果集第一张。",
+                "description": "预览中的照片 handle；省略则用第一张。",
             },
             "target_person": {
                 "type": "string",
-                "description": "问题只针对某一位已确认人物时填他的名字；不针对某个人就省略。",
+                "description": "只在问题指向某位已确认人物时填写姓名。",
             },
         },
-        ["result_set_id", "question"],
+        ["question"],
     ),
     # 1.0 ``tools.py:2756`` 的两条。``visual_observation`` 是「看细节」，
     # ``photo_identity`` 是「这是谁」——两个不同的需求都可能被这一次调用满足。
     satisfies=(EvidenceType.VISUAL_OBSERVATION, EvidenceType.PHOTO_IDENTITY),
     # 1.0 的 ``required_inputs=("asset_handle", "question")`` 与它自己的描述
     # （「asset_handle …可省略」）**互相矛盾**。2.0 保留描述里那条行为（省略就用第一张），
-    # 所以这里只把 ``question`` 与 ``result_set_id`` 列为必填——照 required_inputs 抄会
+    # 所以这里只把 ``question`` 列为必填；``result_set_id`` 由后端注入。照 required_inputs 抄会
     # 让「可省略」当场失效（策略层会以 ``missing_argument`` 拒掉）。
-    required=("result_set_id", "question"),
+    required=("question",),
     cost_class=CostClass.EXPENSIVE,
 )
 
 
 READ_PHOTO_TEXT = ToolSpec(
     name="read_photo_text",
-    brief="读取这张照片已存下的文字（招牌/价格/店名/年份）。昂贵。",
+    brief="预览未写明所问文字时，读取照片已存的图中文字；读不到不代表画面没字。昂贵。",
     description=(
         "读取这张照片**已经存下来的**文字内容（菜单/价格/招牌/店名/电话/年份/小字）。"
         "适用于「多少钱/价格/售价/店名/招牌/电话/写了什么/什么字/哪一年」等需要看照片文字的题。"
@@ -406,16 +389,12 @@ READ_PHOTO_TEXT = ToolSpec(
     ),
     parameters=_object_schema(
         {
-            "result_set_id": {
-                "type": "string",
-                "description": "search_memories 或 get_result_page 返回的结果集 id。",
-            },
             "asset_handle": {
                 "type": "string",
-                "description": "要读的那张照片的 handle（photo_1…）。省略则用结果集第一张。",
+                "description": "预览中的照片 handle；省略时读第一张。",
             },
         },
-        ["result_set_id"],
+        [],
     ),
     # 1.0 ``tools.py:2768`` 的 ``produces_evidence=("visible_text",)``。
     satisfies=(EvidenceType.VISIBLE_TEXT,),
@@ -433,7 +412,7 @@ READ_PHOTO_TEXT = ToolSpec(
     # 恢复昂贵之后两者共用「每轮 3 次照片级取证」，这不是两件事被硬凑到一起：
     # 它们本来就是同一件事——**对某一张照片做一次取证**。1.0 的 ``budget_unit="image"``
     # 说的就是这句话。
-    required=("result_set_id",),
+    required=(),
     cost_class=CostClass.EXPENSIVE,
 )
 

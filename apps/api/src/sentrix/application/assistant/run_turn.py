@@ -78,7 +78,8 @@ from sentrix.domain.assistant.evidence_ledger import (
 )
 from sentrix.domain.assistant.final_guard import FinalGuard, GuardFacts, answered_with_gap
 from sentrix.domain.assistant.intent import json_output_fact
-from sentrix.domain.assistant.jit import select_tools
+from sentrix.domain.assistant.jit import select_turn_tools
+from sentrix.domain.assistant.request_context import acquire_slot, release_slot
 from sentrix.domain.assistant.models import (
     Attachment,
     ChatMessage,
@@ -160,7 +161,7 @@ SYSTEM_PROMPT = """你是这个家庭相册的助手。你能做的只有两件�
 # （``runtime.py`` 的 ``parse_retries``：模型输出解析不出 action 就带着原因再问一次，
 # 用完重试次数才以 ``parse_failure`` 收尾），而不是另立一个终止原因。这里照 1.0 的口径：
 # 提醒一次，再空就按 ``PARSE_FAILURE`` 收尾，用确定性兜底把已有证据说清楚。
-PARSE_FAILURE_NUDGE = "你上一条回复是空的。请直接用一两句中文把结论说给用户，不要再调用工具。"
+PARSE_FAILURE_NUDGE = "上一条回复为空。若仍需证据且有可用工具，先取证；否则依据已知内容作答，不确定就说明。"
 
 # **正文里的工具调用标记**：模型偶尔会把 ``<tool_call><function=…><parameter=…>``
 # 写成正文（Llama 3.x 的格式，不是 8100 那套 Qwen 模板认的 JSON）。llama.cpp 解析不出
@@ -177,9 +178,8 @@ _TEXTUAL_TOOL_CALL = re.compile(r"<tool_call\s*>|<function\s*=")
 
 #: 认出正文工具调用后给模型的一次纠正。**只说「那不是工具调用」**，不解释内部机制。
 TEXTUAL_TOOL_CALL_NUDGE = (
-    "你上一条回复里把工具调用写成了 `<tool_call>` 标记的形式，那不是一次真正的工具调用，"
-    "用户会原样看到这些标记。要调用工具请使用原生工具调用；要回答用户就直接用中文说。"
-    "请重新给出这一轮的回答。"
+    "上一条把工具调用写进了正文，该调用没有执行。需要工具请用原生工具调用；"
+    "否则直接回答，不输出调用标记。"
 )
 
 #: 收尾时的**强制作答**提示（1.0 ``runtime.py:1600-1604``）。预算已经耗尽、模型还
@@ -197,10 +197,7 @@ FORCE_FINAL_NUDGE = (
 # 实测 762 次被拒里有 51% 之后模型继续试同一个工具，426 步是「整步全被拒」——占全部
 # 2667 步的 16%。工具层的每一条判据都拦不住这个，因为**每一次被拒在它自己看来都是对的**。
 # 这是循环级的活性问题，所以护栏也在循环这一层。
-STALLED_NUDGE = (
-    "你连续几轮调用的工具都没有返回可用的结果。请立即基于已经取到的内容作答；"
-    "确实拿不到的就如实说明拿不到。不要再调用刚刚被拒绝过的工具。"
-)
+STALLED_NUDGE = "连续调用未取得新证据。不要重试刚被拒的工具；根据已有内容回答，缺口如实说明。"
 
 # 连续几轮全白跑之后提醒。取 2：一轮是偶发（某张图刚好读不到字），两轮就是卡住了。
 STALLED_ROUNDS_BEFORE_NUDGE = 2
@@ -220,9 +217,7 @@ STALLED_ROUNDS_BEFORE_NUDGE = 2
 
 # 还有**没试过**、且工具链确实可能满足的必需需求。
 UNATTEMPTED_NUDGE_TEMPLATE = (
-    "还有声明的证据需求尚未尝试：{pending}。当前可用工具：{available}。"
-    "请先用兼容工具获取证据；如果确实没有对应的照片或记录可以确认"
-    "（例如问题本身没有可查的答案），请直接输出 final 如实说明，不要编造。"
+    "尚有必要内容未核对：{pending}。请用当前可用工具获取；确实取不到就说明缺口，不要猜测。"
 )
 
 # ③ 零工具调用却给出了具体数字/金额/年份。
@@ -790,6 +785,8 @@ class RunTurn:
         # L3 claim-level 核验：默认开启；``SENTRIX_CLAIM_VERIFIER=0`` 可整体退回旧 L2。
         self._claim_verifier = ClaimVerifier(model)
         self._use_claim_verifier = os.getenv("SENTRIX_CLAIM_VERIFIER", "1") != "0"
+        # llama.cpp 的槽位数（``--parallel``）。Mac 单槽无需 pin，交给服务端默认槽位。
+        self._slots = max(1, int(os.getenv("SENTRIX_VLM_SLOTS", "1")))
 
     def _check_cancel(self, turn_id: str) -> None:
         record = self._turns.get(turn_id)
@@ -915,6 +912,7 @@ class RunTurn:
         planned: PlannerResult | None = None
         answer = ""
         try:
+            acquire_slot(record.conversation_id, self._slots)
             self._check_cancel(turn_id)
             # 1.0 ``runtime.py:1725``：政策拒答在**任何模型调用之前**返回固定的拒绝语——
             # 不规划、不调工具、不进模型。位置也照搬（在规划之前）。
@@ -985,6 +983,9 @@ class RunTurn:
         except OperationCancelled:
             session.state.finish(TerminationReason.CANCELLED)
             answer = ""
+        finally:
+            # 模型调用已经全部结束；租约只保护槽位，不覆盖下面的落库收尾。
+            release_slot(record.conversation_id)
 
         # 收尾前给还开着的需求补上真实原因：**是试过没拿到，还是根本没试**。
         # 必须在最后一次 ``as_payload()`` 之前——它同时喂给落库与返回值。
@@ -1141,6 +1142,10 @@ class RunTurn:
     def _converse(self, session: _Session, record: TurnRecord) -> str:
         state = session.state
         messages = self._initial_messages(record)
+        # planner 已声明本回合需求；工具表冻结，之后不再随结果集/需求销账增删。
+        # 这样同一回合的请求是 append-only，前缀缓存可以整段复用；收敛由下面两条
+        # 安全阀保证：连续失败移除工具、预算耗尽只留终止动作。
+        frozen_specs = select_turn_tools(session.ledger)
 
         while True:
             self._check_cancel(state.turn_id)
@@ -1160,28 +1165,21 @@ class RunTurn:
                 state.emit(ProgressStage.THINKING, ProgressStatus.RUNNING, "正在理解你的问题…"),
             )
 
-            # **JIT 剪枝。** 1.0 每一转只发当前这一步用得上的那几份精简契约
-            # （``jit_prompt.py`` 的 ``LITE_TOOL_SCHEMAS``，每工具 <40 token），
-            # 2.0 原先每次发全量八份完整 schema——实测 5408 字符 ≈ 2704 token，
-            # 而 1.0 的真实 ``prompt_tokens`` 中位数只有 1437。见 ``jit.py``。
+            # **冻结工具集 + 两条收敛安全阀。** 工具表在 planner 之后不再变化，
+            # 回合内前缀保持 append-only；但“工具一直可见”会让弱模型反复撞同一堵墙，
+            # 所以保留两条只在病态回合触发的安全阀：
             #
-            # ``tools_exhausted`` 传的是**两条**预算的合成：工具额度用完（``tool_calls``
-            # 到顶）与墙钟只剩写答案的时间（``has_final_reserve`` 为假）。两者都意味着
-            # 「这一转不该再调工具了」，而 ``select_tools`` 对它的处置是**一个工具都不发**：
-            # 模型于是别无选择，只能说话。实测 ``step_budget_exhausted`` 的 123 道里
-            # 102 道判 0，根子就是模型到最后几步仍然只在撞墙、从没被逼着开口。
-            specs = select_tools(
-                session.ledger,
-                has_result_set=state.current_result_set_id is not None,
-                tools_exhausted=not state.can_call_tool(),
-                page_available=_page_available(state),
-            )
-            # Match the existing execution policy: advertising a tool which
-            # already hit repeated_failure makes small models spend every
-            # remaining step requesting an action we will always deny.
-            specs = tuple(
-                spec for spec in specs if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
-            )
+            # 1. 连续失败 ``MAX_CONSECUTIVE_FAILURES`` 次的工具从本步可见表中移除
+            #    （正常回合不触发，工具表仍是单一变体）；
+            # 2. 工具预算/作答保留耗尽时只发终止动作，物理上逼模型开口，而不是继续
+            #    发注定被拒的调用。
+            if not state.can_call_tool():
+                specs = tuple(spec for spec in frozen_specs if spec.name == FINAL_ANSWER_TOOL)
+            else:
+                specs = tuple(
+                    spec for spec in frozen_specs
+                    if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
+                )
             try:
                 reply = self._complete_recorded(session, messages, specs)
             except PromptTooLongError as error:
@@ -1638,16 +1636,22 @@ class RunTurn:
         ]
 
         # 1.0 要求 ``available`` 非空：一个工具都给不出去时，提醒「请用工具」是空话。
-        available = select_tools(
-            session.ledger,
-            has_result_set=state.current_result_set_id is not None,
-            tools_exhausted=not state.can_call_tool(),
-            page_available=_page_available(state),
-        )
+        # 与主循环使用同一个冻结工具集和同两条安全阀，避免提醒里列出模型实际看不到的工具。
+        available = select_turn_tools(session.ledger)
+        if not state.can_call_tool():
+            available = tuple(spec for spec in available if spec.name == FINAL_ANSWER_TOOL)
+        else:
+            available = tuple(
+                spec for spec in available
+                if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
+            )
         if unattempted and available and state.block_guard_code("required_evidence_missing"):
             self._reminder_event(session, "required_evidence_missing", [item.id for item in unattempted])
             return UNATTEMPTED_NUDGE_TEMPLATE.format(
-                pending="、".join(f"{item.id}:{item.evidence_type.value}" for item in unattempted),
+                pending="、".join(
+                    f"{item.predicate or item.description}（{item.evidence_type.value}）"
+                    for item in unattempted
+                ),
                 available="、".join(spec.name for spec in available),
             )
 

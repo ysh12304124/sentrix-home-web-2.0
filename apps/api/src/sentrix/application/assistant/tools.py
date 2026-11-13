@@ -312,7 +312,7 @@ class AssistantToolbox:
             EvidenceRequest(
                 text=query,
                 scope_id=scope_id,
-                limit=_clamp_limit(arguments.get("limit")),
+                limit=DEFAULT_SEARCH_LIMIT,
                 graph_enabled=graph_enabled,
             )
         )
@@ -421,6 +421,11 @@ class AssistantToolbox:
             "group_photo_rows": group_rows,
             "preview": preview,
         }
+        # 第一页只保留模型真正需要读的候选与合影汇总；内部 observation 仍保存全部
+        # 控制字段，JIT / 证据绑定 / 翻页判定继续从 observation 读。
+        if page_no == 1:
+            for key in ("result_set_id", "query", "page", "page_size", "total", "has_more", "can_inspect"):
+                model_visible.pop(key, None)
         if not preview and page.total:
             # **越界页仍然是 ``ok``**（1.0 的行为，``test_a_page_past_the_end_is_empty_not_an_error``
             # 钉着）：越界不是错误，是「没有更多了」。但**光给一个空数组不够**——实测模型
@@ -498,7 +503,7 @@ class AssistantToolbox:
         observations = self._observations.list_by_asset(entry.asset_id)
         latest = observations[0] if observations else None
         location = self._asset_places.get(entry.asset_id) if self._asset_places is not None else None
-        return {
+        row: dict[str, Any] = {
             "handle": entry.handle,
             "file_name": asset.file_name if asset else "",
             "media_kind": asset.media_type.value if asset else "",
@@ -544,6 +549,26 @@ class AssistantToolbox:
             "evidence_summary": _observation_summary(latest),
             **self._speech_preview(asset),
         }
+        # 全未知的子字段只保留“未知”信号，不发送空壳；有真实来源/坐标/行政区时原样保留。
+        capture_time = row["capture_time"]
+        if capture_time == {"raw": "", "source": "unknown", "timezone": "", "status": "unknown"}:
+            row["capture_time"] = {"source": "unknown", "status": "unknown"}
+
+        location = row["location_evidence"]
+        if (
+            location["gps"] is None
+            and not location["admin"]
+            and not location["nearby"]
+            and location["source"] == "unknown"
+            and location["precision"] == "unknown"
+        ):
+            row["location_evidence"] = {"gps": None, "source": "unknown", "precision": "unknown"}
+
+        hint = row["scene_hint"]
+        summary = row["evidence_summary"]
+        if hint and hint in summary:
+            row.pop("scene_hint")
+        return row
 
     def _speech_preview(self, asset: Any) -> Mapping[str, Any]:
         """Expose transcript evidence only for a video or its timestamped keyframe.
@@ -812,7 +837,7 @@ class AssistantToolbox:
                 "described_people_count": described,
             },
             model_visible={
-                "result_set_id": result_set.id,
+                "asset_handle": handle,
                 "people": [
                     {
                         "person_name": row["person_name"],
@@ -1074,11 +1099,7 @@ class AssistantToolbox:
             },
             model_visible={
                 "asset_handle": handle,
-                # 1.0 ``ocr_tool.py:551`` 的 ``offline_text[:1600]``——上限照抄。
                 "full_text": text[:1600],
-                # 1.0 ``:552-553``：最多 8 行、每行 150 字。1.0 的 ``text_regions``
-                # 是给界面画框用的，2.0 没有那个界面，但**保留这一格**：它是「哪些行是
-                # 真的读出来的」的证据，模型据此判断文本完整性比看一坨全文准。
                 "text_regions": [
                     {"text": line[:150], "source": "ingestion_ocr"} for line in text.splitlines()[:8]
                 ],

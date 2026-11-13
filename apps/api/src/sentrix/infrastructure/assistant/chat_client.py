@@ -48,6 +48,7 @@ from sentrix.domain.assistant.ports import (
     OutputTruncatedError,
     PromptTooLongError,
 )
+from sentrix.domain.assistant.request_context import request_slot
 from sentrix.domain.assistant.tools import ToolSpec, openai_tools
 from sentrix.infrastructure.assistant.model_endpoint import ServedModel
 from sentrix.infrastructure.models.gateway import model_auth_headers
@@ -519,6 +520,10 @@ class OpenAIChatModel:
                 "http_status": response.status_code,
                 "context_window_tokens": self._context_tokens,
                 "streamed": False,
+                # llama.cpp 的服务端计时：prompt_n 是本次真正预填的 token，cache_n 是
+                # 从前缀缓存复用的 token。没有这两个值，就无法回答“缓存到底有没有生效”。
+                "timings": body.get("timings") or {},
+                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
                 **response.extensions.get("diagnostics", {}),
             },
             thought=thought,
@@ -578,6 +583,9 @@ class OpenAIChatModel:
             "stream": False,
             "max_tokens": budget,
         }
+        slot = request_slot()
+        if slot is not None:
+            payload["id_slot"] = slot
         if tools:
             payload["tools"] = list(openai_tools(tools))
             payload["tool_choice"] = "auto"
