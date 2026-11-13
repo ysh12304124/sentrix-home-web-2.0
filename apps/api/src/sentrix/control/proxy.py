@@ -164,9 +164,7 @@ async def forward(
         target = f"{target}?{request.url.query}"
 
     headers = [
-        (name, value)
-        for name, value in request.headers.items()
-        if name.lower() not in _STRIP_REQUEST_HEADERS
+        (name, value) for name, value in request.headers.items() if name.lower() not in _STRIP_REQUEST_HEADERS
     ]
     headers.append(("x-sentrix-internal-token", route.api_token))
     headers.append(("x-sentrix-account-id", route.account_id))
@@ -177,9 +175,7 @@ async def forward(
     upstream = await client.send(upstream_request, stream=True)
 
     response_headers = {
-        name: value
-        for name, value in upstream.headers.items()
-        if name.lower() not in _STRIP_RESPONSE_HEADERS
+        name: value for name, value in upstream.headers.items() if name.lower() not in _STRIP_RESPONSE_HEADERS
     }
     response_headers["x-request-id"] = rid
 

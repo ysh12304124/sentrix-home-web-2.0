@@ -15,7 +15,6 @@ from sentrix.api.deps import get_container
 from sentrix.api.routes.family import TRIGGER_INGEST, run_family_graph_for_scope
 from sentrix.api.routes.identity import _confirmed_person_events
 from sentrix.api.routes.insights import run_insights_for_scope
-from sentrix.api.routes.media import build_import_assets, refresh_memory_graph
 from sentrix.api.schemas.family import FamilyRunResponse
 from sentrix.api.schemas.operations import OperationCancellationResponse
 from sentrix.api.schemas.timeline import (
@@ -60,6 +59,7 @@ from sentrix.application.memories.read_timeline import (
 )
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import build_import_assets, refresh_memory_graph
 from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.api.timeline")
@@ -187,9 +187,7 @@ def timeline_calendar(
     has_place: bool = False,
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    index = _read_timeline(container).calendar(
-        scope_id or None, place=place.strip(), has_place=has_place
-    )
+    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
     years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,
@@ -202,10 +200,7 @@ def timeline_calendar(
                     CalendarMonth(
                         month=month.month,
                         count=month.count,
-                        days=[
-                            CalendarDay(date=day.date, count=day.count)
-                            for day in month.days
-                        ],
+                        days=[CalendarDay(date=day.date, count=day.count) for day in month.days],
                     )
                     for month in year.months
                 ],

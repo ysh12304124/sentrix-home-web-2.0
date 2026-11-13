@@ -11,7 +11,10 @@ import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import {
   listAssetPage,
+  listMediaDeletions,
+  retryMediaCleanup,
   type AssetSummary,
+  type MediaDeletionRecord,
 } from "../../shared/api/client";
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
 import { AssetGrid } from "./AssetGrid";
@@ -43,6 +46,10 @@ export function LibraryPage() {
   const [sortKey, setSortKey] = useState<SortKey>("captured");
   const [order, setOrder] = useState<"desc" | "asc">("desc");
   const [reloadKey, setReloadKey] = useState(0);
+  const [deletions, setDeletions] = useState<MediaDeletionRecord[]>([]);
+  const [deletionsError, setDeletionsError] = useState("");
+  const [deletionsLoading, setDeletionsLoading] = useState(false);
+  const [deletionsRevision, setDeletionsRevision] = useState(0);
   const requestSeq = useRef(0);
   const knownTotal = useRef<number | null>(null);
 
@@ -88,6 +95,16 @@ export function LibraryPage() {
       cancelled = true;
     };
   }, [filter, order, reloadKey, scopeId, sortKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDeletionsLoading(true);
+    listMediaDeletions(scopeId)
+      .then((items) => { if (!cancelled) { setDeletions(items); setDeletionsError(""); } })
+      .catch((cause: Error) => { if (!cancelled) setDeletionsError(cause.message); })
+      .finally(() => { if (!cancelled) setDeletionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [deletionsRevision, scopeId]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || assets.length >= total) return;
@@ -211,6 +228,35 @@ export function LibraryPage() {
         </p>
       ) : null}
 
+      <details className="deletion-history">
+        <summary>删除记录 · 最近 50 条</summary>
+        <div className="deletion-history-content">
+          <p>数据库中的媒体和独占记忆已在删除时提交；受控文件与向量镜像清理状态单独记录。</p>
+          <div className="deletion-history-actions">
+            <button type="button" onClick={() => setDeletionsRevision((value) => value + 1)}>刷新记录</button>
+            {deletions.some((item) => !item.files_done || !item.vectors_done) ? (
+              <button type="button" onClick={() => {
+                void retryMediaCleanup()
+                  .then((result) => { setNotice(result.warnings.join("；") || "待重试的外部清理已完成"); setDeletionsRevision((value) => value + 1); })
+                  .catch((cause: Error) => setDeletionsError(cause.message));
+              }}>重试外部清理</button>
+            ) : null}
+          </div>
+          {deletionsError ? <p className="error" role="alert">读取/清理失败：{deletionsError}</p> : null}
+          {deletionsLoading ? <p>正在读取删除记录…</p> : deletions.length === 0 ? <p>当前范围暂无删除记录。</p> : (
+            <div className="deletion-history-scroll"><table>
+              <thead><tr><th>资源</th><th>删除时间</th><th>资产数</th><th>文件</th><th>向量</th><th>错误</th></tr></thead>
+              <tbody>{deletions.map((item) => <tr key={item.asset_id}>
+                <td>{item.file_name || item.asset_id}</td>
+                <td>{item.deleted_at ? new Date(item.deleted_at).toLocaleString("zh-CN") : "未记录"}</td>
+                <td>{item.asset_count}</td><td>{item.files_done ? "完成" : "待清理"}</td>
+                <td>{item.vectors_done ? "完成" : "待清理"}</td><td>{item.last_error || "—"}</td>
+              </tr>)}</tbody>
+            </table></div>
+          )}
+        </div>
+      </details>
+
       {loading ? (
         <p className="library-loading">正在读取资料…</p>
       ) : assets.length === 0 ? (
@@ -246,6 +292,21 @@ export function LibraryPage() {
                 assetId: asset.id,
               })
             }
+            onDeleted={(assetId, warnings) => {
+              const removed = assets.find((asset) => asset.id === assetId);
+              setAssets((current) => current.filter((asset) => asset.id !== assetId));
+              setTotal((current) => Math.max(0, current - 1));
+              if (removed) {
+                setCounts((current) => ({
+                  ...current,
+                  all: Math.max(0, (current.all ?? 0) - 1),
+                  [removed.media_type]: Math.max(0, (current[removed.media_type] ?? 0) - 1),
+                }));
+              }
+              setNotice(warnings.length ? `媒体已删除，但有外部清理待完成：${warnings.join("；")}` : "媒体及独占记忆已删除。");
+              setReloadKey((value) => value + 1);
+              setDeletionsRevision((value) => value + 1);
+            }}
           />
           <div className="library-footer">
             <span>

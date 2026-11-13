@@ -8,9 +8,8 @@ import subprocess
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-
 import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from sentrix.control.auth import AuthContext, require_admin, require_csrf
 
@@ -136,9 +135,7 @@ def user_client_events(
 ) -> dict[str, object]:
     # 只允许查询配置中的体验账号；管理员账号没有用户 API，也不该有轨迹。
     _route(request, account_id)
-    items, has_more = _store(request).list_client_events(
-        account_id, after_id=max(0, after_id), limit=limit
-    )
+    items, has_more = _store(request).list_client_events(account_id, after_id=max(0, after_id), limit=limit)
     if after_id <= 0:
         # 打开轨迹记一条审计；2 秒轮询带 after_id，不重复记。
         _store(request).audit(
@@ -234,9 +231,7 @@ def restart_service(
     existing = store.get_restart_request(key)
     if existing is not None:
         if str(existing["service_id"]) != service_id:
-            raise HTTPException(
-                status_code=409, detail="idempotency key reused for a different service"
-            )
+            raise HTTPException(status_code=409, detail="idempotency key reused for a different service")
         body = json.loads(str(existing["body_json"]))
         store.audit(
             "service.restart",

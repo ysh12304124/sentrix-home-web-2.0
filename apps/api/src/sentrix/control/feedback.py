@@ -119,9 +119,7 @@ def create_feedback(
 
 
 @router.get("/feedback")
-def list_own_feedback(
-    request: Request, auth: AuthContext = Depends(current_auth)
-) -> dict[str, object]:
+def list_own_feedback(request: Request, auth: AuthContext = Depends(current_auth)) -> dict[str, object]:
     return {"items": _store(request).list_feedback(auth.account.id)}
 
 
@@ -146,9 +144,7 @@ def add_own_update(
     require_csrf(request, auth)
     if _store(request).get_feedback(feedback_id, account_id=auth.account.id) is None:
         raise HTTPException(status_code=404, detail="feedback not found")
-    return _store(request).add_feedback_update(
-        feedback_id, author=auth.account.id, body=payload.body.strip()
-    )
+    return _store(request).add_feedback_update(feedback_id, author=auth.account.id, body=payload.body.strip())
 
 
 def _sniff_image(head: bytes) -> str:
@@ -197,9 +193,7 @@ def download_own_attachment(
     attachment = _store(request).get_attachment(attachment_id)
     if attachment is None:
         raise HTTPException(status_code=404, detail="attachment not found")
-    owner = _store(request).get_feedback(
-        str(attachment["feedback_id"]), account_id=auth.account.id
-    )
+    owner = _store(request).get_feedback(str(attachment["feedback_id"]), account_id=auth.account.id)
     if owner is None:
         raise HTTPException(status_code=404, detail="attachment not found")
     return FileResponse(

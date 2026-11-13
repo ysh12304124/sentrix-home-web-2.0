@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError
-from sentrix.api.routes.media import refresh_memory_graph
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.relationships import (
     RelationshipBatchRequest,
     RelationshipBatchResponse,
@@ -52,6 +52,7 @@ from sentrix.application.identity.import_relationships import (
     RelationshipRequest,
 )
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.identity.models import ENTITY_TYPE_PERSON, RelationshipRecord
 
 # 1.0 ``app.py:2114`` 的原话，逐字（前端与 PhotoBench 都能拿到这句）。
@@ -205,7 +206,7 @@ def import_relationships(
             for item in payload.relationships or []
         ],
     )
-    if payload.scope_id:
+    if payload.scope_id and payload.graph_enabled:
         refresh_memory_graph(container, payload.scope_id)
     return RelationshipBatchResponse(
         requested=outcome.requested,
@@ -224,6 +225,7 @@ def import_relationships(
 
 
 @router.post("/relationships/{relationship_id}/confirm")
+@memory_write("relationship", "relationship_id")
 def confirm_relationship(
     relationship_id: str,
     container: Container = Depends(get_container),
@@ -237,11 +239,11 @@ def confirm_relationship(
     confirmed = container.relationship_repository.confirm(relationship_id)
     if confirmed is None:
         raise NotFoundError("relationship not found")
-    refresh_memory_graph(container, confirmed.scope_id)
     return _payload(confirmed)
 
 
 @router.post("/relationships/{relationship_id}/retract")
+@memory_write("relationship", "relationship_id")
 def retract_relationship(
     relationship_id: str,
     container: Container = Depends(get_container),
@@ -250,5 +252,4 @@ def retract_relationship(
     retracted = container.relationship_repository.retract(relationship_id)
     if retracted is None:
         raise NotFoundError("relationship not found")
-    refresh_memory_graph(container, retracted.scope_id)
     return _payload(retracted)

@@ -83,6 +83,7 @@ class HttpxSentrixClient:
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
+        graph_enabled: bool = True,
         timeout: int = 120,
     ) -> dict[str, Any]:
         """``POST /api/v1/people/seed``（``api/routes/identity.py:904``）。
@@ -103,6 +104,7 @@ class HttpxSentrixClient:
                     "family_role": family_role,
                     "aliases": "、".join(aliases),
                     "scope_id": scope_id,
+                    "graph_enabled": str(graph_enabled).lower(),
                 },
                 [("files", file_name, content)],
                 timeout,
@@ -115,6 +117,7 @@ class HttpxSentrixClient:
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
+        graph_enabled: bool = True,
         timeout: int = 60,
     ) -> dict[str, Any]:
         """``POST /api/v1/relationships/batch``（``api/routes/relationships.py:181``）。
@@ -128,6 +131,7 @@ class HttpxSentrixClient:
                 self._url("/relationships/batch"),
                 {
                     "scope_id": scope_id,
+                    "graph_enabled": graph_enabled,
                     "relationships": [dict(item) for item in relationships],
                     "entity_by_name": dict(entity_by_name),
                 },
@@ -179,11 +183,13 @@ class HttpxSentrixClient:
             )
         )
 
-    def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+    def process_pipeline(
+        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
+    ) -> dict[str, Any]:
         return dict(
             self._http.request_json(
                 self._url("/pipeline/process"),
-                {"scope_id": scope_id, "asset_ids": list(asset_ids)},
+                {"scope_id": scope_id, "asset_ids": list(asset_ids), "graph_enabled": graph_enabled},
                 "POST",
                 timeout,
             )
@@ -232,11 +238,12 @@ class HttpxSentrixClient:
         conversation_id: str,
         message: str,
         include_debug: bool = False,
+        graph_enabled: bool = True,
         timeout: int = 300,
     ) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations/{cid}/turns``（``assistant.py:202``）。
 
-        请求体只有 ``message`` 与 ``include_debug``：``StartTurnRequest`` 里的
+        请求体只有 ``message``、``include_debug`` 与可选的 ``graph_enabled``：``StartTurnRequest`` 里的
         ``conversation_id`` **被路由忽略**（``assistant.py:213`` 的注释写明路径参数才是
         权威），所以这里也不发它——发一个会被忽略的字段只会让下一个人以为它有用。
         """
@@ -245,6 +252,8 @@ class HttpxSentrixClient:
             # 只在需要时发这个键：老版主 API 不认识它也不会因为多一个字段而变，但
             # 「默认请求体长什么样」保持原样更省解释成本。
             payload["include_debug"] = True
+        if not graph_enabled:
+            payload["graph_enabled"] = False
         return dict(
             self._http.request_json(
                 self._url(f"/assistant/conversations/{_quote(conversation_id)}/turns"),

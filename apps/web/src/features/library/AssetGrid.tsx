@@ -52,10 +52,12 @@ export function AssetGrid({
   assets,
   onOpen,
   onMediaError,
+  onDeleted,
 }: {
   assets: readonly AssetSummary[];
   onOpen?: (asset: AssetSummary) => void;
   onMediaError?: (asset: AssetSummary) => void;
+  onDeleted?: (assetId: string, warnings: string[]) => void;
 }) {
   const [selected, setSelected] = useState<AssetDetailResponse | null>(null);
 
@@ -92,7 +94,7 @@ export function AssetGrid({
           </button>
         ))}
       </section>
-      {selected ? <AssetDetail asset={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? <AssetDetail asset={selected} onClose={() => setSelected(null)} onDeleted={onDeleted} /> : null}
     </>
   );
 }

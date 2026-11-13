@@ -165,16 +165,12 @@ class ReadTimeline:
             key = _day_key(event)
             if not days or days[-1].date != key:
                 days.append(_DayBucket(date=key))
-            days[-1].events.append(
-                self._summarize(event, asset_ids_by_event.get(event.id, ()), assets)
-            )
+            days[-1].events.append(self._summarize(event, asset_ids_by_event.get(event.id, ()), assets))
 
         return TimelineResult(
             scope_id=target_scope or "",
             days=tuple(TimelineDay(date=day.date, events=tuple(day.events)) for day in days),
-            total=self._events.count_by_scope(
-                target_scope, place=place, has_place=has_place, date=date
-            ),
+            total=self._events.count_by_scope(target_scope, place=place, has_place=has_place, date=date),
             offset=start,
             limit=page_size,
         )
@@ -196,9 +192,7 @@ class ReadTimeline:
                 month = int(date[5:7])
             except (TypeError, ValueError):
                 continue
-            years.setdefault(year, {}).setdefault(month, []).append(
-                CalendarDay(date=date, count=count)
-            )
+            years.setdefault(year, {}).setdefault(month, []).append(CalendarDay(date=date, count=count))
             year_counts[year] = year_counts.get(year, 0) + count
             month_counts[(year, month)] = month_counts.get((year, month), 0) + count
         return CalendarIndex(
@@ -266,15 +260,12 @@ class ReadTimeline:
         asset_ids: tuple[str, ...] | list[str],
         assets: dict[str, object],
     ) -> TimelineEventSummary:
-        representative = next(
-            (assets[asset_id] for asset_id in asset_ids if asset_id in assets), None
-        )
+        representative = next((assets[asset_id] for asset_id in asset_ids if asset_id in assets), None)
         image = next(
             (
                 assets[asset_id]
                 for asset_id in asset_ids
-                if asset_id in assets
-                and getattr(assets[asset_id], "media_type", None) is MediaType.IMAGE
+                if asset_id in assets and getattr(assets[asset_id], "media_type", None) is MediaType.IMAGE
             ),
             None,
         )
@@ -288,9 +279,7 @@ class ReadTimeline:
             admin_district=event.admin_district,
             summary=event.summary,
             representative_asset_id=getattr(chosen, "id", None),
-            representative_media_type=(
-                getattr(getattr(chosen, "media_type", None), "value", None)
-            ),
+            representative_media_type=(getattr(getattr(chosen, "media_type", None), "value", None)),
             asset_count=len(asset_ids),
         )
 
@@ -300,15 +289,11 @@ class ReadTimeline:
             return {}
         observation_ids_by_event = self._events.observation_ids_many(event_ids)
         all_observation_ids = [
-            observation_id
-            for ids in observation_ids_by_event.values()
-            for observation_id in ids
+            observation_id for ids in observation_ids_by_event.values() for observation_id in ids
         ]
         observations = self._observations.get_many(all_observation_ids)
         all_asset_ids = [
-            observation.asset_id
-            for observation in observations.values()
-            if observation.asset_id
+            observation.asset_id for observation in observations.values() if observation.asset_id
         ]
         assets = self._assets.get_many(all_asset_ids)
 
@@ -322,9 +307,7 @@ class ReadTimeline:
                 asset = assets.get(observation.asset_id)
                 if asset is None:
                     continue
-                ordered.append(
-                    (time_sort_key(asset.captured_at or asset.created_at), asset.id)
-                )
+                ordered.append((time_sort_key(asset.captured_at or asset.created_at), asset.id))
             ordered.sort(key=lambda item: (item[0], item[1]))
             result[event_id] = list(dict.fromkeys(asset_id for _, asset_id in ordered))
         return result

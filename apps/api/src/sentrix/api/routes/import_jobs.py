@@ -18,9 +18,7 @@ from sentrix.domain.media.import_jobs import ImportJob
 
 router = APIRouter(tags=["import-jobs"])
 
-ACTIVE_STATUSES = frozenset(
-    {"accepted", "queued", "running", "waiting_dependency", "retry_scheduled"}
-)
+ACTIVE_STATUSES = frozenset({"accepted", "queued", "running", "waiting_dependency", "retry_scheduled"})
 FAILED_STATUSES = frozenset({"needs_attention", "partial"})
 
 
@@ -53,9 +51,7 @@ def list_import_jobs(
     limit: int = 1000,
     container: Container = Depends(get_container),
 ) -> ImportJobListResponse:
-    jobs = container.import_jobs.list_for_scope(
-        scope_id or None, limit=min(max(limit, 1), 5000)
-    )
+    jobs = container.import_jobs.list_for_scope(scope_id or None, limit=min(max(limit, 1), 5000))
     return ImportJobListResponse(items=[to_job_view(job) for job in jobs])
 
 
@@ -80,9 +76,9 @@ def get_import_progress(
         completed=completed,
         processing=processing,
         failed=failed,
-        percent=100 if total > 0 and completed >= total else (
-            round(completed / total * 100) if total > 0 else 0
-        ),
+        percent=100
+        if total > 0 and completed >= total
+        else (round(completed / total * 100) if total > 0 else 0),
     )
 
     row = container.import_jobs.postprocess_view(scope_id or "home-default")

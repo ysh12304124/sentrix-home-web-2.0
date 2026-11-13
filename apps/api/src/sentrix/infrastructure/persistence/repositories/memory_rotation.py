@@ -52,14 +52,11 @@ class SqliteRotationRepository:
     def advance(self, sequence_id: str, position: int, *, now: datetime) -> None:
         with self._database.connect() as connection, connection:
             connection.execute(
-                "UPDATE memory_rotation_sequences SET position = ?, updated_at = ?"
-                " WHERE sequence_id = ?",
+                "UPDATE memory_rotation_sequences SET position = ?, updated_at = ? WHERE sequence_id = ?",
                 (max(0, position), now.isoformat(), sequence_id),
             )
 
-    def replace_sequence(
-        self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime
-    ) -> None:
+    def replace_sequence(self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime) -> None:
         """同一天的新一轮：保留 sequence_id，换候选并回到第一页。"""
         with self._database.connect() as connection, connection:
             connection.execute(

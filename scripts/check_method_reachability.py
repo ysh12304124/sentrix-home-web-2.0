@@ -117,7 +117,6 @@ PENDING_METHODS: dict[str, str] = {
     # 而是计划**要求**先落地、后接线的一件（§4 Task 123/124：先落 inspector 端口 + 适配器
     # + 它的对照用例，再 T123、再 T124），所以它落地的那一刻必然没有生产调用者。
     # 登记在此，等两条工具接上时**由反向规则自己删掉**——与 facts 那三条走的是同一条路。
-    "MediaStorage.path_for": "S6 · 依赖核查（媒体路径解析，归属未定）",
     "LexicalIndex.rebuild_scope": "S6 · 依赖核查（词法索引重建，归属未定）",
     # AssetRepository.update_status 在 S8a · T504 接线（POST /videos/{id}/reprocess
     # 重置状态），按反向规则删掉——**又是被门禁自己删掉的一条**。

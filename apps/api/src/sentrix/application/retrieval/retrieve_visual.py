@@ -197,4 +197,8 @@ class RetrieveVisual:
             return f"index_empty:index=0,authoritative={authoritative}"
         if indexed < authoritative:
             return f"index_stale:index={indexed},authoritative={authoritative}"
+        if indexed > authoritative:
+            # A pending delete may leave Qdrant ahead of SQLite. Never serve
+            # orphaned media from that mirror while the cleanup job is retried.
+            return f"index_orphaned:index={indexed},authoritative={authoritative}"
         return ""

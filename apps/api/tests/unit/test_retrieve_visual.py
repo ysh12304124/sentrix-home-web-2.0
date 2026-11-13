@@ -222,6 +222,17 @@ def test_index_behind_the_authoritative_store_is_degraded():
     assert index.searches == [], "已经判定落后就不该再去查它"
 
 
+def test_index_ahead_after_failed_delete_falls_back_to_authoritative_store():
+    vectors = FakeVectors(hits=[hit("survivor", 0.31)], total=1)
+    index = FakeIndex(hits=[hit("deleted", 0.99)], count=2)
+
+    result = build(vectors=vectors, index=index).execute(request())
+
+    assert [item.asset_id for item in result.hits] == ["survivor"]
+    assert result.backend == "sqlite_exact"
+    assert result.degraded_reason == "index_orphaned:index=2,authoritative=1"
+
+
 def test_index_dropping_between_status_and_search_still_returns_results():
     vectors = FakeVectors(hits=[hit("asset_a", 0.31)], total=1)
     index = FakeIndex(hits=[hit("asset_a", 0.31)], count=1, fail_on_search=True)

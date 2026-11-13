@@ -11,7 +11,8 @@
 name-load / 调用过**。协议类（``Protocol``）只用作类型注解，注解在 AST 里同样是
 ``ast.Name`` 节点，所以这条对端口模块成立。
 
-**两个根**：``sentrix.main``（进程入口）与 ``sentrix.bootstrap``。只有从根**可达**的
+**生产入口**：``sentrix.main``、独立控制服务 ``sentrix.control.main``、
+``sentrix.bootstrap`` 与 ``photobench.main``。只有从根**可达**的
 文件才算生产代码；测试与 ``scripts/`` 不在图里——它们不是调用者。
 
 **PENDING_WIRING 是显式的例外表，不是后门。** 一个模块可能是「本切片先落地、
@@ -35,7 +36,7 @@ DEFAULT_SRC = REPO_ROOT / "apps" / "api" / "src"
 # 为空，于是每个 photobench 模块都「没有调用者」，PENDING_WIRING 那张表会因为
 # 「根找不到」而永远合法——那正是 S9a 施工记录第 10 条点名要守的不变量。
 # 对 sentrix 那一轮没有影响：它的 by_module 里没有 photobench.main，frontier 直接跳过。
-ROOTS = ("sentrix.main", "sentrix.bootstrap", "photobench.main")
+ROOTS = ("sentrix.main", "sentrix.bootstrap", "sentrix.control.main", "photobench.main")
 
 # 模块 -> 会把它接上生产的任务。**每个条目都必须写明任务，否则它就是一个说不出
 # 理由的例外**——而说不出理由的例外名单会把这条不变量重新变成摆设。

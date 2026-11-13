@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import ConflictError, InvalidRequestError
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.family import (
     FamilyAnalysisRunPayload,
     FamilyGraphResponse,
@@ -202,6 +203,7 @@ def _required(message: str, *values: str) -> None:
 
 
 @router.patch("/family-graph/people/{person_id}/membership")
+@memory_write("family", "person_id")
 def update_family_membership(
     person_id: str,
     payload: FamilyMembershipRequest,
@@ -234,6 +236,7 @@ def update_family_membership(
 
 
 @router.put("/family-graph/relationships")
+@memory_write("family", "subject_entity_id")
 def update_family_relationship(
     payload: FamilyRelationshipRequest,
     container: Container = Depends(get_container),
@@ -265,6 +268,7 @@ def update_family_relationship(
 
 
 @router.delete("/family-graph/relationships")
+@memory_write("family", "subject_entity_id")
 def retract_family_relationship(
     payload: FamilyRetractRequest,
     container: Container = Depends(get_container),
@@ -289,6 +293,7 @@ def retract_family_relationship(
 
 
 @router.patch("/family-graph/people/{person_id}/portrait")
+@memory_write("family", "person_id")
 def update_family_portrait(
     person_id: str,
     payload: FamilyPortraitRequest,

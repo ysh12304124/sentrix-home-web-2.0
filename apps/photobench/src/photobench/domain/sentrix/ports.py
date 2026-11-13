@@ -77,6 +77,7 @@ class SentrixClient(Protocol):
         aliases: Sequence[str],
         file_name: str,
         content: bytes,
+        graph_enabled: bool,
         timeout: int = 120,
     ) -> dict[str, Any]:
         """``POST /api/v1/people/seed``（1.0 ``:2691`` 的单人投影）。
@@ -94,6 +95,7 @@ class SentrixClient(Protocol):
         scope_id: str,
         relationships: Sequence[Mapping[str, Any]],
         entity_by_name: Mapping[str, str],
+        graph_enabled: bool,
         timeout: int = 60,
     ) -> dict[str, Any]:
         """``POST /api/v1/relationships/batch``（1.0 ``:2713``）。逐条失败不中断。"""
@@ -112,7 +114,9 @@ class SentrixClient(Protocol):
         """``POST /api/v1/imports/assets``：只落盘并登记资产，返回有序 ``asset_ids``。"""
         ...
 
-    def process_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
+    def process_pipeline(
+        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+    ) -> dict[str, Any]:
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
 
@@ -141,6 +145,7 @@ class SentrixClient(Protocol):
         conversation_id: str,
         message: str,
         include_debug: bool = False,
+        graph_enabled: bool = True,
         timeout: int = 300,
     ) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations/{cid}/turns``，返回 ``{turn_id, status}``。
@@ -151,6 +156,8 @@ class SentrixClient(Protocol):
         ``include_debug=True`` 让主 API 在终态载荷的 ``trace.debug_calls`` 里带上每次
         模型调用**实际发送的 messages / tools 与原始回复**。评测侧打开它；其他调用方
         不打开，产品对话就不会把那几十 KB 的提示词写进 ``agent_turns``。
+
+        ``graph_enabled=False`` 用于最终媒体召回率对照 run；默认不发送关闭标记。
         """
         ...
 

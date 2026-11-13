@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ManifestSummary, ReuseBase } from "../../api/types.ts";
+import type { ManifestSummary, ReuseBase, Run } from "../../api/types.ts";
 import { ConfigSection, type ConfigSectionProps } from "./ConfigSection.tsx";
 
 const MANIFEST: ManifestSummary = {
@@ -167,5 +167,28 @@ describe("ConfigSection 启动按钮", () => {
     const reuseButton = screen.getByRole("button", { name: "启动复用测评" }) as HTMLButtonElement;
     expect(reuseButton.disabled).toBe(true);
     expect(reuseButton.title).toBe("请先选择要复用的相册");
+  });
+});
+
+describe("ConfigSection 无图基线选择", () => {
+  it("直接列出当前相册、题集和模型匹配的已完成无图 run", () => {
+    const props = makeProps("full", vi.fn()) as ConfigSectionProps & { baselineRuns: Run[] };
+    props.baselineRuns = [
+      {
+        run_id: "20261103-130008-album3-max-video10-current-c1d797",
+        album_id: "album3",
+        qa_set: "compact-10q",
+        model_name: "m1",
+        graph_enabled: false,
+        status: "completed",
+        finished_at: "2026-11-03T13:00:00+08:00",
+        qa_count: 10,
+      },
+    ];
+
+    render(<ConfigSection {...props} />);
+
+    const select = screen.getByRole("combobox", { name: /无图基线 run/ });
+    expect(within(select).getByRole("option", { name: /20261103-130008/ })).toBeTruthy();
   });
 });

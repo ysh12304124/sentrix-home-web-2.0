@@ -179,6 +179,20 @@ def test_ffprobe_failure_raises_value_error():
         FfprobeVideoMetadataReader().read(Path("gone.mp4"))
 
 
+def test_ffprobe_retries_a_transient_failure_before_returning_metadata():
+    with patch(
+        "sentrix.infrastructure.media.ffprobe.subprocess.run",
+        side_effect=[
+            completed({}, returncode=1, stderr="resource temporarily unavailable"),
+            completed(TAGGED_MP4_PAYLOAD),
+        ],
+    ) as run:
+        result = FfprobeVideoMetadataReader().read(Path("retry.mp4"))
+
+    assert run.call_count == 2
+    assert result.duration_sec == pytest.approx(6)
+
+
 def test_no_video_stream_raises_value_error():
     payload = {
         "format": {"duration": "3", "tags": {}},

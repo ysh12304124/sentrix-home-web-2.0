@@ -85,11 +85,7 @@ class ControlSettings(BaseSettings):
         return tuple(unit.strip() for unit in self.shared_model_units.split(",") if unit.strip())
 
     def unmanaged_model_consumer_list(self) -> tuple[str, ...]:
-        return tuple(
-            item.strip()
-            for item in self.unmanaged_model_consumers.split(",")
-            if item.strip()
-        )
+        return tuple(item.strip() for item in self.unmanaged_model_consumers.split(",") if item.strip())
 
     def diagnostics(self, *, route_users: int, ready: bool) -> dict[str, object]:
         """只包含可公开的有效配置，不含令牌、账号列表或文件系统私有路径。"""

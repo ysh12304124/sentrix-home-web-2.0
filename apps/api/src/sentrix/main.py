@@ -27,6 +27,7 @@ from sentrix.api.deps import internal_call_guard
 from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
+    corrections,
     diagnostics,
     facts,
     family,
@@ -173,6 +174,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         for executor in executors:
             executor.stop()
 
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，
     # 线程上限必须在它们之前生效（见 infrastructure.thread_limits）。
@@ -201,6 +203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
+    v1.include_router(corrections.router)
     v1.include_router(media.router)
     v1.include_router(import_jobs.router)
     v1.include_router(internal.router)

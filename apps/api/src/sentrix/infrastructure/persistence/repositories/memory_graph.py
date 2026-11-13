@@ -155,6 +155,9 @@ class SqliteMemoryGraphRepository:
             "event_has_entity",
             "observation_mentions_concept",
             "observation_mentions_entity",
+            "observation_mentions_confirmed_entity",
+            "asset_mentions_confirmed_entity",
+            "observation_semantic_similar",
             "fact_evidence",
             "fact_about_entity",
             "event_temporal_next",
@@ -163,6 +166,9 @@ class SqliteMemoryGraphRepository:
             "frame_shares_object",
             "frame_mentions_relation",
             "frame_shares_relation",
+            "image_temporal_next",
+            "image_shares_object",
+            "image_visual_similar",
             "event_place_context",
             "event_date_context",
             "asset_place_context",
@@ -176,7 +182,10 @@ class SqliteMemoryGraphRepository:
             "event_has_entity": {("event", "entity")},
             "observation_of_asset": {("observation", "asset")},
             "observation_mentions_entity": {("observation", "entity")},
+            "observation_mentions_confirmed_entity": {("observation", "entity")},
+            "asset_mentions_confirmed_entity": {("asset", "entity")},
             "observation_mentions_concept": {("observation", "concept")},
+            "observation_semantic_similar": {("observation", "observation")},
             "fact_evidence": {("fact", "observation")},
             "fact_about_entity": {("fact", "entity")},
             "event_temporal_next": {("event", "event")},
@@ -186,6 +195,9 @@ class SqliteMemoryGraphRepository:
             "frame_mentions_relation": {("asset", "relation_hub")},
             "frame_shares_relation": {("asset", "asset")},
             "frame_visual_similar": {("asset", "asset")},
+            "image_temporal_next": {("asset", "asset")},
+            "image_shares_object": {("asset", "asset")},
+            "image_visual_similar": {("asset", "asset")},
             "event_place_context": {("event", "place_context")},
             "event_date_context": {("event", "date_context")},
             "asset_place_context": {("asset", "place_context")},
@@ -227,12 +239,16 @@ class SqliteMemoryGraphRepository:
                 attribute_supported += 1
             if not isinstance(attributes, dict):
                 attributes = {}
-            discriminator = str(attributes.get("label") or "") if relation.startswith("frame_") else ""
+            discriminator = (
+                str(attributes.get("label") or "")
+                if relation.startswith(("frame_", "image_")) and relation.endswith(("object", "relation"))
+                else ""
+            )
             key = (source_id, target_id, relation, discriminator)
             predicted_counts[key] += 1
             if relation in evaluable_relations:
                 predicted_reference.add(key)
-            if relation == "frame_visual_similar":
+            if relation in {"frame_visual_similar", "image_visual_similar"}:
                 with suppress(TypeError, ValueError):
                     evidence_supported += float(attributes.get("similarity") or 0.0) >= 0.75
             elif relation.startswith("asset_causes_asset:"):
@@ -347,12 +363,22 @@ class SqliteMemoryGraphRepository:
                     relation = str(row[2])
                     weight = float(row[3] or 0.0)
                     causal = relation.startswith("asset_causes_asset:")
-                    temporal = relation in {"frame_temporal_next", "event_temporal_next"}
-                    object_edge = relation in {"frame_shares_object", "frame_mentions_object"}
+                    temporal = relation in {
+                        "frame_temporal_next",
+                        "event_temporal_next",
+                        "image_temporal_next",
+                    }
+                    object_edge = relation in {
+                        "frame_shares_object",
+                        "frame_mentions_object",
+                        "image_shares_object",
+                    }
                     semantic_edge = relation in {
                         "frame_shares_relation",
                         "frame_mentions_relation",
                         "frame_visual_similar",
+                        "image_visual_similar",
+                        "observation_semantic_similar",
                     }
                     hierarchy = relation in {
                         "asset_derived_from_asset",

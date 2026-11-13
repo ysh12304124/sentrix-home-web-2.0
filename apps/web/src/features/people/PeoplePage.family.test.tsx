@@ -173,7 +173,7 @@ describe("图谱 tab", () => {
     ];
     vi.mocked(client.putFamilyRelationship).mockImplementation(async () => {
       vi.mocked(client.getFamilyGraph).mockResolvedValue({ ...graph, relationships: rows });
-      return rows;
+      return { ok: true, relationships: rows, sync_status: "synced", sync_error: "" };
     });
     const { container } = mount(graph, `/?person=${dad.id}`);
     await screen.findByRole("complementary");

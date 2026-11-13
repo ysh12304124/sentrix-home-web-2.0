@@ -54,9 +54,7 @@ class ManageConversations:
     def list_for_scope(self, scope_id: str, limit: int = 50) -> Sequence[Conversation]:
         return self._conversations.list_for_scope(scope_id, limit)
 
-    def detail(
-        self, conversation_id: str, limit: int = 50, cursor: str = ""
-    ) -> ConversationDetail | None:
+    def detail(self, conversation_id: str, limit: int = 50, cursor: str = "") -> ConversationDetail | None:
         conversation = self._conversations.get(conversation_id)
         if conversation is None:
             return None
@@ -66,9 +64,7 @@ class ManageConversations:
             )
         except KeyError as error:
             raise InvalidCursor(str(error)) from None
-        messages = self._conversations.list_messages_for_turns(
-            conversation_id, [turn.id for turn in turns]
-        )
+        messages = self._conversations.list_messages_for_turns(conversation_id, [turn.id for turn in turns])
         return ConversationDetail(
             conversation=conversation,
             messages=messages,

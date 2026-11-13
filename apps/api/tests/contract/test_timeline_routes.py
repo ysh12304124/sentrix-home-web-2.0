@@ -146,6 +146,7 @@ def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_p
     assert body["timings"]["memory_graph"] >= 0
     assert body["timings"]["total"] >= body["timings"]["memory_graph"]
     assert body["memory_graph"]["node_count"] > 0
+    assert body["memory_graph"]["graph_structure_seconds"] == body["timings"]["memory_graph"]
     assert body["memory_graph"]["causal_status"] == "no_candidates"
     assert body["memory_graph"]["causal_candidate_pairs"] == 0
     assert body["memory_graph"]["keyframe_count"] == 0

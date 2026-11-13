@@ -9,24 +9,26 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path  # noqa: F401 - 同时用于 SPA 目录解析
-from typing import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from sentrix.control import admin as admin_routes
+from sentrix.control import client_events as client_event_routes
+from sentrix.control import feedback as feedback_routes
 from sentrix.control.auth import (
     AuthContext,
-    build_router as build_auth_router,
     current_auth,
     require_admin,
     require_csrf,
 )
-from sentrix.control import admin as admin_routes
-from sentrix.control import client_events as client_event_routes
-from sentrix.control import feedback as feedback_routes
+from sentrix.control.auth import (
+    build_router as build_auth_router,
+)
 from sentrix.control.config import ControlSettings
 from sentrix.control.internal_model import router as internal_model_router
 from sentrix.control.metrics import collect_host_snapshot
@@ -151,13 +153,9 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             del path
             require_csrf(request, auth)
             if auth.account.role != "user":
-                raise HTTPException(
-                    status_code=403, detail="administrator is not routed to a user API"
-                )
+                raise HTTPException(status_code=403, detail="administrator is not routed to a user API")
             if denied_for_user(request.method, request.url.path):
-                raise HTTPException(
-                    status_code=403, detail="route not available in experience mode"
-                )
+                raise HTTPException(status_code=403, detail="route not available in experience mode")
             route = routes.get(auth.account.id)
             if route is None:
                 raise HTTPException(status_code=503, detail="user API is not configured")
@@ -180,9 +178,7 @@ def create_app(settings: ControlSettings | None = None) -> FastAPI:
             if full_path and candidate.is_file() and root in candidate.parents:
                 # 带哈希的构建产物可长缓存；index.html 必须每次校验，避免旧 JS。
                 cache = (
-                    "public, max-age=31536000, immutable"
-                    if full_path.startswith("assets/")
-                    else "no-store"
+                    "public, max-age=31536000, immutable" if full_path.startswith("assets/") else "no-store"
                 )
                 return FileResponse(candidate, headers={"Cache-Control": cache})
             return FileResponse(root / "index.html", headers={"Cache-Control": "no-store"})

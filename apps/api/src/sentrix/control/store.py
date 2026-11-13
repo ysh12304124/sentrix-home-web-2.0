@@ -10,10 +10,10 @@ import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections.abc import Sequence
 
 from sentrix.control import security
 from sentrix.infrastructure.persistence.database import Database
@@ -341,8 +341,7 @@ class ControlStore:
                 (account_id, ip, since),
             ).fetchone()
             by_ip = connection.execute(
-                "SELECT COUNT(*) AS n FROM login_attempts "
-                "WHERE ip = ? AND success = 0 AND attempted_at >= ?",
+                "SELECT COUNT(*) AS n FROM login_attempts WHERE ip = ? AND success = 0 AND attempted_at >= ?",
                 (ip, since),
             ).fetchone()
         return int(pair["n"]), int(by_ip["n"])
@@ -382,8 +381,7 @@ class ControlStore:
             ).fetchone()
             if existing is not None:
                 connection.execute(
-                    "UPDATE incidents SET last_seen = ?, occurrences = occurrences + 1"
-                    " WHERE event_id = ?",
+                    "UPDATE incidents SET last_seen = ?, occurrences = occurrences + 1 WHERE event_id = ?",
                     (now, existing["event_id"]),
                 )
                 return str(existing["event_id"])
@@ -448,9 +446,7 @@ class ControlStore:
             "payload": json.loads(row["payload_json"]),
         }
 
-    def list_metric_series(
-        self, *, source: str, since: str, limit: int = 1440
-    ) -> list[dict[str, object]]:
+    def list_metric_series(self, *, source: str, since: str, limit: int = 1440) -> list[dict[str, object]]:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT sampled_at, payload_json FROM metric_samples"
@@ -458,8 +454,7 @@ class ControlStore:
                 (source, since, max(1, limit)),
             ).fetchall()
         return [
-            {"sampled_at": str(row["sampled_at"]), "payload": json.loads(row["payload_json"])}
-            for row in rows
+            {"sampled_at": str(row["sampled_at"]), "payload": json.loads(row["payload_json"])} for row in rows
         ]
 
     def purge_audit(self, *, older_than_days: int = 90) -> int:
@@ -591,9 +586,7 @@ class ControlStore:
             clauses.append("created_at <= ?")
             parameters.append(until)
         if related:
-            clauses.append(
-                "(job_id = ? OR turn_id = ? OR event_id = ? OR asset_id = ? OR request_id = ?)"
-            )
+            clauses.append("(job_id = ? OR turn_id = ? OR event_id = ? OR asset_id = ? OR request_id = ?)")
             parameters.extend([related] * 5)
         sql = "SELECT * FROM feedback"
         if clauses:
@@ -615,19 +608,13 @@ class ControlStore:
 
     def get_feedback_admin(self, feedback_id: str) -> dict[str, object] | None:
         with self._database.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM feedback WHERE id = ?", (feedback_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
         return _feedback_admin(row) if row is not None else None
 
-    def get_feedback(
-        self, feedback_id: str, *, account_id: str | None = None
-    ) -> dict[str, object] | None:
+    def get_feedback(self, feedback_id: str, *, account_id: str | None = None) -> dict[str, object] | None:
         with self._database.connect() as connection:
             if account_id is None:
-                row = connection.execute(
-                    "SELECT * FROM feedback WHERE id = ?", (feedback_id,)
-                ).fetchone()
+                row = connection.execute("SELECT * FROM feedback WHERE id = ?", (feedback_id,)).fetchone()
             else:
                 row = connection.execute(
                     "SELECT * FROM feedback WHERE id = ? AND account_id = ?",
@@ -644,10 +631,14 @@ class ControlStore:
                 " VALUES (?, ?, ?, ?, ?)",
                 (update_id, feedback_id, author, body, now),
             )
-            connection.execute(
-                "UPDATE feedback SET updated_at = ? WHERE id = ?", (now, feedback_id)
-            )
-        return {"id": update_id, "feedback_id": feedback_id, "author": author, "body": body, "created_at": now}
+            connection.execute("UPDATE feedback SET updated_at = ? WHERE id = ?", (now, feedback_id))
+        return {
+            "id": update_id,
+            "feedback_id": feedback_id,
+            "author": author,
+            "body": body,
+            "created_at": now,
+        }
 
     def list_feedback_updates(self, feedback_id: str) -> list[dict[str, object]]:
         with self._database.connect() as connection:
@@ -788,22 +779,18 @@ class ControlStore:
         with self._database.connect() as connection:
             if after_id <= 0:
                 rows = connection.execute(
-                    "SELECT * FROM client_events WHERE account_id = ?"
-                    " ORDER BY id DESC LIMIT ?",
+                    "SELECT * FROM client_events WHERE account_id = ? ORDER BY id DESC LIMIT ?",
                     (account_id, size),
                 ).fetchall()
                 return [dict(row) for row in reversed(rows)], False
             rows = connection.execute(
-                "SELECT * FROM client_events WHERE account_id = ? AND id > ?"
-                " ORDER BY id ASC LIMIT ?",
+                "SELECT * FROM client_events WHERE account_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
                 (account_id, after_id, size),
             ).fetchall()
         items = [dict(row) for row in rows]
         return items, len(items) >= size
 
-    def latest_client_event_times(
-        self, account_ids: list[str]
-    ) -> dict[str, dict[str, object]]:
+    def latest_client_event_times(self, account_ids: list[str]) -> dict[str, dict[str, object]]:
         """按账号批量取最新一条事件（id/时间），不逐账号扫描整段轨迹。"""
         if not account_ids:
             return {}
@@ -863,9 +850,7 @@ class ControlStore:
     def purge_client_events(self, *, older_than_days: int = 7) -> int:
         cutoff = _iso(_now() - timedelta(days=older_than_days))
         with self._database.connect() as connection, connection:
-            cursor = connection.execute(
-                "DELETE FROM client_events WHERE received_at < ?", (cutoff,)
-            )
+            cursor = connection.execute("DELETE FROM client_events WHERE received_at < ?", (cutoff,))
         return cursor.rowcount
 
     # ---- 审计 ---------------------------------------------------------------

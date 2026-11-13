@@ -13,10 +13,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from sentrix.api.deps import get_container
-from sentrix.api.routes.media import refresh_memory_graph
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.facts import FactListResponse, FactPayload
 from sentrix.application.memories.review_fact import ReviewFact
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.memories.facts import Fact
 
 DEFAULT_LIMIT = 200
@@ -68,6 +69,7 @@ def list_facts(
 
 
 @router.post("/facts/{fact_id}/confirm")
+@memory_write("fact", "fact_id")
 def confirm_fact(fact_id: str, container: Container = Depends(get_container)) -> FactPayload:
     fact = _review_fact(container).confirm(fact_id)
     refresh_memory_graph(container, fact.scope_id)
@@ -75,6 +77,7 @@ def confirm_fact(fact_id: str, container: Container = Depends(get_container)) ->
 
 
 @router.post("/facts/{fact_id}/reject")
+@memory_write("fact", "fact_id")
 def reject_fact(fact_id: str, container: Container = Depends(get_container)) -> FactPayload:
     fact = _review_fact(container).reject(fact_id)
     refresh_memory_graph(container, fact.scope_id)

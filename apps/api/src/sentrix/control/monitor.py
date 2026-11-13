@@ -11,7 +11,7 @@ import logging
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -168,9 +168,7 @@ class Monitor:
                 now=now,
             )
         else:
-            self._store.close_incidents(
-                source="model", category="queue_long", now=now, result="recovered"
-            )
+            self._store.close_incidents(source="model", category="queue_long", now=now, result="recovered")
 
     def _record_rollup(self, sampled_at: str) -> None:
         samples = self._rollup_samples
@@ -178,9 +176,7 @@ class Monitor:
         self._last_rollup = time.monotonic()
         if not samples:
             return
-        self._store.record_metric(
-            sampled_at=sampled_at, source="minute", payload=_aggregate(samples)
-        )
+        self._store.record_metric(sampled_at=sampled_at, source="minute", payload=_aggregate(samples))
 
     def _run_retention(self) -> None:
         if time.monotonic() - self._last_retention < RETENTION_INTERVAL_S:
@@ -190,12 +186,8 @@ class Monitor:
         try:
             self._store.purge_metrics(older_than_days=settings.metric_retention_days)
             self._store.purge_audit(older_than_days=settings.audit_retention_days)
-            self._store.purge_client_events(
-                older_than_days=settings.client_event_retention_days
-            )
-            for path in self._store.purge_feedback(
-                older_than_days=settings.feedback_retention_days
-            ):
+            self._store.purge_client_events(older_than_days=settings.client_event_retention_days)
+            for path in self._store.purge_feedback(older_than_days=settings.feedback_retention_days):
                 try:
                     Path(path).unlink(missing_ok=True)
                 except OSError:
@@ -243,9 +235,7 @@ class Monitor:
         services: dict[str, Any] = {}
         with httpx.Client(timeout=3.0) as client:
             services["control"] = {"ok": self._store.ping(), "ready": self._store.ping()}
-            services["model"] = _probe(
-                client, f"{self._settings.model_upstream_url.rstrip('/')}/models"
-            )
+            services["model"] = _probe(client, f"{self._settings.model_upstream_url.rstrip('/')}/models")
             services["bge"] = _probe(client, self._settings.bge_health_url)
             services["clip"] = _probe(client, self._settings.clip_health_url)
             users: dict[str, Any] = {}
@@ -425,9 +415,7 @@ class Monitor:
                             user_id=account,
                         )
                         continue
-                self._store.close_incidents(
-                    source=source, category=category, now=now, result="recovered"
-                )
+                self._store.close_incidents(source=source, category=category, now=now, result="recovered")
 
     def _units(self) -> dict[str, Any]:
         units: dict[str, Any] = {}
@@ -524,9 +512,7 @@ class Monitor:
                 user_id=user_id,
             )
         elif healthy and streak == 0:
-            self._store.close_incidents(
-                source=source, category="service_down", now=now, result="recovered"
-            )
+            self._store.close_incidents(source=source, category="service_down", now=now, result="recovered")
 
 
 def _number(value: object) -> float | None:
@@ -555,13 +541,9 @@ def _aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
             jobs = status.get("jobs") or {}
             turns = status.get("turns") or {}
-            entry = users.setdefault(
-                account, {"active_jobs": 0, "waiting_jobs": 0, "active_turns": 0}
-            )
+            entry = users.setdefault(account, {"active_jobs": 0, "waiting_jobs": 0, "active_turns": 0})
             active_jobs = sum(int(jobs.get(key, 0)) for key in ACTIVE_JOB_STATUSES)
-            waiting_jobs = int(jobs.get("waiting_dependency", 0)) + int(
-                jobs.get("retry_scheduled", 0)
-            )
+            waiting_jobs = int(jobs.get("waiting_dependency", 0)) + int(jobs.get("retry_scheduled", 0))
             active_turns = int(turns.get("pending", 0)) + int(turns.get("running", 0))
             entry["active_jobs"] = max(entry["active_jobs"], active_jobs)
             entry["waiting_jobs"] = max(entry["waiting_jobs"], waiting_jobs)
@@ -575,28 +557,18 @@ def _aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "disk_free_gb": _avg([_number(item.get("disk_free_gb")) for item in hosts]),
             "load_1m": _avg([_number(item.get("load_1m")) for item in hosts]),
             "gpu": {
-                "utilization_percent": _avg(
-                    [_number(item.get("utilization_percent")) for item in gpus]
-                ),
+                "utilization_percent": _avg([_number(item.get("utilization_percent")) for item in gpus]),
                 "memory_used_mib": _avg([_number(item.get("memory_used_mib")) for item in gpus]),
                 "temperature_c": _avg([_number(item.get("temperature_c")) for item in gpus]),
             },
         },
         "queue": {
             "active": max((int(item.get("active") or 0) for item in queues), default=0),
-            "waiting_total": max(
-                (int(item.get("waiting_total") or 0) for item in queues), default=0
-            ),
-            "oldest_wait_s": max(
-                (float(item.get("oldest_wait_s") or 0) for item in queues), default=0.0
-            ),
+            "waiting_total": max((int(item.get("waiting_total") or 0) for item in queues), default=0),
+            "oldest_wait_s": max((float(item.get("oldest_wait_s") or 0) for item in queues), default=0.0),
         },
         "users": users,
-        "services": {
-            key: value.get("ok")
-            for key, value in last_services.items()
-            if isinstance(value, dict)
-        },
+        "services": {key: value.get("ok") for key, value in last_services.items() if isinstance(value, dict)},
     }
 
 

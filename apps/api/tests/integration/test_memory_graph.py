@@ -75,6 +75,12 @@ class _ListSource:
     def list_relationships(self, scope_id):
         return self.values
 
+    def list_properties(self, entity_id):
+        return ()
+
+    def list_mentions(self, scope_id, *, limit):
+        return ()
+
 
 class _EventSource(_ListSource):
     def __init__(self, values, observations):
@@ -172,6 +178,62 @@ def test_build_graph_consumes_standard_memory_records_without_keyframes(migratio
     assert [hit.asset_id for hit in graph.expand_assets(("a",), scope_id=SCOPE, max_hops=4, limit=10)] == [
         "b"
     ]
+
+
+def test_build_graph_links_original_images_by_object_time_and_visual_similarity(migrations_ready_db):
+    assets = (
+        replace(_asset("image-a", "/tmp/a.jpg"), captured_at=NOW),
+        replace(_asset("image-b", "/tmp/b.jpg"), captured_at=NOW.replace(hour=13)),
+        replace(_asset("image-c", "/tmp/c.jpg"), captured_at=NOW.replace(day=24)),
+    )
+    observations = (
+        replace(_observation("obs-a", "image-a"), objects=("bottle",)),
+        replace(_observation("obs-b", "image-b"), objects=("bottle",)),
+        replace(_observation("obs-c", "image-c"), objects=("tree",)),
+    )
+
+    class _Vectors:
+        def get(self, *, space, source_type, source_id, model_name=None):
+            assert space == "visual" and source_type == "asset"
+            vectors = {
+                "image-a": (1.0, 0.0),
+                "image-b": (0.99, 0.1),
+                "image-c": (0.0, 1.0),
+            }
+            return VectorRecord(
+                scope_id=SCOPE,
+                space=space,
+                source_type=source_type,
+                source_id=source_id,
+                model_name="clip-test",
+                vector=vectors[source_id],
+            )
+
+    graph = SqliteMemoryGraphRepository(migrations_ready_db)
+    BuildMemoryGraph(
+        assets=_ListSource(assets),
+        observations=_ListSource(observations),
+        events=_EventSource((), ()),
+        participants=_ParticipantSource(),
+        entities=_ListSource(()),
+        facts=_ListSource(()),
+        relationships=_ListSource(()),
+        graph=graph,
+        vectors=_Vectors(),
+    ).execute(SCOPE)
+
+    with migrations_ready_db.connect() as connection:
+        relations = [
+            row[0]
+            for row in connection.execute(
+                "SELECT relation FROM memory_graph_edges WHERE scope_id = ?", (SCOPE,)
+            ).fetchall()
+        ]
+    assert relations.count("image_temporal_next") == 1
+    assert relations.count("image_shares_object") == 1
+    assert relations.count("image_visual_similar") == 1
+    assert graph.expand_assets(("image-a",), scope_id=SCOPE, max_hops=1, limit=10)
+    assert graph.quality(SCOPE)["reference_edge_recall"] == 1.0
 
 
 def test_build_graph_keeps_video_keyframe_lineage_as_a_traversable_edge(migrations_ready_db):
@@ -458,6 +520,7 @@ def test_build_graph_projects_event_entities_and_video_scene_source(migrations_r
     )
     entity = SimpleNamespace(
         id="place-1",
+        summary="",
         canonical_name="家",
         entity_type="place",
         status="active",

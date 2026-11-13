@@ -142,16 +142,10 @@ class ModelGate:
                     await self._condition.wait()
                 self._waiters.remove(waiter)
                 self._active += 1
-                self._active_by_user[waiter.user_id] = (
-                    self._active_by_user.get(waiter.user_id, 0) + 1
-                )
-                self._active_by_kind[waiter.kind] = (
-                    self._active_by_kind.get(waiter.kind, 0) + 1
-                )
+                self._active_by_user[waiter.user_id] = self._active_by_user.get(waiter.user_id, 0) + 1
+                self._active_by_kind[waiter.kind] = self._active_by_kind.get(waiter.kind, 0) + 1
                 user_kind = (waiter.user_id, waiter.kind)
-                self._active_by_user_kind[user_kind] = (
-                    self._active_by_user_kind.get(user_kind, 0) + 1
-                )
+                self._active_by_user_kind[user_kind] = self._active_by_user_kind.get(user_kind, 0) + 1
                 self._note_admitted(waiter)
                 admitted = True
                 # 还有空槽时让下一个等待者立刻重新判定，否则它要等下一次释放才被唤醒。
@@ -163,27 +157,26 @@ class ModelGate:
                     if waiter in self._waiters:
                         self._waiters.remove(waiter)
                     self._condition.notify_all()
-                return
-            async with self._condition:
-                self._active -= 1
-                remaining = self._active_by_user.get(waiter.user_id, 0) - 1
-                if remaining > 0:
-                    self._active_by_user[waiter.user_id] = remaining
-                else:
-                    self._active_by_user.pop(waiter.user_id, None)
-                remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
-                remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
-                if remaining_kind > 0:
-                    self._active_by_kind[waiter.kind] = remaining_kind
-                else:
-                    self._active_by_kind.pop(waiter.kind, None)
-                user_kind = (waiter.user_id, waiter.kind)
-                remaining_user_kind = self._active_by_user_kind.get(user_kind, 0) - 1
-                if remaining_user_kind > 0:
-                    self._active_by_user_kind[user_kind] = remaining_user_kind
-                else:
-                    self._active_by_user_kind.pop(user_kind, None)
-                self._condition.notify_all()
+            else:
+                async with self._condition:
+                    self._active -= 1
+                    remaining = self._active_by_user.get(waiter.user_id, 0) - 1
+                    if remaining > 0:
+                        self._active_by_user[waiter.user_id] = remaining
+                    else:
+                        self._active_by_user.pop(waiter.user_id, None)
+                    remaining_kind = self._active_by_kind.get(waiter.kind, 0) - 1
+                    if remaining_kind > 0:
+                        self._active_by_kind[waiter.kind] = remaining_kind
+                    else:
+                        self._active_by_kind.pop(waiter.kind, None)
+                    user_kind = (waiter.user_id, waiter.kind)
+                    remaining_user_kind = self._active_by_user_kind.get(user_kind, 0) - 1
+                    if remaining_user_kind > 0:
+                        self._active_by_user_kind[user_kind] = remaining_user_kind
+                    else:
+                        self._active_by_user_kind.pop(user_kind, None)
+                    self._condition.notify_all()
 
     def _can_admit(self, waiter: _Waiter) -> bool:
         if self._active >= self.target.slots:
@@ -238,8 +231,7 @@ class ModelGate:
         return [
             item
             for item in self._waiters
-            if item.kind == kind
-            and self._active_by_user_kind.get((item.user_id, kind), 0) < cap
+            if item.kind == kind and self._active_by_user_kind.get((item.user_id, kind), 0) < cap
         ]
 
     def _pick(self) -> _Waiter | None:
@@ -295,13 +287,10 @@ class ModelGate:
             "active_by_kind": dict(self._active_by_kind),
             "active_by_user": dict(self._active_by_user),
             "active_by_user_kind": {
-                f"{user}:{kind}": count
-                for (user, kind), count in self._active_by_user_kind.items()
+                f"{user}:{kind}": count for (user, kind), count in self._active_by_user_kind.items()
             },
             "budgets": {kind: self._budget(kind) for kind in KINDS},
-            "fair_caps": {
-                kind: self._fair_cap(kind, self._budget(kind)) for kind in KINDS
-            },
+            "fair_caps": {kind: self._fair_cap(kind, self._budget(kind)) for kind in KINDS},
             "waiting_by_user": waiting_by_user,
             "oldest_wait_s": round(now - oldest, 1) if oldest else 0.0,
             "last_ok_at": self._last_ok_at or None,

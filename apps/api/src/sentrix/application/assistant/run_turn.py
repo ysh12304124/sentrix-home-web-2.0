@@ -679,6 +679,7 @@ class TurnRequest:
     #: 只在评测/复盘时打开：把每次模型调用实际发送的 messages / tools / 原始回复
     #: 收进 ``TurnRecord.trace["debug_calls"]``。默认关闭——产品对话不为它付体积。
     include_debug: bool = False
+    graph_enabled: bool = True
     #: 同一会话内的幂等键；重复提交返回已有回合，不重复提问。
     idempotency_key: str = ""
 
@@ -742,6 +743,7 @@ class _Session:
     #: 与 ``model_calls`` 分开：前者是复盘用的输入输出，后者是评测指标；
     #: 混在一起会把体积带进 ``model_call_metrics`` 这个逐题投影里。
     include_debug: bool = False
+    graph_enabled: bool = True
     debug_calls: list[dict[str, Any]] = field(default_factory=list)
     #: 最近一次「需求 ↔ 事实」的绑定结果。只读投影，不改变账本状态；
     #: 守卫用它决定「提醒、放行还是如实报缺口」。
@@ -822,7 +824,10 @@ class RunTurn:
             updated_at=now,
             # 开关要跨 ``start`` / ``run`` 两个调用点，而它们之间只有这条落库的记录。
             # 放进 trace（而不是进程内 dict）：重启后拿到的回合仍然知道自己要不要采。
-            trace={"include_debug": True} if request.include_debug else {},
+            trace={
+                **({"include_debug": True} if request.include_debug else {}),
+                "graph_enabled": request.graph_enabled,
+            },
             idempotency_key=request.idempotency_key,
         )
         operation = "turn:" + record.id
@@ -898,6 +903,7 @@ class RunTurn:
             fence=fence,
             attempt_no=attempt_no or 1,
             include_debug=bool(record.trace.get("include_debug")),
+            graph_enabled=record.trace.get("graph_enabled") is not False,
         )
 
         # 政策拒答那条出口**不经过规划**，所以 ``planned`` 可能从头到尾没被赋值。
@@ -1989,6 +1995,7 @@ class RunTurn:
             # （``tools.py:2162-2165``）。1.0 从可变的 ``task_state`` 里取，2.0 的
             # ``TaskState`` 没有那一格——**这不是加状态，是把已经在手上的那个字符串传下去**。
             question=state.question,
+            graph_enabled=session.graph_enabled,
         )
         duration_ms = round((time.perf_counter() - started_at) * 1000, 1)
         state.record(

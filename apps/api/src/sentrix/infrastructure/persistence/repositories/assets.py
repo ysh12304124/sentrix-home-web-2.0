@@ -157,24 +157,17 @@ class SqliteAssetRepository:
             where = scope_clause if not media_type else f"{scope_clause} AND media_type = ?"
             params = (*scope_params, *type_params)
 
-        sort_expression = (
-            "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
-        )
+        sort_expression = "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
         direction = "ASC" if order == "asc" else "DESC"
 
         with self._database.connect() as connection:
             counts_rows = connection.execute(
-                "SELECT media_type, COUNT(*) AS n FROM assets"
-                f"{scope_clause} GROUP BY media_type",
+                f"SELECT media_type, COUNT(*) AS n FROM assets{scope_clause} GROUP BY media_type",
                 scope_params,
             ).fetchall()
             counts = {str(row["media_type"]): int(row["n"]) for row in counts_rows}
             counts["all"] = sum(counts.values())
-            total = (
-                counts.get(media_type or "", 0)
-                if media_type
-                else counts["all"]
-            )
+            total = counts.get(media_type or "", 0) if media_type else counts["all"]
             rows = connection.execute(
                 f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
                 f" ORDER BY {sort_expression} {direction}, id {direction}"

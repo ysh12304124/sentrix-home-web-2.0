@@ -132,6 +132,60 @@ class Database:
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
             record_version = version
+            # A prior database can contain the numeric 0020 marker while
+            # agent_result_sets still lacks the attempt ownership columns.
+            # Validate the schema as well as the ledger and repair idempotently.
+            if script.name == "0020_result_set_attempts.sql":
+                table_exists = Database._table_exists(connection, "agent_result_sets")
+                has_turn_id = table_exists and Database._column_exists(
+                    connection, "agent_result_sets", "turn_id"
+                )
+                has_attempt_no = table_exists and Database._column_exists(
+                    connection, "agent_result_sets", "attempt_no"
+                )
+                index_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_agent_result_sets_turn'"
+                ).fetchone() is not None
+                if not has_turn_id:
+                    connection.execute(
+                        "ALTER TABLE agent_result_sets ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"
+                    )
+                if not has_attempt_no:
+                    connection.execute(
+                        "ALTER TABLE agent_result_sets ADD COLUMN attempt_no INTEGER NOT NULL DEFAULT 0"
+                    )
+                if not index_exists:
+                    connection.execute(
+                        "CREATE INDEX idx_agent_result_sets_turn "
+                        "ON agent_result_sets(turn_id, attempt_no)"
+                    )
+                if done is None:
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                    )
+                elif not (has_turn_id and has_attempt_no and index_exists):
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?)",
+                        ("0020_result_set_attempts_schema",),
+                    )
+                connection.execute("COMMIT")
+                return not (done is not None and has_turn_id and has_attempt_no and index_exists)
+            # Two published hpq-only migrations used the same numeric revisions as
+            # newer main migrations. If the old revision is recorded but the main
+            # column is absent, apply the main migration under a unique ledger key.
+            if (
+                done is not None
+                and script.name == "0021_postprocess_backoff.sql"
+                and not Database._column_exists(connection, "scope_postprocess", "next_attempt_at")
+            ):
+                done, record_version = None, "0021_postprocess_backoff"
+            if (
+                done is not None
+                and script.name == "0022_turn_failure_count.sql"
+                and not Database._column_exists(connection, "agent_turns", "failure_count")
+            ):
+                done, record_version = None, "0022_turn_failure_count"
             # 本分支与 main 在 0015–0018 使用了不同的迁移编号。main 的数据库里
             # 同名版本号已经被别的迁移占用，但本分支的表/列还没建：不能跳过，也
             # 不能覆盖原版本号，只能执行后用带后缀的版本记录。
@@ -159,12 +213,6 @@ class Database:
                 and not Database._table_exists(connection, "memory_rotation_sequences")
             ):
                 done, record_version = None, "0018_memory_rotation"
-            if (
-                done is not None
-                and script.name == "0019_import_control.sql"
-                and not Database._column_exists(connection, "import_jobs", "cancel_requested")
-            ):
-                done, record_version = None, "0019_import_control"
             if done is not None and script.name == "0015_text_vectors.sql":
                 text_table = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_vectors'"
@@ -200,9 +248,7 @@ class Database:
                 and script.name == "0024_text_vectors.sql"
                 and Database._table_exists(connection, "text_vectors")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if (
@@ -210,9 +256,7 @@ class Database:
                 and script.name == "0025_video_jobs.sql"
                 and Database._table_exists(connection, "video_jobs")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if (
@@ -220,37 +264,44 @@ class Database:
                 and script.name == "0026_video_job_config_hash.sql"
                 and Database._column_exists(connection, "video_jobs", "config_hash")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if done is None and script.name == "0027_capture_time.sql":
                 # main 用 0018 记录同一组列，本分支从 0027 起接。跨分支升级时
                 # 列已经存在就只补版本记录，绝不重复 ALTER。
-                capture_columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(assets)")
-                }
-                place_columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(asset_places)")
-                }
-                if (
-                    "capture_time_json" in capture_columns
-                    and "nearest_evidence_json" in place_columns
-                ):
-                    connection.execute(
-                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                    )
+                capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
+                place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
+                if "capture_time_json" in capture_columns and "nearest_evidence_json" in place_columns:
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                     connection.execute("COMMIT")
                     return True
             if done is not None:
                 connection.execute("COMMIT")
                 return False
+            if script.name == "0028_media_deletion_history.sql":
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(media_cleanup_jobs)")}
+                if {"scope_id", "file_name", "media_type", "deleted_at"} <= columns:
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                    connection.execute("COMMIT")
+                    return True
+            if script.name == "0029_memory_corrections.sql":
+                entity_columns = {row[1] for row in connection.execute("PRAGMA table_info(entities)")}
+                if Database._table_exists(connection, "memory_corrections") and "revision" in entity_columns:
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                    connection.execute("COMMIT")
+                    return True
+            if script.name == "0030_result_set_graph_provenance.sql":
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_result_sets)")}
+                if "graph_provenance_json" in columns:
+                    # Mac legacy databases gained this column before the
+                    # versioned migration. Record it without running ALTER twice.
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                    connection.execute("COMMIT")
+                    return True
             for statement in _statements(script.read_text(encoding="utf-8")):
                 connection.execute(statement)
-            connection.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?)", (record_version,)
-            )
+            connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (record_version,))
             connection.execute("COMMIT")
             return True
         except BaseException:

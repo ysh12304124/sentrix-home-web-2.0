@@ -202,6 +202,23 @@ class SqliteEntityRepository:
             ).fetchall()
         return [_row_to_entity(row) for row in rows]
 
+    def list_mentions(self, scope_id: str, *, limit: int = 100_000) -> Sequence[EntityMentionRecord]:
+        """返回 scope 内确认实体的提及桥，供记忆图复用上游身份结果。"""
+        if not scope_id or limit < 1:
+            return ()
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT em.{_MENTION_COLUMNS.replace(', ', ', em.')},"
+                " e.entity_type, e.status, o.scope_id"
+                " FROM entity_mentions em"
+                " JOIN entities e ON e.id = em.entity_id"
+                " JOIN observations o ON o.id = em.observation_id"
+                " WHERE o.scope_id = ? AND e.entity_type = 'person' AND e.status = 'confirmed'"
+                " ORDER BY em.created_at DESC LIMIT ?",
+                (scope_id, limit),
+            ).fetchall()
+        return [_row_to_mention(row) for row in rows]
+
     def recent_observation_ids(self, entity_id: str, *, limit: int = 100) -> Sequence[str]:
         """1.0 ``db.py:4590-4594`` 的 ``entity_observations ⋈ observations``，只取 id。
 
@@ -902,9 +919,7 @@ class SqliteEntityRepository:
         # 旧数据里可能存着改名时折进来的内部簇名（「待确认人物簇 · cluster-x」）。
         # 那是落库标识，不是用户起的名字，读侧统一滤掉。
         return tuple(
-            str(item)
-            for item in raw
-            if str(item or "").strip() and not is_pending_cluster_name(str(item))
+            str(item) for item in raw if str(item or "").strip() and not is_pending_cluster_name(str(item))
         )
 
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:

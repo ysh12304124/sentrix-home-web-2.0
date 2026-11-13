@@ -96,7 +96,13 @@ def test_seed_person_is_a_single_person_multipart_with_a_joined_alias_string():
     assert result == {"entity_id": "e1"}
     url, fields, files = http.multipart_calls[0]
     assert url == f"{BASE}/api/v1/people/seed"
-    assert fields == {"name": "明明", "family_role": "大宝", "aliases": "小明、明明", "scope_id": "s1"}
+    assert fields == {
+        "name": "明明",
+        "family_role": "大宝",
+        "aliases": "小明、明明",
+        "scope_id": "s1",
+        "graph_enabled": "true",
+    }
     assert files == [("files", "1.jpg", b"J")]
 
 
@@ -129,7 +135,7 @@ def test_split_import_and_pipeline_use_the_explicit_endpoints():
     )
     assert http.calls[1][:3] == (
         f"{BASE}/api/v1/pipeline/process",
-        {"scope_id": "s1", "asset_ids": ["a1", "a2"]},
+        {"scope_id": "s1", "asset_ids": ["a1", "a2"], "graph_enabled": True},
         "POST",
     )
 
@@ -169,6 +175,14 @@ def test_start_turn_can_request_the_full_debug_trace():
     assert http.calls[0][1] == {"message": "海边有谁？", "include_debug": True}
 
 
+def test_start_turn_can_disable_graph_retrieval_for_a_paired_baseline_run():
+    client, http = _client({"turns": {"turn_id": "turn_1", "status": "running"}})
+
+    client.start_turn(conversation_id="conv_1", message="海边有谁？", graph_enabled=False)
+
+    assert http.calls[0][1] == {"message": "海边有谁？", "graph_enabled": False}
+
+
 def test_relationship_batch_sends_the_explicit_name_mapping():
     """``entity_by_name`` 优先于 2.0 内部的名字索引——「我」这类代称在库里重名时，
     不给映射就会被解析到别人身上。"""
@@ -183,6 +197,7 @@ def test_relationship_batch_sends_the_explicit_name_mapping():
     assert method == "POST"
     assert payload == {
         "scope_id": "s1",
+        "graph_enabled": True,
         "relationships": [{"subject": "我", "predicate": "妻子", "object": "芳芳"}],
         "entity_by_name": {"我": "e1", "芳芳": "e2"},
     }

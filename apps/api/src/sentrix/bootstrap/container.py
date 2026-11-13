@@ -50,6 +50,7 @@ from sentrix.domain.media.ports import (
     AudioRepository,
     AudioTranscriber,
     CaptureTimeResolver,
+    MediaDeletionRepository,
     MediaStorage,
     MetadataReader,
     ObservationRepository,
@@ -69,6 +70,7 @@ from sentrix.domain.memories.ports import (
     EventParticipantRepository,
     EventRepository,
     FactRepository,
+    MemoryCorrectionRepository,
     MemoryGraphRepository,
 )
 from sentrix.domain.memories.rotation import RotationRepository
@@ -84,6 +86,7 @@ from sentrix.domain.retrieval.ports import (
     VectorIndex,
     VectorRepository,
     VisualEmbedder,
+    VisualEvidenceUtility,
 )
 from sentrix.domain.spaces.ports import SpaceRepository
 from sentrix.infrastructure.assistant.chat_client import OpenAIChatModel
@@ -118,6 +121,7 @@ from sentrix.infrastructure.models.legacy import (
     LegacyEmbeddingHealthProbe,
 )
 from sentrix.infrastructure.models.reranker import BgeSidecarReranker
+from sentrix.infrastructure.models.visual_utility import OpenAIVisualEvidenceUtility
 from sentrix.infrastructure.models.wemm import WeMMSidecarEmbedder
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.appearance import SqliteAppearanceRepository
@@ -130,12 +134,14 @@ from sentrix.infrastructure.persistence.repositories.audio import SqliteAudioRep
 from sentrix.infrastructure.persistence.repositories.conversations import (
     SqliteConversationRepository,
 )
+from sentrix.infrastructure.persistence.repositories.corrections import SqliteMemoryCorrections
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
 from sentrix.infrastructure.persistence.repositories.events import SqliteEventRepository
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
 from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepository
 from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
 from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
+from sentrix.infrastructure.persistence.repositories.media_deletion import SqliteMediaDeletionRepository
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
 from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
@@ -197,9 +203,7 @@ class RecoveringEmbeddingHealth:
         self._lock = threading.Lock()
         self._available = initially_available
         self._error = "" if initially_available else error
-        self._next_check = clock() + (
-            success_ttl_s if initially_available else failure_ttl_s
-        )
+        self._next_check = clock() + (success_ttl_s if initially_available else failure_ttl_s)
 
     def _refresh(self) -> None:
         with self._lock:
@@ -212,9 +216,7 @@ class RecoveringEmbeddingHealth:
                 ok, error = False, f"{type(exc).__name__}: {exc}"
             self._available = ok
             self._error = "" if ok else (error or "embedding smoke test failed")
-            self._next_check = now + (
-                self._success_ttl_s if ok else self._failure_ttl_s
-            )
+            self._next_check = now + (self._success_ttl_s if ok else self._failure_ttl_s)
 
     @property
     def available(self) -> bool:
@@ -234,9 +236,7 @@ class RecoveringEmbeddingHealth:
         with self._lock:
             self._available = ok
             self._error = "" if ok else (error or "embedding smoke test failed")
-            self._next_check = now + (
-                self._success_ttl_s if ok else self._failure_ttl_s
-            )
+            self._next_check = now + (self._success_ttl_s if ok else self._failure_ttl_s)
         return ok, self._error
 
 
@@ -284,6 +284,7 @@ class Container:
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
     reranker: Reranker | None
+    visual_evidence_utility: VisualEvidenceUtility | None
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
@@ -306,6 +307,8 @@ class Container:
     # 结构化记忆图是由标准记忆端口派生出的可重建投影。它与冻结的 adjacency
     # 通道分开，检索侧只通过 ``MemoryGraphRepository`` 做有限 hop 拓展。
     memory_graph: MemoryGraphRepository
+    memory_corrections: MemoryCorrectionRepository
+    media_deletion: MediaDeletionRepository
     causal_judge: CausalJudge
     # 词法投影的写侧与读侧由同一个 SQLite 适配器实现（它是同一张投影表的两个方向），
     # 这里按两个端口分别声明：调用方在类型上就看得出自己只需要其中一侧。
@@ -437,12 +440,8 @@ class Container:
             raise RuntimeError(
                 "体验实例必须固定 SENTRIX_EMBEDDING_SCHEME=legacy（BGE-M3 1024 + Chinese-CLIP 768）"
             )
-        if settings.experience_mode and (
-            visual_embedder.dimension != 768 or text_embedder.dimension != 1024
-        ):
-            raise RuntimeError(
-                "体验实例嵌入维度不符：视觉必须是 768，文本必须是 1024"
-            )
+        if settings.experience_mode and (visual_embedder.dimension != 768 or text_embedder.dimension != 1024):
+            raise RuntimeError("体验实例嵌入维度不符：视觉必须是 768，文本必须是 1024")
         smoke_ok, smoke_error = embedding_health.smoke_test()
         if not smoke_ok and not settings.experience_mode:
             raise RuntimeError(
@@ -478,6 +477,15 @@ class Container:
             "重排=%s top_k=%d",
             f"{reranker.model_id} @ {reranker_url}" if reranker else "关闭",
             settings.rerank_top_k,
+        )
+        utility_url = settings.utility_vlm_base_url.strip()
+        utility_model = (
+            ServedModel(utility_url, timeout_s=settings.utility_vlm_timeout_s) if utility_url else None
+        )
+        utility = (
+            OpenAIVisualEvidenceUtility(utility_url, utility_model, timeout_s=settings.utility_vlm_timeout_s)
+            if utility_model is not None
+            else None
         )
         # 家庭图谱仓储被两个消费方用：容器自己的字段，以及人物目录——目录要靠它回答
         # 「这个人的归属与关系」（S7c）。拿在手上传两次，而不是就地 new 两个实例。
@@ -532,10 +540,9 @@ class Container:
             ),
             text_embedder=text_embedder,
             reranker=reranker,
+            visual_evidence_utility=utility,
             embedding_health=embedding_health,
-            model_health=ModelGenerationHealth(
-                settings.vlm_base_url, served_model.current
-            ),
+            model_health=ModelGenerationHealth(settings.vlm_base_url, served_model.current),
             place_resolver=OfflinePlaceResolver(
                 admin=PyGeoCNAdminResolver(),
                 nearest=GeoNamesNearestResolver(settings.geo_dir),
@@ -546,6 +553,8 @@ class Container:
             event_participant_repository=SqliteEventParticipantRepository(database),
             fact_repository=SqliteFactRepository(database),
             memory_graph=SqliteMemoryGraphRepository(database),
+            memory_corrections=SqliteMemoryCorrections(database),
+            media_deletion=SqliteMediaDeletionRepository(database),
             causal_judge=OpenAICausalJudge(
                 settings.vlm_base_url, served_model, timeout_s=settings.vlm_timeout_s
             ),
@@ -624,12 +633,12 @@ class Container:
 
     def build_import_executor(self):
         """消费上传接口创建的持久作业，包括独立本地 API 实例。"""
+        from sentrix.application.media.import_executor import ImportJobExecutor
         from sentrix.bootstrap.import_wiring import (
             build_import_assets,
             build_media_postprocess,
             build_video_job_processor,
         )
-        from sentrix.infrastructure.media.import_executor import ImportJobExecutor
 
         return ImportJobExecutor(
             settings=self.settings,

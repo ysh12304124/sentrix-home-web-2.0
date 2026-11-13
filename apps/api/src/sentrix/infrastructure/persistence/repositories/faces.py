@@ -70,10 +70,7 @@ def _row_to_cluster(row: sqlite3.Row) -> FaceClusterRecord:
     # 2.0 落在出口处）。判据是**实体**状态而不是簇状态：簇可以已经 confirmed 而实体还在
     # pending，那种情况下名字同样还没被用户认可。
     # 改名只转 name_state，不改 status；用户已经给过名字的簇要显示真名。
-    pending = (
-        row["entity_status"] == ENTITY_STATUS_PENDING
-        and row["name_state"] != NAME_STATE_CONFIRMED
-    )
+    pending = row["entity_status"] == ENTITY_STATUS_PENDING and row["name_state"] != NAME_STATE_CONFIRMED
     return FaceClusterRecord(
         id=row["id"],
         scope_id=row["scope_id"],

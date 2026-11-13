@@ -83,9 +83,7 @@ class EntityPersonDirectory:
             found.append(
                 PersonRelationship(
                     predicate=row.predicate,
-                    other_name=(
-                        UNNAMED_MEMBER if other is None else entity_display_name(other)
-                    ),
+                    other_name=(UNNAMED_MEMBER if other is None else entity_display_name(other)),
                     source=row.source,
                 )
             )

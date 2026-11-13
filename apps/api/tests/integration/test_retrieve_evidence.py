@@ -21,7 +21,7 @@ from sentrix.application.retrieval.retrieve_evidence import (
     EvidenceRequest,
     RetrieveEvidence,
 )
-from sentrix.application.retrieval.retrieve_graph import GraphSearchResult
+from sentrix.application.retrieval.retrieve_graph import GRAPH_MAX_HOPS, GraphSearchResult
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
@@ -208,12 +208,19 @@ class ScriptedReranker:
         return [self._scores.get(document, 0.0) for document in documents]
 
 
-def build(library, *, graph=None, reranker=None, rerank_top_k=24) -> RetrieveEvidence:
+def build(library, *, graph=None, reranker=None, utility=None, rerank_top_k=24) -> RetrieveEvidence:
     def recognize_place(asset_id: str) -> bool:
         """「这张图本来就该有地点」= asset 上有 GPS（与 ``routes/search.py`` 同一判据）。"""
         asset = library["assets"].get(asset_id)
         return asset is not None and asset.captured_location is not None
 
+    storage = None
+    if utility is not None:
+        storage = type(
+            "Storage",
+            (),
+            {"read_asset": lambda _self, asset: Path(asset.path).read_bytes()},
+        )()
     return RetrieveEvidence(
         visual=RetrieveVisual(embedder=library["embedder"], vectors=library["vectors"], index=None),
         entity=RetrieveEntity(index=library["index"], observations=library["observations"]),
@@ -229,11 +236,50 @@ def build(library, *, graph=None, reranker=None, rerank_top_k=24) -> RetrieveEvi
         reranker=reranker,
         observations=library["observations"],
         rerank_top_k=rerank_top_k,
+        utility=utility,
+        assets=library["assets"] if utility is not None else None,
+        media_storage=storage,
     )
 
 
 def channels_of(hit) -> dict[str, int]:
     return dict(hit.channels)
+
+
+class PathOnlyGraph:
+    """返回一条只有图路径分数、没有查询通道支持的候选。"""
+
+    def __init__(self):
+        self.called = False
+
+    def execute(self, *, seed_asset_ids, scope_id, limit, question):
+        self.called = True
+        return GraphSearchResult(
+            hits=(
+                CandidateHit(
+                    asset_id="asset_graph_only",
+                    channel="graph",
+                    rank=1,
+                    raw_score=1.0,
+                ),
+            )
+        )
+
+
+class DirectLineageGraph:
+    """图候选在当前接口中只携带命中，不附带旧版 provenance 对象。"""
+
+    def execute(self, *, seed_asset_ids, scope_id, limit, question):
+        return GraphSearchResult(
+            hits=(
+                CandidateHit(
+                    asset_id="asset_graph_only",
+                    channel="graph",
+                    rank=1,
+                    raw_score=1.0,
+                ),
+            ),
+        )
 
 
 # ---- 三条通道确实进了同一个 fuse ------------------------------------------------
@@ -281,6 +327,51 @@ def test_a_candidate_outside_every_channels_head_is_still_ranked_by_the_fusion(l
 
     assert [hit.asset_id for hit in result.hits] == ["asset_b"]
     assert channels_of(result.hits[0]) == {"visual_ann": 2, "lexical": 2}
+
+
+def test_graph_path_candidate_uses_reserved_tail_slot(library):
+    """当前融合策略给图拓展保留尾部窗口，且不改动 primary 头部。"""
+    result = build(library, graph=PathOnlyGraph()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
+    )
+
+    assert result.graph_asset_ids == ("asset_graph_only",)
+    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
+
+
+def test_graph_result_without_legacy_provenance_uses_reserved_slot(library):
+    """新接口无需旧版 provenance 字段，也能保留图候选轨迹。"""
+    result = build(library, graph=DirectLineageGraph()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3)
+    )
+
+    assert result.graph_asset_ids == ("asset_graph_only",)
+    assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
+
+
+def test_graph_off_skips_graph_expansion_and_returns_primary_only(library):
+    graph = PathOnlyGraph()
+
+    class Utility:
+        model_id = "test"
+
+        def __init__(self):
+            self.scores = []
+
+        def score(self, question, image):
+            self.scores.append((question, image))
+            return 1.0
+
+    utility = Utility()
+    result = build(library, graph=graph, utility=utility).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3, graph_enabled=False)
+    )
+
+    assert graph.called is False
+    assert utility.scores == []
+    assert result.graph_asset_ids == ()
+    assert result.hits
+    assert all("graph" not in hit.channels for hit in result.hits)
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------
@@ -379,9 +470,11 @@ def test_the_visual_channel_still_reports_its_backend_health(library):
 class _RecordingGraph:
     def __init__(self) -> None:
         self.seeds: tuple[str, ...] = ()
+        self.max_hops = 0
 
-    def execute(self, *, seed_asset_ids, scope_id, limit, question=""):
+    def execute(self, *, seed_asset_ids, scope_id, limit, question="", max_hops=GRAPH_MAX_HOPS):
         self.seeds = tuple(seed_asset_ids)
+        self.max_hops = max_hops
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -395,16 +488,41 @@ class _RecordingGraph:
         )
 
 
-def test_graph_expansion_uses_primary_head_and_reaches_the_final_hybrid_result(library):
+def test_graph_expansion_uses_primary_head_and_preserves_query_relevant_results(library):
     graph = _RecordingGraph()
     use_case = build(library, graph=graph)
 
     result = use_case.execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
 
     assert graph.seeds == ("asset_b", "asset_c")
+    assert graph.max_hops == GRAPH_MAX_HOPS
     assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
     assert result.graph_asset_ids == ("asset_graph",)
     assert result.primary_asset_ids == ("asset_b", "asset_c")
+    assert result.fused_asset_ids == ("asset_b", "asset_graph")
+
+
+def test_a_weak_graph_path_keeps_primary_head_and_uses_tail_slot(library):
+    class _WeakGraph(_RecordingGraph):
+        def execute(self, **kwargs):
+            self.seeds = tuple(kwargs["seed_asset_ids"])
+            self.max_hops = kwargs.get("max_hops", GRAPH_MAX_HOPS)
+            return GraphSearchResult(
+                hits=(
+                    CandidateHit(
+                        asset_id="asset_graph",
+                        channel="graph",
+                        rank=1,
+                        raw_score=0.71,
+                        score_kind="graph_path",
+                    ),
+                )
+            )
+
+    result = build(library, graph=_WeakGraph()).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=2))
+
+    assert [hit.asset_id for hit in result.hits] == ["asset_b", "asset_graph"]
+    assert result.graph_asset_ids == ("asset_graph",)
     assert result.fused_asset_ids == ("asset_b", "asset_graph")
 
 

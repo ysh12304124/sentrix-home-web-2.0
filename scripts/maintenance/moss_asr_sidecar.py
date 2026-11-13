@@ -54,9 +54,7 @@ class AsrRuntime:
         from transformers import AutoModelForCausalLM, AutoProcessor
 
         torch_dtype = torch.bfloat16 if self.dtype == "bf16" else torch.float32
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_path, trust_remote_code=True
-        )
+        self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             trust_remote_code=True,
@@ -89,21 +87,15 @@ class AsrRuntime:
         # The processor keeps tokenizer/feature-extractor state; serialize the
         # whole encode+generate section across concurrent video jobs.
         with self.lock, torch.inference_mode():
-            chat = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            inputs = self.processor(
-                text=chat, audio=audio, return_tensors="pt"
-            ).to(self.device)
+            chat = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.processor(text=chat, audio=audio, return_tensors="pt").to(self.device)
             output = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
             )
         generated = output[:, inputs["input_ids"].shape[1] :]
-        return self.processor.tokenizer.batch_decode(
-            generated, skip_special_tokens=True
-        )[0]
+        return self.processor.tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
 
 
 def _decode_audio(data: bytes, filename: str) -> np.ndarray:
@@ -147,8 +139,7 @@ def _decode_audio(data: bytes, filename: str) -> np.ndarray:
             )
             with wave.open(str(target), "rb") as audio:
                 return (
-                    np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
-                    .astype(np.float32)
+                    np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16).astype(np.float32)
                     / 32768.0
                 )
 
@@ -236,9 +227,7 @@ async def transcriptions(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model-path", default="/home/asus/models/MOSS-Transcribe-Diarize"
-    )
+    parser.add_argument("--model-path", default="/home/asus/models/MOSS-Transcribe-Diarize")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8106)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")

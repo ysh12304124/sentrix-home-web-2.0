@@ -59,9 +59,7 @@ def current_auth(request: Request) -> AuthContext:
     token = request.cookies.get(session_cookie, "")
     if not token:
         raise HTTPException(status_code=401, detail="not authenticated")
-    view = _store(request).get_session(
-        token, idle_s=settings.session_idle_s, max_s=settings.session_max_s
-    )
+    view = _store(request).get_session(token, idle_s=settings.session_idle_s, max_s=settings.session_max_s)
     if view is None:
         raise HTTPException(status_code=401, detail="session expired")
     return AuthContext(account=view.account, session=view.session, token=token)
@@ -85,9 +83,7 @@ def require_csrf(request: Request, auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="csrf token does not match session")
 
 
-def _set_cookies(
-    response: Response, settings: ControlSettings, token: str, csrf_token: str
-) -> None:
+def _set_cookies(response: Response, settings: ControlSettings, token: str, csrf_token: str) -> None:
     session_cookie, csrf_cookie = _cookie_names(settings)
     max_age = min(settings.session_idle_s, settings.session_max_s)
     response.set_cookie(
@@ -126,9 +122,7 @@ def build_router() -> APIRouter:
         ip = _client_ip(request)
         request_id = f"req_{uuid.uuid4().hex[:16]}"
 
-        pair_failures, ip_failures = store.login_failures(
-            payload.account_id, ip, window_s=LOGIN_WINDOW_S
-        )
+        pair_failures, ip_failures = store.login_failures(payload.account_id, ip, window_s=LOGIN_WINDOW_S)
         if pair_failures >= MAX_PAIR_FAILURES or ip_failures >= MAX_IP_FAILURES:
             store.audit(
                 "auth.login",
@@ -216,9 +210,7 @@ def build_router() -> APIRouter:
         return response
 
     @router.get("/auth/me")
-    def me(
-        request: Request, auth: AuthContext = Depends(current_auth)
-    ) -> dict[str, object]:
+    def me(request: Request, auth: AuthContext = Depends(current_auth)) -> dict[str, object]:
         seen = auth.account.onboarding_version_seen
         return {
             "account_id": auth.account.id,
@@ -232,14 +224,10 @@ def build_router() -> APIRouter:
         }
 
     @router.post("/auth/onboarding-seen")
-    def onboarding_seen(
-        request: Request, auth: AuthContext = Depends(current_auth)
-    ) -> dict[str, object]:
+    def onboarding_seen(request: Request, auth: AuthContext = Depends(current_auth)) -> dict[str, object]:
         require_csrf(request, auth)
         # 只记录服务端当前版本，不接受浏览器自报更高版本。
-        seen = _store(request).mark_onboarding_seen(
-            auth.account.id, ONBOARDING_VERSION
-        )
+        seen = _store(request).mark_onboarding_seen(auth.account.id, ONBOARDING_VERSION)
         _store(request).audit(
             "onboarding.seen",
             actor_account_id=auth.account.id,

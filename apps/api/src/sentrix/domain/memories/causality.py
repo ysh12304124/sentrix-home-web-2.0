@@ -148,10 +148,15 @@ def signals_prompt(pairs: tuple[CausalPair, ...]) -> str:
         lines.append("")
     lines.extend(
         (
-            "Return exactly one compact JSON object per pair:",
-            "{results: [{pair_id, has_causal, edge_type, confidence, reason}]}",
-            "edge_type must be exactly LEADS_TO, ENABLES, or NONE.",
+            "Return ONE compact, valid JSON object for all frame pairs.",
+            f'Its "results" array must contain exactly {len(pairs)} row(s), with each pair_id '
+            f"from 0 to {len(pairs) - 1} appearing once.",
+            'Each object must have the double-quoted keys "pair_id" (integer), '
+            '"has_causal" (boolean), "edge_type" (string), "confidence" (number), '
+            'and "reason" (string).',
+            'edge_type must be exactly "LEADS_TO", "ENABLES", or "NONE".',
             "reason: Chinese, at most 12 characters; use 无 when has_causal=false.",
+            "Use double quotes for all JSON keys and strings. Use lowercase true/false booleans.",
             "Do not add explanations, markdown, or missing fields.",
         )
     )

@@ -330,6 +330,85 @@ class RunReports:
         state = self._state(run_id)
         scope_id = str(state.get("scope_id") or "").strip()
         items = [item for item in (state.get("items") or []) if isinstance(item, dict)]
+        baseline_id, pairing_source, baseline, pairing_error = self._graph_baseline(state)
+        baseline_items = [
+            item for item in (baseline or {}).get("items", []) if isinstance(item, dict)
+        ]
+        summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
+        baseline_summary = (baseline or {}).get("summary")
+        baseline_summary = baseline_summary if isinstance(baseline_summary, dict) else None
+        graph_valid = bool(state.get("run_valid", summary.get("run_valid", False)))
+        baseline_valid = bool(
+            (baseline or {}).get(
+                "run_valid",
+                baseline_summary.get("run_valid", False) if baseline_summary else False,
+            )
+        )
+        graph_media_valid = self._has_complete_media_summary(state, summary)
+        baseline_media_valid = bool(
+            baseline and self._has_complete_media_summary(baseline, baseline_summary or {})
+        )
+        overall = graph_quality.aggregate_graph_qa_overall(
+            items,
+            baseline_items,
+            baseline_run_id=baseline_id,
+            graph_run_id=run_id,
+            graph_run_valid=graph_valid,
+            baseline_run_valid=baseline_valid,
+            pairing_error=pairing_error,
+        )
+        # Final-media P/R/F1 are durable pipeline metrics, independent of whether every
+        # Judge/Agent step succeeded. Keep those metrics visible for completed_with_errors
+        # runs, but never compare their incomplete answer-quality scores.
+        summary_effect = graph_quality.final_media_effect_from_run_summaries(
+            summary,
+            baseline_summary,
+            baseline_run_id=baseline_id,
+            graph_run_id=run_id,
+            graph_run_valid=graph_valid,
+            baseline_run_valid=baseline_valid,
+            graph_media_valid=graph_media_valid,
+            baseline_media_valid=baseline_media_valid,
+            pairing_error=pairing_error,
+        )
+        if not summary_effect.get("available") and baseline is not None:
+            # Older runs may lack run-level media summary fields while retaining per-QA
+            # counts. Preserve that historical fallback, gated on completed media work.
+            item_effect = graph_quality._paired_final_media_effect(
+                items,
+                baseline_items,
+                baseline_run_id=baseline_id,
+                graph_run_id=run_id,
+                graph_run_valid=graph_media_valid,
+                baseline_run_valid=baseline_media_valid,
+                pairing_error=pairing_error,
+            )
+            if item_effect.get("available"):
+                summary_effect = item_effect
+                if not (graph_valid and baseline_valid):
+                    for side in ("without_graph", "with_graph"):
+                        summary_effect[side]["answer_quality_mean"] = None
+                    summary_effect["delta"]["answer_quality_mean"] = None
+        summary_effect["pairing_source"] = pairing_source
+        overall["final_media_effect"] = summary_effect
+        if summary_effect.get("available"):
+            overall["available"] = True
+            overall["comparison_basis"] = "final_media_delivery"
+            overall["without_graph"] = {
+                "retrieval_recall": summary_effect["without_graph"]["media_retrieval_recall"],
+                "retrieval_precision": summary_effect["without_graph"]["media_retrieval_precision"],
+                "answer_quality_mean": summary_effect["without_graph"]["answer_quality_mean"],
+            }
+            overall["with_graph"] = {
+                "retrieval_recall": summary_effect["with_graph"]["media_retrieval_recall"],
+                "retrieval_precision": summary_effect["with_graph"]["media_retrieval_precision"],
+                "answer_quality_mean": summary_effect["with_graph"]["answer_quality_mean"],
+            }
+            overall["delta"] = {
+                "retrieval_recall": summary_effect["delta"]["media_retrieval_recall"],
+                "retrieval_precision": summary_effect["delta"]["media_retrieval_precision"],
+                "answer_quality_mean": summary_effect["delta"]["answer_quality_mean"],
+            }
         report: dict[str, Any] = {
             "status": "available" if scope_id else "unavailable",
             "run_id": run_id,
@@ -339,6 +418,7 @@ class RunReports:
             else {"available": False, "reason": "scope_missing"},
             "face_clustering": {"available": False, "reason": "scope_missing"},
             "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(items),
+            "graph_qa_overall": overall,
         }
         if scope_id:
             truth = self._identity_truth(str(state.get("album_id") or ""))
@@ -352,6 +432,91 @@ class RunReports:
                 self._face_clusters(scope_id), truth, asset_names=asset_names
             )
         return report
+
+    @staticmethod
+    def _has_complete_media_summary(state: dict[str, Any], summary: dict[str, Any]) -> bool:
+        status = str(state.get("status") or "")
+        terminal = status in {"completed", "completed_with_errors", "failed", "interrupted"}
+        total = summary.get("total") or state.get("qa_count")
+        completed = summary.get("completed")
+        has_metrics = all(
+            isinstance(summary.get(key), (int, float))
+            for key in (
+                "media_retrieval_recall_macro",
+                "media_retrieval_precision_macro",
+                "media_retrieval_f1_macro",
+            )
+        )
+        if not has_metrics:
+            items = [item for item in state.get("items", []) if isinstance(item, dict)]
+            qa_count = state.get("qa_count") or summary.get("total")
+            has_metrics = bool(
+                items
+                and qa_count
+                and len(items) >= int(qa_count)
+                and any(isinstance(item.get("media_retrieval_counts"), dict) for item in items)
+            )
+        # Failed QA/Judge can mark a run invalid while the media retrieval pass still
+        # completed for every question. The media comparison only depends on that pass.
+        complete_count = bool(total and completed == total) or bool(
+            state.get("qa_count") and len(state.get("items") or []) >= int(state["qa_count"])
+        )
+        return bool(terminal and has_metrics and complete_count)
+
+    def _graph_baseline(
+        self, graph_state: dict[str, Any]
+    ) -> tuple[str | None, str, dict[str, Any] | None, str | None]:
+        """Load the explicitly linked graph-off run, or auto-pair a compatible older run."""
+        explicit_id = str(graph_state.get("graph_baseline_run_id") or "").strip()
+        if explicit_id:
+            try:
+                baseline = self._state(explicit_id)
+            except KeyError:
+                return explicit_id, "bound", None, "已绑定的无图对照 run 不存在"
+            error = self._baseline_mismatch(graph_state, baseline)
+            return explicit_id, "bound", baseline, error
+
+        graph_started = str(graph_state.get("started_at") or graph_state.get("created_at") or "")
+        candidates = sorted(
+            (
+                entry
+                for entry in self._store.iter_entries()
+                if entry.get("graph_enabled") is False
+                and str(entry.get("run_id") or "") != str(graph_state.get("run_id") or "")
+                and str(entry.get("started_at") or entry.get("created_at") or "") < graph_started
+            ),
+            key=lambda entry: str(entry.get("started_at") or entry.get("created_at") or ""),
+            reverse=True,
+        )
+        for entry in candidates:
+            candidate_id = str(entry.get("run_id") or "")
+            if not candidate_id:
+                continue
+            try:
+                baseline = self._state(candidate_id)
+            except KeyError:
+                continue
+            if self._baseline_mismatch(graph_state, baseline) is None:
+                return candidate_id, "auto", baseline, None
+        return None, "auto", None, None
+
+    @staticmethod
+    def _baseline_mismatch(graph_state: dict[str, Any], baseline: dict[str, Any]) -> str | None:
+        if baseline.get("graph_enabled") is not False:
+            return "对照 run 未关闭图检索"
+        for key, label in (("album_id", "相册"), ("qa_set", "题集")):
+            left, right = graph_state.get(key), baseline.get(key)
+            if left and right and left != right:
+                return f"有图与无图 run 的{label}不一致"
+        graph_model = graph_state.get("endpoint_model") or graph_state.get("model_name")
+        baseline_model = baseline.get("endpoint_model") or baseline.get("model_name")
+        if graph_model and baseline_model and graph_model != baseline_model:
+            return "有图与无图 run 的模型不一致"
+        graph_snapshot = (graph_state.get("qa_snapshot") or {}).get("definition_sha256")
+        baseline_snapshot = (baseline.get("qa_snapshot") or {}).get("definition_sha256")
+        if graph_snapshot and baseline_snapshot and graph_snapshot != baseline_snapshot:
+            return "有图与无图 run 的题目快照不一致"
+        return None
 
     def export_traces(
         self,

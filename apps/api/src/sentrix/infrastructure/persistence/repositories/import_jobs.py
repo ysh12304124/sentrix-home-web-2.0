@@ -7,9 +7,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from sentrix.domain.media.import_jobs import (
+    IdempotencyConflict,
     ImportJob,
     ImportJobStage,
-    IdempotencyConflict,
     UploadBusy,
     UploadQuotaExceeded,
 )
@@ -68,9 +68,7 @@ class SqliteImportJobRepository:
         with self._database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                inflight = connection.execute(
-                    "SELECT COUNT(*) AS n FROM upload_reservations"
-                ).fetchone()["n"]
+                inflight = connection.execute("SELECT COUNT(*) AS n FROM upload_reservations").fetchone()["n"]
                 if int(inflight) >= max_inflight:
                     raise UploadBusy("too many concurrent uploads")
                 original = _unique_original_bytes(connection)
@@ -92,9 +90,7 @@ class SqliteImportJobRepository:
 
     def release_upload(self, reservation_id: str) -> None:
         with self._database.connect() as connection, connection:
-            connection.execute(
-                "DELETE FROM upload_reservations WHERE id = ?", (reservation_id,)
-            )
+            connection.execute("DELETE FROM upload_reservations WHERE id = ?", (reservation_id,))
 
     def clear_reservations(self) -> int:
         with self._database.connect() as connection, connection:
@@ -119,9 +115,7 @@ class SqliteImportJobRepository:
                 ).fetchone()
                 if existing is not None:
                     if reservation_id is not None:
-                        connection.execute(
-                            "DELETE FROM upload_reservations WHERE id = ?", (reservation_id,)
-                        )
+                        connection.execute("DELETE FROM upload_reservations WHERE id = ?", (reservation_id,))
                     connection.commit()
                     if str(existing["content_sha256"]) != job.content_sha256:
                         raise IdempotencyConflict("idempotency key reused for different content")
@@ -129,8 +123,7 @@ class SqliteImportJobRepository:
 
                 original = _unique_original_bytes(connection)
                 reserved_other = connection.execute(
-                    "SELECT COALESCE(SUM(expected_bytes), 0) AS n FROM upload_reservations "
-                    "WHERE id <> ?",
+                    "SELECT COALESCE(SUM(expected_bytes), 0) AS n FROM upload_reservations WHERE id <> ?",
                     (reservation_id or "",),
                 ).fetchone()["n"]
                 if int(original) + int(reserved_other) + job.size_bytes > quota_bytes:
@@ -141,9 +134,7 @@ class SqliteImportJobRepository:
                     (job.scope_id,),
                 ).fetchone()["n"]
                 if reservation_id is not None:
-                    connection.execute(
-                        "DELETE FROM upload_reservations WHERE id = ?", (reservation_id,)
-                    )
+                    connection.execute("DELETE FROM upload_reservations WHERE id = ?", (reservation_id,))
                 connection.execute(
                     """
                     INSERT INTO import_jobs (
@@ -185,9 +176,7 @@ class SqliteImportJobRepository:
 
     def get(self, job_id: str) -> ImportJob | None:
         with self._database.connect() as connection:
-            row = connection.execute(
-                f"SELECT {_COLUMNS} FROM import_jobs WHERE id = ?", (job_id,)
-            ).fetchone()
+            row = connection.execute(f"SELECT {_COLUMNS} FROM import_jobs WHERE id = ?", (job_id,)).fetchone()
         return _job(row) if row is not None else None
 
     def list_for_scope(self, scope_id: str | None, *, limit: int = 200) -> list[ImportJob]:
@@ -380,9 +369,7 @@ class SqliteImportJobRepository:
     ) -> bool:
         stamp = now.isoformat()
         with self._database.connect() as connection, connection:
-            owner = connection.execute(
-                "SELECT fence FROM import_jobs WHERE id = ?", (job_id,)
-            ).fetchone()
+            owner = connection.execute("SELECT fence FROM import_jobs WHERE id = ?", (job_id,)).fetchone()
             if owner is None or int(owner["fence"]) != fence:
                 return False
             connection.execute(
@@ -446,10 +433,12 @@ class SqliteImportJobRepository:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 connection.execute(
-                    "INSERT INTO scope_postprocess (scope_id, dirty_generation, processed_generation, updated_at) "
+                    "INSERT INTO scope_postprocess "
+                    "(scope_id, dirty_generation, processed_generation, updated_at) "
                     "VALUES (?, 1, 0, ?) "
                     "ON CONFLICT(scope_id) DO UPDATE SET "
-                    "dirty_generation = scope_postprocess.dirty_generation + 1, updated_at = excluded.updated_at",
+                    "dirty_generation = scope_postprocess.dirty_generation + 1, "
+                    "updated_at = excluded.updated_at",
                     (scope_id, now.isoformat()),
                 )
                 row = connection.execute(
@@ -502,9 +491,7 @@ class SqliteImportJobRepository:
             connection.commit()
         return str(row["scope_id"]), int(row["dirty_generation"])
 
-    def finish_postprocess(
-        self, scope_id: str, generation: int, *, success: bool, now: datetime
-    ) -> None:
+    def finish_postprocess(self, scope_id: str, generation: int, *, success: bool, now: datetime) -> None:
         with self._database.connect() as connection, connection:
             if success:
                 connection.execute(
@@ -527,9 +514,7 @@ class SqliteImportJobRepository:
                     ),
                 )
 
-    def mark_scope_postprocess_partial(
-        self, scope_id: str, *, message: str, now: datetime
-    ) -> int:
+    def mark_scope_postprocess_partial(self, scope_id: str, *, message: str, now: datetime) -> int:
         """批末阶段失败：该相册已完成的作业改为 partial，并标出后处理阶段。"""
         with self._database.connect() as connection, connection:
             cursor = connection.execute(

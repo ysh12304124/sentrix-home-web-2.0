@@ -138,6 +138,8 @@ class FamilyMembershipResponse(BaseModel):
 
     ok: bool
     membership: FamilyMembershipPayload | None
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class FamilyRelationshipRequest(BaseModel):
@@ -156,6 +158,8 @@ class FamilyRelationshipResponse(BaseModel):
 
     ok: bool
     relationships: list[FamilyRelationshipPayload]
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class FamilyRetractRequest(BaseModel):
@@ -174,6 +178,8 @@ class FamilyRetractResponse(BaseModel):
 
     ok: bool
     retracted: list[FamilyRelationshipPayload]
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class FamilyPortraitRequest(BaseModel):
@@ -187,6 +193,8 @@ class FamilyPortraitRequest(BaseModel):
 class FamilyPortraitResponse(BaseModel):
     ok: bool
     portrait: FamilyPortraitPayload | None
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class FamilyScopeMergeRequest(BaseModel):

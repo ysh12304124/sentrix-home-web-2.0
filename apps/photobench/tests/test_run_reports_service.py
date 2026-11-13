@@ -51,6 +51,142 @@ def _image(asset_id: str) -> dict:
     return {"id": asset_id, "file_name": f"{asset_id}.jpg", "media_type": "image"}
 
 
+def test_graph_quality_pairs_exact_snapshot_and_keeps_partial_judge_out_of_quality_delta(
+    tmp_path: Path,
+) -> None:
+    def state(
+        run_id: str,
+        *,
+        graph: bool,
+        started_at: str,
+        matched: int,
+        judge_ok: bool,
+        snapshot_hash: str = "same",
+    ) -> dict:
+        return {
+            "run_id": run_id,
+            "scope_id": run_id,
+            "album_id": "album",
+            "qa_set": "487q",
+            "qa_count": 1,
+            "mode": "full",
+            "endpoint_model": "qwen35-q4km",
+            "graph_enabled": graph,
+            "started_at": started_at,
+            "status": "completed" if judge_ok else "completed_with_errors",
+            "summary": {"run_valid": judge_ok},
+            "qa_snapshot": {
+                "definition_sha256": snapshot_hash,
+                "rows": [{"qa_id": "q1", "question": "same question"}],
+            },
+            "phases": {
+                "pipeline_processing": {"status": "done"},
+                "qa_eval": {"status": "done" if judge_ok else "partial"},
+            },
+            "items": [
+                {
+                    "qa_id": "q1",
+                    "execution_status": "completed",
+                    "judge_status": "completed" if judge_ok else "failed",
+                    "judge": {"score": 2} if judge_ok else None,
+                    "retrieval_media_refs": [],
+                    "media_retrieval_counts": {"gt": 1, "predicted": 1, "matched": matched},
+                    "media_retrieval_recall": float(matched),
+                    "media_retrieval_precision": float(matched),
+                }
+            ],
+        }
+
+    _write(
+        tmp_path,
+        "off",
+        state("off", graph=False, started_at="2026-11-05T00:00:00+08:00", matched=0, judge_ok=True),
+    )
+    _write(
+        tmp_path,
+        "wrong",
+        state(
+            "wrong",
+            graph=False,
+            started_at="2026-11-06T00:00:00+08:00",
+            matched=0,
+            judge_ok=True,
+            snapshot_hash="different",
+        ),
+    )
+    store = _write(
+        tmp_path,
+        "on",
+        state("on", graph=True, started_at="2026-11-07T00:00:00+08:00", matched=1, judge_ok=False),
+    )
+    http = FakeJsonHttpClient({"/assets?": {"items": []}, "/memory-graph/quality?": {"available": False}})
+
+    effect = _reports(store, http).graph_quality("on")["graph_qa_overall"]["final_media_effect"]
+
+    assert effect["available"] is True
+    assert effect["baseline_run_id"] == "off"
+    assert effect["pairing_source"] == "auto"
+    assert effect["without_graph"]["media_retrieval_recall"] == 0.0
+    assert effect["with_graph"]["media_retrieval_recall"] == 1.0
+    assert effect["delta"]["answer_quality_mean"] is None
+
+
+def test_graph_quality_uses_complete_media_summaries_even_when_runs_have_errors(
+    tmp_path: Path,
+) -> None:
+    def run_state(run_id: str, *, graph: bool, baseline_id: str | None, recall: float) -> dict:
+        return {
+            "run_id": run_id,
+            "scope_id": run_id,
+            "album_id": "album3-max-video10",
+            "qa_set": "mixed-image-video-487q",
+            "endpoint_model": "qwen35-q4km",
+            "graph_enabled": graph,
+            "graph_baseline_run_id": baseline_id,
+            "status": "completed_with_errors",
+            "run_valid": False,
+            "qa_count": 487,
+            "summary": {
+                "run_valid": False,
+                "total": 487,
+                "completed": 487,
+                "media_retrieval_recall_macro": recall,
+                "media_retrieval_precision_macro": recall + 0.019,
+                "media_retrieval_f1_macro": recall - 0.005,
+                "media_retrieval_metric_count": 421,
+                "answer_quality_mean": 1.0,
+            },
+            "items": [],
+        }
+
+    baseline_id = "off-run"
+    _write(
+        tmp_path,
+        baseline_id,
+        run_state(baseline_id, graph=False, baseline_id=None, recall=0.397),
+    )
+    store = _write(
+        tmp_path,
+        "on-run",
+        run_state("on-run", graph=True, baseline_id=baseline_id, recall=0.412),
+    )
+    http = FakeJsonHttpClient({"/assets?": {"items": []}, "/memory-graph/quality?": {"available": False}})
+
+    overall = _reports(store, http).graph_quality("on-run")["graph_qa_overall"]
+    effect = overall["final_media_effect"]
+
+    assert overall["available"] is True
+    assert effect["available"] is True
+    assert effect["baseline_run_id"] == baseline_id
+    assert effect["pairing_source"] == "bound"
+    assert effect["sample_count"] == 421
+    assert effect["without_graph"]["media_retrieval_recall"] == 0.397
+    assert effect["with_graph"]["media_retrieval_recall"] == 0.412
+    assert effect["delta"]["media_retrieval_recall"] == pytest.approx(0.015)
+    assert effect["without_graph"]["answer_quality_mean"] is None
+    assert effect["with_graph"]["answer_quality_mean"] is None
+
+
 # ---- 关键帧分析：取数 -------------------------------------------------------
 
 

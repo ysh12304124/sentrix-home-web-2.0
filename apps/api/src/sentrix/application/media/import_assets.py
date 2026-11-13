@@ -349,18 +349,14 @@ class ImportAssets:
         self._ensure_space(request.scope_id)
 
         source_size = (
-            request.source_path.stat().st_size
-            if request.source_path is not None
-            else len(request.content)
+            request.source_path.stat().st_size if request.source_path is not None else len(request.content)
         )
         content_sha256 = request.content_sha256 or (
             _sha256_file(request.source_path)
             if request.source_path is not None
             else hashlib.sha256(request.content).hexdigest()
         )
-        media_type = request.media_type or MediaType.from_upload(
-            request.content_type, request.file_name
-        )
+        media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
 
         existing = self._assets.find_by_hash(request.scope_id, content_sha256)
         if existing is not None:
@@ -382,13 +378,9 @@ class ImportAssets:
         if request.source_path is None:
             stored_path = self._storage.store(asset_id, request.file_name, request.content)
         elif request.source_move:
-            stored_path = self._storage.move_from_path(
-                asset_id, request.file_name, request.source_path
-            )
+            stored_path = self._storage.move_from_path(asset_id, request.file_name, request.source_path)
         else:
-            stored_path = self._storage.copy_from_path(
-                asset_id, request.file_name, request.source_path
-            )
+            stored_path = self._storage.copy_from_path(asset_id, request.file_name, request.source_path)
 
         captured_at, gps, device = (None, None, None)
         if media_type is MediaType.IMAGE:
@@ -550,8 +542,7 @@ class ImportAssets:
             video_scenes=video_scenes.scene_count,
             video_scene_error=(
                 video_scenes.reason
-                if staged.media_type is MediaType.VIDEO
-                and video_scenes.reason not in {"", "not_a_video"}
+                if staged.media_type is MediaType.VIDEO and video_scenes.reason not in {"", "not_a_video"}
                 else ""
             ),
             audio_probed=staged.audio_probe is not None and staged.audio_probe.metadata is not None,

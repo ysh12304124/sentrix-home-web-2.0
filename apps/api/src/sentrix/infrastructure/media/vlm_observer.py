@@ -283,9 +283,7 @@ def chat_json(
             body["response_format"] = {"type": "json_object"}
         fact["diagnostics"].update(model.apply_output_budget(body, timeout_s=timeout_s))
         fact["diagnostics"]["request_sent"] = None
-        response = httpx.post(
-            endpoint, json=body, timeout=timeout_s, headers=model_auth_headers()
-        )
+        response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers())
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sentrix.domain.assistant.models import (
@@ -126,9 +126,7 @@ class SqliteTurnRepository:
                 ),
             )
 
-    def create_with_user_message(
-        self, record: TurnRecord, *, message_id: str
-    ) -> tuple[TurnRecord, bool]:
+    def create_with_user_message(self, record: TurnRecord, *, message_id: str) -> tuple[TurnRecord, bool]:
         """用户消息与回合同一事务落库；同键同文返回已有回合。"""
         with self._database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -142,9 +140,7 @@ class SqliteTurnRepository:
                     if existing is not None:
                         connection.commit()
                         if str(existing["question"]) != record.question:
-                            raise TurnIdempotencyConflict(
-                                "idempotency key reused for a different question"
-                            )
+                            raise TurnIdempotencyConflict("idempotency key reused for a different question")
                         return _row_to_turn(existing), False
                 connection.execute(
                     "INSERT INTO agent_turns"
@@ -362,8 +358,7 @@ class SqliteTurnRepository:
                     connection.rollback()
                     return None
                 row = connection.execute(
-                    "SELECT COALESCE(MAX(event_seq), 0) + 1 AS n"
-                    " FROM agent_turn_events_v2 WHERE turn_id = ?",
+                    "SELECT COALESCE(MAX(event_seq), 0) + 1 AS n FROM agent_turn_events_v2 WHERE turn_id = ?",
                     (turn_id,),
                 ).fetchone()
                 seq = int(row["n"])
@@ -392,9 +387,7 @@ class SqliteTurnRepository:
             connection.commit()
         return seq
 
-    def events_after(
-        self, turn_id: str, event_seq: int
-    ) -> Sequence[tuple[int, int, ProgressEvent]]:
+    def events_after(self, turn_id: str, event_seq: int) -> Sequence[tuple[int, int, ProgressEvent]]:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT event_seq, attempt_no, payload_json FROM agent_turn_events_v2"
@@ -528,8 +521,7 @@ class SqliteTurnRepository:
     def oldest_active_updated_at(self) -> str | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT MIN(updated_at) AS value FROM agent_turns"
-                " WHERE status IN ('pending', 'running')"
+                "SELECT MIN(updated_at) AS value FROM agent_turns WHERE status IN ('pending', 'running')"
             ).fetchone()
         return str(row["value"]) if row is not None and row["value"] is not None else None
 
@@ -561,8 +553,7 @@ class SqliteTurnRepository:
         with self._database.connect() as connection:
             if cursor:
                 anchor = connection.execute(
-                    "SELECT created_at, rowid FROM agent_turns"
-                    " WHERE id = ? AND conversation_id = ?",
+                    "SELECT created_at, rowid FROM agent_turns WHERE id = ? AND conversation_id = ?",
                     (cursor, conversation_id),
                 ).fetchone()
                 if anchor is None:
@@ -606,8 +597,7 @@ class SqliteTurnRepository:
     def list_recent(self, *, limit: int = 20) -> Sequence[TurnRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_TURN_COLUMNS} FROM agent_turns"
-                " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                f"SELECT {_TURN_COLUMNS} FROM agent_turns ORDER BY updated_at DESC, rowid DESC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
         return [_row_to_turn(row) for row in rows]

@@ -399,6 +399,14 @@ class EntityRepository(Protocol):
         """
         ...
 
+    def list_mentions(self, scope_id: str, *, limit: int = 100_000) -> Sequence[EntityMentionRecord]:
+        """列出这个 scope 内已经落库的确认身份提及。
+
+        图构建只消费这条上游身份链的结果，不根据 ``Observation.people`` 或人脸向量
+        自行猜测身份；这样 pending/rejected 实体不会被投影成身份边。
+        """
+        ...
+
     def recent_observation_ids(self, entity_id: str, *, limit: int = 100) -> Sequence[str]:
         """这个实体关联的观察 id，按 ``captured_at`` 降序，取前 ``limit`` 条。
 
@@ -1053,6 +1061,10 @@ class FamilyGraphRepository(Protocol):
     """
 
     # ---- 读投影 ----------------------------------------------------------------
+
+    def user_relationship_pairs(self, scope_id: str) -> Sequence[tuple[str, str]]:
+        """用户已覆盖或撤回的无序人物对；图投影不得从旧通用关系恢复它们。"""
+        ...
 
     def family_graph_people(self, scope_ids: Sequence[str]) -> Sequence[FamilyPersonProjection]:
         """这张图里**全部人物**的展示投影。1.0 ``db.py:5649-5688`` 的 ``family_graph_people``。

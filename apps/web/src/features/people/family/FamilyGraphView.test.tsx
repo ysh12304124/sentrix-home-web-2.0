@@ -55,7 +55,9 @@ afterEach(() => {
 
 describe("关系图点边编辑", () => {
   it("点中一条边后可以改谓词，PUT 带上那条关系自己的 scope 与正反向标签", async () => {
-    vi.mocked(client.putFamilyRelationship).mockResolvedValue([]);
+    vi.mocked(client.putFamilyRelationship).mockResolvedValue({
+      ok: true, relationships: [], sync_status: "synced", sync_error: "",
+    });
     const onChanged = vi.fn().mockResolvedValue(undefined);
     const { container } = render(
       <FamilyGraphView
@@ -89,10 +91,13 @@ describe("关系图点边编辑", () => {
       });
     });
     expect(onChanged).toHaveBeenCalled();
+    expect(await screen.findByText("关系已保存，图谱与检索索引已同步。")).toBeTruthy();
   });
 
   it("删除关系只带两端 id 与 scope", async () => {
-    vi.mocked(client.deleteFamilyRelationship).mockResolvedValue([]);
+    vi.mocked(client.deleteFamilyRelationship).mockResolvedValue({
+      ok: true, retracted: [], sync_status: "synced", sync_error: "",
+    });
     const onChanged = vi.fn().mockResolvedValue(undefined);
     const { container } = render(
       <FamilyGraphView
@@ -116,5 +121,6 @@ describe("关系图点边编辑", () => {
       });
     });
     expect(onChanged).toHaveBeenCalled();
+    expect(await screen.findByText("关系已保存，图谱与检索索引已同步。")).toBeTruthy();
   });
 });

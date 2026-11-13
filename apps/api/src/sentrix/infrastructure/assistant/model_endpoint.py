@@ -268,9 +268,7 @@ def probe_context_tokens(base_url: str, *, timeout: float = PROBE_TIMEOUT_S) -> 
     base = base_url.rstrip("/")
     # vLLM 那一支。
     try:
-        body = httpx.get(
-            f"{base}/models", timeout=timeout, headers=model_auth_headers()
-        ).json()
+        body = httpx.get(f"{base}/models", timeout=timeout, headers=model_auth_headers()).json()
         for item in (body or {}).get("data") or []:
             if not isinstance(item, dict):
                 continue
@@ -282,9 +280,7 @@ def probe_context_tokens(base_url: str, *, timeout: float = PROBE_TIMEOUT_S) -> 
 
     # llama.cpp 那一支。``/props`` 挂在根上，不在 ``/v1`` 下；控制面入口除外。
     try:
-        props = httpx.get(
-            props_url(base), timeout=timeout, headers=model_auth_headers()
-        ).json()
+        props = httpx.get(props_url(base), timeout=timeout, headers=model_auth_headers()).json()
         settings = (props or {}).get("default_generation_settings") or {}
         value = settings.get("n_ctx")
         if isinstance(value, int) and value > 0:

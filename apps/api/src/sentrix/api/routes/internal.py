@@ -89,16 +89,13 @@ def internal_status(container: Container = Depends(get_container)) -> dict[str, 
         "jobs": job_counts,
         "job_total": len(jobs),
         "jobs_active": len(active_jobs),
-        "oldest_active_job": min(
-            (job.updated_at.isoformat() for job in active_jobs), default=None
-        ),
+        "oldest_active_job": min((job.updated_at.isoformat() for job in active_jobs), default=None),
         "active_jobs": [
             _job_view(job, with_stages=True, container=container)
             for job in sorted(active_jobs, key=lambda item: item.updated_at)[:ACTIVE_LIMIT]
         ],
         "recent_jobs": [
-            _job_view(job, with_stages=False, container=container)
-            for job in recent_jobs[:RECENT_LIMIT]
+            _job_view(job, with_stages=False, container=container) for job in recent_jobs[:RECENT_LIMIT]
         ],
         "postprocess_backlog": container.import_jobs.scope_backlog(),
         "turns": container.turn_repository.status_counts(),

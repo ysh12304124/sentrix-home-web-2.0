@@ -1,6 +1,7 @@
 import type {
   FaceClusteringMetrics,
   GraphQaByTypeRow,
+  GraphQaOverall,
   GraphQuality,
   GraphReferenceMetrics,
 } from "../../api/types.ts";
@@ -59,6 +60,73 @@ function qaCell(value: number | null | undefined, percent = true): string {
   return percent ? ratio(value) : value.toFixed(3);
 }
 
+function signedRatio(value: number | null | undefined): string {
+  if (typeof value !== "number") return "—";
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+}
+
+function transition(before: number | null | undefined, after: number | null | undefined): string {
+  if (typeof before !== "number" || typeof after !== "number") return "—";
+  return `${ratio(before)} → ${ratio(after)}`;
+}
+
+function overallGainCards(overall: GraphQaOverall) {
+  const candidate = overall.candidate_effect || {
+    without_graph: overall.without_graph,
+    with_graph: overall.with_graph,
+    delta: overall.delta,
+  };
+  const without = candidate.without_graph || {};
+  const withGraph = candidate.with_graph || {};
+  const delta = candidate.delta || {};
+  const final = overall.final_media_effect;
+  const finalWithout = final?.without_graph || {};
+  const finalWith = final?.with_graph || {};
+  const finalDelta = final?.delta || {};
+  return [
+    metricCard(
+      "最终媒体召回率（无图 → 有图）",
+      final?.available ? transition(finalWithout.media_retrieval_recall, finalWith.media_retrieval_recall) : "需配对无图 run",
+      final?.available
+        ? `变化 ${signedRatio(finalDelta.media_retrieval_recall)}`
+        : (final?.note || "必须使用同相册、同题集、同模型的 graph_enabled=false 完整测评作对照"),
+    ),
+    metricCard(
+      "最终媒体精确率（无图 → 有图）",
+      final?.available ? transition(finalWithout.media_retrieval_precision, finalWith.media_retrieval_precision) : "需配对无图 run",
+      final?.available ? `变化 ${signedRatio(finalDelta.media_retrieval_precision)}` : "与最终媒体召回使用同一对照 run",
+    ),
+    metricCard(
+      "最终回答质量分（无图 → 有图）",
+      final?.available
+        ? (typeof finalWithout.answer_quality_mean === "number" && typeof finalWith.answer_quality_mean === "number"
+          ? `${finalWithout.answer_quality_mean.toFixed(3)} → ${finalWith.answer_quality_mean.toFixed(3)}`
+          : "评分不完整")
+        : "需配对无图 run",
+      final?.available
+        ? (typeof finalDelta.answer_quality_mean === "number"
+          ? `变化 ${finalDelta.answer_quality_mean.toFixed(3)}`
+          : "存在 Judge/Agent 错误，暂不比较质量分")
+        : "同题对照后计算",
+    ),
+    metricCard(
+      "候选召回率（primary → fused）",
+      transition(without.retrieval_recall, withGraph.retrieval_recall),
+      `候选层变化 ${signedRatio(delta.retrieval_recall)}，不等同于最终媒体召回率`,
+    ),
+    metricCard(
+      "候选精确率（primary → fused）",
+      transition(without.retrieval_precision, withGraph.retrieval_precision),
+      `变化 ${signedRatio(delta.retrieval_precision)}`,
+    ),
+    metricCard(
+      "有效对照题数",
+      number(final?.available ? final.sample_count : overall.sample_count),
+      `图路由 ${number(overall.graph_routed_count)} · 图生效 ${number(overall.graph_enabled_count)}`,
+    ),
+  ];
+}
+
 function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
   if (!rows.length) return <p className="metric-calc-time">没有可汇总的题型数据。</p>;
   return (
@@ -70,7 +138,9 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
             <th>题数</th>
             <th>图路由</th>
             <th>图生效</th>
-            <th>图召回 Δ</th>
+            <th>候选头召回 Δ</th>
+            <th>最终媒体召回 Δ</th>
+            <th>图精确率 Δ</th>
             <th>检索 R</th>
             <th>回答质量</th>
             <th>证据支持率</th>
@@ -85,6 +155,8 @@ function QuestionTypeTable({ rows }: { rows: GraphQaByTypeRow[] }) {
               <td>{number(row.graph_routed_count)}</td>
               <td>{number(row.graph_effect_count)}</td>
               <td>{row.graph_recall_delta == null ? "—" : `${row.graph_recall_delta >= 0 ? "+" : ""}${(row.graph_recall_delta * 100).toFixed(1)}%`}</td>
+              <td>{signedRatio(row.final_media_recall_delta)}</td>
+              <td>{signedRatio(row.graph_precision_delta)}</td>
               <td>{qaCell(row.retrieval_recall)}</td>
               <td>{row.answer_quality_mean == null ? "—" : row.answer_quality_mean.toFixed(2)}</td>
               <td>{qaCell(row.evidence_supported_rate)}</td>
@@ -128,6 +200,27 @@ export function GraphQualityPanel({ quality }: { quality: GraphQuality | null })
 
       <h4>人脸身份聚类质量</h4>
       {face.available ? <div className="phase-metrics graph-quality-metrics">{faceCards(face)}</div> : <p className="metric-calc-time">{String(face.reason || "未找到 identity GT sidecar")}</p>}
+
+      <h4>总体图增益（同题无图 → 有图）</h4>
+      <p className="metric-calc-time">
+        最终媒体指标严格读取完整 QA 的交付媒体结果（列表中的“媒体召回率”，例如 39.3%），
+        需要同题、同相册、同模型的 graph-off 对照 run；候选 primary → fused 只作为辅助诊断。
+      </p>
+      {quality.graph_qa_overall?.final_media_effect?.baseline_run_id ? (
+        <p className="metric-calc-time">
+          {quality.graph_qa_overall.final_media_effect.pairing_source === "auto" ? "自动匹配" : "已绑定"}
+          无图对照 run：{quality.graph_qa_overall.final_media_effect.baseline_run_id}
+          {quality.graph_qa_overall.final_media_effect.status === "run_summary_partial_quality"
+            ? "；本轮评分不完整，仅比较最终媒体指标。"
+            : ""}
+        </p>
+      ) : null}
+      {quality.graph_qa_overall &&
+      (quality.graph_qa_overall.available || quality.graph_qa_overall.final_media_effect?.available) ? (
+        <div className="phase-metrics graph-quality-metrics">{overallGainCards(quality.graph_qa_overall)}</div>
+      ) : (
+        <p className="metric-calc-time">总体图增益：暂无可比较的图遥测或 GT。</p>
+      )}
 
       <h4>按问题类型的图记忆 QA 表现</h4>
       <QuestionTypeTable rows={quality.graph_qa_by_type || []} />

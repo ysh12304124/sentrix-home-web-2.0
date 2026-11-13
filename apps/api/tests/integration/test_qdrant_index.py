@@ -77,6 +77,18 @@ def test_upsert_is_idempotent_on_the_source_identity(index: QdrantVectorIndex):
     assert hits[0].score == pytest.approx(1.0)
 
 
+def test_delete_sources_removes_only_matching_source_pairs(index: QdrantVectorIndex):
+    index.upsert([record("gone"), record("gone", source_type="face_instance"), record("keep")])
+
+    index.delete_sources([("asset", "gone"), ("asset", "gone")])
+
+    hits = index.search(space="visual", vector=(1.0, 0.0, 0.0, 0.0), limit=5, model_name=MODEL)
+    assert {(item.source_type, item.source_id) for item in hits} == {
+        ("face_instance", "gone"),
+        ("asset", "keep"),
+    }
+
+
 def test_search_filters_by_scope(index: QdrantVectorIndex):
     index.upsert([record("asset_a", scope_id="album1"), record("asset_b", scope_id="album2")])
 

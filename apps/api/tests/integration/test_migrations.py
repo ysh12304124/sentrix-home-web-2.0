@@ -24,6 +24,63 @@ def test_migrations_are_applied_once_and_recorded(tmp_path):
     assert {"a", "b", "schema_migrations"} <= tables
 
 
+def test_graph_provenance_column_already_present_is_recorded_without_duplicate_alter(tmp_path):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "0001_result_sets.sql").write_text(
+        "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, graph_provenance_json TEXT NOT NULL);"
+    )
+    source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
+    (migrations / "0030_result_set_graph_provenance.sql").write_bytes(
+        (source / "0030_result_set_graph_provenance.sql").read_bytes()
+    )
+    db = Database(tmp_path / "t.db", migrations)
+
+    assert db.migrate() == ["0001", "0030"]
+    assert db.migrate() == []
+    with db.connect() as conn:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(agent_result_sets)")].count(
+            "graph_provenance_json"
+        ) == 1
+
+
+def test_result_set_attempt_migration_repairs_stale_numeric_marker(tmp_path):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
+    (migrations / "0020_result_set_attempts.sql").write_bytes(
+        (source / "0020_result_set_attempts.sql").read_bytes()
+    )
+    path = tmp_path / "t.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL "
+            "DEFAULT (datetime('now')))"
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version) VALUES('0020')"
+        )
+        connection.execute(
+            "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, "
+            "query TEXT NOT NULL DEFAULT '', asset_ids_json TEXT NOT NULL DEFAULT '[]', "
+            "total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)"
+        )
+
+    db = Database(path, migrations)
+    assert db.migrate() == ["0020"]
+    assert db.migrate() == []
+    with db.connect() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_result_sets)")}
+        index = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_agent_result_sets_turn'"
+        ).fetchone()
+        versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+
+    assert {"turn_id", "attempt_no"} <= columns
+    assert index is not None
+    assert "0020_result_set_attempts_schema" in versions
+
+
 def test_failed_migration_rolls_back(tmp_path):
     db = Database(tmp_path / "t.db", migrations_dir=tmp_path / "migrations")
     (tmp_path / "migrations").mkdir()
@@ -124,18 +181,12 @@ def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
                 (old_scripts / script.name).write_bytes(script.read_bytes())
     elif baseline == "main":
         # main 的编号：0015 文本向量、0016 视频任务、0017 配置哈希、0018 拍摄时间。
-        (old_scripts / "0015_text_vectors.sql").write_bytes(
-            (source / "0024_text_vectors.sql").read_bytes()
-        )
-        (old_scripts / "0016_video_jobs.sql").write_bytes(
-            (source / "0025_video_jobs.sql").read_bytes()
-        )
+        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0024_text_vectors.sql").read_bytes())
+        (old_scripts / "0016_video_jobs.sql").write_bytes((source / "0025_video_jobs.sql").read_bytes())
         (old_scripts / "0017_video_job_config_hash.sql").write_bytes(
             (source / "0026_video_job_config_hash.sql").read_bytes()
         )
-        (old_scripts / "0018_capture_time.sql").write_bytes(
-            (source / "0027_capture_time.sql").read_bytes()
-        )
+        (old_scripts / "0018_capture_time.sql").write_bytes((source / "0027_capture_time.sql").read_bytes())
     path = tmp_path / "t.db"
     if baseline != "fresh":
         old = Database(path, old_scripts)
@@ -154,10 +205,7 @@ def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
     assert current.migrate() == []
     with current.connect() as connection:
         if baseline != "fresh":
-            assert (
-                connection.execute("SELECT value FROM regression_sentinel").fetchone()[0]
-                == "preserved"
-            )
+            assert connection.execute("SELECT value FROM regression_sentinel").fetchone()[0] == "preserved"
         versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
         for table in (
             "text_vectors",
@@ -172,25 +220,21 @@ def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
                 ).fetchone()
                 is not None
             )
-        assert "config_hash" in {
-            row[1] for row in connection.execute("PRAGMA table_info(video_jobs)")
-        }
-        assert "capture_time_json" in {
-            row[1] for row in connection.execute("PRAGMA table_info(assets)")
-        }
+        assert "config_hash" in {row[1] for row in connection.execute("PRAGMA table_info(video_jobs)")}
+        assert "capture_time_json" in {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
         assert "nearest_evidence_json" in {
             row[1] for row in connection.execute("PRAGMA table_info(asset_places)")
         }
-        assert "cancel_requested" in {
-            row[1] for row in connection.execute("PRAGMA table_info(import_jobs)")
-        }
-        assert "idempotency_key" in {
-            row[1] for row in connection.execute("PRAGMA table_info(agent_turns)")
-        }
+        assert "cancel_requested" in {row[1] for row in connection.execute("PRAGMA table_info(import_jobs)")}
+        assert "idempotency_key" in {row[1] for row in connection.execute("PRAGMA table_info(agent_turns)")}
         if baseline == "main":
             # main 的数值版本被别的迁移占用；本分支用带后缀的版本记录补齐。
-            assert {"0015_import_jobs", "0016_import_replay_keys", "0017_turn_recovery",
-                    "0018_memory_rotation"} <= versions
+            assert {
+                "0015_import_jobs",
+                "0016_import_replay_keys",
+                "0017_turn_recovery",
+                "0018_memory_rotation",
+            } <= versions
             assert (
                 connection.execute(
                     "SELECT applied_at FROM schema_migrations WHERE version='0018'"

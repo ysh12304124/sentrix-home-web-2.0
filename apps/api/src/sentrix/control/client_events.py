@@ -61,9 +61,7 @@ ROUTE_TEMPLATES = frozenset({"/", "/assistant", "/timeline", "/people", "/librar
 RESULT_CODES = frozenset(
     {"started", "accepted", "ok", "partial", "failed", "cancelled", "rejected", "ignored"}
 )
-ERROR_CODES = frozenset(
-    {"network", "timeout", "http_4xx", "http_5xx", "media_load", "video_play", "unknown"}
-)
+ERROR_CODES = frozenset({"network", "timeout", "http_4xx", "http_5xx", "media_load", "video_play", "unknown"})
 _ID = r"^$|^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 
 

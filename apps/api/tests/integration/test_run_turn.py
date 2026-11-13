@@ -127,6 +127,7 @@ class StubToolbox:
         scope_id: str,
         now: datetime,
         question: str = "",
+        graph_enabled: bool = True,
     ) -> ToolOutcome:
         # ``question`` 是 `inspect_photo` 要的（1.0 ``tools.py:2162-2165`` 拿它找裁剪目标）,
         # 与 ``__init__`` 那三件一样：**凡是 ``RunTurn`` 会传给真实 toolbox 的形参，
@@ -1203,7 +1204,7 @@ def test_an_unexpected_exception_still_produces_a_named_reason(env):
     """
 
     class Exploding(StubToolbox):
-        def execute(self, name, arguments, *, scope_id, now):  # type: ignore[override]
+        def execute(self, name, arguments, *, scope_id, now, question="", graph_enabled=True):  # type: ignore[override]
             raise ValueError("工具内部炸了")
 
     _conversations, turns, conversation, _db = env
@@ -1503,7 +1504,9 @@ def test_an_unfaithful_answer_is_pushed_back_once_then_released(env):
     # 没有它，「评审放行的答案」与「评审通过的答案」在轨迹上完全一样，
     # 而评测与排查要区分的正是这两者。
     released = [
-        event for _, _, event in _turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _, _, event in _turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
     assert len(released) == 1
     assert released[0].kind == "judge"
@@ -1550,7 +1553,9 @@ def test_an_unfaithful_answer_is_released_when_the_judge_spent_the_last_step(env
     # 放行的同时还必须有那条标：没有它，「评审放行的答案」与「评审通过的答案」在轨迹
     # 上完全一样，而评测与排查要区分的正是这两者。
     released = [
-        event for _, _, event in _turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _, _, event in _turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
     assert len(released) == 1
     assert released[0].payload["possibly_fabricated"] is True
@@ -1675,7 +1680,9 @@ def test_a_faithful_answer_carries_no_soft_release_label(env):
 
     assert len(model.judge_calls) == 1, "评审该被调用一次"
     assert not [
-        event for _, _, event in turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _, _, event in turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
 
 
@@ -1698,7 +1705,9 @@ def test_a_style_only_problem_does_not_earn_the_label(env):
 
     assert result.answer == "相册里有 2 张海边的照片。", "风格问题不该让回答被退回重写"
     assert not [
-        event for _, _, event in turns.events_after(turn_id, 0) if event.payload.get("code") == "l2_soft_release"
+        event
+        for _, _, event in turns.events_after(turn_id, 0)
+        if event.payload.get("code") == "l2_soft_release"
     ]
 
 
@@ -1832,7 +1841,7 @@ def test_include_debug_persists_the_switch_before_the_turn_runs(env):
         TurnRequest(conversation_id=conversation.id, question=QUESTION, include_debug=True)
     ).id
 
-    assert turns.get(turn_id).trace == {"include_debug": True}
+    assert turns.get(turn_id).trace == {"include_debug": True, "graph_enabled": True}
 
 
 def test_include_debug_records_planner_agent_and_judge_with_exact_messages(env):

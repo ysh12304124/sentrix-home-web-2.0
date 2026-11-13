@@ -188,6 +188,7 @@ class PipelineProcessRequest(BaseModel):
 
     scope_id: str = Field(..., min_length=1, max_length=255)
     asset_ids: list[str] = Field(default_factory=list, max_length=1000)
+    graph_enabled: bool = True
 
 
 class MemoryGraphBuildResponse(BaseModel):
@@ -197,6 +198,18 @@ class MemoryGraphBuildResponse(BaseModel):
     causal_candidate_pairs: int = 0
     causal_edges: int = 0
     causal_status: str = "not_configured"
+    # 普通图片、关键帧、语义边和图写入的合计耗时；UI 只展示这一项。
+    graph_structure_seconds: float = 0.0
+    # 这些计数保留在 API 诊断包，耗时不再按它们拆分展示。
+    image_count: int = 0
+    image_temporal_edges: int = 0
+    image_object_edges: int = 0
+    image_visual_edges: int = 0
+    image_visual_status: str = "no_images"
+    semantic_observation_count: int = 0
+    semantic_edges: int = 0
+    semantic_status: str = "no_observations"
+    confirmed_mention_edges: int = 0
     causal_seconds: float = 0.0
     keyframe_count: int = 0
     keyframe_temporal_edges: int = 0

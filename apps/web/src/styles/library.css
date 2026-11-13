@@ -9,6 +9,16 @@
 .filter-chip.active, .filter-chip:hover { border-color: var(--lime); background: #effbdc; color: var(--ink); }
 .sort-label { color: var(--muted); font-size: 10px; }
 
+.deletion-history { margin: 0 0 22px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.deletion-history > summary { padding: 13px 16px; cursor: pointer; font-weight: 700; }
+.deletion-history-content { padding: 0 16px 16px; }
+.deletion-history-content > button { margin: 8px 0 12px; }
+.deletion-history-scroll { overflow-x: auto; }
+.deletion-history table { width: 100%; min-width: 680px; border-collapse: collapse; text-align: left; font-size: 12px; }
+.deletion-history th, .deletion-history td { padding: 9px 12px; border-top: 1px solid var(--line); vertical-align: top; }
+.deletion-history td strong, .deletion-history td small { display: block; overflow-wrap: anywhere; }
+.deletion-history td small { color: var(--muted); font-size: 10px; }
+
 .library-summary { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 22px; }
 .library-summary div { padding: 18px 20px; border-right: 1px solid var(--line); }
 .library-summary div:last-child { border-right: 0; }

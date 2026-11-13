@@ -25,9 +25,8 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -35,7 +34,6 @@ from fastapi.responses import StreamingResponse
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.media import deliver_asset
-from sentrix.bootstrap.assistant_wiring import build_run_turn
 from sentrix.api.schemas.assistant import (
     AttachmentSummary,
     CompleteEventPayload,
@@ -56,12 +54,11 @@ from sentrix.application.assistant.manage_conversations import (
     InvalidCursor,
     ManageConversations,
 )
-from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.run_turn import (
     RunTurn,
     TurnRequest,
 )
-from sentrix.application.assistant.tools import AssistantToolbox
+from sentrix.bootstrap.assistant_wiring import build_run_turn
 from sentrix.bootstrap.container import Container
 from sentrix.domain.assistant.models import (
     Conversation,
@@ -69,7 +66,6 @@ from sentrix.domain.assistant.models import (
     TurnIdempotencyConflict,
     TurnRecord,
 )
-from sentrix.domain.assistant.profile import DEFAULT_PROFILE
 
 log = logging.getLogger("sentrix.api.assistant")
 
@@ -145,9 +141,7 @@ def get_conversation(
         conversations=container.conversation_repository, turns=container.turn_repository
     )
     try:
-        detail = use_case.detail(
-            conversation_id, limit=max(1, min(limit, 200)), cursor=cursor
-        )
+        detail = use_case.detail(conversation_id, limit=max(1, min(limit, 200)), cursor=cursor)
     except InvalidCursor:
         raise HTTPException(status_code=400, detail="cursor is not a turn of this conversation") from None
     if detail is None:
@@ -224,6 +218,7 @@ def start_turn(
                 conversation_id=conversation_id,
                 question=payload.message,
                 include_debug=payload.include_debug,
+                graph_enabled=payload.graph_enabled,
                 idempotency_key=idempotency_key.strip(),
             )
         )
@@ -238,9 +233,7 @@ def start_turn(
     broker = container.turn_event_broker
     # 执行由进程内 TurnExecutor 认领；这里只登记 SSE channel，不自己起线程。
     broker.open(record.id)
-    return StartTurnResponse(
-        turn_id=record.id, conversation_id=conversation_id, status=record.status.value
-    )
+    return StartTurnResponse(turn_id=record.id, conversation_id=conversation_id, status=record.status.value)
 
 
 def _progress_payload(event: ProgressEvent) -> ProgressEventPayload:
@@ -343,9 +336,7 @@ async def turn_events(
                         "execution_state": record.execution_state,
                         "attempt_no": record.attempt_no,
                         "waiting_reason": record.waiting_reason,
-                        "next_retry_at": (
-                            record.next_retry_at.isoformat() if record.next_retry_at else None
-                        ),
+                        "next_retry_at": (record.next_retry_at.isoformat() if record.next_retry_at else None),
                     },
                     ensure_ascii=False,
                 )
@@ -486,11 +477,8 @@ async def cancel_turn(turn_id: str, request: Request) -> OperationCancellationRe
         raise HTTPException(status_code=404, detail="turn not found")
     # 取消标志持久化：进程重启后的恢复扫描不会认领已取消回合。
     container.turn_repository.request_cancel(turn_id, now=datetime.now(UTC))
-    try:
+    with suppress(KeyError):
         container.operation_control.request_cancel("turn:" + turn_id)
-    except KeyError:
-        # 执行线程不在本进程（例如回合尚未被认领）——标志已经落库，足够。
-        pass
     return OperationCancellationResponse(
         operation_id=turn_id, cancel_requested=True, cleanup_status="pending"
     )

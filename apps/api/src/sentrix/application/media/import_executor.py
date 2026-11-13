@@ -12,13 +12,12 @@ from __future__ import annotations
 import logging
 import random
 import threading
-import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 from sentrix.application.media.import_assets import (
     ImportAssets,
@@ -86,9 +85,7 @@ class _Heartbeat:
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
             try:
-                self._jobs.heartbeat(
-                    self._job_id, self._fence, now=self._clock(), lease_s=int(LEASE_S)
-                )
+                self._jobs.heartbeat(self._job_id, self._fence, now=self._clock(), lease_s=int(LEASE_S))
             except Exception:  # noqa: BLE001 - 心跳失败不杀执行线程
                 log.warning("导入作业心跳失败 job=%s", self._job_id, exc_info=True)
 
@@ -236,9 +233,7 @@ class ImportJobExecutor:
                 try:
                     persisted_type = MediaType(job.media_type)
                 except ValueError:
-                    raise InputInvalid(
-                        f"unsupported persisted media type: {job.media_type}"
-                    ) from None
+                    raise InputInvalid(f"unsupported persisted media type: {job.media_type}") from None
                 self._mark(job, "asset_staged", "running")
                 outcome = importer.stage(
                     ImportRequest(
@@ -330,7 +325,6 @@ class ImportJobExecutor:
         finally:
             item.heartbeat.stop()
 
-
     def _run_postprocess(self, now: datetime) -> None:
         if self._postprocess is None:
             return
@@ -355,9 +349,7 @@ class ImportJobExecutor:
                 generation,
                 ",".join(failures),
             )
-            self._jobs.mark_scope_postprocess_partial(
-                scope_id, message=message, now=self._clock()
-            )
+            self._jobs.mark_scope_postprocess_partial(scope_id, message=message, now=self._clock())
             # 五分钟后重试整代；成功时 clear_scope_postprocess_partial 会把作业清回 completed。
             self._jobs.finish_postprocess(scope_id, generation, success=False, now=self._clock())
             return

@@ -3,21 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.media import to_summary
 from sentrix.api.schemas.search import ChannelTrace, SearchHit, SearchResponse
-from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
-from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-from sentrix.application.retrieval.retrieve_graph import RetrieveGraph
-from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
-from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
-from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
-from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
+from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest
 from sentrix.bootstrap.assistant_wiring import build_retrieve_evidence
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import MediaType
@@ -27,7 +20,6 @@ from sentrix.domain.retrieval.time_expression import parse_time_expression
 log = logging.getLogger("sentrix.api.search")
 
 router = APIRouter(tags=["search"])
-
 
 
 def _conditions(

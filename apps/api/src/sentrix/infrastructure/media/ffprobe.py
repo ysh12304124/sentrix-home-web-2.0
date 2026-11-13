@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -31,39 +32,60 @@ COMPACT_TZ_RE = re.compile(r"([+-]\d{2})(\d{2})$")
 # 1.0 的 timeout 是 60 秒（``metadata.py:43``）。读元数据只解容器头，与转码
 # （可能几分钟）不是一件事，不该共用一个上限。
 DEFAULT_PROBE_TIMEOUT_S = 60
+DEFAULT_PROBE_RETRIES = 2
 
 
-def run_ffprobe(path: Path, *, timeout_s: int = DEFAULT_PROBE_TIMEOUT_S) -> dict[str, Any]:
-    """跑一次 ``ffprobe`` 拿整包 JSON。非零退出或输出不是 JSON 一律 ``ValueError``。
+def run_ffprobe(
+    path: Path,
+    *,
+    timeout_s: int = DEFAULT_PROBE_TIMEOUT_S,
+    retries: int = DEFAULT_PROBE_RETRIES,
+) -> dict[str, Any]:
+    """读取 ``ffprobe`` 整包 JSON，并对瞬时探测失败做有限重试。
+
+    整册导入时多个视频会同时占用磁盘/进程资源，macOS 上 ``ffprobe`` 偶发返回非零
+    且 stderr 为空。以前一次失败就直接落成 ``video_probe_error``，既丢失了时长，也
+    让后续只能走导入时间兜底。重试只放在 infrastructure，且次数有上限，不改变 1.0
+    的命令和字段口径；最终失败时把 return code、stderr 和路径都留下，方便定位。
 
     ``-show_format`` 与 ``-show_streams`` 缺一不可：拍摄时间/GPS/总时长在 format 上，
     编码与各流自己的参数（帧率 / 采样率 / 声道）在 streams 上。
     """
-    process = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(Path(path).resolve()),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-    )
-    if process.returncode:
-        raise ValueError(f"ffprobe failed: {process.stderr.strip()[-1000:]}")
-    try:
-        payload = json.loads(process.stdout)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"ffprobe output is not JSON: {error}") from error
-    if not isinstance(payload, dict):
-        raise ValueError("ffprobe output is not a JSON object")
-    return payload
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(Path(path).resolve()),
+    ]
+    last_error = "ffprobe failed"
+    for attempt in range(max(0, retries) + 1):
+        process = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        if process.returncode:
+            stderr = process.stderr.strip()[-1000:] or "no stderr"
+            last_error = f"ffprobe failed (returncode={process.returncode}): {stderr}"
+        else:
+            try:
+                payload = json.loads(process.stdout)
+            except json.JSONDecodeError as error:
+                last_error = f"ffprobe output is not JSON: {error}"
+            else:
+                if not isinstance(payload, dict):
+                    last_error = "ffprobe output is not a JSON object"
+                else:
+                    return payload
+        if attempt < max(0, retries):
+            time.sleep(0.1 * (attempt + 1))
+    raise ValueError(f"{last_error}; path={Path(path).resolve()}")
 
 
 def normalized_datetime(value: object) -> str | None:

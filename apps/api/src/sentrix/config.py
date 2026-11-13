@@ -51,6 +51,7 @@ class Settings(BaseSettings):
                 "embedding_scheme": "legacy",
                 "agent_wall_time_s": 600.0,
                 "chat_timeout_s": 180.0,
+                "album_workers": 2,
                 "face_providers": "CPUExecutionProvider",
                 "retinaface_providers": "CPUExecutionProvider",
             }.items():
@@ -65,6 +66,9 @@ class Settings(BaseSettings):
             for key in (
                 "deployment_profile",
                 "vlm_base_url",
+                "utility_vlm_base_url",
+                "utility_vlm_timeout_s",
+                "utility_vlm_concurrency",
                 "embedding_scheme",
                 "text_embedder_url",
                 "legacy_clip_url",
@@ -80,6 +84,7 @@ class Settings(BaseSettings):
                 "vlm_generation_profile",
                 "vlm_exact_output_budget",
                 "vlm_context_tokens",
+                "album_workers",
                 "face_providers",
                 "retinaface_providers",
             )
@@ -103,6 +108,12 @@ class Settings(BaseSettings):
 
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
+    # Optional Utility-MRAG-style local surrogate.  It is deliberately a separate
+    # endpoint: the production VLM must not be used for one extra image request per
+    # candidate.  Empty means the graph-enabled retriever keeps its normal ordering.
+    utility_vlm_base_url: str = ""
+    utility_vlm_timeout_s: float = 45.0
+    utility_vlm_concurrency: int = Field(default=2, ge=1, le=4)
     # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
     qwen_asr_base_url: str = ""
     qwen_asr_model: str = "Qwen3-ASR"
@@ -144,9 +155,7 @@ class Settings(BaseSettings):
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0
     # Product defaults to one; isolated QA can opt into bounded concurrency.
-    agent_turn_workers: int = Field(
-        default=1, ge=1, le=64, validation_alias="SENTRIX_AGENT_TURN_MAX_WORKERS"
-    )
+    agent_turn_workers: int = Field(default=1, ge=1, le=64, validation_alias="SENTRIX_AGENT_TURN_MAX_WORKERS")
     agent_max_steps: int = Field(default=8, ge=3)
     agent_max_tool_calls: int = Field(default=6, ge=0)
     vlm_generation_profile: Literal["legacy", "qwen35_nonthinking"] = "legacy"
@@ -179,11 +188,10 @@ class Settings(BaseSettings):
     # 整册导入是**串行**的（单卡 GPU），所以这个超时按单次调用算，不是按一张图算。
     vlm_timeout_s: float = 180.0
 
-    # 整册导入的预取窗口：同时在飞的**推理**数（视觉嵌入 / VLM 观察 / 人脸检测）。
-    # 1 就是原先的逐张串行。默认 4 是 1.0 在同一类机器上的实测值
-    # （``app.py:366`` 的 ``effective_workers``，11.78 秒/张；2.0 串行时 49.1 秒/张）。
-    # **提交永远串行**，与这个数无关——事件的归属顺序是语义的一部分。
-    album_workers: int = 4
+    # 整册导入的预取窗口：同时在飞的**推理**数。Mac profile 默认 2；llama-server 单槽
+    # 加 CPU 人脸推理时，4 个 worker 会堆积请求并放大内存压力。server 默认 4。
+    # 可通过 SENTRIX_ALBUM_WORKERS 显式覆盖；提交仍始终串行保序。
+    album_workers: int = Field(default=4, ge=1, le=4)
 
     # 体验入口逐文件导入的在飞窗口：多个作业的 prepare_image 同时请求主模型，
     # 单用户也能吃满 8100 的多个槽位。提交仍按认领顺序串行（事件归属是语义的一部分）。

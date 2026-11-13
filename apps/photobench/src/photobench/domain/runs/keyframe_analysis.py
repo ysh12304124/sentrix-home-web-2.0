@@ -89,7 +89,7 @@ def _recover_from_traces(state: Mapping[str, Any]) -> list[dict[str, Any]]:
         for trace in item.get("tool_trace") or []:
             if not isinstance(trace, Mapping):
                 continue
-            observation = (trace.get("observation") or trace.get("result"))
+            observation = trace.get("observation") or trace.get("result")
             if not isinstance(observation, Mapping):
                 continue
             for preview in observation.get("preview") or []:
@@ -308,7 +308,7 @@ def keyframe_analysis(
                             "asset_id": asset_id,
                             "parent_asset_id": "",
                         }
-            observation = (trace.get("observation") or trace.get("result"))
+            observation = trace.get("observation") or trace.get("result")
             if not isinstance(observation, Mapping):
                 continue
             for preview in observation.get("preview") or []:
@@ -372,7 +372,7 @@ def keyframe_analysis(
         for trace in item.get("tool_trace") or []:
             if not isinstance(trace, Mapping):
                 continue
-            observation = (trace.get("observation") or trace.get("result"))
+            observation = trace.get("observation") or trace.get("result")
             if not isinstance(observation, Mapping):
                 continue
             for preview in observation.get("preview") or []:

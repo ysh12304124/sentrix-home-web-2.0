@@ -10,6 +10,10 @@ export interface StartActionsProps extends StartDisabledInput {
   onScoringChange?: (v: ScoringSelection) => void;
   deleteScopeAfterRun: boolean;
   onDeleteScopeAfterRunChange: (next: boolean) => void;
+  graphEnabled?: boolean;
+  onGraphEnabledChange?: (next: boolean) => void;
+  graphBaselineRunId?: string;
+  onGraphBaselineRunIdChange?: (next: string) => void;
   onStart: () => void;
   onStop: () => void;
   stopping?: boolean;

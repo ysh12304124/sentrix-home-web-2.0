@@ -77,6 +77,168 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DiagnosticsResponse'
+  /api/v1/memories/corrections:
+    get:
+      tags:
+      - memory-corrections
+      summary: History
+      operationId: history_api_v1_memories_corrections_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/corrections/retry:
+    post:
+      tags:
+      - memory-corrections
+      summary: Retry
+      operationId: retry_api_v1_memories_corrections_retry_post
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Retry Api V1 Memories Corrections Retry Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/{kind}/{target_id}:
+    get:
+      tags:
+      - memory-corrections
+      summary: Read Memory
+      operationId: read_memory_api_v1_memories__kind___target_id__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Kind
+      - name: target_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Target Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Read Memory Api V1 Memories  Kind   Target Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - memory-corrections
+      summary: Correct Memory
+      operationId: correct_memory_api_v1_memories__kind___target_id__patch
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Kind
+      - name: target_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Target Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorrectionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/memories:
+    get:
+      tags:
+      - memory-corrections
+      summary: Asset Memories
+      operationId: asset_memories_api_v1_assets__asset_id__memories_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/media/import:
     post:
       tags:
@@ -190,6 +352,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/deletions:
+    get:
+      tags:
+      - media
+      summary: List Media Deletions
+      operationId: list_media_deletions_api_v1_assets_deletions_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaDeletionHistoryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/assets/{asset_id}:
     get:
       tags:
@@ -210,6 +409,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssetSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - media
+      summary: Delete Asset
+      operationId: delete_asset_api_v1_assets__asset_id__delete
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAssetResponse'
         '422':
           description: Validation Error
           content:
@@ -335,6 +559,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/deletion-cleanup/retry:
+    post:
+      tags:
+      - media
+      summary: Retry Media Cleanup
+      operationId: retry_media_cleanup_api_v1_assets_deletion_cleanup_retry_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaCleanupRetryResponse'
   /api/v1/import-jobs:
     get:
       tags:
@@ -3441,6 +3678,70 @@ components:
       - updated_at
       - last_message_at
       title: ConversationSummary
+    CorrectionRecords:
+      properties:
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: CorrectionRecords
+    CorrectionRequest:
+      properties:
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+        changes:
+          additionalProperties:
+            anyOf:
+            - type: string
+            - items:
+                type: string
+              type: array
+            - type: 'null'
+          type: object
+          title: Changes
+        reason:
+          type: string
+          maxLength: 2000
+          title: Reason
+          default: ''
+      additionalProperties: false
+      type: object
+      required:
+      - revision
+      - changes
+      title: CorrectionRequest
+    CorrectionResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        scope_id:
+          type: string
+          title: Scope Id
+        revision:
+          type: integer
+          title: Revision
+        sync_status:
+          type: string
+          title: Sync Status
+        error:
+          type: string
+          title: Error
+      type: object
+      required:
+      - id
+      - scope_id
+      - revision
+      - sync_status
+      - error
+      title: CorrectionResponse
     CreateConversationRequest:
       properties:
         scope_id:
@@ -3478,6 +3779,25 @@ components:
       - id
       - name
       title: CreateSpaceRequest
+    DeleteAssetResponse:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        deleted:
+          type: boolean
+          title: Deleted
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      type: object
+      required:
+      - asset_id
+      - deleted
+      - warnings
+      title: DeleteAssetResponse
     DiagnosticsResponse:
       properties:
         status:
@@ -5729,6 +6049,73 @@ components:
       type: object
       title: LibraryProgressView
       description: 第一段：逐个文件建库。
+    MediaCleanupRetryResponse:
+      properties:
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+      type: object
+      required:
+      - warnings
+      title: MediaCleanupRetryResponse
+    MediaDeletionHistoryResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/MediaDeletionRecordResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: MediaDeletionHistoryResponse
+    MediaDeletionRecordResponse:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        scope_id:
+          type: string
+          title: Scope Id
+        file_name:
+          type: string
+          title: File Name
+        media_type:
+          type: string
+          title: Media Type
+        deleted_at:
+          type: string
+          title: Deleted At
+        asset_count:
+          type: integer
+          title: Asset Count
+        files_done:
+          type: boolean
+          title: Files Done
+        vectors_done:
+          type: boolean
+          title: Vectors Done
+        attempts:
+          type: integer
+          title: Attempts
+        last_error:
+          type: string
+          title: Last Error
+      type: object
+      required:
+      - asset_id
+      - scope_id
+      - file_name
+      - media_type
+      - deleted_at
+      - asset_count
+      - files_done
+      - vectors_done
+      - attempts
+      - last_error
+      title: MediaDeletionRecordResponse
     MemoryGraphBuildResponse:
       properties:
         scope_id:
@@ -5752,6 +6139,46 @@ components:
           type: string
           title: Causal Status
           default: not_configured
+        graph_structure_seconds:
+          type: number
+          title: Graph Structure Seconds
+          default: 0.0
+        image_count:
+          type: integer
+          title: Image Count
+          default: 0
+        image_temporal_edges:
+          type: integer
+          title: Image Temporal Edges
+          default: 0
+        image_object_edges:
+          type: integer
+          title: Image Object Edges
+          default: 0
+        image_visual_edges:
+          type: integer
+          title: Image Visual Edges
+          default: 0
+        image_visual_status:
+          type: string
+          title: Image Visual Status
+          default: no_images
+        semantic_observation_count:
+          type: integer
+          title: Semantic Observation Count
+          default: 0
+        semantic_edges:
+          type: integer
+          title: Semantic Edges
+          default: 0
+        semantic_status:
+          type: string
+          title: Semantic Status
+          default: no_observations
+        confirmed_mention_edges:
+          type: integer
+          title: Confirmed Mention Edges
+          default: 0
         causal_seconds:
           type: number
           title: Causal Seconds
@@ -5986,6 +6413,10 @@ components:
           type: array
           maxItems: 1000
           title: Asset Ids
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          default: true
       type: object
       required:
       - scope_id
@@ -6291,6 +6722,10 @@ components:
           - type: string
           - type: 'null'
           title: Scope Id
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          default: true
         entity_by_name:
           anyOf:
           - additionalProperties:
@@ -7087,6 +7522,11 @@ components:
           title: Include Debug
           description: 是否在回合轨迹里记录每次模型调用的完整输入与原始输出（默认关闭）
           default: false
+        graph_enabled:
+          type: boolean
+          title: Graph Enabled
+          description: 是否启用图记忆拓展检索；评测对照 run 可关闭
+          default: true
       type: object
       required:
       - message

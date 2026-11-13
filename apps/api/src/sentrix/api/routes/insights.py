@@ -128,9 +128,7 @@ def list_person_insights(
                 **item,
                 # pending 实体的 canonical_name 是落库的内部名
                 # （「待确认人物簇 · cluster-x」），不能直接给用户看。
-                "display_name": (
-                    entity_display_name(person) if person is not None else ANONYMOUS_NAME
-                ),
+                "display_name": (entity_display_name(person) if person is not None else ANONYMOUS_NAME),
                 "family_role": person.family_role if person else None,
                 "status": person.status if person else None,
                 "avatar_face_instance_id": item.get("avatar_face_instance_id"),

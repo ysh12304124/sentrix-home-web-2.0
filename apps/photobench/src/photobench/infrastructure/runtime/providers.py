@@ -41,15 +41,15 @@ from urllib.parse import urlparse
 
 import httpx
 
-from photobench.domain.runtime.metrics import (
-    RESOURCE_TELEMETRY_VERSION,
-    component_total,
-    physical_memory_used,
-)
 from photobench.domain.deploy.ports import (
     BENCHMARK_GATEWAY_TOKEN_ENV,
     BENCHMARK_GATEWAY_UPSTREAM_ENV,
     BENCHMARK_GATEWAY_URL_ENV,
+)
+from photobench.domain.runtime.metrics import (
+    RESOURCE_TELEMETRY_VERSION,
+    component_total,
+    physical_memory_used,
 )
 from photobench.domain.runtime.ports import LifecycleProvider, RuntimeProviders, TelemetryProvider
 from photobench.infrastructure.runtime.hardware import HostCpuSampler, read_cpu_temperature_c
@@ -108,10 +108,7 @@ def gateway_matches_selected(observed: str, expected: str) -> bool:
     gateway, upstream, token = benchmark_gateway()
     if not (gateway and upstream and token):
         return False
-    return (
-        normalize_openai_base_url(observed) == gateway
-        and normalize_openai_base_url(expected) == upstream
-    )
+    return normalize_openai_base_url(observed) == gateway and normalize_openai_base_url(expected) == upstream
 
 
 def _configured_set(env_name: str, defaults: tuple[str, ...]) -> set[str]:

@@ -103,6 +103,7 @@ def _sentrix_environment() -> tuple[tuple[str, str], ...]:
         # 同一轮测评前后半段的重排开关就不一致了。
         "SENTRIX_RERANKER_URL",
         "SENTRIX_RERANK_TOP_K",
+        "SENTRIX_ALBUM_WORKERS",
         "FACE_PROVIDERS",
         "RETINAFACE_PROVIDERS",
     )

@@ -118,9 +118,7 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
         _stage(scope_id, generation, "participants")
         observations = container.observation_repository.list_scope(scope_id, limit=100000)
         try:
-            _confirmed_person_events(container).refresh_participants(
-                [item.id for item in observations]
-            )
+            _confirmed_person_events(container).refresh_participants([item.id for item in observations])
         except Exception as error:  # noqa: BLE001 - 单个后处理阶段失败不阻断其他阶段
             log.warning("参与者刷新失败（scope=%s）: %s", scope_id, error)
             failures.append("participants")
@@ -157,18 +155,13 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
         done = 0
         workers = max(1, min(4, int(getattr(container.settings, "import_workers", 4))))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentrix-summary") as pool:
-            futures = {
-                pool.submit(summarize, event.id): event
-                for event in pending
-            }
+            futures = {pool.submit(summarize, event.id): event for event in pending}
             for future in as_completed(futures):
                 done += 1
                 try:
                     future.result()
                 except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
-                    log.warning(
-                        "事件总结失败（event=%s）: %s", futures[future].id, error
-                    )
+                    log.warning("事件总结失败（event=%s）: %s", futures[future].id, error)
                     summary_failed = True
                 if done == total or done % 5 == 0:
                     _progress(scope_id, generation, done, total)
@@ -213,9 +206,7 @@ def _run_family_graph(container: Container, scope_id: str) -> bool:
         latest = repository.latest_run(scope_id)
         if latest is not None and latest.status in {"queued", "running"}:
             return True
-        run = repository.create_run(
-            scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"}
-        )
+        run = repository.create_run(scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"})
         service = FamilyGraphService(
             family=repository,
             events=container.event_repository,
@@ -394,9 +385,7 @@ def _build_importer(
         event_attacher=lambda event_id, observation: container.event_repository.attach(
             event_id, observation.id
         ),
-        observation_event=lambda observation_id: _observation_event(
-            container, observation_id
-        ),
+        observation_event=lambda observation_id: _observation_event(container, observation_id),
         face_manifest=container.face_repository.list_face_manifest,
         face_enroller=_face_enroller(container),
         fact_maintainer=_fact_maintainer(container),
@@ -426,9 +415,7 @@ def _face_enroller(container: Container) -> EnrollFaces:
 
 
 def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
-    index = IndexObservationText(
-        embedder=container.text_embedder, vectors=container.vector_repository
-    )
+    index = IndexObservationText(embedder=container.text_embedder, vectors=container.vector_repository)
 
     def run(observation: Observation, event_id: str | None) -> int:
         return index.index(observation, event_id).rows

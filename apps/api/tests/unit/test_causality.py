@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from sentrix.domain.memories.causality import CausalFrame, extract_causal_pairs
+from sentrix.domain.memories.causality import CausalFrame, extract_causal_pairs, signals_prompt
 from sentrix.infrastructure.memories.causal_judge import CausalInferenceError, OpenAICausalJudge
 
 
@@ -41,6 +41,21 @@ def test_object_appearance_alone_and_unstable_scene_are_not_causality():
     switched = CausalFrame("c", "video", 3.0, 0, ("car", "road"), ("car on road",))
 
     assert extract_causal_pairs((first, appeared, switched)) == ()
+
+
+def test_causal_prompt_requires_one_valid_json_object_for_all_pairs():
+    pairs = extract_causal_pairs(
+        (
+            _frame("a", "video", 1.0, "person holds bottle"),
+            _frame("b", "video", 4.0, "person puts bottle"),
+        )
+    )
+    prompt = signals_prompt(pairs)
+    assert "exactly 1 row(s)" in prompt
+    assert '"results"' in prompt
+    assert '"pair_id"' in prompt
+    assert "{results:" not in prompt
+    assert "ONE compact, valid JSON object" in prompt
 
 
 def test_causal_response_requires_every_pair_and_valid_confidence():

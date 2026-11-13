@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 
+import { AssetMemoryCorrection, MemoryCorrection } from "../../shared/components/MemoryCorrection";
 import { fetchEvent, type TimelineEvent } from "../../shared/api/client";
 import { timelinePhotoThumbUrl, timelinePhotoUrl } from "./photoUrl";
 
@@ -41,6 +42,7 @@ export function TimelineEventDetail({
   onOpenImage?: (src: string, caption: string) => void;
 }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   // 「这个 id 的详情还没回来」是推导出来的，效果里只写回调，不额外 setState。
   const loading = loaded === null || loaded.id !== eventId;
@@ -59,7 +61,7 @@ export function TimelineEventDetail({
     return () => {
       alive = false;
     };
-  }, [eventId]);
+  }, [eventId, reloadToken]);
 
   useEffect(() => {
     function onKeyDown(key: KeyboardEvent) {
@@ -122,7 +124,15 @@ export function TimelineEventDetail({
               </div>
             </dl>
 
-            <section className="timeline-event-section">
+            <section className="timeline-event-section" aria-label="事件记忆修正">
+              <MemoryCorrection
+                kind="event"
+                targetId={event.id}
+                onSaved={() => setReloadToken((value) => value + 1)}
+              />
+            </section>
+
+            <section className="timeline-event-section" aria-label="关联媒体和观察记忆">
               <h3>全部资料（{event.photos.length} 份）</h3>
               {event.photos.length === 0 ? (
                 <p className="timeline-event-note">这个事件暂时没有可展示的资料。</p>
@@ -150,6 +160,7 @@ export function TimelineEventDetail({
                       )}
                       <small>{formatDateTime(photo.captured_at)}</small>
                       {photo.place ? <small>{photo.place}</small> : null}
+                      <AssetMemoryCorrection assetId={photo.asset_id} compact />
                     </li>
                   ))}
                 </ul>

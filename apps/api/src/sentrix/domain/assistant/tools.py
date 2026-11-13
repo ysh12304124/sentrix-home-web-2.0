@@ -103,6 +103,8 @@ SEARCH_MEMORIES = ToolSpec(
         "视频关键帧只带与该帧时间戳重叠的语音片段）——问说话内容时直接使用 speech_evidence，"
         "不要调用 read_photo_text 做 OCR，也不要把语音当作画面事实。**单张照片的地点、时间、"
         "人物、画面内容直接在 preview 里读，不要为此再调用其他工具**。"
+        "图扩展候选还会带 graph_support（跳数与关系）；它表示这张媒体由另一条高相关候选"
+        "沿图得到，先结合本条 preview 的内容确认相关性，不要只因有图关系就交付。"
         "问「在哪里拍的」就用 place 里的行政区名回答，不要用 scene_hint。"
         "返回值里另有 group_photo_count / group_photo_sizes / group_photo_rows："
         "**这一页里有几张多人照片、各是几人**，已经替你数好了，问「几张合影/各是几人」"

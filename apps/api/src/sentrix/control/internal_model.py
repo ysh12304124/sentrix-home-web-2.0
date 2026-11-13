@@ -66,9 +66,7 @@ def _props_upstream(request: Request) -> str:
 def _upstream_headers(request: Request) -> dict[str, str]:
     settings = request.app.state.control_settings
     headers = {
-        name: value
-        for name, value in request.headers.items()
-        if name.lower() not in _STRIP_UPSTREAM_HEADERS
+        name: value for name, value in request.headers.items() if name.lower() not in _STRIP_UPSTREAM_HEADERS
     }
     if settings.model_upstream_api_key:
         headers["Authorization"] = f"Bearer {settings.model_upstream_api_key}"
@@ -97,9 +95,7 @@ async def props(request: Request) -> Response:
     _model_client(request)
     client: httpx.AsyncClient = request.app.state.http_client
     try:
-        upstream = await client.get(
-            _props_upstream(request), headers=_upstream_headers(request)
-        )
+        upstream = await client.get(_props_upstream(request), headers=_upstream_headers(request))
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail=f"model upstream unreachable: {error}") from error
     if upstream.is_success:

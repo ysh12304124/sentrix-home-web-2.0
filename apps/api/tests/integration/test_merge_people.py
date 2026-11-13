@@ -190,7 +190,9 @@ def test_two_confirmed_people_become_one_and_keep_every_photo(db: Database, merg
     # 所有脸都在目标的簇里，来源簇退休但归属改成目标。
     faces = rows(db, "SELECT id, cluster_id FROM face_instances ORDER BY id")
     assert {item["cluster_id"] for item in faces} == {target_cluster}
-    source = rows(db, "SELECT status, entity_id, member_count FROM face_clusters WHERE id = ?", source_cluster)
+    source = rows(
+        db, "SELECT status, entity_id, member_count FROM face_clusters WHERE id = ?", source_cluster
+    )
     assert source == [{"status": "rejected", "entity_id": "mom", "member_count": 0}]
     target = rows(db, "SELECT member_count FROM face_clusters WHERE id = ?", target_cluster)
     assert target == [{"member_count": 3}]
@@ -205,10 +207,14 @@ def test_two_confirmed_people_become_one_and_keep_every_photo(db: Database, merg
     assert set(SqliteEntityRepository(db).person_aliases("mom")) == {"年轻的妈妈", "小芳"}
     assert rows(db, "SELECT status FROM entities WHERE id = 'mom_young'") == [{"status": "superseded"}]
     # 观察快照里的旧名字被换成目标。
-    snapshot = json.loads(rows(db, "SELECT people_json FROM observations WHERE id = 'obs_3'")[0]["people_json"])
+    snapshot = json.loads(
+        rows(db, "SELECT people_json FROM observations WHERE id = 'obs_3'")[0]["people_json"]
+    )
     assert snapshot == [{"entity_id": "mom", "name": "妈妈", "status": "confirmed"}]
     # 双边审计。
-    revisions = rows(db, "SELECT entity_id, field_name, new_value, source FROM entity_revisions ORDER BY entity_id")
+    revisions = rows(
+        db, "SELECT entity_id, field_name, new_value, source FROM entity_revisions ORDER BY entity_id"
+    )
     merge_rows = [item for item in revisions if item["source"] == "user_person_merge"]
     assert {(item["entity_id"], item["field_name"], item["new_value"]) for item in merge_rows} == {
         ("mom", "absorbed_person", "mom_young"),
@@ -227,9 +233,13 @@ def test_an_unnamed_target_takes_the_sources_name_and_becomes_confirmed(
 
     assert result.entity.canonical_name == "王王"
     assert result.entity.status == "confirmed"
-    assert rows(db, "SELECT status FROM face_clusters WHERE id = ?", target_cluster) == [{"status": "confirmed"}]
+    assert rows(db, "SELECT status FROM face_clusters WHERE id = ?", target_cluster) == [
+        {"status": "confirmed"}
+    ]
     # 目标原来那张脸没有提及；确认之后必须补上。
-    mentioned = {item["face_instance_id"] for item in rows(db, "SELECT face_instance_id FROM entity_mentions")}
+    mentioned = {
+        item["face_instance_id"] for item in rows(db, "SELECT face_instance_id FROM entity_mentions")
+    }
     assert mentioned == {"face_1", "face_2"}
 
 
@@ -302,7 +312,9 @@ def test_a_locked_membership_from_the_source_replaces_a_model_guess_on_the_targe
     assert effective == [{"entity_id": "a", "membership": "family"}]
 
 
-def test_generic_relationships_are_repointed_and_self_loops_retracted(db: Database, merge: MergePeople) -> None:
+def test_generic_relationships_are_repointed_and_self_loops_retracted(
+    db: Database, merge: MergePeople
+) -> None:
     person(db, "a", "妈妈", faces=("face_1",))
     person(db, "b", "母亲", faces=("face_2",))
     person(db, "c", "孩子", faces=("face_3",))
@@ -310,7 +322,8 @@ def test_generic_relationships_are_repointed_and_self_loops_retracted(db: Databa
         for rel_id, subject, obj in (("r1", "b", "c"), ("r2", "a", "b"), ("r3", "a", "c")):
             connection.execute(
                 "INSERT INTO relationships (id, scope_id, subject_entity_id, predicate, object_entity_id,"
-                " status, confidence, created_at, updated_at) VALUES (?, ?, ?, '同框', ?, 'pending', 0.5, ?, ?)",
+                " status, confidence, created_at, updated_at) "
+                "VALUES (?, ?, ?, '同框', ?, 'pending', 0.5, ?, ?)",
                 (rel_id, HOME, subject, obj, NOW, NOW),
             )
 
@@ -364,7 +377,9 @@ def test_people_from_different_spaces_cannot_be_merged(db: Database, merge: Merg
     assert rows(db, "SELECT status FROM entities WHERE id = 'b'") == [{"status": "confirmed"}]
 
 
-def test_the_merged_name_must_not_collide_with_another_confirmed_person(db: Database, merge: MergePeople) -> None:
+def test_the_merged_name_must_not_collide_with_another_confirmed_person(
+    db: Database, merge: MergePeople
+) -> None:
     person(db, "a", "待确认人物簇 · c1", status="pending", faces=("face_1",))
     person(db, "b", "待确认人物簇 · c2", status="pending", faces=("face_2",))
     person(db, "c", "妈妈", faces=("face_3",))

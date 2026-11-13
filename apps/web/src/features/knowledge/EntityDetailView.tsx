@@ -20,6 +20,7 @@ import {
 import { AssetDetail } from "../library/AssetDetail";
 import { assetFromObservation } from "./observationAsset";
 import "./knowledge.css";
+import { MemoryCorrection, CorrectionHistory } from '../../shared/components/MemoryCorrection';
 
 function propertyValue(property: EntityPropertyPayload): string {
   if (typeof property.value === "boolean") return property.value ? "已开启" : "未开启";
@@ -161,6 +162,8 @@ export function EntityDetailView({ detail: initial, onClose }: EntityDetailViewP
       <div className="entity-dialog-panel">
         <p className="section-kicker">ENTITY · {detail.entity.entity_type}</p>
         <h2>{detail.entity.canonical_name}</h2>
+        {detail.entity.entity_type !== 'person' && <MemoryCorrection kind="entity" targetId={detail.entity.id} onSaved={reload} />}
+        <CorrectionHistory scopeId={detail.entity.scope_id} />
         <p className="entity-lead">
           {detail.entity.summary || "这是跨多个事件维护的实体，不是单张图片的描述。"}
         </p>

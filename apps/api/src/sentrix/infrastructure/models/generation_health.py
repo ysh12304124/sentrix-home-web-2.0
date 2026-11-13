@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 
@@ -81,9 +81,7 @@ class ModelGenerationHealth:
             self._available = available
             self._models_ok = models_ok
             self._error = error
-            self._next_check = now + (
-                self._success_ttl_s if available else self._failure_ttl_s
-            )
+            self._next_check = now + (self._success_ttl_s if available else self._failure_ttl_s)
             return available, error
 
     def describe(self) -> dict[str, object]:

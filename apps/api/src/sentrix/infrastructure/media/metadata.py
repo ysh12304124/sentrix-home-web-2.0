@@ -65,11 +65,7 @@ def _text(value: object) -> str:
 def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
     # DateTimeOriginal / DateTimeDigitized 常在 Exif 子 IFD 里，DateTime 在 IFD0。
     # 三处都看：只读顶层会漏掉「只有 DateTimeOriginal」的相机文件。
-    raw = (
-        tags.get(DATETIME_ORIGINAL_TAG)
-        or tags.get(DATETIME_DIGITIZED_TAG)
-        or tags.get(DATETIME_TAG)
-    )
+    raw = tags.get(DATETIME_ORIGINAL_TAG) or tags.get(DATETIME_DIGITIZED_TAG) or tags.get(DATETIME_TAG)
     if not raw:
         return None
     text = _text(raw)

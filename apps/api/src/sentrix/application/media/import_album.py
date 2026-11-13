@@ -493,6 +493,11 @@ class ProcessAlbumPipeline:
                     inference = future.result()
                     result = self._importer.finish(self._importer.resume(asset), inference)
                 except Exception as error:  # 一张失败不中断后续资产
+                    log.exception(
+                        "整册流水线单项处理失败 file=%s asset_id=%s",
+                        asset.file_name,
+                        asset.id,
+                    )
                     self._assets.update_status(asset.id, AssetStatus.FAILED)
                     failures[index] = AlbumFailure(asset.file_name, f"{type(error).__name__}: {error}")
                     continue

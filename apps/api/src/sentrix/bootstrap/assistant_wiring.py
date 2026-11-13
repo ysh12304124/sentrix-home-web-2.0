@@ -34,9 +34,7 @@ def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
             index=container.vector_index,
         ),
         text=RetrieveTextAnn(embedder=container.text_embedder, vectors=container.text_vector_repository),
-        entity=RetrieveEntity(
-            index=container.lexical_search, observations=container.observation_repository
-        ),
+        entity=RetrieveEntity(index=container.lexical_search, observations=container.observation_repository),
         lexical=RetrieveLexical(index=container.lexical_search),
         metadata=RetrieveMetadata(
             assets=container.asset_repository,
@@ -52,6 +50,10 @@ def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
             confirmed_people=_confirmed_people(container),
         ),
         graph=RetrieveGraph(graph=container.memory_graph),
+        utility=container.visual_evidence_utility,
+        utility_concurrency=container.settings.utility_vlm_concurrency,
+        assets=container.asset_repository,
+        media_storage=container.media_storage,
         # 重排只重排 RRF 后的头部；``container.reranker is None`` 时整段不执行。
         reranker=container.reranker,
         observations=container.observation_repository,

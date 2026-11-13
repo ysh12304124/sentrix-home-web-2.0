@@ -26,7 +26,7 @@ from fastapi.responses import Response
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError, UnprocessableError
-from sentrix.api.routes.media import refresh_memory_graph
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.identity import (
     BatchConfirmFailure,
     BatchConfirmOutcome,
@@ -84,6 +84,7 @@ from sentrix.application.identity.seed_identity import (
 )
 from sentrix.application.memories.assign_events import ConfirmedPersonEvents, EventVisualSimilarity
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.identity.decoration import is_reviewable, is_single_sample, private_place
 from sentrix.domain.identity.models import (
     CLUSTER_SAMPLES_LIMIT,
@@ -315,34 +316,32 @@ def list_face_clusters(
 
 
 @router.post("/face-clusters/{cluster_id}/confirm")
+@memory_write("face", "cluster_id")
 def confirm_face_cluster(
     cluster_id: str,
     payload: ConfirmClusterRequest,
     container: Container = Depends(get_container),
 ) -> ConfirmClusterResponse:
-    cluster = container.face_repository.get_cluster(cluster_id)
     result = _review_cluster(container).confirm(
         cluster_id, name=payload.name, family_role=payload.family_role
     )
-    refresh_memory_graph(container, cluster.scope_id if cluster is not None else result.entity.scope_id)
     return ConfirmClusterResponse(
         entity=_person_payload(container, result.entity), merged_into=result.merged_into
     )
 
 
 @router.post("/face-clusters/{cluster_id}/reject")
+@memory_write("face", "cluster_id")
 def reject_face_cluster(
     cluster_id: str, container: Container = Depends(get_container)
 ) -> RejectClusterResponse:
     # 用例找不到簇时抛 ClusterNotFoundError（404），由统一处理器映射；这里不做二次判断。
-    cluster = container.face_repository.get_cluster(cluster_id)
     rejected = _review_cluster(container).reject(cluster_id)
-    if cluster is not None:
-        refresh_memory_graph(container, cluster.scope_id)
     return RejectClusterResponse(cluster_id=cluster_id, rejected_entity_id=rejected)
 
 
 @router.post("/face-clusters/merge")
+@memory_write("face", "target_cluster_id")
 def merge_face_clusters(
     payload: MergeClustersRequest, container: Container = Depends(get_container)
 ) -> FaceClusterSummary:
@@ -351,18 +350,14 @@ def merge_face_clusters(
     # 报成「这个簇不存在」。
     if not payload.target_cluster_id or not payload.source_cluster_id:
         raise InvalidRequestError("target_cluster_id and source_cluster_id are required")
-    target_before = container.face_repository.get_cluster(payload.target_cluster_id)
     target = _review_cluster(container).merge(
         target_cluster_id=payload.target_cluster_id, source_cluster_id=payload.source_cluster_id
-    )
-    refresh_memory_graph(
-        container,
-        target_before.scope_id if target_before is not None else target.scope_id,
     )
     return _cluster_payload(container, target)
 
 
 @router.post("/face-clusters/{cluster_id}/split")
+@memory_write("face", "cluster_id")
 def split_face_cluster(
     cluster_id: str,
     payload: SplitClusterRequest,
@@ -370,12 +365,7 @@ def split_face_cluster(
 ) -> FaceClusterSummary:
     if not payload.face_instance_id:
         raise InvalidRequestError("face_instance_id is required")
-    cluster_before = container.face_repository.get_cluster(cluster_id)
     created = _review_cluster(container).split(cluster_id, face_instance_id=payload.face_instance_id)
-    refresh_memory_graph(
-        container,
-        cluster_before.scope_id if cluster_before is not None else created.scope_id,
-    )
     return _cluster_payload(container, created)
 
 
@@ -675,6 +665,7 @@ def _property_payload(record: EntityPropertyRecord) -> EntityPropertyPayload:
 
 
 @router.put("/entities/{entity_id}/properties/{property_key}")
+@memory_write("entity", "entity_id")
 def set_entity_property(
     entity_id: str,
     property_key: str,
@@ -846,6 +837,7 @@ def get_person(person_id: str, container: Container = Depends(get_container)) ->
 
 
 @router.patch("/people/{person_id}/name")
+@memory_write("entity", "person_id")
 def rename_person(
     person_id: str,
     payload: RenamePersonRequest,
@@ -854,7 +846,6 @@ def rename_person(
     result = _name_person(container).rename(person_id, payload.name)
     if result is None:
         raise NotFoundError("person not found")
-    refresh_memory_graph(container, result.entity.scope_id)
     return RenamePersonResponse(
         entity=_person_payload(container, result.entity), aliases=list(result.aliases)
     )
@@ -898,6 +889,7 @@ def batch_confirm_people(
 
 
 @router.post("/people/merge")
+@memory_write("family", "target_person_id")
 def merge_people(
     payload: MergePeopleRequest, container: Container = Depends(get_container)
 ) -> MergePeopleResponse:
@@ -912,7 +904,6 @@ def merge_people(
         source_person_ids=payload.source_person_ids,
         name=payload.name,
     )
-    refresh_memory_graph(container, result.entity.scope_id)
     return MergePeopleResponse(
         entity=_person_payload(container, result.entity),
         merged_person_ids=list(result.merged_person_ids),

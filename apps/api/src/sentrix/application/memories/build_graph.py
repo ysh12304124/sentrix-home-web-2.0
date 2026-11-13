@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from sentrix.domain.identity.ports import EntityRepository, RelationshipRepository
+from sentrix.domain.identity.ports import EntityRepository, FamilyGraphRepository, RelationshipRepository
 from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
 from sentrix.domain.media.models import Observation
 from sentrix.domain.media.ports import AssetRepository, ObservationRepository
@@ -31,6 +31,7 @@ from sentrix.domain.memories.ports import (
 )
 from sentrix.domain.retrieval.ports import VectorRepository
 
+from .image_graph import project_image_graph
 from .keyframe_graph import project_keyframe_graph
 
 log = logging.getLogger("sentrix.memories.build_graph")
@@ -82,6 +83,7 @@ class BuildMemoryGraph:
         graph: MemoryGraphRepository,
         causal_judge: CausalJudge | None = None,
         vectors: VectorRepository | None = None,
+        family: FamilyGraphRepository | None = None,
     ) -> None:
         self._assets = assets
         self._observations = observations
@@ -93,6 +95,7 @@ class BuildMemoryGraph:
         self._graph = graph
         self._causal_judge = causal_judge
         self._vectors = vectors
+        self._family = family
 
     def execute(self, scope_id: str) -> GraphBuildStats:
         scope = str(scope_id or "").strip()
@@ -119,6 +122,15 @@ class BuildMemoryGraph:
                 latest_by_asset[observation.asset_id] = observation
         asset_by_id = {item.id: item for item in assets}
         entity_by_id = {item.id: item for item in entities}
+        confirmed_mentions = tuple(self._entities.list_mentions(scope, limit=GRAPH_READ_LIMIT))
+        confirmed_by_observation: dict[str, set[str]] = {}
+        confirmed_by_asset: dict[str, set[str]] = {}
+        for mention in confirmed_mentions:
+            person = entity_by_id.get(mention.entity_id)
+            observed = observation_by_id.get(mention.observation_id)
+            if person and person.status == "confirmed" and observed:
+                confirmed_by_observation.setdefault(observed.id, set()).add(person.id)
+                confirmed_by_asset.setdefault(observed.asset_id, set()).add(person.id)
         entity_by_name = {
             _normalise(item.canonical_name): item for item in entities if _normalise(item.canonical_name)
         }
@@ -196,6 +208,7 @@ class BuildMemoryGraph:
                         "derived_kind": asset.derived_kind or "",
                         "parent_asset_id": asset.parent_asset_id or "",
                         "source_timestamp_sec": asset.source_timestamp_sec,
+                        "confirmed_entity_ids": sorted(confirmed_by_asset.get(asset.id, ())),
                     },
                 )
             )
@@ -215,6 +228,17 @@ class BuildMemoryGraph:
                 )
 
         for entity in entities:
+            properties = {
+                p.property_key: p.value
+                for p in self._entities.list_properties(entity.id)
+                if p.status == "active"
+            }
+            aliases = properties.get("aliases", [])
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    entity_by_name.setdefault(_normalise(str(alias)), entity)
+            membership = self._family.get_effective_membership(scope, entity.id) if self._family else None
+            portrait = self._family.get_active_portrait(scope, entity.id) if self._family else None
             add_node(
                 GraphNode(
                     id=_node_id("entity", entity.id),
@@ -224,12 +248,37 @@ class BuildMemoryGraph:
                     attributes={
                         "entity_id": entity.id,
                         "canonical_name": entity.canonical_name,
+                        "summary": entity.summary,
                         "entity_type": entity.entity_type,
                         "status": entity.status,
                         "family_role": entity.family_role or "",
+                        "properties": properties,
+                        "membership": membership.membership if membership else "",
+                        "portrait": portrait.portrait_text if portrait else "",
                     },
                 )
             )
+
+        if self._family is not None:
+            for family_relation in self._family.list_effective_relationships(scope):
+                if not family_relation.locked:
+                    continue
+                if (
+                    family_relation.subject_entity_id in entity_by_id
+                    and family_relation.object_entity_id in entity_by_id
+                ):
+                    add_edge(
+                        _node_id("entity", family_relation.subject_entity_id),
+                        _node_id("entity", family_relation.object_entity_id),
+                        f"entity_relationship:{family_relation.predicate}",
+                        weight=family_relation.confidence,
+                        discriminator="family",
+                        attributes={
+                            "relationship_id": family_relation.id,
+                            "source": family_relation.source,
+                            "evidence_tier": "confirmed" if family_relation.locked else "inferred",
+                        },
+                    )
 
         for event in events:
             event_node = _node_id("event", event.id)
@@ -316,11 +365,13 @@ class BuildMemoryGraph:
                     label=observation.caption or observation.activity or observation.place,
                     attributes={
                         "observation_id": observation.id,
+                        "confirmed_entity_ids": sorted(confirmed_by_observation.get(observation.id, ())),
                         "asset_id": observation.asset_id,
                         "revision": observation.revision,
                         "updated_at": _iso(observation.updated_at),
                         "captured_at": _iso(observation.captured_at),
                         "caption": observation.caption,
+                        "ocr_text": observation.ocr_text,
                         "activity": observation.activity,
                         "place": observation.place,
                         "event_type": observation.event_type,
@@ -412,7 +463,39 @@ class BuildMemoryGraph:
                 )
                 add_edge(fact_id, observation_node, "fact_evidence")
 
+        for mention in confirmed_mentions:
+            mentioned_person = entity_by_id.get(mention.entity_id)
+            if (
+                mentioned_person
+                and mentioned_person.status == "confirmed"
+                and mention.observation_id in observation_by_id
+            ):
+                add_edge(
+                    _node_id("observation", mention.observation_id),
+                    _node_id("entity", mentioned_person.id),
+                    "observation_mentions_confirmed_entity",
+                    attributes={
+                        "entity_id": mentioned_person.id,
+                        "observation_id": mention.observation_id,
+                        "evidence_tier": "confirmed",
+                    },
+                )
+                mentioned_observation = observation_by_id[mention.observation_id]
+                if mentioned_observation.asset_id in asset_by_id:
+                    add_edge(
+                        _node_id("asset", mentioned_observation.asset_id),
+                        _node_id("entity", mentioned_person.id),
+                        "asset_mentions_confirmed_entity",
+                        attributes={
+                            "entity_id": mentioned_person.id,
+                            "observation_id": mention.observation_id,
+                            "evidence_tier": "confirmed",
+                        },
+                    )
+
         for persisted_fact in facts:
+            if str(persisted_fact.status) != "active":
+                continue
             fact_node = _node_id("fact", persisted_fact.id)
             add_node(
                 GraphNode(
@@ -445,7 +528,13 @@ class BuildMemoryGraph:
                 if evidence_id in observation_by_id:
                     add_edge(fact_node, _node_id("observation", evidence_id), "fact_evidence")
 
+        overridden_pairs = set(self._family.user_relationship_pairs(scope)) if self._family else set()
         for relationship in relationships:
+            if (
+                tuple(sorted((relationship.subject_entity_id, relationship.object_entity_id)))
+                in overridden_pairs
+            ):
+                continue
             if relationship.status in {"retracted", "superseded"}:
                 continue
             if (
@@ -477,6 +566,20 @@ class BuildMemoryGraph:
                     attributes=attributes,
                 )
             ),
+            add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
+                source,
+                target,
+                relation,
+                weight=weight,
+                attributes=attributes,
+                discriminator=discriminator,
+            ),
+        )
+
+        project_image_graph(
+            assets=assets,
+            latest_observations=latest_by_asset,
+            vectors=self._vectors,
             add_edge=lambda source, target, relation, weight, attributes, discriminator: add_edge(
                 source,
                 target,
@@ -561,6 +664,7 @@ class BuildMemoryGraph:
         causal_seconds = time.perf_counter() - causal_started
 
         revision_parts: list[str] = [scope]
+        revision_parts.extend(f"node:{node.id}:{sorted(node.attributes.items())}" for node in nodes.values())
         revision_parts.extend(f"asset:{item.id}:{_iso(item.updated_at)}" for item in assets)
         revision_parts.extend(
             f"observation:{item.id}:{item.revision}:{item.updated_at.isoformat()}" for item in observations

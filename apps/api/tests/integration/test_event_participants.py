@@ -591,7 +591,8 @@ def test_the_source_event_person_moments_follow_the_merge(
         connection.execute(
             "INSERT INTO person_moments (id, scope_id, person_id, cluster_id, event_id, observation_id,"
             " asset_id, face_instance_id, prompt_version, created_at, updated_at)"
-            " VALUES ('moment_1', ?, 'ent_1', 'cluster_1', 'evt_2', 'obs_2', 'asset_2', 'face_2', 'v1', ?, ?)",
+            " VALUES ('moment_1', ?, 'ent_1', 'cluster_1', 'evt_2', 'obs_2', 'asset_2',"
+            " 'face_2', 'v1', ?, ?)",
             (HOME, now, now),
         )
 

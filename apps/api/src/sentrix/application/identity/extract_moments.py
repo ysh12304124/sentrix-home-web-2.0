@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ from sentrix.domain.media.ports import AssetRepository
 
 # 1.0 ``person_moments.py:185`` 的 ``getattr(self.gamma, "model", "unknown")`` 兜底。
 UNKNOWN_MODEL = "unknown"
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +171,11 @@ class ExtractMoments:
         source = {str(item["face_instance_id"]): item for item in items}
 
         created = 0
+        try:
+            model_name = self._vision.model_id or UNKNOWN_MODEL
+        except Exception as error:  # noqa: BLE001 - 模型名只用于记账，瞬间本身仍可保存
+            log.warning("读取人物瞬间模型名失败，按 unknown 记录: %s", error)
+            model_name = UNKNOWN_MODEL
         for moment in raw:
             if not isinstance(moment, Mapping):
                 continue
@@ -213,7 +220,7 @@ class ExtractMoments:
                 narrative_note=str(moment.get("narrative_note") or ""),
                 selection=_selection(origin),
                 confidence=_confidence(moment.get("confidence")),
-                model_name=self._vision.model_id or UNKNOWN_MODEL,
+                model_name=model_name,
             )
             created += 1
         return created

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 
@@ -16,6 +17,32 @@ from sentrix.domain.memories.graph import (
     GraphNode,
     GraphStatus,
 )
+
+
+class MemoryCorrectionRepository(Protocol):
+    """修正与审计同事务；派生同步失败保留任务，重试读取最新权威值。"""
+
+    def read(self, kind: str, target_id: str) -> dict[str, object] | None: ...
+
+    def correct(
+        self, kind: str, target_id: str, revision: int, changes: Mapping[str, object], reason: str
+    ) -> dict[str, object]: ...
+
+    def track(self, scope_id: str, kind: str, target_id: str) -> AbstractContextManager[None]:
+        """在既有写入之前登记持久任务，写后记录快照；异常也保留待核验记录。"""
+        ...
+
+    def records(self, scope_id: str, limit: int) -> Sequence[dict[str, object]]: ...
+
+    def pending_scopes(self) -> Sequence[str]: ...
+
+    def refresh_people(self, scope_id: str) -> None: ...
+
+    def affected_observations(self, scope_id: str) -> Sequence[str]: ...
+
+    def affected_events(self, scope_id: str) -> Sequence[str]: ...
+
+    def finish(self, scope_id: str, error: str) -> None: ...
 
 
 class EventRepository(Protocol):

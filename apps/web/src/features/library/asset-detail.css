@@ -1,61 +1,198 @@
 /* 资产详情。1.0 的 `.asset-modal-preview` 是居中的媒体区，`.evidence-list` 是观察列表。
  * 这里只补 2.0 需要的布局，颜色沿用 tokens。 */
 
-.asset-detail {
-  overflow-y: auto;
-  /* 顶部栏是 sticky z-index:4；详情必须盖住它，否则右上角关闭会被“退出”截获。 */
+.detail.asset-detail {
+  position: fixed;
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 0;
+  width: min(1120px, calc(100vw - 48px));
+  height: min(780px, calc(100dvh - 48px));
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #ffffff42;
+  border-radius: 20px;
+  background: var(--surface, #fff);
+  box-shadow: 0 0 0 100vmax #000b, 0 28px 90px #02061770;
+  color: var(--ink);
+  text-align: left;
+  box-sizing: border-box;
+  /* 覆盖全站 `.detail` 的全屏 flex 布局；媒体与资料信息各占一个稳定栏位。 */
+  transform: translate(-50%, -50%);
   z-index: 60;
 }
 
-.asset-detail .close {
-  position: absolute;
-  top: 18px;
-  right: 22px;
-  z-index: 2;
-  min-height: 42px;
-  padding: 0 18px;
-  border: 1px solid #ffffff8c;
-  border-radius: 999px;
-  background: #0f172ad9;
-  color: #fff;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  box-shadow: 0 6px 18px #00000059;
-}
-
-.asset-detail .close:hover {
-  background: #0f172a;
-  border-color: #fff;
-}
-
 .asset-detail-media {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: min(92vw, 1200px);
-  max-width: 100%;
-  max-height: 58vh;
-  padding: clamp(4px, 1vw, 14px);
+  padding: 56px 24px 24px;
+  background: #0b1220;
   box-sizing: border-box;
 }
 
-.asset-detail-media img,
-.asset-detail-media video {
-  /* 任意比例的图片/视频都按自身比例装进可用区域，不拉满、不裁切。 */
-  width: auto;
-  height: auto;
+.asset-detail .asset-detail-media img,
+.asset-detail .asset-detail-media video {
+  width: 100%;
+  height: 100%;
   max-width: 100%;
-  max-height: 58vh;
+  max-height: 100%;
   object-fit: contain;
   object-position: center;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #000;
 }
 
-.asset-detail-media audio {
-  width: min(80vw, 560px);
+.asset-detail-media audio { width: min(100%, 560px); }
+
+.asset-detail-info {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 64px 24px 24px;
+  color: var(--ink);
+  box-sizing: border-box;
 }
+
+.asset-detail .asset-detail-metadata {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.34fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+}
+
+.asset-detail .asset-detail-metadata dt,
+.asset-detail .asset-detail-metadata dd {
+  min-width: 0;
+  margin: 0;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.asset-detail .asset-detail-metadata dt { color: var(--muted); opacity: 1; }
+.asset-detail .asset-detail-metadata dd { color: var(--ink); }
+.asset-detail .asset-detail-metadata dd a { color: var(--green-strong); font-weight: 650; }
+
+.asset-detail .asset-detail-observations { grid-column: 2; max-width: none; }
+
+.asset-detail .asset-observations li {
+  border-color: var(--line);
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.asset-detail .asset-observations small { color: var(--muted); opacity: 1; }
+
+.asset-detail .asset-memory-actions {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.asset-detail .asset-memory-correction { width: 100%; margin: 0; border-color: #cfe8dc; background: #f8fcf9; }
+.asset-detail .asset-memory-correction-toggle { min-height: 66px; gap: 12px; padding: 12px 15px; background: #f8fcf9; }
+.asset-detail .asset-memory-correction.is-open > .asset-memory-correction-toggle { background: #eef8f1; }
+.asset-detail .asset-memory-copy strong { font-size: 14px; }
+.asset-detail .asset-memory-copy small { font-size: 12px; }
+.asset-detail .asset-memory-content { padding: 0 14px 14px; }
+
+.asset-delete-action {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 14px 15px;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  background: #fffafa;
+}
+
+.asset-delete-action > div { min-width: 0; }
+.asset-delete-action strong { color: #7f1d1d; font-size: 13px; }
+.asset-delete-action p { margin: 4px 0 0; color: #7f1d1d; font-size: 11px; line-height: 1.5; }
+.asset-delete-action .error { grid-column: 1 / -1; margin: 0; overflow-wrap: anywhere; }
+
+.asset-detail .asset-delete-action > .button-danger {
+  justify-self: end;
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid #dc2626;
+  border-radius: 9px;
+  background: #fff;
+  color: #b42323;
+  white-space: nowrap;
+}
+
+.asset-detail .asset-delete-action > .button-danger:hover:not(:disabled) { background: #fef2f2; }
+
+.asset-detail .close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffffed;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px #02061724;
+}
+
+.asset-detail .close:hover { background: #fff; border-color: #94a3b8; }
+
+/* 视频转写随右栏内容滚动，不再撑开并覆盖操作卡片。 */
+.asset-detail .asset-video-speech { width: auto; margin: 0 0 16px; color: var(--ink); }
+.asset-detail .asset-video-speech ol { max-height: 180px; }
+
+@media (max-width: 760px) {
+  .detail.asset-detail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 38vh) minmax(0, 1fr);
+    width: calc(100vw - 24px);
+    height: calc(100dvh - 24px);
+    border-radius: 16px;
+  }
+
+  .asset-detail-media { padding: 50px 14px 14px; }
+  .asset-detail-info { padding: 18px 16px 20px; }
+  .asset-detail .close { top: 10px; right: 10px; }
+}
+
+@media (max-width: 440px) {
+  .asset-detail .asset-detail-metadata { grid-template-columns: 82px minmax(0, 1fr); }
+  .asset-delete-action { grid-template-columns: minmax(0, 1fr); }
+  .asset-detail .asset-delete-action > .button-danger { justify-self: stretch; }
+}
+
+/* Keep the source media detail panel above the shared library overlays. */
+.detail.asset-detail { z-index: 60; }
 
 .asset-video-speech {
   width: min(92vw, 900px);
@@ -116,6 +253,27 @@
 
 .asset-detail-note code {
   font-size: 10px;
+}
+
+.asset-memory-actions {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.asset-memory-actions > .button-danger {
+  justify-self: start;
+  border: 1px solid #d34b4b;
+  border-radius: 9px;
+  background: #fff;
+  color: #b42323;
+  padding: 9px 14px;
+}
+
+.asset-memory-actions > .button-danger:hover:not(:disabled) {
+  background: #fff1f1;
 }
 
 .asset-detail-observations {

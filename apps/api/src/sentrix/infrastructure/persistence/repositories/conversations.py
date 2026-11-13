@@ -172,9 +172,7 @@ class SqliteConversationRepository:
             ).fetchall()
         return [_row_to_message(row) for row in rows]
 
-    def list_messages_for_turns(
-        self, conversation_id: str, turn_ids: Sequence[str]
-    ) -> Sequence[Message]:
+    def list_messages_for_turns(self, conversation_id: str, turn_ids: Sequence[str]) -> Sequence[Message]:
         unique = list(dict.fromkeys(turn_ids))
         if not unique:
             return []

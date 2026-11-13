@@ -117,6 +117,8 @@ class RenamePersonRequest(BaseModel):
 class RenamePersonResponse(BaseModel):
     entity: PersonPayload
     aliases: list[str]
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class MergePeopleRequest(BaseModel):
@@ -281,6 +283,8 @@ class EntityPropertyPayload(BaseModel):
     revision: int
     created_at: str | None
     updated_at: str | None
+    sync_status: str = "synced"
+    sync_error: str = ""
 
 
 class EntityDetailEntity(BaseModel):

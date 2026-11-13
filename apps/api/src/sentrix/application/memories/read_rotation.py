@@ -131,8 +131,7 @@ class ReadRotation:
             while index < len(sequence.event_ids) and len(cards) < page_size:
                 chunk = sequence.event_ids[index : index + chunk_size]
                 chunk_media = {
-                    item.media.event_id: item.media
-                    for item in self._candidates(scope_id, event_ids=chunk)
+                    item.media.event_id: item.media for item in self._candidates(scope_id, event_ids=chunk)
                 }
                 for event_id in chunk:
                     index += 1
@@ -175,8 +174,7 @@ class ReadRotation:
         events = [
             event
             for event in self._events.list_by_scope(scope_id, limit=10000)
-            if (wanted is None or event.id in wanted)
-            and event.source_type != VIDEO_SCENE_SOURCE_TYPE
+            if (wanted is None or event.id in wanted) and event.source_type != VIDEO_SCENE_SOURCE_TYPE
         ]
         if not events:
             return []
@@ -185,24 +183,14 @@ class ReadRotation:
         # 上万次 SQLite 连接。这里全部按批取，事件与素材的对应关系在内存里组装。
         observation_ids_by_event = self._events.observation_ids_many([event.id for event in events])
         all_observation_ids = [
-            observation_id
-            for ids in observation_ids_by_event.values()
-            for observation_id in ids
+            observation_id for ids in observation_ids_by_event.values() for observation_id in ids
         ]
         observations = self._observations.get_many(all_observation_ids)
         assets = self._assets.get_many(
-            [
-                observation.asset_id
-                for observation in observations.values()
-                if observation.asset_id
-            ]
+            [observation.asset_id for observation in observations.values() if observation.asset_id]
         )
         videos_with_derived = self._videos.derived_parent_ids(
-            [
-                asset.id
-                for asset in assets.values()
-                if asset.media_type is MediaType.VIDEO
-            ]
+            [asset.id for asset in assets.values() if asset.media_type is MediaType.VIDEO]
         )
         file_ok: dict[str, bool] = {}
         result: list[_Candidate] = []
@@ -259,8 +247,10 @@ class ReadRotation:
                 photos.append((distance, asset.id, asset))
             elif asset.media_type is MediaType.VIDEO and asset.id in videos_with_derived:
                 videos.append((distance, asset.id, asset))
-        chosen = min(photos, key=lambda item: (item[0], item[1])) if photos else (
-            min(videos, key=lambda item: (item[0], item[1])) if videos else None
+        chosen = (
+            min(photos, key=lambda item: (item[0], item[1]))
+            if photos
+            else (min(videos, key=lambda item: (item[0], item[1])) if videos else None)
         )
         if chosen is None:
             return None

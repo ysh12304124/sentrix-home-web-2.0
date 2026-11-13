@@ -79,6 +79,10 @@ class StartTurnRequest(BaseModel):
         default=False,
         description="是否在回合轨迹里记录每次模型调用的完整输入与原始输出（默认关闭）",
     )
+    graph_enabled: bool = Field(
+        default=True,
+        description="是否启用图记忆拓展检索；评测对照 run 可关闭",
+    )
 
 
 class StartTurnResponse(BaseModel):
