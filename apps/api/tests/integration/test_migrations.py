@@ -44,6 +44,43 @@ def test_graph_provenance_column_already_present_is_recorded_without_duplicate_a
         ) == 1
 
 
+def test_result_set_attempt_migration_repairs_stale_numeric_marker(tmp_path):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
+    (migrations / "0020_result_set_attempts.sql").write_bytes(
+        (source / "0020_result_set_attempts.sql").read_bytes()
+    )
+    path = tmp_path / "t.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL "
+            "DEFAULT (datetime('now')))"
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version) VALUES('0020')"
+        )
+        connection.execute(
+            "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, "
+            "query TEXT NOT NULL DEFAULT '', asset_ids_json TEXT NOT NULL DEFAULT '[]', "
+            "total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)"
+        )
+
+    db = Database(path, migrations)
+    assert db.migrate() == ["0020"]
+    assert db.migrate() == []
+    with db.connect() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_result_sets)")}
+        index = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_agent_result_sets_turn'"
+        ).fetchone()
+        versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+
+    assert {"turn_id", "attempt_no"} <= columns
+    assert index is not None
+    assert "0020_result_set_attempts_schema" in versions
+
+
 def test_failed_migration_rolls_back(tmp_path):
     db = Database(tmp_path / "t.db", migrations_dir=tmp_path / "migrations")
     (tmp_path / "migrations").mkdir()

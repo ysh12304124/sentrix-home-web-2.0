@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from sentrix.application.identity.person_directory import EntityPersonDirectory
 from sentrix.domain.identity.models import PENDING_CLUSTER_NAME
+from sentrix.api.routes import corrections as correction_routes
 
 NOW = "2026-09-23T10:00:00+00:00"
 
@@ -488,6 +489,27 @@ def test_rename_folds_the_old_name_into_aliases(identity_client: TestClient):
     assert response.status_code == 200
     assert response.json()["entity"]["canonical_name"] == "母亲"
     assert response.json()["aliases"] == ["妈妈"]
+    assert response.json()["sync_status"] in {"synced", "pending"}
+    assert "sync_error" in response.json()
+
+
+def test_rename_reports_pending_when_derived_sync_fails(
+    identity_client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    add_entity(identity_client, "ent_1", name="妈妈", status="confirmed")
+
+    class FailedSync:
+        @staticmethod
+        def execute(_scope: str) -> str:
+            return "图谱暂不可用"
+
+    monkeypatch.setattr(correction_routes, "synchronizer", lambda _container: FailedSync())
+    response = identity_client.patch("/api/v1/people/ent_1/name", json={"name": "母亲"})
+
+    assert response.status_code == 200
+    assert response.json()["entity"]["canonical_name"] == "母亲"
+    assert response.json()["sync_status"] == "pending"
+    assert response.json()["sync_error"] == "图谱暂不可用"
 
 
 def test_rename_with_a_blank_name_is_400(identity_client: TestClient):

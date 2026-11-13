@@ -124,8 +124,7 @@ export function TimelineEventDetail({
               </div>
             </dl>
 
-            <section className="timeline-event-section">
-              <h3>修正事件记忆</h3>
+            <section className="timeline-event-section" aria-label="事件记忆修正">
               <MemoryCorrection
                 kind="event"
                 targetId={event.id}
@@ -133,7 +132,7 @@ export function TimelineEventDetail({
               />
             </section>
 
-            <section className="timeline-event-section">
+            <section className="timeline-event-section" aria-label="关联媒体和观察记忆">
               <h3>全部资料（{event.photos.length} 份）</h3>
               {event.photos.length === 0 ? (
                 <p className="timeline-event-note">这个事件暂时没有可展示的资料。</p>

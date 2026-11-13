@@ -25,8 +25,10 @@ import {
 import {
   deleteFamilyRelationship,
   putFamilyRelationship,
+  retryMemoryCorrections,
   type FamilyPerson,
   type FamilyRelationship,
+  type MemorySyncResult,
 } from "../../../shared/api/client";
 import { EmptyState } from "../../../shared/ui/EmptyState";
 import { describeReviewError } from "../reviewErrors";
@@ -490,22 +492,25 @@ function EdgeEditor({
   const [choiceIndex, setChoiceIndex] = useState(currentIndex);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<MemorySyncResult | null>(null);
+  const [syncRetrying, setSyncRetrying] = useState(false);
 
   async function save() {
     const choice = choices[choiceIndex];
     if (choice === undefined || scopeId === "") return;
     setBusy(true);
     setError(null);
+    setSyncResult(null);
     try {
-      await putFamilyRelationship({
+      const result = await putFamilyRelationship({
         scopeId,
         subjectEntityId: edge.subject,
         predicate: choice.predicate,
         objectEntityId: edge.object,
         inversePredicate: choice.inversePredicate,
       });
+      setSyncResult(result);
       await onChanged();
-      onClose();
     } catch (cause) {
       setError(describeReviewError(cause));
     } finally {
@@ -517,18 +522,36 @@ function EdgeEditor({
     if (scopeId === "") return;
     setBusy(true);
     setError(null);
+    setSyncResult(null);
     try {
-      await deleteFamilyRelationship({
+      const result = await deleteFamilyRelationship({
         scopeId,
         subjectEntityId: edge.subject,
         objectEntityId: edge.object,
       });
+      setSyncResult(result);
       await onChanged();
-      onClose();
     } catch (cause) {
       setError(describeReviewError(cause));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function retrySync() {
+    setSyncRetrying(true);
+    setError(null);
+    try {
+      const result = await retryMemoryCorrections(scopeId);
+      setSyncResult({
+        sync_status: result.error ? "pending" : "synced",
+        sync_error: result.error,
+      });
+      if (!result.error) await onChanged();
+    } catch (cause) {
+      setError(describeReviewError(cause));
+    } finally {
+      setSyncRetrying(false);
     }
   }
 
@@ -566,8 +589,20 @@ function EdgeEditor({
         删除关系
       </button>
       <button type="button" className="button ghost small" disabled={busy} onClick={onClose}>
-        取消
+        {syncResult === null ? "取消" : "完成"}
       </button>
+      {syncResult === null ? null : (
+        <div className={`memory-sync-feedback is-${syncResult.sync_status}`} role="status" aria-live="polite">
+          <span>{syncResult.sync_status === "synced"
+            ? "关系已保存，图谱与检索索引已同步。"
+            : `关系已保存，但关联数据待同步${syncResult.sync_error ? `：${syncResult.sync_error}` : "。"}`}</span>
+          {syncResult.sync_status === "pending" ? (
+            <button type="button" className="button ghost small" disabled={syncRetrying || busy} onClick={() => void retrySync()}>
+              {syncRetrying ? "正在重试…" : "重试同步"}
+            </button>
+          ) : null}
+        </div>
+      )}
       {error === null ? null : (
         <p className="error" role="alert">
           {error}

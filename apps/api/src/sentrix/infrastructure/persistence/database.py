@@ -132,6 +132,45 @@ class Database:
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
             record_version = version
+            # A prior database can contain the numeric 0020 marker while
+            # agent_result_sets still lacks the attempt ownership columns.
+            # Validate the schema as well as the ledger and repair idempotently.
+            if script.name == "0020_result_set_attempts.sql":
+                table_exists = Database._table_exists(connection, "agent_result_sets")
+                has_turn_id = table_exists and Database._column_exists(
+                    connection, "agent_result_sets", "turn_id"
+                )
+                has_attempt_no = table_exists and Database._column_exists(
+                    connection, "agent_result_sets", "attempt_no"
+                )
+                index_exists = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_agent_result_sets_turn'"
+                ).fetchone() is not None
+                if not has_turn_id:
+                    connection.execute(
+                        "ALTER TABLE agent_result_sets ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"
+                    )
+                if not has_attempt_no:
+                    connection.execute(
+                        "ALTER TABLE agent_result_sets ADD COLUMN attempt_no INTEGER NOT NULL DEFAULT 0"
+                    )
+                if not index_exists:
+                    connection.execute(
+                        "CREATE INDEX idx_agent_result_sets_turn "
+                        "ON agent_result_sets(turn_id, attempt_no)"
+                    )
+                if done is None:
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
+                    )
+                elif not (has_turn_id and has_attempt_no and index_exists):
+                    connection.execute(
+                        "INSERT INTO schema_migrations (version) VALUES (?)",
+                        ("0020_result_set_attempts_schema",),
+                    )
+                connection.execute("COMMIT")
+                return not (done is not None and has_turn_id and has_attempt_no and index_exists)
             # Two published hpq-only migrations used the same numeric revisions as
             # newer main migrations. If the old revision is recorded but the main
             # column is absent, apply the main migration under a unique ledger key.

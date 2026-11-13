@@ -681,7 +681,19 @@ export interface PersonDetailResponse {
   clusters: FaceClusterSummary[];
 }
 
-export interface RenamePersonResponse {
+export interface MemorySyncResult {
+  sync_status: "synced" | "pending";
+  sync_error: string;
+}
+
+export async function retryMemoryCorrections(scopeId: string): Promise<{ error: string }> {
+  return request<{ error: string }>(
+    `/memories/corrections/retry?scope_id=${encodeURIComponent(scopeId)}`,
+    { method: "POST" },
+  );
+}
+
+export interface RenamePersonResponse extends MemorySyncResult {
   entity: PersonPayload;
   aliases: string[];
 }
@@ -810,8 +822,8 @@ export async function setEntityProperty(
   entityId: string,
   propertyKey: string,
   value: unknown,
-): Promise<void> {
-  await request(
+): Promise<EntityPropertyWriteResponse> {
+  return request<EntityPropertyWriteResponse>(
     `/entities/${encodeURIComponent(entityId)}/properties/${encodeURIComponent(propertyKey)}`,
     {
       method: "PUT",
@@ -1314,23 +1326,23 @@ export interface FamilyGraph {
 }
 
 /** 写路由统一包了 `{ok: true, …}`，不是裸对象——照 1.0 的 `{"ok": True, …}`。 */
-interface FamilyMembershipResponse {
+export interface FamilyMembershipResponse extends MemorySyncResult {
   ok: boolean;
   membership: FamilyMembership | null;
 }
 
-interface FamilyPortraitResponse {
+export interface FamilyPortraitResponse extends MemorySyncResult {
   ok: boolean;
   portrait: FamilyPortrait | null;
 }
 
-interface FamilyRelationshipResponse {
+export interface FamilyRelationshipResponse extends MemorySyncResult {
   ok: boolean;
   relationships: FamilyRelationship[];
 }
 
 /** 撤回返回的是**撤回之后**的行（`state = "retracted"`），键名是 `retracted`。 */
-interface FamilyRetractResponse {
+export interface FamilyRetractResponse extends MemorySyncResult {
   ok: boolean;
   retracted: FamilyRelationship[];
 }
@@ -1355,8 +1367,8 @@ export async function setFamilyMembership(
   personId: string,
   scopeId: string,
   membership: FamilyMembershipValue,
-): Promise<FamilyMembership | null> {
-  const body = await request<FamilyMembershipResponse>(
+): Promise<FamilyMembershipResponse> {
+  return request<FamilyMembershipResponse>(
     `/family-graph/people/${encodeURIComponent(personId)}/membership`,
     {
       method: "PATCH",
@@ -1364,7 +1376,6 @@ export async function setFamilyMembership(
       body: JSON.stringify({ scope_id: scopeId, membership }),
     },
   );
-  return body.membership;
 }
 
 /** 手写一段家庭画像。**与人物画像那套不是一张表**，不要串到别的端点上。 */
@@ -1372,8 +1383,8 @@ export async function setFamilyPortrait(
   personId: string,
   scopeId: string,
   portraitText: string,
-): Promise<FamilyPortrait | null> {
-  const body = await request<FamilyPortraitResponse>(
+): Promise<FamilyPortraitResponse> {
+  return request<FamilyPortraitResponse>(
     `/family-graph/people/${encodeURIComponent(personId)}/portrait`,
     {
       method: "PATCH",
@@ -1381,7 +1392,6 @@ export async function setFamilyPortrait(
       body: JSON.stringify({ scope_id: scopeId, portrait_text: portraitText }),
     },
   );
-  return body.portrait;
 }
 
 /** 建一对亲属边。后端一次落**两行**（正行 + 反行），所以回来的是列表。 */
@@ -1391,8 +1401,8 @@ export async function putFamilyRelationship(input: {
   predicate: string;
   objectEntityId: string;
   inversePredicate: string;
-}): Promise<FamilyRelationship[]> {
-  const body = await request<FamilyRelationshipResponse>("/family-graph/relationships", {
+}): Promise<FamilyRelationshipResponse> {
+  return request<FamilyRelationshipResponse>("/family-graph/relationships", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1403,7 +1413,6 @@ export async function putFamilyRelationship(input: {
       inverse_predicate: input.inversePredicate,
     }),
   });
-  return body.relationships;
 }
 
 /**
@@ -1416,8 +1425,8 @@ export async function deleteFamilyRelationship(input: {
   scopeId: string;
   subjectEntityId: string;
   objectEntityId: string;
-}): Promise<FamilyRelationship[]> {
-  const body = await request<FamilyRetractResponse>("/family-graph/relationships", {
+}): Promise<FamilyRetractResponse> {
+  return request<FamilyRetractResponse>("/family-graph/relationships", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1426,7 +1435,6 @@ export async function deleteFamilyRelationship(input: {
       object_entity_id: input.objectEntityId,
     }),
   });
-  return body.retracted;
 }
 
 /** 把若干 scope 并成一张图。**响应没有 `ok` 键**，1.0 直接返回仓储那个 dict。 */
@@ -1719,6 +1727,8 @@ export interface EntityPropertyPayload {
   created_at: string | null;
   updated_at: string | null;
 }
+
+export interface EntityPropertyWriteResponse extends EntityPropertyPayload, MemorySyncResult {}
 
 export interface EntityDetailFactPayload {
   id: string;

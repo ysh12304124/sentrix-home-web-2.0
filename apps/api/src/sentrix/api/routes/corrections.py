@@ -67,7 +67,15 @@ def memory_write(kind: str, key: str) -> Callable[..., Any]:
             with SYNC_LOCK:
                 with container.memory_corrections.track(scope, kind, target):
                     result = function(*args, **kwargs)
-                synchronizer(container).execute(scope)
+                sync_error = synchronizer(container).execute(scope)
+                model_fields = getattr(type(result), "model_fields", {})
+                if {"sync_status", "sync_error"}.issubset(model_fields):
+                    result = result.model_copy(
+                        update={
+                            "sync_status": "pending" if sync_error else "synced",
+                            "sync_error": sync_error,
+                        }
+                    )
             return result
 
         wrapped.__dict__["__signature__"] = signature

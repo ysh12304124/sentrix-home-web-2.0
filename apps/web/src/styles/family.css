@@ -104,6 +104,9 @@
 .detail-close:hover { color: var(--ink); }
 .detail-section { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 16px; }
 .detail-section h3 { font-size: 13px; margin: 0 0 12px; }
+.memory-sync-feedback { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-radius: 8px; padding: 9px 11px; font-size: 11px; line-height: 1.5; }
+.memory-sync-feedback.is-synced { color: #176b48; background: #edf8f1; }
+.memory-sync-feedback.is-pending { color: #815410; background: #fff6e5; }
 .detail-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .detail-form label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); }
 .detail-field { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); margin-bottom: 12px; }

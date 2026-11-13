@@ -106,6 +106,10 @@ describe("资产详情", () => {
     fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
 
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", []));
-    expect(fetch).toHaveBeenCalledWith("/api/v1/assets/a1", { method: "DELETE" });
+    expect(fetch).toHaveBeenCalledWith("/api/v1/assets/a1", {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "x-csrf-token": "" },
+    });
   });
 });

@@ -9,7 +9,10 @@ vi.mock("../../../shared/api/client", async (importOriginal) => {
     getPersonPortrait: vi.fn().mockResolvedValue(null),
     getEntityDetail: vi.fn(),
     setEntityProperty: vi.fn(),
-    putFamilyRelationship: vi.fn().mockResolvedValue([]),
+    retryMemoryCorrections: vi.fn().mockResolvedValue({ error: "" }),
+    putFamilyRelationship: vi.fn().mockResolvedValue({
+      ok: true, relationships: [], sync_status: "synced", sync_error: "",
+    }),
     batchConfirmPeople: vi.fn(),
     rejectFaceCluster: vi.fn().mockResolvedValue({ cluster_id: "cluster_1", rejected_entity_id: "person_1" }),
     renamePerson: vi.fn(),
@@ -90,6 +93,48 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("PersonDetail 人物记忆修正", () => {
+  it("复用人物姓名编辑接口，并在保存后显示服务端姓名与同步结果", async () => {
+    vi.mocked(client.renamePerson).mockResolvedValue({
+      entity: {
+        id: "person_1", scope_id: "album1", canonical_name: "妈妈2", status: "confirmed",
+        family_role: "母亲", summary: "", confidence: 1, confirmed: true, aliases: ["妈妈"],
+      },
+      aliases: ["妈妈"],
+      sync_status: "synced",
+      sync_error: "",
+    });
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PersonDetail person={person()} people={[person()]} relationships={[]}
+        onClose={() => undefined} onChanged={onChanged} />,
+    );
+
+    const input = screen.getByLabelText("姓名") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "妈妈2" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存姓名" }));
+
+    await waitFor(() => expect(client.renamePerson).toHaveBeenCalledWith("person_1", "妈妈2"));
+    await waitFor(() => expect((screen.getByLabelText("姓名") as HTMLInputElement).value).toBe("妈妈2"));
+    expect(await screen.findByText("修改已保存，关联记忆、图谱与检索索引已同步。")).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+
+  it("展示显式的记忆修正按钮并触发当前空间的派生同步", async () => {
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PersonDetail person={person()} people={[person()]} relationships={[]}
+        onClose={() => undefined} onChanged={onChanged} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "修正并同步关联记忆" }));
+
+    await waitFor(() => expect(client.retryMemoryCorrections).toHaveBeenCalledWith("album1"));
+    expect(await screen.findByText("已按当前人物与关系信息同步关联记忆、图谱和检索索引。")).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+});
+
 describe("PersonDetail 别名编辑", () => {
   it("从 GET /people/{id} 读别名，保存时写 entity_properties 的 aliases 键", async () => {
     vi.mocked(client.getPerson).mockResolvedValue({
@@ -131,6 +176,33 @@ describe("PersonDetail 别名编辑", () => {
         "明明",
       ]);
     });
+  });
+
+  it("别名写入成功但派生同步待重试时，明确显示待同步状态", async () => {
+    vi.mocked(client.getPerson).mockResolvedValue({
+      entity: {
+        id: "person_1", scope_id: "album1", canonical_name: "妈妈", status: "confirmed",
+        family_role: "母亲", summary: "", confidence: 1, confirmed: true, aliases: [],
+      },
+      avatar_face_instance_id: null,
+      clusters: [],
+    });
+    vi.mocked(client.setEntityProperty).mockResolvedValue({
+      id: "prop_1", entity_id: "person_1", property_key: "aliases", value: ["妈妈"],
+      source: "user", confidence: 1, status: "active", evidence_ids: [],
+      supersedes_property_id: null, revision: 1, created_at: null, updated_at: null,
+      sync_status: "pending", sync_error: "图谱暂不可用",
+    });
+    render(
+      <PersonDetail person={person()} people={[person()]} relationships={[]}
+        onClose={() => undefined} onChanged={vi.fn().mockResolvedValue(undefined)} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "编辑别名" }));
+    fireEvent.click(await screen.findByRole("button", { name: "保存别名" }));
+    const notice = await screen.findByRole("status");
+    expect(notice.textContent).toContain("图谱暂不可用");
+    expect(notice.textContent).toContain("待同步");
+    expect(screen.getByRole("button", { name: "重试同步" })).toBeTruthy();
   });
 });
 

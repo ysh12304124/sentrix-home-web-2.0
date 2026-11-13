@@ -131,6 +131,62 @@ def test_graph_quality_pairs_exact_snapshot_and_keeps_partial_judge_out_of_quali
     assert effect["delta"]["answer_quality_mean"] is None
 
 
+def test_graph_quality_uses_complete_media_summaries_even_when_runs_have_errors(
+    tmp_path: Path,
+) -> None:
+    def run_state(run_id: str, *, graph: bool, baseline_id: str | None, recall: float) -> dict:
+        return {
+            "run_id": run_id,
+            "scope_id": run_id,
+            "album_id": "album3-max-video10",
+            "qa_set": "mixed-image-video-487q",
+            "endpoint_model": "qwen35-q4km",
+            "graph_enabled": graph,
+            "graph_baseline_run_id": baseline_id,
+            "status": "completed_with_errors",
+            "run_valid": False,
+            "qa_count": 487,
+            "summary": {
+                "run_valid": False,
+                "total": 487,
+                "completed": 487,
+                "media_retrieval_recall_macro": recall,
+                "media_retrieval_precision_macro": recall + 0.019,
+                "media_retrieval_f1_macro": recall - 0.005,
+                "media_retrieval_metric_count": 421,
+                "answer_quality_mean": 1.0,
+            },
+            "items": [],
+        }
+
+    baseline_id = "off-run"
+    _write(
+        tmp_path,
+        baseline_id,
+        run_state(baseline_id, graph=False, baseline_id=None, recall=0.397),
+    )
+    store = _write(
+        tmp_path,
+        "on-run",
+        run_state("on-run", graph=True, baseline_id=baseline_id, recall=0.412),
+    )
+    http = FakeJsonHttpClient({"/assets?": {"items": []}, "/memory-graph/quality?": {"available": False}})
+
+    overall = _reports(store, http).graph_quality("on-run")["graph_qa_overall"]
+    effect = overall["final_media_effect"]
+
+    assert overall["available"] is True
+    assert effect["available"] is True
+    assert effect["baseline_run_id"] == baseline_id
+    assert effect["pairing_source"] == "bound"
+    assert effect["sample_count"] == 421
+    assert effect["without_graph"]["media_retrieval_recall"] == 0.397
+    assert effect["with_graph"]["media_retrieval_recall"] == 0.412
+    assert effect["delta"]["media_retrieval_recall"] == pytest.approx(0.015)
+    assert effect["without_graph"]["answer_quality_mean"] is None
+    assert effect["with_graph"]["answer_quality_mean"] is None
+
+
 # ---- 关键帧分析：取数 -------------------------------------------------------
 
 

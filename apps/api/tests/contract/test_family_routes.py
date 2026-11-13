@@ -366,6 +366,8 @@ def test_a_user_membership_lands_locked_with_full_confidence(family_client: Test
     assert body["membership"]["source"] == "user_override"
     assert body["membership"]["confidence"] == 1.0
     assert body["membership"]["locked"] is True
+    assert body["sync_status"] in {"synced", "pending"}
+    assert "sync_error" in body
 
 
 def test_a_membership_without_a_scope_is_a_400_with_the_literal_message(
@@ -400,6 +402,8 @@ def test_a_user_relationship_lands_as_two_locked_rows(family_client: TestClient)
     ] == [("mom", "母亲", "kid"), ("kid", "儿子", "mom")]
     assert all(item["locked"] for item in body["relationships"])
     assert {item["source"] for item in body["relationships"]} == {"user_override"}
+    assert body["sync_status"] in {"synced", "pending"}
+    assert "sync_error" in body
 
 
 def test_a_relationship_without_a_scope_is_a_400(family_client: TestClient) -> None:

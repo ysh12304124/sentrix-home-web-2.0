@@ -19,12 +19,14 @@ import {
   getPersonPortrait,
   putFamilyRelationship,
   rejectFaceCluster,
+  retryMemoryCorrections,
   renamePerson,
   setEntityProperty,
   setFamilyMembership,
   type FamilyMembershipValue,
   type FamilyPerson,
   type FamilyRelationship,
+  type MemorySyncResult,
 } from "../../../shared/api/client";
 import { newOperationId, reportClientEvent } from "../../../shared/clientEvents";
 import { describeReviewError } from "../reviewErrors";
@@ -70,6 +72,8 @@ export function PersonDetail({
   const pending = isPendingPerson(person);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<{ status: "synced" | "pending"; text: string } | null>(null);
+  const [syncRetrying, setSyncRetrying] = useState(false);
   // 未命名的人不把占位文案「未确认姓名人物」预填进输入框——那句话不是名字。
   const [name, setName] = useState(isNamed(person) ? personDisplayName(person) : "");
   const [familyRole, setFamilyRole] = useState("");
@@ -134,8 +138,20 @@ export function PersonDetail({
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
+    setSyncNotice(null);
     try {
-      await action();
+      const result = await action();
+      if (result !== null && typeof result === "object" && "sync_status" in result) {
+        const sync = result as MemorySyncResult;
+        setSyncNotice({
+          status: sync.sync_status,
+          text: sync.sync_status === "synced"
+            ? "修改已保存，关联记忆、图谱与检索索引已同步。"
+            : `修改已保存，但关联数据待同步${sync.sync_error ? `：${sync.sync_error}` : "，可在修正记录中重试。"}`,
+        });
+      } else {
+        setSyncNotice({ status: "synced", text: "修改已保存，人物与关系信息已刷新。" });
+      }
       await onChanged();
       return true;
     } catch (cause) {
@@ -146,11 +162,44 @@ export function PersonDetail({
     }
   }
 
+  async function retrySync() {
+    setSyncRetrying(true);
+    try {
+      const result = await retryMemoryCorrections(person.scope_id);
+      setSyncNotice(result.error
+        ? { status: "pending", text: `关联数据仍待同步：${result.error}` }
+        : { status: "synced", text: "关联记忆、图谱与检索索引已同步。" });
+      if (!result.error) await onChanged();
+    } catch (cause) {
+      setSyncNotice({ status: "pending", text: `重试失败：${describeReviewError(cause)}` });
+    } finally {
+      setSyncRetrying(false);
+    }
+  }
+
+  async function syncPersonMemories() {
+    setSyncRetrying(true);
+    setError(null);
+    try {
+      const result = await retryMemoryCorrections(person.scope_id);
+      setSyncNotice(result.error
+        ? { status: "pending", text: `关联记忆同步失败：${result.error}` }
+        : { status: "synced", text: "已按当前人物与关系信息同步关联记忆、图谱和检索索引。" });
+      if (!result.error) await onChanged();
+    } catch (cause) {
+      setSyncNotice({ status: "pending", text: `关联记忆同步失败：${describeReviewError(cause)}` });
+    } finally {
+      setSyncRetrying(false);
+    }
+  }
+
   function submitRename(event: FormEvent) {
     event.preventDefault();
     void run(async () => {
       const result = await renamePerson(person.id, name);
+      setName(result.entity.canonical_name);
       setAliases(result.aliases);
+      return result;
     });
   }
 
@@ -234,9 +283,10 @@ export function PersonDetail({
     const next = splitAliases(aliasText);
     void run(async () => {
       // `PATCH /people/{id}/name` 只收 name；别名是通用实体属性，走属性写入。
-      await setEntityProperty(person.id, "aliases", next);
+      const result = await setEntityProperty(person.id, "aliases", next);
       setAliases(next);
       setAliasesOpen(false);
+      return result;
     });
   }
 
@@ -278,6 +328,16 @@ export function PersonDetail({
         <p className="error" role="alert">
           {error}
         </p>
+      )}
+      {syncNotice === null ? null : (
+        <div className={`memory-sync-feedback is-${syncNotice.status}`} role="status" aria-live="polite">
+          <span>{syncNotice.text}</span>
+          {syncNotice.status === "pending" ? (
+            <button type="button" className="button ghost small" disabled={syncRetrying || busy} onClick={() => void retrySync()}>
+              {syncRetrying ? "正在重试…" : "重试同步"}
+            </button>
+          ) : null}
+        </div>
       )}
 
       <section className="detail-section">
@@ -536,6 +596,23 @@ export function PersonDetail({
           </form>
         )}
       </section>
+
+      {!pending ? (
+        <section className="detail-section person-memory-sync" aria-label="关联记忆修正">
+          <h3>关联记忆</h3>
+          <p className="detail-empty">
+            人物姓名、别名、家庭归属或关系修改后，可在这里按当前信息重新同步相关记忆、图谱与检索索引。
+          </p>
+          <button
+            type="button"
+            className="button primary small"
+            disabled={busy || syncRetrying}
+            onClick={() => void syncPersonMemories()}
+          >
+            {syncRetrying ? "正在同步关联记忆…" : "修正并同步关联记忆"}
+          </button>
+        </section>
+      ) : null}
 
       <section className="detail-section">
         <h3>照片</h3>
