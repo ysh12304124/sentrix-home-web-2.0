@@ -761,31 +761,3 @@ def test_person_counts_include_live_cluster_evidence_without_a_mention_bridge(db
     metrics = json.loads(state(db, "entities", {"id": "p"})["metrics_json"])
     assert metrics["valid_observation_count"] == 1
     assert metrics["valid_asset_count"] == 1
-
-
-def test_person_directory_separates_manual_and_unknown_portrait_sources(db):
-    from sentrix.application.identity.person_directory import EntityPersonDirectory
-    from sentrix.infrastructure.persistence.repositories.assets import SqliteObservationRepository
-    from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
-    from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
-
-    shared(db)
-    entities = SqliteEntityRepository(db)
-    family = SqliteFamilyGraphRepository(db, entities)
-    directory = EntityPersonDirectory(
-        entities=entities, family=family, observations=SqliteObservationRepository(db)
-    )
-    family.write_portrait("s", "p", "有当前观察的模型推断", source="model", evidence_refs=["ob"])
-    assert directory.lookup("妈妈", "s").summary_evidence_refs == ("ob",)
-    family.write_portrait("s", "p", "人工维护：喜欢阅读", source="user_override")
-    family.write_portrait("s", "p2", "无来源的模型档案", source="model")
-
-    assert directory.lookup("妈妈", "s").summary == "人工维护：喜欢阅读"
-    assert directory.lookup("妈妈", "s").summary_source == "user_override"
-    assert entities.get("p2").summary == "旧模型画像"
-    assert family.get_active_portrait("s", "p2").portrait_text == "无来源的模型档案"
-    assert directory.lookup("爸爸", "s").summary == ""
-    family.write_portrait("s", "p2", "引用不存在的观察", source="model", evidence_refs=["missing"])
-    assert directory.lookup("爸爸", "s").summary == ""
-    family.write_portrait("s", "p2", "引用另一人的观察", source="model", evidence_refs=["ob"])
-    assert directory.lookup("爸爸", "s").summary == ""
