@@ -16,7 +16,12 @@ function timestamp(run: Run): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** 找出可用于当前有图 run 对照的、同配置无图完整测评。 */
+/** 找出可用于当前有图 run 对照的、同配置无图测评。
+ *
+ * ``completed_with_errors`` 仍可能保留完整的 QA/Judge 结果和部分最终媒体
+ * 指标。它不能冒充“无错误完整基线”，但应该进入选择列表，供报告按两轮
+ * 的有效媒体指标进行对比；界面会单独标注这类 run。
+ */
 export function filterGraphBaselineRuns(
   runs: Run[],
   context: GraphBaselineContext,
@@ -29,7 +34,7 @@ export function filterGraphBaselineRuns(
     .filter(
       (run) =>
         run.graph_enabled === false &&
-        run.status === "completed" &&
+        (run.status === "completed" || run.status === "completed_with_errors") &&
         value(run.album_id) === albumId &&
         value(run.qa_set) === qaSet &&
         value(run.model_name) === modelName,

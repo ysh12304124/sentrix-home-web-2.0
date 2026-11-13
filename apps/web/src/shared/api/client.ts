@@ -65,7 +65,7 @@ function parseApiError(raw: string): ApiErrorBody | null {
   return null;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, init);
   if (!response.ok) {
     const raw = await response.text();

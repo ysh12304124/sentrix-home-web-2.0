@@ -179,6 +179,11 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 
 ## 3. 端口总览
 
+用户记忆修正新增 `MemoryCorrectionRepository`（`domain/memories/ports.py`），由 SQLite
+适配器实现并在 bootstrap 装配。新增修正/历史/重试 API 采用增量契约；失败保留 pending，
+不掩盖已提交的权威修改。兼容旧身份/关系入口的事务边界及验证见
+[记忆修正传播](../refactor/memory-correction-deviations.md)。
+
 ### 3.1 可替换性分级
 
 | 级别 | 含义 | 典型端口 | 替换难度 |

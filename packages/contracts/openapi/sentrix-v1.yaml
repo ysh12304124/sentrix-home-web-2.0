@@ -3,6 +3,168 @@ info:
   title: Sentrix Home API
   version: 0.1.0
 paths:
+  /api/v1/memories/corrections:
+    get:
+      tags:
+      - memory-corrections
+      summary: History
+      operationId: history_api_v1_memories_corrections_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/corrections/retry:
+    post:
+      tags:
+      - memory-corrections
+      summary: Retry
+      operationId: retry_api_v1_memories_corrections_retry_post
+      parameters:
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Retry Api V1 Memories Corrections Retry Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/{kind}/{target_id}:
+    get:
+      tags:
+      - memory-corrections
+      summary: Read Memory
+      operationId: read_memory_api_v1_memories__kind___target_id__get
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Kind
+      - name: target_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Target Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Read Memory Api V1 Memories  Kind   Target Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - memory-corrections
+      summary: Correct Memory
+      operationId: correct_memory_api_v1_memories__kind___target_id__patch
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Kind
+      - name: target_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Target Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorrectionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/memories:
+    get:
+      tags:
+      - memory-corrections
+      summary: Asset Memories
+      operationId: asset_memories_api_v1_assets__asset_id__memories_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectionRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/health/live:
     get:
       tags:
@@ -2958,6 +3120,70 @@ components:
       - updated_at
       - last_message_at
       title: ConversationSummary
+    CorrectionRecords:
+      properties:
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: CorrectionRecords
+    CorrectionRequest:
+      properties:
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+        changes:
+          additionalProperties:
+            anyOf:
+            - type: string
+            - items:
+                type: string
+              type: array
+            - type: 'null'
+          type: object
+          title: Changes
+        reason:
+          type: string
+          maxLength: 2000
+          title: Reason
+          default: ''
+      additionalProperties: false
+      type: object
+      required:
+      - revision
+      - changes
+      title: CorrectionRequest
+    CorrectionResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        scope_id:
+          type: string
+          title: Scope Id
+        revision:
+          type: integer
+          title: Revision
+        sync_status:
+          type: string
+          title: Sync Status
+        error:
+          type: string
+          title: Error
+      type: object
+      required:
+      - id
+      - scope_id
+      - revision
+      - sync_status
+      - error
+      title: CorrectionResponse
     CreateConversationRequest:
       properties:
         scope_id:

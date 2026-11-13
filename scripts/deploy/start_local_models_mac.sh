@@ -6,6 +6,7 @@
 #   8101  BGE-M3 text embeddings (1024d)
 #   8103  Chinese-CLIP ViT-L/14 image embeddings (768d)
 #   8104  BGE reranker (optional; skipped when the weights are missing)
+#   8106  Utility-MRAG Qwen3-VL-2B surrogate (optional local evidence selector)
 #   8105  Qwen3-ASR (optional; started only when a local server is configured)
 #   8191  Sentrix API (legacy embedding scheme)
 set -euo pipefail
@@ -20,7 +21,11 @@ VLM_PORT="${SENTRIX_VLM_PORT:-8100}"
 BGE_PORT="${SENTRIX_BGE_PORT:-8101}"
 CLIP_PORT="${SENTRIX_LEGACY_CLIP_PORT:-8103}"
 RERANK_PORT="${SENTRIX_BGE_RERANK_PORT:-8104}"
+UTILITY_VLM_PORT="${SENTRIX_UTILITY_VLM_PORT:-8106}"
 RERANK_MODEL_DIR="${SENTRIX_BGE_RERANKER_MODEL_PATH:-$PROJ/data/models/bge-reranker-v2-m3}"
+UTILITY_VLM_MODEL="${SENTRIX_UTILITY_VLM_MODEL:-$PROJ/data/models/qwen3-vl-2b-surrogate/Qwen3VL-2B-Instruct-Q4_K_M.gguf}"
+UTILITY_VLM_MMPROJ="${SENTRIX_UTILITY_VLM_MMPROJ:-$PROJ/data/models/qwen3-vl-2b-surrogate/mmproj-Qwen3VL-2B-Instruct-F16.gguf}"
+ENABLE_UTILITY_VLM="${SENTRIX_ENABLE_UTILITY_VLM:-1}"
 API_PORT="${SENTRIX_API_PORT:-8191}"
 ASR_PORT="${SENTRIX_QWEN_ASR_PORT:-8105}"
 VLM_MODEL="${SENTRIX_VLM_MODEL:-$PROJ/data/models/qwen35-q4km/qwen35-q4km.gguf}"
@@ -146,6 +151,36 @@ else
   echo "跳过 BGE Reranker（默认关闭）"
 fi
 
+# Utility-MRAG selector is an independent, optional VLM.  It is intentionally
+# not the production 8100 model: utility scoring makes one multimodal request
+# per image candidate.  Missing files degrade to ordinary graph ordering.
+UTILITY_URL=""
+if [ "$ENABLE_UTILITY_VLM" = "1" ] && [ -f "$UTILITY_VLM_MODEL" ] && [ -f "$UTILITY_VLM_MMPROJ" ]; then
+  if ! port_in_use "$UTILITY_VLM_PORT"; then
+    echo "启动 Utility-MRAG surrogate :$UTILITY_VLM_PORT"
+    nohup llama-server \
+      --model "$UTILITY_VLM_MODEL" \
+      --mmproj "$UTILITY_VLM_MMPROJ" \
+      --alias qwen3-vl-2b-surrogate \
+      --host 127.0.0.1 \
+      --port "$UTILITY_VLM_PORT" \
+      --ctx-size "${SENTRIX_UTILITY_VLM_CTX_SIZE:-8192}" \
+      --parallel "${SENTRIX_UTILITY_VLM_PARALLEL:-2}" \
+      --n-gpu-layers "${SENTRIX_UTILITY_VLM_GPU_LAYERS:-999}" \
+      --image-min-tokens 512 \
+      --reasoning off \
+      > logs/utility-vlm.log 2>&1 < /dev/null &
+  fi
+  wait_http "http://127.0.0.1:$UTILITY_VLM_PORT/v1/models" 180 || {
+    echo "Utility-MRAG surrogate 未就绪，日志：" >&2
+    tail -60 logs/utility-vlm.log >&2
+    exit 1
+  }
+  UTILITY_URL="http://127.0.0.1:$UTILITY_VLM_PORT/v1"
+else
+  echo "跳过 Utility-MRAG surrogate（权重缺失或 SENTRIX_ENABLE_UTILITY_VLM != 1）"
+fi
+
 if ! port_in_use "$API_PORT"; then
   echo "启动 Sentrix API :$API_PORT"
   env \
@@ -153,6 +188,7 @@ if ! port_in_use "$API_PORT"; then
     SENTRIX_LEGACY_CLIP_URL="http://127.0.0.1:$CLIP_PORT" \
     SENTRIX_TEXT_EMBEDDER_URL="http://127.0.0.1:$BGE_PORT" \
     SENTRIX_RERANKER_URL="$RERANK_URL" \
+    SENTRIX_UTILITY_VLM_BASE_URL="$UTILITY_URL" \
     SENTRIX_VLM_BASE_URL="http://127.0.0.1:$VLM_PORT/v1" \
     SENTRIX_DATA_DIR="$DATA_DIR" \
     nohup .venv/bin/python -m uvicorn --factory sentrix.main:create_app \

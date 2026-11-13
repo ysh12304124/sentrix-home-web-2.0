@@ -68,6 +68,7 @@ def build_retrieve_evidence(container: Container, *, graph_enabled: bool = True)
         observations=container.observation_repository,
         rerank_top_k=container.settings.rerank_top_k,
         utility=container.visual_evidence_utility if graph_enabled else None,
+        utility_concurrency=container.settings.utility_vlm_concurrency,
         assets=container.asset_repository,
         media_storage=container.media_storage,
     )

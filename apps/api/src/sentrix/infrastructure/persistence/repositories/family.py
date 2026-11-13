@@ -190,6 +190,16 @@ def _row_to_portrait(row: sqlite3.Row) -> FamilyPortraitRecord:
 
 
 class SqliteFamilyGraphRepository:
+    def user_relationship_pairs(self, scope_id: str) -> Sequence[tuple[str, str]]:
+        with self._database.connect() as conn:
+            rows = conn.execute(
+                "SELECT subject_entity_id,object_entity_id FROM family_relationships "
+                "WHERE scope_id=? AND source='user_override' UNION "
+                "SELECT left_entity_id,right_entity_id FROM family_relationship_blocks WHERE scope_id=?",
+                (scope_id, scope_id),
+            ).fetchall()
+        return sorted({(min(str(row[0]), str(row[1])), max(str(row[0]), str(row[1]))) for row in rows})
+
     def __init__(self, database: Database, entities: EntityRepository) -> None:
         self._database = database
         # ``family_graph_people`` 要按 ``list_entities`` 的口径列人物——那份口径

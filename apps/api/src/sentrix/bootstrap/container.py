@@ -66,6 +66,7 @@ from sentrix.domain.memories.ports import (
     EventParticipantRepository,
     EventRepository,
     FactRepository,
+    MemoryCorrectionRepository,
     MemoryGraphRepository,
 )
 from sentrix.domain.places.aliases import PlaceAliases
@@ -129,6 +130,7 @@ from sentrix.infrastructure.persistence.repositories.audio import SqliteAudioRep
 from sentrix.infrastructure.persistence.repositories.conversations import (
     SqliteConversationRepository,
 )
+from sentrix.infrastructure.persistence.repositories.corrections import SqliteMemoryCorrections
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
 from sentrix.infrastructure.persistence.repositories.events import SqliteEventRepository
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
@@ -184,6 +186,7 @@ class Container:
     import_progress: ImportProgressStore
     asset_repository: AssetRepository
     media_deletion: MediaDeletionRepository
+    memory_corrections: MemoryCorrectionRepository
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
@@ -215,7 +218,7 @@ class Container:
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
     reranker: Reranker | None
-    visual_evidence_utility: VisualEvidenceUtility
+    visual_evidence_utility: VisualEvidenceUtility | None
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
@@ -326,6 +329,22 @@ class Container:
         # **部署事实**，配置里那个 6144 是照部署的某一次实测抄的，部署一改它就过期。
         # 读不到才退回配置值（那说明端点没在正常服务，此时保守值不添乱）。
         served_context = probe_context_tokens(settings.vlm_base_url)
+        utility_vlm_base_url = settings.utility_vlm_base_url.strip()
+        utility_served_model = (
+            ServedModel(
+                utility_vlm_base_url,
+                timeout_s=settings.utility_vlm_timeout_s,
+                generation_profile="legacy",
+                exact_output_budget=False,
+                context_tokens=4096,
+            )
+            if utility_vlm_base_url
+            else None
+        )
+        log.info(
+            "Utility-MRAG surrogate=%s",
+            f"enabled @ {utility_vlm_base_url}" if utility_served_model else "disabled",
+        )
         # **嵌入方案是整方案原子切换**（``scheme.SCHEMES``）。默认 wemm；legacy 是
         # 16 GB Mac mini 的回退（chinese-clip 768d + bge-m3 1024d）。两个分支都只
         # 构造 HTTP 客户端，API 进程不 import torch。
@@ -380,6 +399,7 @@ class Container:
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,
             media_deletion=SqliteMediaDeletionRepository(database),
+            memory_corrections=SqliteMemoryCorrections(database),
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
@@ -422,8 +442,14 @@ class Container:
             ),
             text_embedder=text_embedder,
             reranker=reranker,
-            visual_evidence_utility=OpenAIVisualEvidenceUtility(
-                settings.vlm_base_url, served_model, timeout_s=settings.vlm_timeout_s
+            visual_evidence_utility=(
+                OpenAIVisualEvidenceUtility(
+                    utility_vlm_base_url,
+                    utility_served_model,
+                    timeout_s=settings.utility_vlm_timeout_s,
+                )
+                if utility_served_model is not None
+                else None
             ),
             embedding_health=embedding_health,
             place_resolver=OfflinePlaceResolver(

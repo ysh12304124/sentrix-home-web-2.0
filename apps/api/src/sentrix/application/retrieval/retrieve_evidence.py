@@ -36,6 +36,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
@@ -231,6 +233,7 @@ class RetrieveEvidence:
         utility: VisualEvidenceUtility | None = None,
         assets: AssetRepository | None = None,
         media_storage: MediaStorage | None = None,
+        utility_concurrency: int = 2,
     ) -> None:
         self._visual = visual
         self._lexical = lexical
@@ -245,6 +248,7 @@ class RetrieveEvidence:
         self._utility = utility
         self._assets = assets
         self._media_storage = media_storage
+        self._utility_concurrency = max(1, min(4, utility_concurrency))
         if reranker is not None and observations is None:
             raise ValueError("启用重排时必须提供 ObservationRepository：候选文本来自观察")
 
@@ -340,6 +344,139 @@ class RetrieveEvidence:
             )
         )
         return [*scored, *unscored, *tail]
+
+    @staticmethod
+    def _unique_candidates(candidates: Sequence[FusedCandidate]) -> list[FusedCandidate]:
+        """Keep the first fused record for an asset while preserving retrieval order."""
+        unique: list[FusedCandidate] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate.asset_id in seen:
+                continue
+            seen.add(candidate.asset_id)
+            unique.append(candidate)
+        return unique
+
+    def _graph_fallback(
+        self,
+        *,
+        primary: Sequence[FusedCandidate],
+        graph: Sequence[FusedCandidate],
+        limit: int,
+    ) -> list[FusedCandidate]:
+        """The pre-utility graph policy, used only when utility scoring is unavailable."""
+        graph_slots = min(len(graph), max(1, min(4, limit // 4 or 1)))
+        selected = [*primary[: max(0, limit - graph_slots)], *graph[:graph_slots]]
+        selected_ids = {candidate.asset_id for candidate in selected}
+        if len(selected) < limit:
+            selected.extend(candidate for candidate in primary if candidate.asset_id not in selected_ids)
+        return selected[:limit]
+
+    def _utility_select(
+        self,
+        *,
+        question: str,
+        candidates: Sequence[FusedCandidate],
+        limit: int,
+        traces: list[ChannelTrace],
+    ) -> list[FusedCandidate] | None:
+        """Score the complete retrieved union, then select the utility-ranked head.
+
+        This follows Utility-MRAG's separation of recall and evidence selection: the
+        ordinary and graph candidate pools are first unioned, every scoreable image in
+        that pool is sent to the small surrogate, and only then is the final ``limit``
+        applied.  A failed score is local to that candidate; it must not discard scores
+        already obtained for the rest of the pool.
+        """
+        utility = self._utility
+        assets = self._assets
+        storage = self._media_storage
+        if utility is None or assets is None or storage is None:
+            return None
+        pool = self._unique_candidates(candidates)
+        started = time.monotonic()
+        prepared: list[tuple[int, FusedCandidate, bytes]] = []
+        fallback: list[tuple[int, FusedCandidate]] = []
+        failures: list[str] = []
+        for position, candidate in enumerate(pool):
+            asset = assets.get(candidate.asset_id)
+            if asset is None:
+                fallback.append((position, candidate))
+                failures.append(f"missing:{candidate.asset_id}")
+                continue
+            if asset.media_type != MediaType.IMAGE:
+                # Utility-MRAG's surrogate is an image scorer.  Video assets in this
+                # project are represented by image keyframes, so the video row itself
+                # remains a deterministic fallback rather than being silently dropped.
+                fallback.append((position, candidate))
+                continue
+            try:
+                prepared.append((position, candidate, storage.read_asset(asset)))
+            except OSError as error:
+                fallback.append((position, candidate))
+                failures.append(f"unreadable:{candidate.asset_id}:{error}")
+
+        def score_one(image: bytes) -> float | None:
+            try:
+                return utility.score(question, image)
+            except Exception as error:  # noqa: BLE001 - one bad image must not abort selection
+                log.warning("效用评分候选失败: %s", error)
+                return None
+
+        scored: list[tuple[float, int, FusedCandidate]] = []
+        unscored_images: list[tuple[int, FusedCandidate]] = []
+        if prepared:
+            with ThreadPoolExecutor(max_workers=self._utility_concurrency) as executor:
+                scores = list(executor.map(score_one, (image for _, _, image in prepared)))
+            for (position, candidate, _), score in zip(prepared, scores, strict=True):
+                if score is None:
+                    unscored_images.append((position, candidate))
+                    failures.append(f"score_unavailable:{candidate.asset_id}")
+                else:
+                    scored.append(
+                        (
+                            float(score),
+                            position,
+                            replace(candidate, raw_scores={**candidate.raw_scores, "utility": float(score)}),
+                        )
+                    )
+
+        latency_ms = round((time.monotonic() - started) * 1000, 1)
+        if not scored:
+            traces.append(
+                ChannelTrace(
+                    channel="utility",
+                    status="degraded",
+                    candidate_count=len(pool),
+                    latency_ms=latency_ms,
+                    reason=("no_scoreable_candidates" if not prepared else ";".join(failures[:3])),
+                )
+            )
+            return None
+
+        ranked_images = [candidate for _, _, candidate in sorted(scored, key=lambda row: (-row[0], row[1]))]
+        fallback_with_order = [
+            candidate
+            for _, candidate in sorted(
+                [*[(position, candidate) for position, candidate in unscored_images], *fallback],
+                key=lambda row: row[0],
+            )
+        ]
+        ranked = self._unique_candidates([*ranked_images, *fallback_with_order])
+        backend = "utility"
+        with suppress(Exception):
+            backend = utility.model_id
+        traces.append(
+            ChannelTrace(
+                channel="utility",
+                status="degraded" if failures else "ok",
+                candidate_count=len(pool),
+                latency_ms=latency_ms,
+                backend=backend,
+                reason=(";".join(failures[:3]) if failures else ""),
+            )
+        )
+        return ranked[:limit]
 
     def execute(self, request: EvidenceRequest) -> EvidenceResult:
         text = request.text.strip()
@@ -533,6 +670,7 @@ class RetrieveEvidence:
         # 预留一个小而确定的尾部窗口；窗口内按 graph 的 0.5 应用层权重与路径排名
         # 选择，未命中时再由 primary 补位。这样既不改冻结 DEFAULT_CHANNEL_WEIGHTS，
         # 也不会让图候选反向改变 primary 排名。
+        graph_candidates: list[FusedCandidate] = []
         if channel_hits.get(GRAPH_CHANNEL):
             primary_ids = {candidate.asset_id for candidate in primary_fused}
             graph_candidates = [
@@ -547,88 +685,19 @@ class RetrieveEvidence:
                     candidate.asset_id,
                 )
             )
-            graph_slots = min(len(graph_candidates), max(1, min(4, limit // 4 or 1)))
-            selected: list[FusedCandidate] = [
-                *primary_fused[: max(0, limit - graph_slots)],
-                *graph_candidates[:graph_slots],
-            ]
-            selected_ids = {candidate.asset_id for candidate in selected}
-            if len(selected) < limit:
-                selected.extend(
-                    candidate for candidate in primary_fused if candidate.asset_id not in selected_ids
-                )
-                selected = selected[:limit]
-            fused = selected
-            if self._utility is not None and self._assets is not None and self._media_storage is not None:
-                # The paper scores actual images, not observation text. Keep the
-                # original selection intact if any candidate cannot be scored.
-                pool = [*primary_fused[:limit], *graph_candidates[: min(3, limit)]]
-                unique = list({candidate.asset_id: candidate for candidate in pool}.values())
-                started = time.monotonic()
-                scored: list[tuple[float, int, FusedCandidate]] = []
-                non_image_ids = {
-                    candidate.asset_id
-                    for candidate in selected
-                    if (asset := self._assets.get(candidate.asset_id)) is not None
-                    and asset.media_type != MediaType.IMAGE
-                }
-                failure = ""
-                for position, candidate in enumerate(unique):
-                    asset = self._assets.get(candidate.asset_id)
-                    if asset is None:
-                        failure = "candidate_missing"
-                        break
-                    if asset.media_type != MediaType.IMAGE:
-                        continue
-                    try:
-                        image = self._media_storage.read_asset(asset)
-                    except OSError as error:
-                        failure = f"image_unavailable: {error}"
-                        break
-                    score = self._utility.score(text, image)
-                    if score is None:
-                        failure = "true_token_logprob_unavailable"
-                        break
-                    scored.append((score, position, candidate))
-                if failure:
-                    traces.append(
-                        ChannelTrace(
-                            channel="utility",
-                            status="degraded",
-                            candidate_count=len(scored),
-                            latency_ms=round((time.monotonic() - started) * 1000, 1),
-                            reason=failure,
-                        )
-                    )
-                elif scored:
-                    ranked_images = [
-                        replace(candidate, raw_scores={**candidate.raw_scores, "utility": score})
-                        for score, _, candidate in sorted(scored, key=lambda row: (-row[0], row[1]))
-                    ]
-                    image_iter = iter(ranked_images)
-                    fused = [
-                        candidate if candidate.asset_id in non_image_ids else next(image_iter, candidate)
-                        for candidate in selected
-                    ]
-                    traces.append(
-                        ChannelTrace(
-                            channel="utility",
-                            status="ok",
-                            candidate_count=len(scored),
-                            latency_ms=round((time.monotonic() - started) * 1000, 1),
-                            backend=self._utility.model_id,
-                        )
-                    )
-                else:
-                    traces.append(
-                        ChannelTrace(
-                            channel="utility",
-                            status="degraded",
-                            candidate_count=0,
-                            latency_ms=0,
-                            reason="no_visual_candidates",
-                        )
-                    )
+        fallback = self._graph_fallback(primary=primary_fused, graph=graph_candidates, limit=limit)
+        if self._utility is not None:
+            # Score the complete ordinary+graph recall pool, not only the six
+            # delivery slots and not only three graph candidates.
+            utility_selected = self._utility_select(
+                question=text,
+                candidates=[*primary_fused, *graph_candidates],
+                limit=limit,
+                traces=traces,
+            )
+            fused = utility_selected if utility_selected is not None else fallback
+        elif graph_candidates:
+            fused = fallback
         else:
             fused = primary_fused[:limit]
 

@@ -26,6 +26,7 @@ from sentrix import __version__
 from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
+    corrections,
     diagnostics,
     facts,
     family,
@@ -173,6 +174,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(DomainError, domain_error_handler)
 
     v1 = APIRouter(prefix="/api/v1")
+    v1.include_router(corrections.router)
     v1.include_router(health.router)
     v1.include_router(media.router)
     v1.include_router(search.router)

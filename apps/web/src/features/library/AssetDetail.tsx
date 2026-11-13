@@ -24,6 +24,7 @@ import {
   type VideoScenePayload,
 } from "../../shared/api/client";
 import "./asset-detail.css";
+import { AssetMemoryCorrection } from '../../shared/components/MemoryCorrection';
 
 const MEDIA_LABEL: Readonly<Record<string, string>> = {
   image: "图片",
@@ -203,6 +204,7 @@ export function AssetDetail({
             />
           ) : null}
           <section className="asset-detail-evidence" aria-label="观察记录">
+            <AssetMemoryCorrection assetId={asset.id} />
             <h3>观察记录</h3>
             <ObservationList observations={observations} />
           </section>

@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.routes.media import refresh_memory_graph
 from sentrix.api.schemas.relationships import (
     RelationshipBatchRequest,
@@ -224,6 +225,7 @@ def import_relationships(
 
 
 @router.post("/relationships/{relationship_id}/confirm")
+@memory_write("relationship", "relationship_id")
 def confirm_relationship(
     relationship_id: str,
     container: Container = Depends(get_container),
@@ -242,6 +244,7 @@ def confirm_relationship(
 
 
 @router.post("/relationships/{relationship_id}/retract")
+@memory_write("relationship", "relationship_id")
 def retract_relationship(
     relationship_id: str,
     container: Container = Depends(get_container),

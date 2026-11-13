@@ -64,9 +64,6 @@ DEFAULT_SRC = REPO_ROOT / "apps" / "api" / "src"
 #     动工前先核依赖、核出缺口再写任务定义，**核查本身就是一个有交付物的任务**。
 #     把它们硬塞进一个编号会更像有归属，实际只是把问题推后。
 PENDING_METHODS: dict[str, str] = {
-    # 媒体级删除直接在同一 SQLite 事务内处理提及；此列表端口保留给
-    # 后续「逐条记忆修正向身份提及传播」任务，届时在应用层接线。
-    "EntityRepository.list_mentions": "记忆修正传播任务：按 scope 读取身份提及并更新派生图",
     # VideoJob 工作流把旧的「清空派生物后重跑」改为保留产物并续跑。该仓储方法仍保留，
     # 供未来显式的管理员清理流程复用；普通重处理不得调用它或删除已有产物。
     "VideoRepository.cleanup_derivatives": (

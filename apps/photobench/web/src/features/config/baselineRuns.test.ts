@@ -22,7 +22,7 @@ function run(overrides: Partial<Run>): Run {
 }
 
 describe("filterGraphBaselineRuns", () => {
-  it("只返回同配置下已完成的无图 run，并按完成时间倒序", () => {
+  it("只返回同配置下已结束的无图 run，并按完成时间倒序", () => {
     const result = filterGraphBaselineRuns(
       [
         run({ run_id: "older", finished_at: "2026-11-03T12:00:00+08:00" }),
@@ -32,10 +32,11 @@ describe("filterGraphBaselineRuns", () => {
         run({ run_id: "wrong-qa", qa_set: "compact-10q" }),
         run({ run_id: "wrong-model", model_name: "other-model" }),
         run({ run_id: "running", status: "running" }),
+        run({ run_id: "partial", status: "completed_with_errors", finished_at: "2026-11-03T14:00:00+08:00" }),
       ],
       CONTEXT,
     );
 
-    expect(result.map((item) => item.run_id)).toEqual(["latest", "older"]);
+    expect(result.map((item) => item.run_id)).toEqual(["partial", "latest", "older"]);
   });
 });

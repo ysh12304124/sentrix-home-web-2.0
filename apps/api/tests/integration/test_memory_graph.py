@@ -75,6 +75,12 @@ class _ListSource:
     def list_relationships(self, scope_id):
         return self.values
 
+    def list_properties(self, entity_id):
+        return ()
+
+    def list_mentions(self, scope_id, *, limit):
+        return ()
+
 
 class _EventSource(_ListSource):
     def __init__(self, values, observations):
@@ -514,6 +520,7 @@ def test_build_graph_projects_event_entities_and_video_scene_source(migrations_r
     )
     entity = SimpleNamespace(
         id="place-1",
+        summary="",
         canonical_name="家",
         entity_type="place",
         status="active",

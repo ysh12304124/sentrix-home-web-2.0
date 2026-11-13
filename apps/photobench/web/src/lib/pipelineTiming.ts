@@ -89,7 +89,6 @@ export function pipelineTimingView(
       const duration = seconds(timings[spanStage ? key + "_wall" : key]);
       const cumulative = spanStage ? seconds(timings[key]) : null;
       if (spanStage) {
-        basis = "整段实际耗时";
         if (cumulative !== null) description += ' 任务累计 ' + pipelineDuration(cumulative) + '（辅助统计）。';
       }
       const comparable = !nested && basis === "整段实际耗时" && duration !== null && total !== null && total > 0 && duration <= total;
@@ -117,12 +116,19 @@ export function pipelineTimingView(
       note: "下方占比以此为分母；与实际总耗时的差额未细分。" });
   }
 
-  if (explicit || ["source_memory_prepare", "source_memory_commit", "pipeline_core", "video_total", "video_keyframe_extraction"]
+  if (explicit || ["source_memory_prepare", "source_memory_commit", "pipeline_core", "video_total", "video_total_wall",
+    "video_keyframe_extraction", "video_keyframe_memory"]
     .some(key => timings[key] != null)) {
     const agentSeconds = options.qa ? agentDuration(options.qa, options.now ?? Date.now()) : null;
     const pipelineWall = phaseElapsed(phase);
+    const hasVideoStage = ["video_total", "video_total_wall", "video_keyframe_extraction", "video_keyframe_memory"]
+      .some(key => timings[key] != null);
     const flowRows = rows([
-      ["pipeline_core", "基础记忆构建", "整段实际耗时", "源媒体记忆、视频场景与关键帧处理、事件总结的处理窗口；并发分项不相加。"],
+      ...(hasVideoStage ? [[
+        "video_total", "媒体/关键帧处理", "基础记忆子阶段",
+        "视频场景规划、抽帧、关键帧资产写入和关键帧记忆构建；耗时已包含在下方基础记忆构建总墙钟内，不再相加。",
+      ] as Definition] : []),
+      ["pipeline_core", "基础记忆构建（含关键帧）", "整段实际耗时", "源媒体记忆、关键帧处理与事件总结的整段流水线窗口；这是全流程的主计时，不能再与上面的子阶段相加。"],
       ["memory_graph", "图结构构建", "整段实际耗时", "普通图片、视频关键帧、语义/因果边及图写入的合计。"],
     ]);
     if (options.graphEnabled === false) {
@@ -137,22 +143,29 @@ export function pipelineTimingView(
       basis: "QA 阶段实际经过", description: "包含检索工具、模型回答及其等待；Judge 评分另行执行，不计入此行。",
       share: null, nested: false,
     });
-    const flowTotal = pipelineWall.label === "实际总耗时" && agentSeconds !== null
-      ? `流水线＋Agent 合计 ${pipelineDuration(pipelineWall.seconds! + agentSeconds)}` : undefined;
+    const memoryBuildSeconds = seconds(timings.pipeline_core);
+    const graphSeconds = options.graphEnabled === false ? 0 : seconds(timings.memory_graph) ?? 0;
+    const flowBuildSeconds = memoryBuildSeconds === null ? null : memoryBuildSeconds + graphSeconds;
+    const flowTotal = flowBuildSeconds !== null && agentSeconds !== null
+      ? `记忆构建＋Agent 合计 ${pipelineDuration(flowBuildSeconds + agentSeconds)}`
+      : flowBuildSeconds !== null
+        ? `记忆构建合计 ${pipelineDuration(flowBuildSeconds)}`
+        : pipelineWall.label === "实际总耗时" && agentSeconds !== null
+          ? `流水线＋Agent 合计 ${pipelineDuration(pipelineWall.seconds! + agentSeconds)}`
+          : undefined;
     groups.push({
       key: "memory_flow", title: "记忆构建全流程", summary: flowTotal,
-      note: "基础记忆构建与图结构构建属于流水线；检索与推理属于随后执行的 QA Agent 阶段。合计只加两段独立阶段墙钟，包含流水线收尾，不含阶段间调度与 Judge；下方明细可能重叠，不再相加。",
+      note: "媒体/关键帧处理是基础记忆构建的子阶段，已包含在基础记忆构建主值中；图结构构建随后执行，检索与推理属于 QA Agent 阶段。总计只相加独立阶段墙钟；明细行的阶段跨度和任务累计可能重叠，不再相加。",
       rows: flowRows,
     });
-    const core = rows([["pipeline_core", "媒体处理与事件总结", "整段实际耗时", "包含下列处理步骤；并发推理与串行提交会重叠。"]])[0];
-    groups.push({ key: "core", title: "媒体处理与事件总结",
+    const core = rows([["pipeline_core", "基础记忆构建明细", "整段实际耗时", "包含下列源媒体处理与事件总结步骤；子阶段可能重叠。"]])[0];
+    groups.push({ key: "core", title: "基础记忆构建明细",
       summary: core ? actualSummary(seconds(timings.pipeline_core)) : undefined,
-      note: "本段从开始处理媒体到事件总结结束，按实际经过时间计时。子阶段按最早开始至最晚结束计时，包含期间等待，占比以后端总耗时为分母。子阶段可重叠，占比不可相加；历史未采集首尾时标为未记录。",
+      note: "本段是基础记忆构建的诊断明细；媒体/关键帧处理已在上方全流程列出。主值是各环节的阶段跨度，括号中的任务累计是所有任务执行时间；两者都不是可直接相加的独立阶段，历史未采集首尾时标为未记录。",
       rows: rows([
-        ["source_memory_prepare", "源媒体模型准备", "并行任务累计", "视觉向量、画面理解、人脸检测；多张媒体并行准备。"],
-        ["source_memory_commit", "源媒体记忆提交", "串行累计", "地点、人脸归类、事件归属、文本向量、实体、事实与检索索引。"],
-        ["video_total", "视频场景与关键帧处理", "串行累计", "含场景规划、抽帧、关键帧登记和记忆构建。"],
-        ["event_summarize", "事件总结", "整段实际耗时", "媒体处理结束后的事件摘要。"],
+        ["source_memory_prepare", "源媒体模型准备", "并行阶段跨度", "多张媒体同时执行视觉向量、画面理解和人脸检测；主值是首个任务开始到最后任务结束的跨度，任务累计是所有 worker 执行时间总和。", true],
+        ["source_memory_commit", "源媒体记忆提交", "顺序提交跨度", "按媒体顺序落库以保证事件归属；主值包含提交之间等待并行结果的跨度，任务累计是实际提交操作总和。", true],
+        ["event_summarize", "事件总结", "事件总结阶段墙钟", "媒体处理结束后按事件执行摘要生成。", true],
       ]),
     });
     const finalizeParts = ["participant_projection", "memory_graph", "family_graph", "person_insights"].map(key => seconds(timings[key]));

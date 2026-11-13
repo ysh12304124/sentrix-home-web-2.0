@@ -66,6 +66,9 @@ class Settings(BaseSettings):
             for key in (
                 "deployment_profile",
                 "vlm_base_url",
+                "utility_vlm_base_url",
+                "utility_vlm_timeout_s",
+                "utility_vlm_concurrency",
                 "embedding_scheme",
                 "text_embedder_url",
                 "legacy_clip_url",
@@ -99,6 +102,12 @@ class Settings(BaseSettings):
 
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
+    # Optional Utility-MRAG-style local surrogate.  It is deliberately a separate
+    # endpoint: the production VLM must not be used for one extra image request per
+    # candidate.  Empty means the graph-enabled retriever keeps its normal ordering.
+    utility_vlm_base_url: str = ""
+    utility_vlm_timeout_s: float = 45.0
+    utility_vlm_concurrency: int = Field(default=2, ge=1, le=4)
     # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
     qwen_asr_base_url: str = ""
     qwen_asr_model: str = "Qwen3-ASR"

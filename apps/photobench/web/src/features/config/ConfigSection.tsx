@@ -105,7 +105,8 @@ export function ConfigSection({
     const count = run.qa_count ?? run.item_count;
     const recall = run.summary?.media_retrieval_recall_macro ?? run.summary?.retrieval_recall_macro;
     const recallLabel = typeof recall === "number" ? ` · 媒体召回 ${(recall * 100).toFixed(1)}%` : "";
-    return `${run.run_id} · ${finished} · ${count ?? "?"} 题${recallLabel}`;
+    const statusLabel = run.status === "completed_with_errors" ? " · 有错误" : "";
+    return `${run.run_id} · ${finished} · ${count ?? "?"} 题${statusLabel}${recallLabel}`;
   };
 
   // 1.0 `:17-20`：`config?.cloud_model_profile || {...}`（整对象兜底，不逐字段补）。
@@ -285,7 +286,7 @@ export function ConfigSection({
                     ))}
                   </select>
                   <span className="config-help">
-                    已按当前相册、QA 数据集和模型过滤，只显示已完成且关闭图检索的测评。
+                    已按当前相册、QA 数据集和模型过滤，显示已完成或部分完成且关闭图检索的测评；有错误的 run 会单独标注。
                   </span>
                 </label>
                 <label>

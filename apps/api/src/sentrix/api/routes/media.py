@@ -712,6 +712,7 @@ def build_memory_graph(container: Container) -> BuildMemoryGraph:
         facts=container.fact_repository,
         relationships=container.relationship_repository,
         graph=container.memory_graph,
+        family=container.family_graph_repository,
         causal_judge=container.causal_judge,
         vectors=container.vector_repository,
     )

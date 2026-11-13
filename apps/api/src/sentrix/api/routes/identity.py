@@ -26,6 +26,7 @@ from fastapi.responses import Response
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError, UnprocessableError
+from sentrix.api.routes.corrections import memory_write, synchronizer
 from sentrix.api.routes.media import refresh_memory_graph
 from sentrix.api.schemas.identity import (
     BatchConfirmFailure,
@@ -300,6 +301,7 @@ def list_face_clusters(
 
 
 @router.post("/face-clusters/{cluster_id}/confirm")
+@memory_write("face", "cluster_id")
 def confirm_face_cluster(
     cluster_id: str,
     payload: ConfirmClusterRequest,
@@ -316,6 +318,7 @@ def confirm_face_cluster(
 
 
 @router.post("/face-clusters/{cluster_id}/reject")
+@memory_write("face", "cluster_id")
 def reject_face_cluster(
     cluster_id: str, container: Container = Depends(get_container)
 ) -> RejectClusterResponse:
@@ -328,6 +331,7 @@ def reject_face_cluster(
 
 
 @router.post("/face-clusters/merge")
+@memory_write("face", "target_cluster_id")
 def merge_face_clusters(
     payload: MergeClustersRequest, container: Container = Depends(get_container)
 ) -> FaceClusterSummary:
@@ -348,6 +352,7 @@ def merge_face_clusters(
 
 
 @router.post("/face-clusters/{cluster_id}/split")
+@memory_write("face", "cluster_id")
 def split_face_cluster(
     cluster_id: str,
     payload: SplitClusterRequest,
@@ -658,6 +663,7 @@ def _property_payload(record: EntityPropertyRecord) -> EntityPropertyPayload:
 
 
 @router.put("/entities/{entity_id}/properties/{property_key}")
+@memory_write("entity", "entity_id")
 def set_entity_property(
     entity_id: str,
     property_key: str,
@@ -829,6 +835,7 @@ def get_person(person_id: str, container: Container = Depends(get_container)) ->
 
 
 @router.patch("/people/{person_id}/name")
+@memory_write("entity", "person_id")
 def rename_person(
     person_id: str,
     payload: RenamePersonRequest,
@@ -854,7 +861,11 @@ def batch_confirm_people(
     scopes: set[str] = set()
     for item in payload.items:
         try:
-            result = use_case.confirm_entity(item.person_id, name=item.name, family_role=item.family_role)
+            person_before = container.entity_repository.get(item.person_id)
+            if person_before is None:
+                raise NotFoundError("person not found")
+            with container.memory_corrections.track(person_before.scope_id, "entity", item.person_id):
+                result = use_case.confirm_entity(item.person_id, name=item.name, family_role=item.family_role)
         except Exception as error:  # noqa: BLE001 — 逐件回执正是要把失败收进响应
             failed.append(
                 BatchConfirmFailure(person_id=item.person_id, name=item.name, error=str(error)[:200])
@@ -876,7 +887,7 @@ def batch_confirm_people(
         )
         scopes.add(result.entity.scope_id)
     for scope_id in sorted(scopes):
-        refresh_memory_graph(container, scope_id)
+        synchronizer(container).execute(scope_id)
     return BatchConfirmResponse(confirmed=confirmed, failed=failed, count=len(confirmed))
 
 

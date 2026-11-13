@@ -57,7 +57,7 @@ describe("事件详情", () => {
     expect(screen.getAllByText("杭州市西湖区").length).toBeGreaterThan(0);
     expect(screen.getByText("86%")).not.toBeNull();
     expect(screen.getByRole("img", { name: "湖边散步的封面" })).not.toBeNull();
-    expect(screen.getByText("原始证据（2 张照片）")).not.toBeNull();
+    expect(screen.getByText("原始证据（2 个媒体）")).not.toBeNull();
     // 后端没有的三块如实说明，而不是渲染空壳。
     expect(screen.getByText(/不返回人物、实体或关联事实/)).not.toBeNull();
   });

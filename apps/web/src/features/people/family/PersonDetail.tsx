@@ -35,6 +35,7 @@ import {
   MEMBERSHIP_VALUES,
 } from "./membership";
 import { PersonAvatar } from "./PersonAvatar";
+import { CorrectionHistory } from '../../../shared/components/MemoryCorrection';
 
 const CHOICES = relationChoices();
 
@@ -181,6 +182,7 @@ export function PersonDetail({
 
       <section className="detail-section">
         <h3>身份</h3>
+        <CorrectionHistory scopeId={person.scope_id} />
         <form className="detail-form" onSubmit={submitRename}>
           <label>
             姓名

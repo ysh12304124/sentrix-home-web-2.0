@@ -16,7 +16,7 @@ describe("流水线计时口径", () => {
     const prepare = view.groups.find(group => group.key === "core")!.rows.find(row => row.key === "source_memory_prepare")!;
     expect(prepare.value).toBe("未记录");
     expect(prepare.description).toContain("任务累计 12分48.6秒（辅助统计）");
-    expect(prepare.basis).toBe("整段实际耗时");
+    expect(prepare.basis).toBe("并行阶段跨度");
     expect(prepare.share).toBeNull();
     const tail = view.groups.find(group => group.key === "finalize")!;
     expect(tail.summary).toBe("实际经过 1分56.4秒 · 占后端 16.6%");
@@ -32,8 +32,9 @@ describe("流水线计时口径", () => {
       video_scene_write: 2, video_keyframe_extraction: 3, video_keyframe_asset_write: 4, video_keyframe_memory: 25,
     } });
     expect(view.groups.some(group => group.key === "video")).toBe(false);
-    expect(view.groups.find(group => group.key === "core")!.rows.find(row => row.key === "video_total"))
+    expect(view.groups.find(group => group.key === "memory_flow")!.rows.find(row => row.key === "video_total"))
       .toMatchObject({ value: "未记录", description: expect.stringContaining("任务累计 35s（辅助统计）") });
+    expect(view.groups.find(group => group.key === "core")!.rows.some(row => row.key === "video_total")).toBe(false);
   });
 
   it("旧合并接口保留主线程等待含义，不当作模型累计或独立流水线墙钟", () => {
@@ -105,7 +106,7 @@ it("并行任务累计20秒，实际经过10秒，阶段主值与占比使用实
   const before = JSON.stringify(phase);
   const view = pipelineTimingView(phase);
   expect(view.groups.find(group => group.key === "core")!.rows.find(row => row.key === "source_memory_prepare"))
-    .toMatchObject({ value: "10s", basis: "整段实际耗时", share: "50.0%" });
+    .toMatchObject({ value: "10s", basis: "并行阶段跨度", share: null });
   expect(view.groups.find(group => group.key === "core")!.rows.find(row => row.key === "source_memory_prepare")?.description)
     .toContain("任务累计 20s（辅助统计）");
   expect(view.groups.some(group => group.key === "video")).toBe(false);
@@ -117,16 +118,17 @@ it("记忆构建全流程按流水线和 QA Agent 两段真实墙钟展示，不
   const view = pipelineTimingView({
     execution_mode: "explicit", status: "done",
     started_at: "2026-11-09T10:00:00Z", finished_at: "2026-11-09T10:01:40Z",
-    timings: { total: 100, pipeline_core: 70, memory_graph: 8, video_keyframe_memory: 25 },
+    timings: { total: 100, pipeline_core: 70, memory_graph: 8, video_total: 25, video_total_wall: 20, video_keyframe_memory: 25 },
   }, {}, { qa: { status: "done", agent_phase_wall_ms: 120000, judge_phase_wall_ms: 200000 }, graphEnabled: true });
   const flow = view.groups.find(group => group.key === "memory_flow")!;
-  expect(flow.summary).toBe("流水线＋Agent 合计 3分40秒");
+  expect(flow.summary).toBe("记忆构建＋Agent 合计 3分18秒");
   expect(flow.rows.map(row => [row.label, row.value])).toEqual([
-    ["基础记忆构建", "1分10秒"],
+    ["媒体/关键帧处理", "20s"],
+    ["基础记忆构建（含关键帧）", "1分10秒"],
     ["图结构构建", "8s"],
     ["检索与推理（Agent）", "2分"],
   ]);
-  expect(flow.rows[2].share).toBeNull();
+  expect(flow.rows[3].share).toBeNull();
   expect(view.groups.find(group => group.key === "finalize")?.rows.some(row => row.key === "memory_graph")).toBe(false);
 });
 

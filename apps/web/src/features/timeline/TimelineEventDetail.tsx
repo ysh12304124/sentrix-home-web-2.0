@@ -10,7 +10,8 @@
 import { useEffect, useState } from "react";
 
 import { fetchEvent, type TimelineEvent } from "../../shared/api/client";
-import { timelinePhotoUrl } from "./photoUrl";
+import { isTimelineVideo, timelinePhotoUrl } from "./photoUrl";
+import { MemoryCorrection, AssetMemoryCorrection } from '../../shared/components/MemoryCorrection';
 
 interface Loaded {
   readonly id: string;
@@ -106,6 +107,9 @@ export function TimelineEventDetail({
         ) : (
           <>
             <p className="timeline-event-summary">{event.summary || "暂无摘要。"}</p>
+            <MemoryCorrection kind="event" targetId={event.id} onSaved={async () => {
+              setLoaded({ id: eventId, event: await fetchEvent(eventId), error: null });
+            }} />
 
             <dl className="timeline-event-facts">
               <div>
@@ -135,60 +139,70 @@ export function TimelineEventDetail({
             </dl>
 
             <section className="timeline-event-section">
-              <h3>封面照片</h3>
+              <h3>封面媒体</h3>
               {event.photos.length === 0 ? (
                 <p className="timeline-event-note">这个事件没有关联照片。</p>
               ) : (
-                <a
-                  className="timeline-event-cover"
-                  href={timelinePhotoUrl(event.photos[0])}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <img
-                    src={timelinePhotoUrl(event.photos[0])}
-                    alt={`${event.title}的封面`}
-                  />
-                </a>
+                isTimelineVideo(event.photos[0]) ? (
+                  <a className="timeline-video-preview is-cover" href={timelinePhotoUrl(event.photos[0])} target="_blank" rel="noreferrer">
+                    <span aria-hidden="true">▶</span>
+                    <strong>视频证据</strong>
+                    <small>{event.photos[0].file_name}</small>
+                  </a>
+                ) : (
+                  <a
+                    className="timeline-event-cover"
+                    href={timelinePhotoUrl(event.photos[0])}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <img
+                      src={timelinePhotoUrl(event.photos[0])}
+                      alt={`${event.title}的封面`}
+                    />
+                  </a>
+                )
               )}
             </section>
 
             <section className="timeline-event-section">
-              <h3>原始证据（{event.photos.length} 张照片）</h3>
+              <h3>原始证据（{event.photos.length} 个媒体）</h3>
               {event.photos.length === 0 ? (
                 <p className="timeline-event-note">没有可回溯的照片。</p>
               ) : (
                 <ul className="timeline-event-photo-list">
                   {event.photos.map((photo) => (
                     <li key={photo.asset_id}>
-                      {/* **点图片是放大，不是打开原文件。** 此前这里是
-                          `<a href="/assets/{id}/file" target="_blank">`——浏览器遇到
-                          HEIC 或不认识的 MIME 会直接下载，用户点「图片」得到的是一个文件。 */}
-                      {onOpenImage ? (
+                      {isTimelineVideo(photo) ? (
+                        <a className="timeline-video-preview" href={timelinePhotoUrl(photo)} target="_blank" rel="noreferrer">
+                          <span aria-hidden="true">▶</span>
+                          <strong>视频</strong>
+                          <small>{photo.file_name}</small>
+                        </a>
+                      ) : onOpenImage ? (
                         <button
                           type="button"
                           className="timeline-photo-open"
-                          onClick={() =>
-                            onOpenImage(timelinePhotoUrl(photo), photo.file_name)
-                          }
+                          onClick={() => onOpenImage(timelinePhotoUrl(photo), photo.file_name)}
                         >
                           <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
                         </button>
                       ) : (
-                        <a href={timelinePhotoUrl(photo)} target="_blank" rel="noreferrer">
+                        <a className="timeline-photo-open" href={timelinePhotoUrl(photo)} target="_blank" rel="noreferrer">
                           <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
                         </a>
                       )}
-                      <small>{photo.file_name}</small>
-                      <small>{formatDateTime(photo.captured_at)}</small>
-                      {photo.place ? <small>{photo.place}</small> : null}
+                      <div className="timeline-evidence-meta">
+                        <strong title={photo.file_name}>{photo.file_name}</strong>
+                        <small>{formatDateTime(photo.captured_at)}</small>
+                        {photo.place ? <small>{photo.place}</small> : null}
+                      </div>
+                      <AssetMemoryCorrection assetId={photo.asset_id} compact />
                     </li>
                   ))}
                 </ul>
               )}
-              <p className="timeline-event-note">
-                接口返回的是照片（Asset），不含 Observation 的 ID 与描述。
-              </p>
+              <p className="timeline-event-note">展开单个媒体卡片，可查看并修正该媒体及其关键帧关联的观察记忆。</p>
             </section>
 
             <section className="timeline-event-section">

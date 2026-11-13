@@ -69,6 +69,10 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
     for node_id, (kind, attrs) in nodes.items():
         if kind == "entity":
             entities_by_name[str(attrs.get("canonical_name") or "").casefold()] = node_id
+            properties = attrs.get("properties")
+            if isinstance(properties, dict):
+                for alias in _strings(properties.get("aliases")):
+                    entities_by_name.setdefault(" ".join(alias.casefold().split()), node_id)
         elif kind == "concept":
             concepts[(str(attrs.get("concept_type") or ""), str(attrs.get("normalised") or ""))] = node_id
         elif kind in {"place_context", "date_context"}:
@@ -86,6 +90,11 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
 
     # 名称索引在第一遍读取完所有节点后才完整；再次处理名称依赖关系。
     for node_id, (kind, attrs) in nodes.items():
+        if kind in {"asset", "observation"}:
+            for entity_id in _strings(attrs.get("confirmed_entity_ids")):
+                target = f"entity:{entity_id}"
+                if target in nodes and nodes[target][1].get("status") == "confirmed":
+                    reference.add((node_id, target, f"{kind}_mentions_confirmed_entity", ""))
         if kind == "observation":
             values: list[tuple[str, str]] = []
             for source, kind_name in (("objects", "object"), ("clothing", "clothing"), ("people", "person")):

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTimeline, type TimelineDay, type TimelinePhoto } from "../../shared/api/client";
 import { Lightbox } from "../../shared/ui/Lightbox";
 import { TimelineEventDetail } from "./TimelineEventDetail";
-import { timelinePhotoUrl } from "./photoUrl";
+import { isTimelineVideo, timelinePhotoUrl } from "./photoUrl";
 
 const PAGE_SIZE = 20;
 
@@ -275,10 +275,26 @@ export function Timeline({ scopeId, focusEventId, onOpenEvent }: Props) {
                 <p>{event.summary}</p>
                 <div className="timeline-photos" onClick={(click) => click.stopPropagation()}>
                   {event.photos.map((photo) => (
-                    <button type="button" key={photo.asset_id} onClick={() => setOpen(photo)}>
-                      <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
-                      {photo.place ? <small>{photo.place}</small> : null}
-                    </button>
+                    isTimelineVideo(photo) ? (
+                      <a
+                        className="timeline-video-thumb"
+                        href={timelinePhotoUrl(photo)}
+                        target="_blank"
+                        rel="noreferrer"
+                        key={photo.asset_id}
+                        onClick={(click) => click.stopPropagation()}
+                        aria-label={`打开视频 ${photo.file_name}`}
+                      >
+                        <span aria-hidden="true">▶</span>
+                        <strong>视频</strong>
+                        <small>{photo.file_name}</small>
+                      </a>
+                    ) : (
+                      <button type="button" key={photo.asset_id} onClick={() => setOpen(photo)}>
+                        <img src={timelinePhotoUrl(photo)} alt={photo.file_name} loading="lazy" />
+                        {photo.place ? <small>{photo.place}</small> : null}
+                      </button>
+                    )
                   ))}
                 </div>
                 <button
@@ -299,7 +315,7 @@ export function Timeline({ scopeId, focusEventId, onOpenEvent }: Props) {
       <div ref={sentinel} className="timeline-sentinel">
         {loading || loadingMore ? "加载中…" : null}
       </div>
-      {open ? (
+      {open && !isTimelineVideo(open) ? (
         <div className="timeline-overlay" role="presentation" onClick={() => setOpen(null)}>
           <img src={timelinePhotoUrl(open)} alt={open.file_name} />
           <p>

@@ -1061,6 +1061,10 @@ class FamilyGraphRepository(Protocol):
 
     # ---- 读投影 ----------------------------------------------------------------
 
+    def user_relationship_pairs(self, scope_id: str) -> Sequence[tuple[str, str]]:
+        """用户已覆盖或撤回的无序人物对；图投影不得从旧通用关系恢复它们。"""
+        ...
+
     def family_graph_people(self, scope_ids: Sequence[str]) -> Sequence[FamilyPersonProjection]:
         """这张图里**全部人物**的展示投影。1.0 ``db.py:5649-5688`` 的 ``family_graph_people``。
 
