@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sentrix.domain.identity.ports import EntityRepository, FamilyGraphRepository, RelationshipRepository
 from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
@@ -38,6 +38,11 @@ log = logging.getLogger("sentrix.memories.build_graph")
 
 GRAPH_READ_LIMIT = 100_000
 TEMPORAL_EDGE_MAX_SECONDS = 6 * 60 * 60
+
+
+def _aware(value: datetime) -> datetime:
+    """事件时间可能来自无时区元数据；图内比较统一按 UTC。"""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _iso(value: datetime | None) -> str:

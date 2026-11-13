@@ -176,7 +176,7 @@ def test_list_clusters_honours_include_in_people(faces: SqliteFaceRepository, se
 
 
 def test_pending_cluster_is_displayed_as_an_unnamed_member(faces: SqliteFaceRepository, seeded_db: Database):
-    """``pending`` 簇对外只叫「待命名成员」，而且不许带家庭角色。
+    """``pending`` 簇对外只叫「未确认姓名人物」，而且不许带家庭角色。
 
     1.0 在 HTTP 层做的这件事（``app.py:1976``）：库里那一行 ``canonical_name`` 是
     「待确认人物簇 · cluster-3」，直接展示出去用户看到的是内部 id。角色同理——
@@ -189,7 +189,7 @@ def test_pending_cluster_is_displayed_as_an_unnamed_member(faces: SqliteFaceRepo
 
     by_id = {cluster.id: cluster for cluster in faces.list_clusters()}
 
-    assert PENDING_CLUSTER_NAME == "待命名成员"
+    assert PENDING_CLUSTER_NAME == "未确认姓名人物"
     assert by_id["clu_1"].canonical_name == PENDING_CLUSTER_NAME
     assert by_id["clu_1"].family_role is None
     assert by_id["clu_2"].canonical_name == "妈妈"
@@ -427,6 +427,54 @@ def test_rename_person_folds_the_old_name_into_aliases(entities: SqliteEntityRep
             " WHERE field_name = 'canonical_name'"
         ).fetchone()
     assert tuple(row) == ("canonical_name", "妈妈", "老妈", "user_rename")
+
+
+def _people_snapshot(db: Database, observation_id: str) -> list[dict[str, str]]:
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
+        ).fetchone()
+    return json.loads(row["people_json"] or "[]")
+
+
+def test_renaming_a_confirmed_person_rewrites_the_name_in_photo_snapshots(
+    entities: SqliteEntityRepository, seeded_db: Database
+):
+    """快照存的是名字：检索人物条件、记忆图、照片预览都读它。改名不同步，
+    这个人所有照片上记的还是旧名，按新名字一张都查不到。别人的条目不能被碰到。"""
+    add_entity(seeded_db, "ent_1", name="王王", status="confirmed")
+    add_entity(seeded_db, "ent_2", name="明明", status="confirmed")
+    entities.link_confirmed_mention("ent_1", "obs_1")
+    entities.link_confirmed_mention("ent_2", "obs_1")
+    entities.link_confirmed_mention("ent_1", "obs_2")
+
+    entities.rename_person("ent_1", "王小王")
+
+    assert _people_snapshot(seeded_db, "obs_1") == [
+        {"entity_id": "ent_1", "name": "王小王", "status": "confirmed"},
+        {"entity_id": "ent_2", "name": "明明", "status": "confirmed"},
+    ]
+    assert _people_snapshot(seeded_db, "obs_2") == [
+        {"entity_id": "ent_1", "name": "王小王", "status": "confirmed"},
+    ]
+
+
+def test_relinking_a_mention_refreshes_a_stale_snapshot_entry(
+    entities: SqliteEntityRepository, seeded_db: Database
+):
+    """老库里可能已经有改名前留下的旧条目：再写一次提及时按当前实体对齐，不追加第二条。"""
+    add_entity(seeded_db, "ent_1", name="王王", status="confirmed")
+    with seeded_db.connect() as connection, connection:
+        connection.execute(
+            "UPDATE observations SET people_json = ? WHERE id = 'obs_1'",
+            (json.dumps([{"entity_id": "ent_1", "name": "旧名", "status": "pending"}], ensure_ascii=False),),
+        )
+
+    entities.link_confirmed_mention("ent_1", "obs_1")
+
+    assert _people_snapshot(seeded_db, "obs_1") == [
+        {"entity_id": "ent_1", "name": "王王", "status": "confirmed"},
+    ]
 
 
 def test_rename_person_refuses_a_non_person_entity(entities: SqliteEntityRepository, seeded_db: Database):

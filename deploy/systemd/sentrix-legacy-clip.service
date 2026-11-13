@@ -1,0 +1,20 @@
+[Unit]
+Description=Sentrix legacy Chinese-CLIP sidecar (8103, 768d)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentrix-models
+Group=sentrix-models
+WorkingDirectory=/opt/sentrix/current
+Environment=SENTRIX_CLIP_PORT=8103
+ExecStart=/opt/sentrix/current/.venv/bin/python scripts/maintenance/legacy_clip_sidecar.py --port 8103
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -88,6 +88,14 @@ class LexicalIndex(Protocol):
 
     def rebuild_scope(self, scope_id: str) -> int: ...
 
+    def rebuild_person_bridge(self, scope_id: str | None = None) -> int:
+        """只按观察当前的人物快照重写 ``person_bridge`` 行；``scope_id`` 为空时覆盖全部观察。
+
+        存量回填用（``scripts/backfill_person_bridge.py``）：确认人物的写入路径从此在
+        同一事务里刷这一列，但此前确认过的人只在快照里、不在投影里。幂等，可反复跑。
+        """
+        ...
+
     def count(self, scope_id: str | None = None) -> int: ...
 
 
@@ -107,6 +115,9 @@ class LexicalSearch(Protocol):
 
         查不到就返回空集——**空集与「这个人在库里没有照片」在调用方是一回事**，
         由 ``RetrieveEntity`` 决定要不要退回直接读观察。
+
+        ``scope_id`` 为空是「全部相册」：只覆盖 ``include_in_people = 1`` 的空间，与
+        ``EntityRepository.list_entities`` 同一条口径（评测空间不进家庭问答）。
         """
         ...
 

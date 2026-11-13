@@ -41,6 +41,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+from photobench.domain.deploy.ports import (
+    BENCHMARK_GATEWAY_TOKEN_ENV,
+    BENCHMARK_GATEWAY_UPSTREAM_ENV,
+    BENCHMARK_GATEWAY_URL_ENV,
+)
 from photobench.domain.runtime.metrics import (
     RESOURCE_TELEMETRY_VERSION,
     component_total,
@@ -74,6 +79,36 @@ def normalize_openai_base_url(value: str | None) -> str:
     if not value:
         return ""
     return value if re.search(r"/v\d+$", value, flags=re.IGNORECASE) else f"{value}/v1"
+
+
+def benchmark_gateway() -> tuple[str, str, str]:
+    """(入口 URL, 入口指向的上游 URL, 评测令牌)。未完整配置时返回空串。"""
+    gateway = normalize_openai_base_url(os.getenv(BENCHMARK_GATEWAY_URL_ENV, ""))
+    upstream = normalize_openai_base_url(os.getenv(BENCHMARK_GATEWAY_UPSTREAM_ENV, ""))
+    token = os.getenv(BENCHMARK_GATEWAY_TOKEN_ENV, "").strip()
+    if not (gateway and upstream and token):
+        return "", "", ""
+    return gateway, upstream, token
+
+
+def benchmark_route(model_base_url: str) -> tuple[str, str]:
+    """同机共享模型 → (控制入口, 评测令牌)；其他模型或未配置 → 原端点、空令牌。
+
+    **不能把所有端点都改成 153 入口**：评测选择远端模型时必须保持原模式。
+    """
+    gateway, upstream, token = benchmark_gateway()
+    base = normalize_openai_base_url(model_base_url)
+    if gateway and base == upstream:
+        return gateway, token
+    return base, ""
+
+
+def gateway_matches_selected(observed: str, expected: str) -> bool:
+    """产品的 ``vlm_base_url`` 指向控制入口，且入口上游等于本轮所选模型。"""
+    gateway, upstream, token = benchmark_gateway()
+    if not (gateway and upstream and token):
+        return False
+    return normalize_openai_base_url(observed) == gateway and normalize_openai_base_url(expected) == upstream
 
 
 def _configured_set(env_name: str, defaults: tuple[str, ...]) -> set[str]:
@@ -507,16 +542,25 @@ class OpenAICompatibleInferenceProvider:
         manager_url: str = "",
         timeout: float = 180,
     ):
-        self.base_url = normalize_openai_base_url(base_url)
+        routed, gateway_token = benchmark_route(base_url)
+        self.base_url = normalize_openai_base_url(routed)
         if not self.base_url:
             raise ValueError("model base URL is required")
         self.api_key = str(api_key or "")
+        # 走控制面时只用评测级令牌：调用方 api_key 属于被评测模型，不能带进准入入口。
+        self._gateway_token = gateway_token
         self.api_mode = str(api_mode or "generic").strip().lower()
         self.manager_url = normalize_service_url(manager_url)
         self.timeout = float(timeout)
 
     @property
+    def routed_through_gateway(self) -> bool:
+        return bool(self._gateway_token)
+
+    @property
     def headers(self) -> dict[str, str]:
+        if self._gateway_token:
+            return {"Authorization": f"Bearer {self._gateway_token}"}
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     def health(self) -> dict[str, Any]:
@@ -525,6 +569,9 @@ class OpenAICompatibleInferenceProvider:
             models = self.list_models()
             return {"status": "available", "source": "openai_models", **models}
         except Exception as models_error:
+            if self.routed_through_gateway:
+                # 控制入口没有 llama.cpp/Ollama 的 `/health` 回落；不要探测不存在的路径。
+                return {"status": "unavailable", "error": str(models_error)}
             root = self.base_url.removesuffix("/v1")
             for suffix in ("/health", "/api/health"):
                 try:

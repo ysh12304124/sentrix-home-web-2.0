@@ -103,6 +103,18 @@ class SqliteAssetRepository:
             ).fetchone()
         return _row_to_asset(row) if row else None
 
+    def get_many(self, asset_ids: Sequence[str]) -> dict[str, Asset]:
+        unique = list(dict.fromkeys(asset_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["id"]): _row_to_asset(row) for row in rows}
+
     def list_by_scope(self, scope_id: str | None, limit: int = 200) -> Sequence[Asset]:
         """``scope_id=None`` = 跨全部相册。
 
@@ -118,6 +130,51 @@ class SqliteAssetRepository:
                 (*params, limit),
             ).fetchall()
         return [_row_to_asset(row) for row in rows]
+
+    def list_page(
+        self,
+        scope_id: str | None,
+        *,
+        media_type: str | None = None,
+        sort: str = "captured",
+        order: str = "desc",
+        offset: int = 0,
+        limit: int = 200,
+    ) -> tuple[Sequence[Asset], int, dict[str, int]]:
+        """资料库分页：返回 (当页资产, 当前筛选总数, 当前范围各类型计数)。
+
+        计数查询覆盖完整范围，先取 200 条再统计会把「前 200 条」冒充总量。
+        排序键与方向由调用方按白名单给；SQL 里只拼这两列常量表达式。
+        """
+        scope_clause = "" if scope_id is None else " WHERE scope_id = ?"
+        scope_params: tuple[object, ...] = () if scope_id is None else (scope_id,)
+        type_clause = " WHERE media_type = ?" if media_type else ""
+        type_params: tuple[object, ...] = (media_type,) if media_type else ()
+        if scope_id is None:
+            where = type_clause
+            params = type_params
+        else:
+            where = scope_clause if not media_type else f"{scope_clause} AND media_type = ?"
+            params = (*scope_params, *type_params)
+
+        sort_expression = "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
+        direction = "ASC" if order == "asc" else "DESC"
+
+        with self._database.connect() as connection:
+            counts_rows = connection.execute(
+                f"SELECT media_type, COUNT(*) AS n FROM assets{scope_clause} GROUP BY media_type",
+                scope_params,
+            ).fetchall()
+            counts = {str(row["media_type"]): int(row["n"]) for row in counts_rows}
+            counts["all"] = sum(counts.values())
+            total = counts.get(media_type or "", 0) if media_type else counts["all"]
+            rows = connection.execute(
+                f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
+                f" ORDER BY {sort_expression} {direction}, id {direction}"
+                " LIMIT ? OFFSET ?",
+                (*params, max(1, limit), max(0, offset)),
+            ).fetchall()
+        return [_row_to_asset(row) for row in rows], total, counts
 
     def find_by_hash(self, scope_id: str, content_sha256: str) -> Asset | None:
         with self._database.connect() as connection:
@@ -163,12 +220,15 @@ def _json_facts(value: str | None) -> tuple[ObservationFact, ...]:
     )
 
 
-def _json_people(value: str | None) -> tuple[str, ...]:
+def people_names(value: str | None) -> tuple[str, ...]:
     """``people_json`` → 名字元组。
 
     写入侧（``entities.py`` 的 ``_append_person_snapshot``）存的是
     ``{"entity_id":…, "name":…, "status":…}``；1.0 把它整条 ``str()`` 进了词法投影
     （见 ``domain/retrieval/lexical.py`` 的字段表注释），2.0 只取名字。
+
+    公开是因为 ``search_terms.sync_person_bridge`` 在**同一个事务里**直接从这一列
+    重写 ``person_bridge`` 行：两处必须是同一个解析，否则「快照里有、投影里没有」。
     """
     try:
         parsed = json.loads(value or "[]")
@@ -185,15 +245,15 @@ def _json_people(value: str | None) -> tuple[str, ...]:
 
 
 def people_snapshot(value: str | None) -> tuple[PeopleSnapshotEntry, ...]:
-    """``people_json`` → 带绑定状态的条目。**只解析，不校验**（与 ``_json_people`` 同）。
+    """``people_json`` → 带绑定状态的条目。**只解析，不校验**（与 ``people_names`` 同）。
 
     写入侧存的是 ``{"entity_id":…, "name":…, "status":…}``；模型自报的那一批可能只是
-    字符串（``_json_people`` 两种都吃）。两种都收成同一个形状：
+    字符串（``people_names`` 两种都吃）。两种都收成同一个形状：
 
     - dict → ``name`` 取 ``name``，``entity_id`` 取 ``entity_id``；
     - 裸字符串 → ``name`` 是它，``entity_id`` 是空串。
 
-    **不去重。** ``_json_people`` 去重是因为它产出的是给人看的名字表；这里产出的是
+    **不去重。** ``people_names`` 去重是因为它产出的是给人看的名字表；这里产出的是
     「这张照片里有几个说不上名字的人」，去重会把这个计数改小——而 1.0 的
     ``sum(1 for p in people_values if not ...)`` 是在**原始列表**上数的。
     """
@@ -244,7 +304,7 @@ def row_to_observation(row: sqlite3.Row) -> Observation:
         ocr_text=row["ocr_text"] or "",
         objects=_json_list(row["objects_json"]),
         clothing=_json_list(row["clothing_json"]),
-        people=_json_people(row["people_json"]),
+        people=people_names(row["people_json"]),
         facts=_json_facts(row["facts_json"]),
         revision=row["revision"],
     )
@@ -293,6 +353,18 @@ class SqliteObservationRepository:
             ).fetchone()
         return row_to_observation(row) if row else None
 
+    def get_many(self, observation_ids: Sequence[str]) -> dict[str, Observation]:
+        unique = list(dict.fromkeys(observation_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE id IN ({placeholders})",
+                tuple(unique),
+            ).fetchall()
+        return {str(row["id"]): row_to_observation(row) for row in rows}
+
     def list_by_asset(self, asset_id: str) -> Sequence[Observation]:
         with self._database.connect() as connection:
             rows = connection.execute(
@@ -316,7 +388,7 @@ class SqliteObservationRepository:
 
         不复用 ``list_by_asset`` 再挑第一条：那个按 ``created_at DESC`` 排（1.0 这里是
         ``updated_at DESC``），而且它会把整行观察读出来解析一遍——这里要的是**原始 JSON
-        里的 entity_id 那一位**，而 ``row_to_observation`` 走的 ``_json_people``
+        里的 entity_id 那一位**，而 ``row_to_observation`` 走的 ``people_names``
         恰好把它丢了。读整行再解析等于把丢掉的东西再从原始列里捞一次，绕。
         """
         with self._database.connect() as connection:

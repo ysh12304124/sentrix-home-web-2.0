@@ -1,0 +1,121 @@
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.tour-backdrop {
+  position: fixed;
+  background: rgba(15, 23, 42, 0.58);
+  pointer-events: auto;
+}
+
+.tour-highlight {
+  position: fixed;
+  z-index: 71;
+  border: 2px solid var(--lime);
+  border-radius: 12px;
+  box-shadow: 0 0 0 3px rgba(220, 252, 231, 0.35);
+  pointer-events: none;
+  transition: top 160ms ease, left 160ms ease, width 160ms ease, height 160ms ease;
+}
+
+.tour-box {
+  position: fixed;
+  z-index: 72;
+  width: min(350px, calc(100vw - 32px));
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+}
+
+.tour-box-center {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  left: 50% !important;
+  top: 50% !important;
+}
+
+.tour-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: #fff;
+  border: 1px solid var(--line);
+  transform: rotate(45deg);
+}
+
+.tour-arrow-bottom {
+  top: -6.5px;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.tour-arrow-top {
+  bottom: -6.5px;
+  border-left: 0;
+  border-top: 0;
+}
+
+.tour-eyebrow {
+  margin: 0 0 6px;
+  color: var(--green-strong);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tour-box h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.tour-box > p:not(.tour-eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.tour-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.tour-actions .text-button {
+  margin-right: auto;
+}
+
+.tour-more {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  font-size: 10.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.tour-more:hover {
+  color: var(--green-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-highlight {
+    transition: none;
+  }
+}

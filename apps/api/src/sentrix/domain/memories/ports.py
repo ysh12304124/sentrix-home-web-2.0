@@ -90,6 +90,10 @@ class EventRepository(Protocol):
 
     def observation_ids(self, event_id: str) -> Sequence[str]: ...
 
+    def observation_ids_many(self, event_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """一页事件的观察 ID，一次 ``IN`` 查完；回忆首页遍历全部事件时用它。"""
+        ...
+
     def events_for_observations(self, observation_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         """这些观察各自落在哪些事件上，反着查一次。
 

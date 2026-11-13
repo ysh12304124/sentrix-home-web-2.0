@@ -70,15 +70,6 @@
   padding: 0; border: 1px solid var(--line); border-radius: 8px;
   overflow: hidden; background: #fff; cursor: zoom-in; line-height: 0;
 }
-.timeline-photos .timeline-video-thumb {
-  width: 112px; height: 112px; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 5px; padding: 8px; overflow: hidden;
-  border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(145deg, #f1f5f9, #e2e8f0);
-  color: #334155; text-align: center; text-decoration: none;
-}
-.timeline-photos .timeline-video-thumb > span { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; background: #fff; color: var(--green-strong); font-size: 9px; }
-.timeline-photos .timeline-video-thumb strong { font-size: 9px; line-height: 1.3; }
-.timeline-photos .timeline-video-thumb small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-photos img { width: 112px; height: 112px; object-fit: cover; display: block; }
 .timeline-photos small {
   display: block; padding: 4px 6px; color: var(--muted); font-size: 9px;
@@ -99,10 +90,10 @@
 .timeline-event-overlay {
   position: fixed; inset: 0; z-index: 30;
   display: flex; align-items: center; justify-content: center;
-  padding: 16px; background: rgba(0, 0, 0, .55);
+  padding: 24px; background: rgba(0, 0, 0, .55);
 }
 .timeline-event-panel {
-  width: min(820px, 100%); min-width: 0; max-height: 88vh; overflow-x: hidden; overflow-y: auto;
+  width: min(760px, 100%); max-height: 88vh; overflow-y: auto;
   border-radius: 14px; background: #fff; padding: 22px 24px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, .28);
 }
@@ -131,30 +122,15 @@
 }
 .timeline-event-photo-list {
   list-style: none; margin: 0; padding: 0;
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
-  align-items: start; gap: 12px;
-}
-.timeline-event-photo-list > li {
-  min-width: 0; display: grid; align-content: start; gap: 0;
-  padding: 9px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px;
-  background: var(--surface);
-}
-.timeline-event-photo-list > li > small {
-  display: block; margin-top: 3px; color: var(--muted); font-size: 10px;
-  line-height: 1.45; overflow-wrap: anywhere;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px;
 }
 .timeline-event-photo-list img {
-  display: block; width: 100%; height: 116px; object-fit: cover;
-  border-radius: 8px;
+  display: block; width: 100%; height: 100px; object-fit: cover;
+  border-radius: 8px; border: 1px solid var(--line);
 }
-.timeline-evidence-meta { min-width: 0; display: grid; gap: 3px; padding: 8px 1px 2px; }
-.timeline-evidence-meta strong {
-  min-width: 0; overflow: hidden; color: var(--ink); font-size: 11px; line-height: 1.4;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.timeline-evidence-meta small {
-  min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.4;
-  text-overflow: ellipsis; white-space: nowrap;
+.timeline-event-photo-list small {
+  display: block; margin-top: 3px; color: var(--muted); font-size: 9px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .timeline-event-note { color: var(--muted); font-size: 10px; line-height: 1.7; }
 
@@ -169,56 +145,655 @@
 
 /* 事件详情里的照片：点开是放大（Lightbox），不是打开/下载原文件。 */
 .timeline-photo-open {
-  display: block; width: 100%; min-width: 0; height: 116px; padding: 0; border: 0; border-radius: 8px;
-  overflow: hidden; background: var(--soft);
+  display: block; width: 100%; padding: 0; border: 0; background: transparent;
   cursor: zoom-in; line-height: 0;
 }
-.timeline-event-photo-list .timeline-photo-open img { height: 116px; border: 0; }
-.timeline-video-preview {
-  min-width: 0; height: 116px; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 5px; padding: 10px; overflow: hidden;
-  border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(145deg, #f1f5f9, #e2e8f0);
-  color: #334155; text-align: center; text-decoration: none;
-}
-.timeline-video-preview > span { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #fff; color: var(--green-strong); font-size: 11px; }
-.timeline-video-preview strong { font-size: 11px; }
-.timeline-video-preview small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.timeline-video-preview.is-cover { width: min(100%, 440px); height: 220px; }
-.timeline-video-preview.is-cover > span { width: 42px; height: 42px; font-size: 15px; }
-.timeline-video-preview.is-cover strong { font-size: 14px; }
 
-/* 时间线媒体卡片较窄，修正入口收敛成单行按钮，避免文字逐字竖排。 */
-.timeline-event-photo-list .asset-memory-correction.is-compact {
-  min-width: 0; margin: 6px 0 0; overflow: visible; border: 0; border-radius: 0; background: transparent;
-}
-.timeline-event-photo-list .asset-memory-correction.is-compact > .asset-memory-correction-toggle {
-  width: 100%; min-width: 0; min-height: 36px; gap: 7px; padding: 5px 8px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--soft); font-size: 11px;
-  writing-mode: horizontal-tb; white-space: normal;
-}
-.timeline-event-photo-list .asset-memory-correction.is-compact .asset-memory-copy { min-width: 0; flex: 1; }
-.timeline-event-photo-list .asset-memory-correction.is-compact .asset-memory-copy strong {
-  overflow-wrap: anywhere; font-size: 11px; line-height: 1.35;
-}
-.timeline-event-photo-list .asset-memory-correction.is-compact .memory-correction-icon { width: 22px; height: 22px; font-size: 12px; }
-.timeline-event-photo-list .asset-memory-correction.is-compact .asset-memory-content { gap: 7px; padding: 8px 0 0; }
-.timeline-event-photo-list .asset-memory-correction.is-compact .asset-memory-item { padding: 9px; }
-.timeline-event-photo-list .asset-memory-correction.is-compact .memory-correction-toggle {
-  width: 100%; min-width: 0; min-height: 34px; gap: 6px; padding: 5px 7px;
-  white-space: normal; writing-mode: horizontal-tb; font-size: 10px;
-}
-.timeline-event-photo-list .asset-memory-correction.is-compact .memory-correction-toggle > span:nth-child(2) {
-  min-width: 0; flex: 1; overflow-wrap: anywhere; line-height: 1.35;
+/* ---- 年月日索引 ---- */
+
+.timeline-layout { grid-template-columns: minmax(0, 1fr); }
+.timeline-main { border-left: 0; padding-left: 0; }
+
+.timeline-loading {
+  padding: 14px 2px;
+  color: var(--muted);
+  font-size: 11.5px;
 }
 
-@media (max-width: 560px) {
-  .timeline-event-overlay { padding: 8px; }
-  .timeline-event-panel { max-height: 94dvh; padding: 16px; }
-  .timeline-event-photo-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .timeline-event-photo-list > li { padding: 7px; }
-  .timeline-event-photo-list img,
-  .timeline-photo-open,
-  .timeline-event-photo-list .timeline-photo-open img,
-  .timeline-video-preview { height: 92px; }
-  .timeline-video-preview.is-cover { height: 180px; }
+.timeline-focus-issue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.timeline-years {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.timeline-year,
+.timeline-month {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.timeline-year small,
+.timeline-month small {
+  color: var(--faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-year:hover,
+.timeline-month:hover {
+  color: var(--ink);
+  border-color: var(--faint);
+}
+
+.timeline-year.active,
+.timeline-month.active {
+  border-color: transparent;
+  background: var(--lime);
+  color: var(--green-strong);
+  font-weight: 700;
+}
+
+.timeline-year.active small,
+.timeline-month.active small {
+  color: var(--green-strong);
+}
+
+.timeline-months {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.timeline-month {
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
+.timeline-days {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeline-day-block {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.timeline-day-block.open {
+  box-shadow: var(--shadow);
+}
+
+.timeline-day-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 15px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-day-toggle:hover {
+  background: var(--soft);
+}
+
+.timeline-day-toggle small {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.timeline-day-toggle b {
+  margin-left: auto;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.timeline-day-events {
+  padding: 2px 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-event {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 14px;
+  margin: 0;
+  padding: 10px;
+}
+
+.timeline-event-media {
+  position: relative;
+  height: 96px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--soft);
+  color: var(--faint);
+}
+
+.timeline-event-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.timeline-event-placeholder {
+  font-size: 22px;
+}
+
+.timeline-event-badge {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.timeline-event-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.timeline-event-body > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.timeline-event-body > header strong {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-event-body > header span {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.timeline-event-time {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.timeline-event-body > p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.timeline-event-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+@media (max-width: 640px) {
+  .timeline-event {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .timeline-event-media {
+    height: 78px;
+  }
+
+  .timeline-event-body > header {
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+
+/* ---- 单列竖轴：年份 → 月份 → 日期节点 → 当天卡片 ---- */
+
+.timeline-axis {
+  position: relative;
+  padding: 2px 0 28px;
+}
+
+.timeline-axis::before {
+  content: "";
+  position: absolute;
+  left: 74px;
+  top: 12px;
+  bottom: 20px;
+  width: 2px;
+  background: var(--line);
+}
+
+.timeline-year-block,
+.timeline-month-block {
+  position: relative;
+}
+
+.axis-year {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  padding: 26px 0 8px;
+}
+
+.axis-year::before {
+  content: "";
+  position: absolute;
+  left: 68px;
+  top: 40px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--green);
+  border: 3px solid var(--ex-paper, #f4f1e8);
+}
+
+.axis-year-label {
+  width: 72px;
+  margin-right: 2px;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--ink);
+  font-size: clamp(20px, 2vw, 27px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.axis-year-count {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.axis-month {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 9px 0 6px;
+}
+
+.axis-month::before {
+  content: "";
+  position: absolute;
+  left: 70px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--faint);
+  border: 2px solid #fff;
+}
+
+.axis-month-label {
+  width: 64px;
+  margin-right: 10px;
+  text-align: right;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.axis-month-count {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.timeline-day-block {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  box-shadow: none;
+}
+
+.timeline-day-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-day-toggle:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.timeline-day-block.open .timeline-day-toggle {
+  color: var(--ink);
+}
+
+.axis-day-label {
+  width: 64px;
+  margin-right: 10px;
+  text-align: right;
+  color: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.axis-dot {
+  position: absolute;
+  left: 70px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--green);
+  border: 2px solid var(--ex-paper, #f4f1e8);
+}
+
+.timeline-day-toggle small {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.timeline-day-toggle b {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.timeline-day-events {
+  margin-left: 106px;
+  padding: 4px 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .timeline-axis::before { left: 54px; }
+  .axis-year::before { left: 48px; }
+  .axis-month::before { left: 50px; }
+  .axis-dot { left: 50px; }
+  .axis-year-label { width: 52px; margin-right: 2px; }
+  .axis-month-label,
+  .axis-day-label { width: 48px; margin-right: 6px; }
+  .axis-year-count,
+  .axis-month-count,
+  .timeline-day-toggle small { margin-left: 24px; }
+  .timeline-day-events { margin-left: 78px; }
+}
+
+/* ---- 新版竖轴：年/月默认节点，点月展开日，点日展开全部事件 ---- */
+
+.timeline-axis {
+  position: relative;
+  padding: 2px 0 28px;
+}
+
+.timeline-axis::before {
+  content: "";
+  position: absolute;
+  left: 84px;
+  top: 10px;
+  bottom: 18px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--faint);
+  opacity: 0.55;
+}
+
+.axis-year,
+.axis-month,
+.axis-day {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.axis-year {
+  padding: 30px 0 10px;
+  cursor: default;
+}
+
+.axis-month,
+.axis-day {
+  cursor: pointer;
+}
+
+.axis-month:hover,
+.axis-day:hover {
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.axis-year::before,
+.axis-month::before {
+  content: none;
+}
+
+.axis-year-label {
+  width: 74px;
+  margin-right: 10px;
+  text-align: right;
+  color: var(--ink);
+  font-size: clamp(22px, 2.2vw, 29px);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.axis-month-label {
+  width: 74px;
+  margin-right: 10px;
+  text-align: right;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.axis-day-label {
+  width: 74px;
+  margin-right: 10px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.axis-year-count,
+.axis-month-count,
+.axis-day small {
+  margin-left: 32px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.axis-year-count {
+  font-size: 11px;
+}
+
+.axis-month b,
+.axis-day b {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.axis-dot {
+  position: absolute;
+  left: 80px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--faint);
+  border: 2px solid #fff;
+}
+
+.axis-dot-year {
+  left: 77px;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  background: var(--green);
+  border: 3px solid var(--ex-paper, #f4f1e8);
+}
+
+.axis-dot-day {
+  background: #fff;
+  border: 2px solid var(--green);
+}
+
+.axis-dot-event {
+  left: 81px;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  background: var(--faint);
+  border: 2px solid #fff;
+}
+
+.timeline-day-list,
+.axis-events {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.axis-events {
+  padding: 2px 0 12px;
+}
+
+.axis-event {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+
+.axis-event-time {
+  width: 74px;
+  margin-right: 10px;
+  padding-top: 10px;
+  text-align: right;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.axis-event .timeline-event {
+  flex: 1;
+  min-width: 0;
+  margin-left: 32px;
+}
+
+.timeline-day-block {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (max-width: 640px) {
+  .timeline-axis::before { left: 60px; }
+  .axis-year-label { width: 52px; margin-right: 8px; font-size: 20px; }
+  .axis-month-label,
+  .axis-day-label { width: 52px; margin-right: 8px; }
+  .axis-year-count,
+  .axis-month-count,
+  .axis-day small { margin-left: 22px; }
+  .axis-dot { left: 56px; }
+  .axis-dot-year { left: 53px; width: 12px; height: 12px; margin-top: -6px; }
+  .axis-dot-event { left: 57px; }
+  .axis-event-time { width: 52px; margin-right: 8px; font-size: 10px; }
+  .axis-event .timeline-event { margin-left: 22px; }
+}
+
+/* 没有拍摄时间的事件单独成组，不冒充上传日期。 */
+.timeline-unknown-block {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
+
+.timeline-unknown-block .axis-year {
+  margin-bottom: 8px;
+}
+
+.timeline-unknown-block .timeline-day-list {
+  margin-left: 0;
 }

@@ -1,3 +1,5 @@
+import { csrfToken } from "../csrf";
+
 const BASE = "/api/v1";
 
 export interface AssetSummary {
@@ -8,6 +10,8 @@ export interface AssetSummary {
   size_bytes: number;
   status: string;
   captured_at: string | null;
+  /** 服务端解析好的地点；没有地点时为空串。 */
+  place?: string;
   gps: { latitude: number; longitude: number } | null;
   /** 关键帧血缘（`GET /assets` 的 `AssetSummary` 会带）。普通资产为 null。 */
   derived_kind?: string | null;
@@ -21,8 +25,61 @@ export interface AssetSummary {
   scope_id?: string;
 }
 
-interface AssetListResponse {
+export interface AssetPage {
   items: AssetSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  counts: Record<string, number>;
+}
+
+export interface AssetPageOptions {
+  offset?: number;
+  limit?: number;
+  mediaType?: string;
+  sort?: "captured" | "created";
+  order?: "asc" | "desc";
+}
+
+export interface MediaDeletionRecord {
+  asset_id: string;
+  scope_id: string;
+  file_name: string;
+  media_type: string;
+  deleted_at: string;
+  asset_count: number;
+  files_done: boolean;
+  vectors_done: boolean;
+  attempts: number;
+  last_error: string;
+}
+
+export async function listMediaDeletions(scopeId: string): Promise<MediaDeletionRecord[]> {
+  const params = new URLSearchParams({ scope_id: scopeId, limit: "50" });
+  const response = await request<{ items: MediaDeletionRecord[] }>(`/assets/deletions?${params}`);
+  return response.items;
+}
+
+export function retryMediaCleanup(): Promise<{ warnings: string[] }> {
+  return request<{ warnings: string[] }>("/assets/deletion-cleanup/retry", { method: "POST" });
+}
+
+/** 资料库分页。筛选、排序与计数都由后端覆盖完整范围。 */
+export async function listAssetPage(
+  scopeId: string,
+  options: AssetPageOptions = {},
+): Promise<AssetPage> {
+  const params = new URLSearchParams({
+    scope_id: scopeId,
+    offset: String(Math.max(0, options.offset ?? 0)),
+    limit: String(options.limit ?? 60),
+    sort: options.sort ?? "captured",
+    order: options.order ?? "desc",
+  });
+  if (options.mediaType !== undefined && options.mediaType !== "") {
+    params.set("media_type", options.mediaType);
+  }
+  return request<AssetPage>(`/assets?${params.toString()}`);
 }
 
 /** 后端统一错误体的形状（``apps/api/src/sentrix/api/errors.py``）。 */
@@ -59,14 +116,34 @@ function parseApiError(raw: string): ApiErrorBody | null {
     if (typeof parsed === "object" && parsed !== null && "code" in parsed) {
       return parsed as ApiErrorBody;
     }
+    // FastAPI 的 HTTPException 只有 detail；把可读原因提到 message，便于就地展示。
+    if (typeof parsed === "object" && parsed !== null && "detail" in parsed) {
+      const detail = (parsed as { detail?: unknown }).detail;
+      if (typeof detail === "string") {
+        return { code: "http_error", message: detail, detail };
+      }
+    }
   } catch {
     // 非 JSON 的错误体（反向代理的 502 页面之类）原样留在 raw 里，走兜底分支。
   }
   return null;
 }
 
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, init);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers = new Headers(init?.headers);
+  if (!SAFE_METHODS.has(method)) {
+    const token = csrfToken();
+    if (token !== "" && !headers.has("x-csrf-token")) headers.set("x-csrf-token", token);
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    // 体验入口的会话 cookie 只在同源发送；控制面据此决定转发目标。
+    credentials: "same-origin",
+    ...init,
+    headers,
+  });
   if (!response.ok) {
     const raw = await response.text();
     throw new ApiError(response.status, parseApiError(raw), raw);
@@ -75,7 +152,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listAssets(scopeId: string): Promise<AssetSummary[]> {
-  const body = await request<AssetListResponse>(`/assets?scope_id=${encodeURIComponent(scopeId)}`);
+  const body = await listAssetPage(scopeId, { limit: 200 });
   return body.items;
 }
 
@@ -85,6 +162,11 @@ export function assetFileUrl(assetId: string): string {
 
 export function assetPreviewUrl(assetId: string): string {
   return `${BASE}/assets/${assetId}/preview`;
+}
+
+/** 列表/网格用的 480px 缩略图；详情和全屏仍用 preview。 */
+export function assetThumbnailUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/thumbnail`;
 }
 
 /** 浏览器能直接渲染的格式走原图，其余（HEIC 等）走服务端转码预览。 */
@@ -97,11 +179,13 @@ export function assetDisplayUrl(asset: AssetSummary): string {
 
 /** 后端已经按 mime 决定过怎么交付；助手交付的照片只带回这些字段，走同一条判断。 */
 export function deliveredPhotoUrl(assetId: string, fileName: string): string {
-  const lowered = fileName.toLowerCase();
-  if (lowered.endsWith(".heic") || lowered.endsWith(".heif")) {
-    return assetPreviewUrl(assetId);
-  }
-  return assetFileUrl(assetId);
+  void fileName;
+  return assetPreviewUrl(assetId);
+}
+
+/** 助手/人物卡片的小图走缩略图，避免把原图塞进对话框。 */
+export function deliveredPhotoThumbUrl(assetId: string): string {
+  return assetThumbnailUrl(assetId);
 }
 
 export interface SearchHit {
@@ -149,6 +233,25 @@ export interface TimelinePhoto {
   place: string;
 }
 
+export interface TimelineEventSummary {
+  id: string;
+  title: string;
+  time_start: string | null;
+  time_end: string | null;
+  place: string;
+  admin_district: string;
+  summary: string;
+  // 旧响应与旧测试夹具可能没有这三个字段；消费方按“可能缺失”处理。
+  representative_asset_id?: string | null;
+  representative_media_type?: string | null;
+  asset_count?: number;
+  // 兼容旧概览数据；新列表不再依赖这些字段。
+  event_type?: string;
+  activity?: string;
+  confidence?: number;
+  photos?: TimelinePhoto[];
+}
+
 export interface TimelineEvent {
   id: string;
   title: string;
@@ -161,11 +264,14 @@ export interface TimelineEvent {
   summary: string;
   confidence: number;
   photos: TimelinePhoto[];
+  /** 服务端算好的事件归属日期。 */
+  timeline_date?: string;
+  scope_id?: string;
 }
 
 export interface TimelineDay {
   date: string;
-  events: TimelineEvent[];
+  events: TimelineEventSummary[];
 }
 
 export interface TimelineResponse {
@@ -176,8 +282,32 @@ export interface TimelineResponse {
   days: TimelineDay[];
 }
 
+export interface CalendarDay {
+  date: string;
+  count: number;
+}
+
+export interface CalendarMonth {
+  month: number;
+  count: number;
+  days: CalendarDay[];
+}
+
+export interface CalendarYear {
+  year: number;
+  count: number;
+  months: CalendarMonth[];
+}
+
+export interface TimelineCalendarResponse {
+  scope_id: string;
+  /** 没有拍摄时间的事件数；渲染成「时间未知」分组，不冒充上传日期。 */
+  unknown_count: number;
+  years: CalendarYear[];
+}
+
 /**
- * 时间线。**地点筛选走后端**：前端只把用户输入原样传过去，不解析任何地名。
+ * 时间线。**地点、有没有地点、日期筛选都走后端**：前端只把用户输入原样传过去。
  *
  * `place` 为空时不传这个参数——「用户没筛」与「用户筛了一个空串」是两件事。
  */
@@ -186,24 +316,49 @@ export async function fetchTimeline(
   offset = 0,
   limit = 20,
   place = "",
+  options: { hasPlace?: boolean; date?: string } = {},
 ): Promise<TimelineResponse> {
   const params = new URLSearchParams({
     scope_id: scopeId,
     offset: String(offset),
     limit: String(limit),
   });
-  if (place) {
-    params.set("place", place);
-  }
+  if (place) params.set("place", place);
+  if (options.hasPlace === true) params.set("has_place", "true");
+  if (options.date !== undefined && options.date !== "") params.set("date", options.date);
   return request<TimelineResponse>(`/timeline?${params.toString()}`);
 }
 
+/** 有记录的年/月/日索引；没有事件的日期不会返回。 */
+export async function fetchTimelineCalendar(
+  scopeId: string,
+  place = "",
+  hasPlace = false,
+): Promise<TimelineCalendarResponse> {
+  const params = new URLSearchParams({ scope_id: scopeId });
+  if (place) params.set("place", place);
+  if (hasPlace) params.set("has_place", "true");
+  return request<TimelineCalendarResponse>(`/timeline/calendar?${params.toString()}`);
+}
+
 /**
- * 单个事件。与 `/timeline` 里的一项**是同一个模型**（后端 `_event_payload`），
- * 没有额外的人物 / 事实 / Observation 字段——详情页只展示实际存在的这些。
+ * 单个事件：完整事件与全部素材。列表卡片不再走这个模型。
  */
 export async function fetchEvent(eventId: string): Promise<TimelineEvent> {
   return request<TimelineEvent>(`/events/${encodeURIComponent(eventId)}`);
+}
+
+/** 海报图版本：关键帧已按 SAR 重新生成，旧 URL 可能被浏览器缓存 24 小时。 */
+const POSTER_VERSION = "2";
+
+/** 事件的代表图/封面。图片与视频都走既有 poster 路由，不下载视频原片。 */
+export function timelinePosterUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/poster?v=${POSTER_VERSION}`;
+}
+
+/** 视频封面（已抽关键帧或首帧），用于未播放时的缩略图与播放器 poster。 */
+export function assetPosterUrl(assetId: string): string {
+  return `${BASE}/assets/${assetId}/poster?v=${POSTER_VERSION}`;
 }
 // ---- 助手 -------------------------------------------------------------------
 
@@ -290,11 +445,20 @@ export interface ConversationDetail {
   conversation: ConversationSummary;
   messages: ConversationMessage[];
   turns: ConversationTurn[];
+  has_more?: boolean;
+  next_cursor?: string | null;
 }
 
-export async function getConversation(conversationId: string): Promise<ConversationDetail> {
+/** 默认取最新一页回合；cursor 指向更早一页的最旧回合。 */
+export async function getConversation(
+  conversationId: string,
+  cursor = "",
+  limit = 50,
+): Promise<ConversationDetail> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
   return request<ConversationDetail>(
-    `/assistant/conversations/${encodeURIComponent(conversationId)}`,
+    `/assistant/conversations/${encodeURIComponent(conversationId)}?${params.toString()}`,
   );
 }
 
@@ -320,7 +484,11 @@ export async function renameConversation(
 export async function deleteConversation(conversationId: string): Promise<void> {
   const response = await fetch(
     `${BASE}/assistant/conversations/${encodeURIComponent(conversationId)}`,
-    { method: "DELETE" },
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "x-csrf-token": csrfToken() },
+    },
   );
   if (!response.ok) {
     const raw = await response.text();
@@ -337,17 +505,21 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 export async function startTurn(
   conversationId: string,
   message: string,
+  idempotencyKey = "",
 ): Promise<{ turn_id: string; conversation_id: string; status: string }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey !== "") headers["Idempotency-Key"] = idempotencyKey;
   return request(`/assistant/conversations/${conversationId}/turns`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ message }),
   });
 }
 
-/** 回合事件的 SSE 地址。浏览器侧的主路径，与 1.0 ``src/api.js:66`` 同形。 */
-export function turnEventsUrl(turnId: string): string {
-  return `${BASE}/assistant/turns/${turnId}/events`;
+/** 回合事件的 SSE 地址。``after`` 让新连接从已经看过的序号之后续传。 */
+export function turnEventsUrl(turnId: string, after = 0): string {
+  const suffix = after > 0 ? `?after=${after}` : "";
+  return `${BASE}/assistant/turns/${turnId}/events${suffix}`;
 }
 
 /**
@@ -387,6 +559,10 @@ export function fetchTurnEvents(turnId: string, timeoutMs = 5000): Promise<Assis
 export interface AssistantTurnPoll {
   turn_id: string;
   status: string;
+  execution_state?: string;
+  attempt_no?: number;
+  waiting_reason?: string;
+  next_retry_at?: string | null;
   public_progress: AssistantProgressEvent[];
   result: AssistantCompleteEvent | null;
   error: string;
@@ -402,6 +578,13 @@ export interface AssistantTurnPoll {
  */
 export async function pollTurn(turnId: string): Promise<AssistantTurnPoll> {
   return request<AssistantTurnPoll>(`/assistant/turns/${encodeURIComponent(turnId)}`);
+}
+
+/** 停止本轮回答：持久写取消标志，执行器在下一个安全检查点收尾。 */
+export async function cancelTurn(
+  turnId: string,
+): Promise<{ operation_id: string; cancel_requested: boolean; cleanup_status: string }> {
+  return request(`/assistant/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" });
 }
 
 /**
@@ -482,18 +665,8 @@ export interface PersonPayload {
   aliases: string[];
 }
 
-interface FaceClusterListResponse {
-  clusters: FaceClusterSummary[];
-}
-
 interface PersonListResponse {
   people: PersonPayload[];
-}
-
-/** ``merged_into`` 非空表示这次确认并进了另一个已存在的人（同名合并）。 */
-export interface ConfirmClusterResponse {
-  entity: PersonPayload;
-  merged_into: string | null;
 }
 
 /** ``rejected_entity_id`` 为空表示这一簇本来就没有候选实体，调用没有改动任何行。 */
@@ -540,72 +713,10 @@ export interface BatchConfirmResponse {
   count: number;
 }
 
-/**
- * 簇列表。**默认不含 rejected**——后端 ``list_clusters(status=None)`` 就是这个语义，
- * 前端不自己过滤。传 ``status`` 再切一刀。
- */
-export async function listFaceClusters(
-  scopeId: string,
-  status?: string,
-): Promise<FaceClusterSummary[]> {
-  const params = new URLSearchParams({ scope_id: scopeId });
-  if (status) {
-    params.set("status", status);
-  }
-  const body = await request<FaceClusterListResponse>(`/face-clusters?${params.toString()}`);
-  return body.clusters;
-}
-
-/**
- * 确认一簇脸，给它一个名字。``name`` 允许为空串——空名字是**用例的判据**（400），
- * 不是请求格式错，所以这里不替后端拦。
- */
-export async function confirmFaceCluster(
-  clusterId: string,
-  payload: { name: string; family_role?: string | null },
-): Promise<ConfirmClusterResponse> {
-  return request<ConfirmClusterResponse>(`/face-clusters/${encodeURIComponent(clusterId)}/confirm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: payload.name, family_role: payload.family_role ?? null }),
-  });
-}
-
 /** 拒绝一簇：删掉候选实体，原始照片不受影响。 */
 export async function rejectFaceCluster(clusterId: string): Promise<RejectClusterResponse> {
   return request<RejectClusterResponse>(`/face-clusters/${encodeURIComponent(clusterId)}/reject`, {
     method: "POST",
-  });
-}
-
-/**
- * 合并两个簇：``source`` 的样本并进 ``target``，返回合并后的 ``target``。
- *
- * 两个 id 都由调用方的多选给出，方向由调用方指定——后端不做「哪个更像谁」的推断。
- */
-export async function mergeFaceClusters(
-  targetClusterId: string,
-  sourceClusterId: string,
-): Promise<FaceClusterSummary> {
-  return request<FaceClusterSummary>("/face-clusters/merge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      target_cluster_id: targetClusterId,
-      source_cluster_id: sourceClusterId,
-    }),
-  });
-}
-
-/** 从一簇里拆出一张脸，返回**新建的那个簇**（不是原簇）。 */
-export async function splitFaceCluster(
-  clusterId: string,
-  faceInstanceId: string,
-): Promise<FaceClusterSummary> {
-  return request<FaceClusterSummary>(`/face-clusters/${encodeURIComponent(clusterId)}/split`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ face_instance_id: faceInstanceId }),
   });
 }
 
@@ -622,12 +733,58 @@ export async function getPerson(personId: string): Promise<PersonDetailResponse>
   return request<PersonDetailResponse>(`/people/${encodeURIComponent(personId)}`);
 }
 
+/**
+ * 读取当前生效的人物画像。没有生成过时后端回 404——那不是一个错误，是「无」，
+ * 所以这里把它收成 ``null``，其余失败照常抛。
+ */
+export async function getPersonPortrait(personId: string): Promise<PortraitRevision | null> {
+  try {
+    return await request<PortraitRevision>(
+      `/people/${encodeURIComponent(personId)}/portrait`,
+    );
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 404) return null;
+    throw cause;
+  }
+}
+
 /** 改一个人的名字。返回里带 ``aliases``——旧名字会留成别名，前端不自己拼这份历史。 */
 export async function renamePerson(personId: string, name: string): Promise<RenamePersonResponse> {
   return request<RenamePersonResponse>(`/people/${encodeURIComponent(personId)}/name`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
+  });
+}
+
+/** 人物级合并的回执。计数只用于提示用户，审计在服务端的修订表里。 */
+export interface MergePeopleResponse {
+  entity: PersonPayload;
+  merged_person_ids: string[];
+  moved_face_count: number;
+  moved_relationship_count: number;
+  dropped_relationship_count: number;
+}
+
+/**
+ * 把 `sourcePersonIds` 并进 `targetPersonId`（名录里的手动合并）。
+ *
+ * 与 `POST /face-clusters/merge`（簇级）不同：这是**人物级**的，提及、关系、归属、画像一并改挂，
+ * 两个已确认的人也能合并。`name` 省略时由后端按「目标的名字 → 第一个有名字的来源」决定。
+ */
+export async function mergePeople(
+  targetPersonId: string,
+  sourcePersonIds: string[],
+  name?: string | null,
+): Promise<MergePeopleResponse> {
+  return request<MergePeopleResponse>("/people/merge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_person_id: targetPersonId,
+      source_person_ids: sourcePersonIds,
+      name: name ?? null,
+    }),
   });
 }
 
@@ -752,6 +909,8 @@ export interface PersonInsightItem {
   display_name: string;
   family_role: string | null;
   status: string | null;
+  /** 这个人的代表脸；没有可用人脸时为 null。 */
+  avatar_face_instance_id: string | null;
   portrait: PortraitRevision | null;
   [key: string]: unknown;
 }
@@ -819,12 +978,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
-/**
- * 记忆空间（相册）列表。
- *
- * 形状对齐 1.0 的消费处 `src/app.js:1161`：`spaceResult[0].value.spaces || []`，
- * 即后端给 `{spaces: [...]}`。四个字段就是 `memory_spaces` 的四列，没有派生字段。
- */
+/** 显式登记空间用途；已存在的空间不允许在此接口重分类。 */
+export interface MemorySpaceCreateRequest {
+  id: string;
+  name: string;
+  kind?: "household" | "benchmark";
+}
+
+/** 记忆空间（相册）列表项；列表响应为 {spaces: [...]}。 */
 export interface MemorySpace {
   id: string;
   name: string;
@@ -875,6 +1036,139 @@ export async function importAsset(file: File, scopeId: string): Promise<ImportRe
   form.append("file", file);
   form.append("scope_id", scopeId);
   return request<ImportResponse>("/media/import", { method: "POST", body: form });
+}
+
+/** 体验入口的持久上传：202 + 作业 ID，处理与浏览器连接无关。 */
+export async function uploadMedia(
+  file: File,
+  scopeId: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<{ job_id: string; asset_id: string; status: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("scope_id", scopeId);
+  const response = await fetch(`${BASE}/media/uploads`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Idempotency-Key": idempotencyKey, "x-csrf-token": csrfToken() },
+    body: form,
+    signal,
+  });
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as { job_id: string; asset_id: string; status: string };
+}
+
+export interface ImportJobStageView {
+  stage: string;
+  status: string;
+  reason: string;
+  attempts: number;
+  error_category: string;
+}
+
+export interface ImportJobView {
+  job_id: string;
+  asset_id: string;
+  scope_id: string;
+  receive_seq: number;
+  file_name: string;
+  media_type: string;
+  size_bytes: number;
+  status: string;
+  stage: string;
+  attempts: number;
+  error_category: string;
+  error_message: string;
+  next_retry_at: string | null;
+  accepted_at: string;
+  updated_at: string;
+  completed_items: number;
+  failed_items: number;
+  stages: ImportJobStageView[];
+}
+
+export async function listImportJobs(scopeId: string, limit = 1000): Promise<ImportJobView[]> {
+  const body = await request<{ items: ImportJobView[] }>(
+    `/import-jobs?scope_id=${encodeURIComponent(scopeId)}&limit=${limit}`,
+  );
+  return body.items;
+}
+
+export interface ImportProgress {
+  library: {
+    total: number;
+    completed: number;
+    processing: number;
+    failed: number;
+    percent: number;
+  };
+  postprocess: {
+    state: "idle" | "pending" | "running" | "waiting_retry" | "done";
+    stage: string;
+    events_done: number;
+    events_total: number;
+    updated_at: string | null;
+    next_attempt_at: string | null;
+  };
+}
+
+export async function fetchImportProgress(scopeId: string): Promise<ImportProgress> {
+  return request<ImportProgress>(
+    `/imports/progress?scope_id=${encodeURIComponent(scopeId)}`,
+  );
+}
+
+export async function getImportJob(jobId: string): Promise<ImportJobView> {
+  return request<ImportJobView>(`/import-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function cancelImportJob(jobId: string): Promise<ImportJobView> {
+  return request<ImportJobView>(`/import-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export interface RotationCard {
+  event_id: string;
+  asset_id: string;
+  media_kind: string;
+  title: string;
+  summary: string;
+  time_label: string;
+  place_label: string;
+  related_asset_count: number;
+  poster_url: string;
+  play_url: string | null;
+}
+
+export interface RotationResponse {
+  sequence_id: string;
+  day: string;
+  cursor: number;
+  has_more: boolean;
+  empty_reason: string;
+  media: RotationCard[];
+}
+
+export async function fetchRotation(scopeId: string, cursor?: number): Promise<RotationResponse> {
+  const query = new URLSearchParams();
+  if (scopeId !== "") query.set("scope_id", scopeId);
+  if (cursor !== undefined) query.set("cursor", String(cursor));
+  const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+  return request<RotationResponse>(`/memories/rotation${suffix}`);
+}
+
+export async function markRotationViewed(sequenceId: string, eventId: string): Promise<void> {
+  await fetch(`${BASE}/memories/rotation/viewed`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken() },
+    body: JSON.stringify({ sequence_id: sequenceId, event_id: eventId }),
+  }).catch(() => undefined);
 }
 
 /** 某个相册范围下的会话列表。`GET /api/v1/assistant/conversations`。 */
@@ -975,6 +1269,11 @@ export interface FamilyPerson {
   avatar_face_instance_id: string | null;
   appearance_count: number;
   representative_media: FamilyRepresentativeMedia[];
+  /**
+   * 实体状态：`pending`（系统整理出、还没人确认）或 `confirmed`。
+   * 只改名不确认的人进不了问答与按人找照片，所以详情据此给「确认身份」而不是「改名」。
+   */
+  status: string;
 }
 
 export interface FamilyRelationship {
@@ -1036,11 +1335,6 @@ interface FamilyRetractResponse {
   retracted: FamilyRelationship[];
 }
 
-/** `POST /family-graph/runs` 同步跑完再回，体是 `{run}`——不是 1.0 的 `{status: 202, run}`。 */
-interface FamilyRunResponse {
-  run: FamilyRun;
-}
-
 export async function getFamilyGraph(scopeId: string): Promise<FamilyGraph> {
   return request<FamilyGraph>(`/family-graph?scope_id=${encodeURIComponent(scopeId)}`);
 }
@@ -1048,8 +1342,8 @@ export async function getFamilyGraph(scopeId: string): Promise<FamilyGraph> {
 /**
  * 人脸裁剪图。
  *
- * `FamilyPerson` 只给 `avatar_face_instance_id`，整条路径由前端拼；`PeopleView` 那条
- * 路是服务端把 `crop_url` 拼好带回来的（见 `FaceCropRef` 的注释）。两条路都留着：
+ * `FamilyPerson` 只给 `avatar_face_instance_id`，整条路径由前端拼；簇列表那条路是
+ * 服务端把 `crop_url` 拼好带回来的（见 `FaceCropRef` 的注释）。两条路都留着：
  * 家庭图谱的响应里没有 crop_url 这个字段。
  */
 export function faceInstanceCropUrl(faceInstanceId: string): string {
@@ -1146,16 +1440,6 @@ export async function mergeFamilyScopes(
   });
 }
 
-/** 手工跑一趟家庭图谱推断。同步返回跑完的 run；已有 run 在跑时后端回 409。 */
-export async function runFamilyGraph(scopeId: string): Promise<FamilyRun> {
-  const body = await request<FamilyRunResponse>("/family-graph/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope_id: scopeId }),
-  });
-  return body.run;
-}
-
 // ---- 资产详情 / 音视频交付 ---------------------------------------------------------
 
 /**
@@ -1166,10 +1450,7 @@ export async function runFamilyGraph(scopeId: string): Promise<FamilyRun> {
  * 自己拼 `/file`**：原片可能是 HEVC/HEIC，浏览器放不了。
  */
 export function assetInlineUrl(asset: AssetSummary): string {
-  if (asset.media_type === "video" || asset.media_type === "audio") {
-    return assetPreviewUrl(asset.id);
-  }
-  return assetDisplayUrl(asset);
+  return assetPreviewUrl(asset.id);
 }
 
 /**
@@ -1196,34 +1477,6 @@ export type AssetDetailResponse = AssetSummary & {
 
 export async function getAsset(assetId: string): Promise<AssetDetailResponse> {
   return request<AssetDetailResponse>(`/assets/${encodeURIComponent(assetId)}`);
-}
-
-export async function deleteAsset(assetId: string): Promise<{ asset_id: string; deleted: boolean; warnings: string[] }> {
-  return request(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
-}
-
-export interface MediaDeletionRecord {
-  asset_id: string;
-  scope_id: string;
-  file_name: string;
-  media_type: string;
-  deleted_at: string;
-  asset_count: number;
-  files_done: boolean;
-  vectors_done: boolean;
-  attempts: number;
-  last_error: string;
-}
-
-export async function listMediaDeletions(scopeId: string): Promise<MediaDeletionRecord[]> {
-  const query = new URLSearchParams({ limit: "50" });
-  if (scopeId) query.set("scope_id", scopeId);
-  const response = await request<{ items: MediaDeletionRecord[] }>(`/assets/deletions?${query}`);
-  return response.items;
-}
-
-export async function retryMediaCleanup(): Promise<{ warnings: string[] }> {
-  return request<{ warnings: string[] }>("/assets/deletion-cleanup/retry", { method: "POST" });
 }
 
 // ---- 视频 ------------------------------------------------------------------------
@@ -1727,4 +1980,74 @@ export async function reprocessVideo(assetId: string): Promise<VideoReprocessRes
     `/videos/${encodeURIComponent(assetId)}/reprocess`,
     { method: "POST" },
   );
+}
+
+// ---- 管理端操作轨迹（控制面） ------------------------------------------------------
+
+/** 控制库里的关键操作事件；只有固定名称、结果码和已有对象 ID。 */
+export interface ClientEventView {
+  id: number;
+  received_at: string;
+  operation_id: string;
+  event_name: string;
+  route: string;
+  result: string;
+  scope_id: string;
+  job_id: string;
+  turn_id: string;
+  event_id: string;
+  asset_id: string;
+  entity_id: string;
+  error_code: string;
+}
+
+interface ClientEventPage {
+  items: ClientEventView[];
+  next_cursor: number;
+  has_more: boolean;
+}
+
+export interface ClientEventSummaryItem {
+  account_id: string;
+  total: number;
+  last_at: string;
+  events: Record<string, number>;
+}
+
+export async function fetchClientEventSummary(
+  hours = 24,
+): Promise<{ hours: number; since: string; items: ClientEventSummaryItem[] }> {
+  const response = await fetch(`/control/v1/admin/client-events/summary?hours=${hours}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as {
+    hours: number;
+    since: string;
+    items: ClientEventSummaryItem[];
+  };
+}
+
+/** 管理端按账号增量读取轨迹。afterId=0 表示取最近一页。 */
+export async function listClientEvents(
+  accountId: string,
+  afterId = 0,
+  limit = 60,
+): Promise<ClientEventPage> {
+  const params = new URLSearchParams({
+    after_id: String(Math.max(0, afterId)),
+    limit: String(limit),
+  });
+  const response = await fetch(
+    `/control/v1/admin/users/${encodeURIComponent(accountId)}/client-events?${params.toString()}`,
+    { credentials: "same-origin" },
+  );
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new ApiError(response.status, parseApiError(raw), raw);
+  }
+  return (await response.json()) as ClientEventPage;
 }

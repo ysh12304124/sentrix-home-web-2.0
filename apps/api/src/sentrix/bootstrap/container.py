@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,12 +36,14 @@ from sentrix.domain.identity.ports import (
     FamilyGraphRepository,
     MomentRepository,
     PersonCropRenderer,
+    PersonMergeRepository,
     PersonPreviewRenderer,
     PersonVision,
     PortraitRepository,
     RelationshipRepository,
     SemanticRepository,
 )
+from sentrix.domain.media.import_jobs import ImportJobRepository
 from sentrix.domain.media.ports import (
     AssetRepository,
     AudioMetadataReader,
@@ -69,6 +73,7 @@ from sentrix.domain.memories.ports import (
     MemoryCorrectionRepository,
     MemoryGraphRepository,
 )
+from sentrix.domain.memories.rotation import RotationRepository
 from sentrix.domain.places.aliases import PlaceAliases
 from sentrix.domain.places.ports import AssetPlaceRepository, PlaceResolver
 from sentrix.domain.retrieval.ports import (
@@ -102,8 +107,6 @@ from sentrix.infrastructure.media.person_vision import (
 from sentrix.infrastructure.media.person_vision_model import OpenAIPersonVision
 from sentrix.infrastructure.media.photo_inspector import OpenAIPhotoInspector
 from sentrix.infrastructure.media.storage import FileSystemMediaStorage
-from sentrix.infrastructure.media.svd_katna_scene_planner import SVDKatnaScenePlanner
-from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanner
 from sentrix.infrastructure.media.video_keyframes import FfmpegVideoKeyframeExtractor
 from sentrix.infrastructure.media.video_metadata import FfprobeVideoMetadataReader
 from sentrix.infrastructure.media.video_transcode import FfmpegVideoTranscoder
@@ -111,6 +114,7 @@ from sentrix.infrastructure.media.vlm_observer import OpenAIVlmObserver
 from sentrix.infrastructure.memories.causal_judge import OpenAICausalJudge
 from sentrix.infrastructure.models.face_adapter import FaceAdapter
 from sentrix.infrastructure.models.face_detector import RetinaFaceTiledDetector
+from sentrix.infrastructure.models.generation_health import ModelGenerationHealth
 from sentrix.infrastructure.models.legacy import (
     BgeSidecarEmbedder,
     ChineseClipSidecarEmbedder,
@@ -136,12 +140,15 @@ from sentrix.infrastructure.persistence.repositories.events import SqliteEventRe
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
 from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepository
 from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
+from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
 from sentrix.infrastructure.persistence.repositories.media_deletion import SqliteMediaDeletionRepository
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
+from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
 from sentrix.infrastructure.persistence.repositories.participants import (
     SqliteEventParticipantRepository,
 )
+from sentrix.infrastructure.persistence.repositories.person_merge import SqlitePersonMergeRepository
 from sentrix.infrastructure.persistence.repositories.portraits import (
     SqlitePortraitRepository,
 )
@@ -172,6 +179,67 @@ log = logging.getLogger("sentrix.bootstrap.container")
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "infrastructure" / "persistence" / "migrations"
 
 
+class RecoveringEmbeddingHealth:
+    """体验实例的嵌入健康投影：启动失败不锁死，后续按冷却时间自动重探。
+
+    同一时刻只允许一个线程做真实 smoke_test；失败结果短期缓存，避免执行器每秒
+    轮询时反复打侧车。成功后仍会按成功 TTL 复查，侧车之后再坏也能重新进入等待。
+    """
+
+    def __init__(
+        self,
+        wrapped: object,
+        *,
+        initially_available: bool,
+        error: str,
+        success_ttl_s: float = 30.0,
+        failure_ttl_s: float = 5.0,
+        clock=time.monotonic,
+    ) -> None:
+        self._wrapped = wrapped
+        self._success_ttl_s = success_ttl_s
+        self._failure_ttl_s = failure_ttl_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._available = initially_available
+        self._error = "" if initially_available else error
+        self._next_check = clock() + (success_ttl_s if initially_available else failure_ttl_s)
+
+    def _refresh(self) -> None:
+        with self._lock:
+            now = self._clock()
+            if now < self._next_check:
+                return
+            try:
+                ok, error = self._wrapped.smoke_test()
+            except Exception as exc:  # noqa: BLE001 - 探针失败只更新状态
+                ok, error = False, f"{type(exc).__name__}: {exc}"
+            self._available = ok
+            self._error = "" if ok else (error or "embedding smoke test failed")
+            self._next_check = now + (self._success_ttl_s if ok else self._failure_ttl_s)
+
+    @property
+    def available(self) -> bool:
+        self._refresh()
+        return self._available
+
+    @property
+    def load_error(self) -> str:
+        return self._error
+
+    def smoke_test(self) -> tuple[bool, str]:
+        try:
+            ok, error = self._wrapped.smoke_test()
+        except Exception as exc:  # noqa: BLE001
+            ok, error = False, f"{type(exc).__name__}: {exc}"
+        now = self._clock()
+        with self._lock:
+            self._available = ok
+            self._error = "" if ok else (error or "embedding smoke test failed")
+            self._next_check = now + (self._success_ttl_s if ok else self._failure_ttl_s)
+        return ok, self._error
+
+
 @dataclass(frozen=True)
 class Container:
     settings: Settings
@@ -185,8 +253,6 @@ class Container:
     operation_control: OperationControl
     import_progress: ImportProgressStore
     asset_repository: AssetRepository
-    media_deletion: MediaDeletionRepository
-    memory_corrections: MemoryCorrectionRepository
     observation_repository: ObservationRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
@@ -224,6 +290,7 @@ class Container:
     # 「此刻还嵌不嵌得动」——2026-10-10 那轮侧车全程不在，检索照常返回、静默降级，
     # ``/health`` 一路回 ok。没有这一格，降级在运维侧不可见。
     embedding_health: EmbeddingHealthProbe
+    model_health: ModelGenerationHealth
 
     # 时间线（S4）。地点是纯离线的：区县走 PyGeoCN 的面，乡镇/村庄走 GeoNames 的
     # 最近邻点，运行时零网络依赖。
@@ -240,6 +307,8 @@ class Container:
     # 结构化记忆图是由标准记忆端口派生出的可重建投影。它与冻结的 adjacency
     # 通道分开，检索侧只通过 ``MemoryGraphRepository`` 做有限 hop 拓展。
     memory_graph: MemoryGraphRepository
+    memory_corrections: MemoryCorrectionRepository
+    media_deletion: MediaDeletionRepository
     causal_judge: CausalJudge
     # 词法投影的写侧与读侧由同一个 SQLite 适配器实现（它是同一张投影表的两个方向），
     # 这里按两个端口分别声明：调用方在类型上就看得出自己只需要其中一侧。
@@ -278,6 +347,8 @@ class Container:
     moment_repository: MomentRepository
     relationship_repository: RelationshipRepository
     family_graph_repository: FamilyGraphRepository
+    # 人物级合并（名录里「这几个是同一个人」）。一次事务改挂全部派生行，见端口 docstring。
+    person_merge_repository: PersonMergeRepository
     portrait_repository: PortraitRepository
 
     chat_model: ChatModel
@@ -288,6 +359,10 @@ class Container:
     conversation_repository: ConversationRepository
     turn_repository: TurnRepository
     result_set_repository: ResultSetRepository
+    # 持久导入作业（任务 4/5）。接收确认与离线阶段都记在用户自己的 SQLite 里。
+    import_jobs: ImportJobRepository
+    # 回忆首页序列与已看记录（任务 7）。
+    memory_rotation: RotationRepository
     person_directory: PersonDirectory
     # 内存里的实时事件流。它没有持久化的一面——历史事件在 agent_turn_events 表里，
     # 两半合起来才构成完整的 SSE 语义（见 domain/assistant/ports.py 的 TurnEventBroker）。
@@ -296,11 +371,16 @@ class Container:
 
     @classmethod
     def build(cls, settings: Settings) -> Container:
+        # 默认走 SVD/Katna；体验实例也用它。部署可用 env 显式切回 window。
         video_algorithm = os.getenv("SENTRIX_VIDEO_KEYFRAME_ALGORITHM", "svd_katna").strip().lower()
         video_scene_planner: VideoScenePlanner | None = None
         if video_algorithm == "svd_katna":
+            from sentrix.infrastructure.media.svd_katna_scene_planner import SVDKatnaScenePlanner
+
             video_scene_planner = SVDKatnaScenePlanner(settings.media_dir / "derived" / "svd_katna")
         elif video_algorithm == "svd_lowrank":
+            from sentrix.infrastructure.media.svd_scene_planner import SVDLowRankScenePlanner
+
             video_scene_planner = SVDLowRankScenePlanner(settings.media_dir / "derived" / "svd")
         elif video_algorithm != "window":
             raise ValueError(f"Unsupported SENTRIX_VIDEO_KEYFRAME_ALGORITHM: {video_algorithm}")
@@ -329,22 +409,6 @@ class Container:
         # **部署事实**，配置里那个 6144 是照部署的某一次实测抄的，部署一改它就过期。
         # 读不到才退回配置值（那说明端点没在正常服务，此时保守值不添乱）。
         served_context = probe_context_tokens(settings.vlm_base_url)
-        utility_vlm_base_url = settings.utility_vlm_base_url.strip()
-        utility_served_model = (
-            ServedModel(
-                utility_vlm_base_url,
-                timeout_s=settings.utility_vlm_timeout_s,
-                generation_profile="legacy",
-                exact_output_budget=False,
-                context_tokens=4096,
-            )
-            if utility_vlm_base_url
-            else None
-        )
-        log.info(
-            "Utility-MRAG surrogate=%s",
-            f"enabled @ {utility_vlm_base_url}" if utility_served_model else "disabled",
-        )
         # **嵌入方案是整方案原子切换**（``scheme.SCHEMES``）。默认 wemm；legacy 是
         # 16 GB Mac mini 的回退（chinese-clip 768d + bge-m3 1024d）。两个分支都只
         # 构造 HTTP 客户端，API 进程不 import torch。
@@ -368,6 +432,33 @@ class Container:
             visual_embedder = wemm_embedder
             text_embedder = wemm_embedder
             embedding_health = wemm_embedder
+        # **启动时推理测试**：2026-10-29 的教训——CLIP 侧车缺 `from PIL import Image`，
+        # `/health` 返回 ok，但实际推理时 NameError。健康检查只验证服务活着，
+        # 发现不了功能 broken。现在启动时做一次真实推理，确认端到端可用。
+        # 失败则 API 启动失败，明确报错。
+        if settings.experience_mode and settings.embedding_scheme != "legacy":
+            raise RuntimeError(
+                "体验实例必须固定 SENTRIX_EMBEDDING_SCHEME=legacy（BGE-M3 1024 + Chinese-CLIP 768）"
+            )
+        if settings.experience_mode and (visual_embedder.dimension != 768 or text_embedder.dimension != 1024):
+            raise RuntimeError("体验实例嵌入维度不符：视觉必须是 768，文本必须是 1024")
+        smoke_ok, smoke_error = embedding_health.smoke_test()
+        if not smoke_ok and not settings.experience_mode:
+            raise RuntimeError(
+                f"嵌入方案启动测试失败（embedding_scheme={settings.embedding_scheme}）: "
+                f"{smoke_error}。请检查嵌入侧车是否正常，代码是否有语法/import 错误。"
+            )
+        if settings.experience_mode:
+            # 体验实例允许先起来；失败不再永久锁死，投影会按冷却时间重探。
+            embedding_health = RecoveringEmbeddingHealth(
+                embedding_health,
+                initially_available=smoke_ok,
+                error=smoke_error,
+            )
+            if not smoke_ok:
+                log.warning("体验实例嵌入依赖暂不可用，将自动重试: %s", smoke_error)
+        log.info("嵌入方案启动测试通过（%s）", settings.embedding_scheme)
+
         log.info(
             "嵌入方案=%s 视觉=%s/%sd 文本=%s/%sd",
             settings.embedding_scheme,
@@ -387,6 +478,15 @@ class Container:
             f"{reranker.model_id} @ {reranker_url}" if reranker else "关闭",
             settings.rerank_top_k,
         )
+        utility_url = settings.utility_vlm_base_url.strip()
+        utility_model = (
+            ServedModel(utility_url, timeout_s=settings.utility_vlm_timeout_s) if utility_url else None
+        )
+        utility = (
+            OpenAIVisualEvidenceUtility(utility_url, utility_model, timeout_s=settings.utility_vlm_timeout_s)
+            if utility_model is not None
+            else None
+        )
         # 家庭图谱仓储被两个消费方用：容器自己的字段，以及人物目录——目录要靠它回答
         # 「这个人的归属与关系」（S7c）。拿在手上传两次，而不是就地 new 两个实例。
         family = SqliteFamilyGraphRepository(database, entities)
@@ -398,8 +498,6 @@ class Container:
             import_progress=InProcessImportProgressStore(),
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,
-            media_deletion=SqliteMediaDeletionRepository(database),
-            memory_corrections=SqliteMemoryCorrections(database),
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
@@ -442,16 +540,9 @@ class Container:
             ),
             text_embedder=text_embedder,
             reranker=reranker,
-            visual_evidence_utility=(
-                OpenAIVisualEvidenceUtility(
-                    utility_vlm_base_url,
-                    utility_served_model,
-                    timeout_s=settings.utility_vlm_timeout_s,
-                )
-                if utility_served_model is not None
-                else None
-            ),
+            visual_evidence_utility=utility,
             embedding_health=embedding_health,
+            model_health=ModelGenerationHealth(settings.vlm_base_url, served_model.current),
             place_resolver=OfflinePlaceResolver(
                 admin=PyGeoCNAdminResolver(),
                 nearest=GeoNamesNearestResolver(settings.geo_dir),
@@ -462,6 +553,8 @@ class Container:
             event_participant_repository=SqliteEventParticipantRepository(database),
             fact_repository=SqliteFactRepository(database),
             memory_graph=SqliteMemoryGraphRepository(database),
+            memory_corrections=SqliteMemoryCorrections(database),
+            media_deletion=SqliteMediaDeletionRepository(database),
             causal_judge=OpenAICausalJudge(
                 settings.vlm_base_url, served_model, timeout_s=settings.vlm_timeout_s
             ),
@@ -486,6 +579,7 @@ class Container:
             moment_repository=SqliteMomentRepository(database),
             relationship_repository=SqliteRelationshipRepository(database),
             family_graph_repository=family,
+            person_merge_repository=SqlitePersonMergeRepository(database),
             portrait_repository=SqlitePortraitRepository(database),
             chat_model=OpenAIChatModel(
                 settings.vlm_base_url,
@@ -508,7 +602,64 @@ class Container:
             turn_repository=SqliteTurnRepository(database),
             result_set_repository=SqliteResultSetRepository(database),
             person_directory=EntityPersonDirectory(entities=entities, family=family),
+            import_jobs=SqliteImportJobRepository(database),
+            memory_rotation=SqliteRotationRepository(database),
             turn_event_broker=InProcessTurnEventBroker(),
+        )
+
+    def dependencies_ready(self) -> tuple[bool, str]:
+        """执行器开始一条作业前的依赖门槛：嵌入可用且主模型可响应。"""
+        if not self.embedding_health.available:
+            return False, f"embedding_unavailable: {self.embedding_health.load_error}"
+        ready, reason = self.model_health.check()
+        if not ready:
+            return False, f"model_unavailable: {reason}"
+        return True, ""
+
+    def build_turn_executor(self):
+        """消费问答接口创建的持久回合，包括独立本地 API 实例。"""
+        from sentrix.bootstrap.assistant_wiring import build_run_turn
+        from sentrix.infrastructure.assistant.turn_executor import TurnExecutor
+
+        return TurnExecutor(
+            turns=self.turn_repository,
+            run_turn_factory=lambda: build_run_turn(self),
+            broker=self.turn_event_broker,
+            dependencies_ready=self.dependencies_ready,
+            operation_control=self.operation_control,
+            result_sets=self.result_set_repository,
+            max_workers=self.settings.agent_turn_workers,
+        )
+
+    def build_import_executor(self):
+        """消费上传接口创建的持久作业，包括独立本地 API 实例。"""
+        from sentrix.application.media.import_executor import ImportJobExecutor
+        from sentrix.bootstrap.import_wiring import (
+            build_import_assets,
+            build_media_postprocess,
+            build_video_job_processor,
+        )
+
+        return ImportJobExecutor(
+            settings=self.settings,
+            jobs=self.import_jobs,
+            assets=self.asset_repository,
+            importer_factory=lambda: build_import_assets(self, observe=True),
+            dependencies_ready=self.dependencies_ready,
+            postprocess=build_media_postprocess(self),
+            video_processor=build_video_job_processor(self),
+            workers=self.settings.import_workers,
+        )
+
+    def reconcile_uploads(self) -> dict[str, int]:
+        """体验实例启动时先对账再清理；装配点之外不 import infrastructure。"""
+        from sentrix.infrastructure.media.upload_cleanup import reconcile_uploads
+
+        return reconcile_uploads(
+            media_dir=self.settings.media_dir,
+            staging_dir=self.media_storage.staging_dir,
+            jobs=self.import_jobs,
+            grace_s=self.settings.upload_cleanup_grace_s,
         )
 
     def database_healthy(self) -> bool:

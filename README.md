@@ -50,6 +50,27 @@ SENTRIX_DEPLOYMENT_PROFILE=mac ./scripts/deploy/start_legacy_mac.sh
 
 详见 [`docs/runbooks/mac-mini-legacy.md`](docs/runbooks/mac-mini-legacy.md)。
 
+### 本地前端开发
+
+确认 API 8191 已启动后，在另一个终端运行：
+
+```bash
+make web-dev        # http://localhost:4274/
+```
+
+该目标默认代理到 `http://127.0.0.1:8191`，并启用已有的本地用户模式，无需运行 8210
+控制面；账号登录、管理台与反馈功能需要控制面。完整 Mac 启动脚本已启动 API 时，
+无需再运行 `make dev`。
+
+开发控制面功能时，先启动控制服务，再显式选择代理目标：
+
+```bash
+SENTRIX_PREVIEW_TARGET=http://127.0.0.1:8210 make web-dev
+```
+
+指定该目标后默认使用控制面认证；`VITE_LEGACY_LOCAL_AUTH` 仍可显式覆盖。
+这些默认值仅作用于 `make web-dev`，不改变直接运行 npm 或生产构建的行为。
+
 ### 部署 profile（同一份代码，server / mac）
 
 平台差异**不写成代码里的 `if macOS`**。用 `SENTRIX_DEPLOYMENT_PROFILE=server|mac`
@@ -128,6 +149,11 @@ make ci
 
 PhotoBench 运行结果在 `apps/photobench/results/<run_id>/`，页面在 8772。
 QA 数据集在 `apps/photobench/datasets/`。
+
+本机双场景（主相册手动上传/AI 记忆对话 + `album3-max-video10` 487QA）启动与验收见
+[`local-mac-upload-and-487qa.md`](docs/runbooks/local-mac-upload-and-487qa.md)。该工作副本使用
+`scripts/deploy/start_local_two_workflows_mac.sh`，评测素材目录和结果目录由本机忽略文件
+`data/local-mac.env` 指定，不会写入 Git。
 
 ---
 

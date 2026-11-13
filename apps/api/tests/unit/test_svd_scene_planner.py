@@ -21,7 +21,7 @@ def test_svd_keyframes_become_selected_scene_timestamps(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "sentrix.infrastructure.media.svd_scene_planner.SVDLowRankKeyframeExtractor",
-        Extractor,
+        lambda: Extractor(),
     )
     video_path = tmp_path / "video.mp4"
     planner = SVDLowRankScenePlanner(tmp_path / "derived")
@@ -30,5 +30,5 @@ def test_svd_keyframes_become_selected_scene_timestamps(tmp_path, monkeypatch):
 
     assert seen["call"] == (video_path, "video-1", tmp_path / "derived" / "video-1")
     assert len(scenes) == 1
-    assert scenes[0].keyframe_timestamp_sec == 6.7
+    assert scenes[0].selected_timestamp_sec == 6.7
     assert (scenes[0].start_sec, scenes[0].end_sec) == (2.0, 8.0)

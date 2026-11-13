@@ -3081,3 +3081,15 @@ Failed: 人脸检测没报错，却在 8 张确认有人脸的真照片上一张
 **推论比这一条本身重要**：凡是「环境不满足就跳过」的守卫，都要问一句
 **「那实现坏掉时会怎样」**。如果两者的表现相同，那个守卫就一定会在某一天替一个真 bug
 打掩护——而它打掩护的方式是让用例不跑，不是让用例变红，所以**没有任何东西会提醒你**。
+
+### 第 142 条 · `person_bridge` 从来没有被写过：投影只在导入时刷，那时还没人被确认
+
+1.0 的 `EntityRetriever` 读 `person_bridge`，而这一列在 1.0 里写进去的是 `str(dict)`，查不中；
+2.0 修了值源（取名字），却**沿用了 1.0 的调用时点**——只在导入时 `refresh_from_observation`。
+导入时 `people_json` 是空的，确认人物只改快照、不刷投影，于是真实库里这一列是 **0 行**，
+实体通道全靠扫观察的兜底在跑，而兜底在「全部相册」下不跑。
+
+**偏离 1.0**：快照写完在同一个事务里同步 `person_bridge`（`search_terms.sync_person_bridge`）；
+全部相册按人召回只覆盖 `include_in_people = 1` 的空间（1.0 的兜底 `list_observations` 不带
+scope 扫全表，评测空间也在里面）。存量用 `scripts/backfill_person_bridge.py` 回填。
+详见 `docs/refactor/2026-11-11-entity-channel-all-albums.md`。

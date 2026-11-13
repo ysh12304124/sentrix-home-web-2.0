@@ -76,6 +76,7 @@ class Settings(BaseSettings):
                 "reranker_url",
                 "rerank_top_k",
                 "agent_wall_time_s",
+                "agent_turn_workers",
                 "chat_timeout_s",
                 "vlm_timeout_s",
                 "agent_max_steps",
@@ -99,6 +100,11 @@ class Settings(BaseSettings):
 
     api_port: int = 8191
     api_host: str = "0.0.0.0"
+
+    # 体验实例由控制面独占转发；内部令牌未设置时保持旧 8191/PhotoBench 语义不变。
+    require_internal_token: bool = False
+    internal_token: str = ""
+    experience_mode: bool = False
 
     # 2.0 reuses 1.0's already-running model services; it never manages them.
     vlm_base_url: str = "http://127.0.0.1:8100/v1"
@@ -148,6 +154,8 @@ class Settings(BaseSettings):
     # 单个 Agent 回合的墙钟上限。180 是 153（GPU）的默认；Mac/CPU 上 4 并发时
     # 一次 inspect_photo 就可能 30-60s，正常回合会被截成 timeout，可放宽到 600。
     agent_wall_time_s: float = 180.0
+    # Product defaults to one; isolated QA can opt into bounded concurrency.
+    agent_turn_workers: int = Field(default=1, ge=1, le=64, validation_alias="SENTRIX_AGENT_TURN_MAX_WORKERS")
     agent_max_steps: int = Field(default=8, ge=3)
     agent_max_tool_calls: int = Field(default=6, ge=0)
     vlm_generation_profile: Literal["legacy", "qwen35_nonthinking"] = "legacy"
@@ -185,6 +193,21 @@ class Settings(BaseSettings):
     # 可通过 SENTRIX_ALBUM_WORKERS 显式覆盖；提交仍始终串行保序。
     album_workers: int = Field(default=4, ge=1, le=4)
 
+    # 体验入口逐文件导入的在飞窗口：多个作业的 prepare_image 同时请求主模型，
+    # 单用户也能吃满 8100 的多个槽位。提交仍按认领顺序串行（事件归属是语义的一部分）。
+    # 取 4 是因为生产 8100 是 --parallel 4；调小等于主动让出槽位，调大会在网关排队。
+    import_workers: int = Field(default=4, ge=1, le=16)
+
+    # 体验入口的持久上传（任务 4/5）。配额按用户原件计，派生预览与向量另计。
+    upload_quota_bytes: int = 20 * 1024**3
+    upload_photo_max_bytes: int = 250 * 1024**2
+    upload_video_max_bytes: int = 2 * 1024**3
+    # Server deployments retain a 100 GiB safety buffer; the Mac profile uses
+    # a smaller local-disk buffer unless an operator explicitly overrides it.
+    upload_min_free_bytes: int = 100 * 1024**3
+    upload_max_inflight: int = 2
+    upload_cleanup_grace_s: int = 3600
+
     def model_post_init(self, _context: Any, /) -> None:  # noqa: D105
         self.data_dir = self.data_dir.expanduser().resolve()
         self.web_dist_dir = self.web_dist_dir.expanduser().resolve()
@@ -197,6 +220,8 @@ class Settings(BaseSettings):
             self.agent_wall_time_s = 600.0 if mac else 180.0
         if "chat_timeout_s" not in self.model_fields_set:
             self.chat_timeout_s = 180.0 if mac else 120.0
+        if mac and "upload_min_free_bytes" not in self.model_fields_set:
+            self.upload_min_free_bytes = 10 * 1024**3
         # **未知方案直接启动失败。** 静默回退到默认会让「配错了」变成「跑的是另一套
         # 模型」——两套模型的向量互不兼容，而检索侧不会报错，只会算不出相似度。
         if self.embedding_scheme not in EMBEDDING_SCHEMES:

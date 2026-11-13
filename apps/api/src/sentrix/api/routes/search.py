@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.media import to_summary
 from sentrix.api.schemas.search import ChannelTrace, SearchHit, SearchResponse
-from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
-from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
-from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-from sentrix.application.retrieval.retrieve_graph import RetrieveGraph
-from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
-from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
-from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
-from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
+from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest
+from sentrix.bootstrap.assistant_wiring import build_retrieve_evidence
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import MediaType
 from sentrix.domain.retrieval.conditions import Condition
@@ -26,70 +20,6 @@ from sentrix.domain.retrieval.time_expression import parse_time_expression
 log = logging.getLogger("sentrix.api.search")
 
 router = APIRouter(tags=["search"])
-
-
-def build_retrieve_evidence(container: Container, *, graph_enabled: bool = True) -> RetrieveEvidence:
-    """把四条召回通道与编排接起来。**只在这里接一次**。
-
-    1.0 的对应物是 ``build_default_retrievers`` 加 ``EvidenceRetrievalKernel`` 的构造
-    （``backend/retrieval/__init__.py:65-85``）：只有**被启用**的通道才进 retriever 列表。
-    1.0 的 text_ann 在 ``defaults.json`` 里是 ``"text": true``（启用的），
-    而 2.0 到 S6 T115 才把它补上——那之前这里确实不构造它，因为「缺通道」在 1.0 里
-    就是「不在列表里」，不是「构造一个返回空的通道」。现在五条都在了。
-
-    ``recognize_place`` 的判据是「这张图本来就该有地点」= asset 上有 GPS，而
-    ``asset_places`` 里没有行（``index_place.py`` 的第三个状态）。
-    """
-    return RetrieveEvidence(
-        visual=RetrieveVisual(
-            embedder=container.visual_embedder,
-            vectors=container.vector_repository,
-            index=container.vector_index,
-        ),
-        text=RetrieveTextAnn(embedder=container.text_embedder, vectors=container.text_vector_repository),
-        entity=RetrieveEntity(index=container.lexical_search, observations=container.observation_repository),
-        lexical=RetrieveLexical(index=container.lexical_search),
-        metadata=RetrieveMetadata(
-            assets=container.asset_repository,
-            places=container.asset_place_repository,
-            aliases=container.place_aliases,
-            recognize_place=lambda asset_id: _has_gps(container, asset_id),
-        ),
-        conditions=EvaluateConditions(
-            assets=container.asset_repository,
-            observations=container.observation_repository,
-            places=container.asset_place_repository,
-            aliases=container.place_aliases,
-            confirmed_people=_confirmed_people(container),
-        ),
-        graph=RetrieveGraph(graph=container.memory_graph) if graph_enabled else None,
-        # 重排只重排 RRF 后的头部；``container.reranker is None`` 时整段不执行。
-        reranker=container.reranker,
-        observations=container.observation_repository,
-        rerank_top_k=container.settings.rerank_top_k,
-        utility=container.visual_evidence_utility if graph_enabled else None,
-        utility_concurrency=container.settings.utility_vlm_concurrency,
-        assets=container.asset_repository,
-        media_storage=container.media_storage,
-    )
-
-
-def _confirmed_people(container: Container) -> Callable[[str | None], frozenset[str]]:
-    """按 scope 取已确认人物本名。**scope 为空（全部相册）时返回空集**。
-
-    confirmed_person_names 要一个具体的 scope，而「全部相册」在 2.0 用 None
-    表达。跨相册取并集要另写一条查询，而这里**不发明它**——人物条件的第 1 支
-    （观察自己的 people 快照）本来就覆盖了全部相册的情形，这一支只是
-    「这个 scope 里还有没有这个人」的补充。为空时那一支不生效，
-    而结果**只会更严**（少匹配），不会更松。
-    """
-
-    def names(scope_id: str | None) -> frozenset[str]:
-        if scope_id is None:
-            return frozenset()
-        return container.entity_repository.confirmed_person_names(scope_id)
-
-    return names
 
 
 def _conditions(

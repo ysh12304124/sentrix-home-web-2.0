@@ -31,12 +31,12 @@ def test_graph_provenance_column_already_present_is_recorded_without_duplicate_a
         "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, graph_provenance_json TEXT NOT NULL);"
     )
     source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
-    (migrations / "0020_result_set_graph_provenance.sql").write_bytes(
-        (source / "0020_result_set_graph_provenance.sql").read_bytes()
+    (migrations / "0030_result_set_graph_provenance.sql").write_bytes(
+        (source / "0030_result_set_graph_provenance.sql").read_bytes()
     )
     db = Database(tmp_path / "t.db", migrations)
 
-    assert db.migrate() == ["0001", "0020"]
+    assert db.migrate() == ["0001", "0030"]
     assert db.migrate() == []
     with db.connect() as conn:
         assert [row[1] for row in conn.execute("PRAGMA table_info(agent_result_sets)")].count(
@@ -80,7 +80,7 @@ def test_migrate_fails_when_no_migrations_are_found(tmp_path):
 
 
 def test_text_vectors_migration_is_applied(migrations_ready_db):
-    """``0015`` 建出文本向量表；``CHECK`` 与唯一键都写在建表语句里。
+    """``0024`` 建出文本向量表；``CHECK`` 与唯一键都写在建表语句里。
 
     迁移只建表不搬数据——存量复制必须走维护脚本（可 dry-run、可审计）。
     """
@@ -96,7 +96,7 @@ def test_text_vectors_migration_is_applied(migrations_ready_db):
             )
         }
 
-    assert "0015" in versions
+    assert "0024" in versions
     assert row is not None
     assert "CHECK (space IN ('semantic', 'episodic'))" in row[0]
     assert "UNIQUE(space, source_type, source_id, model_name)" in row[0]
@@ -129,7 +129,7 @@ def test_duplicate_migration_versions_fail_before_creating_database(tmp_path):
     assert not database.path.exists()
 
 
-@pytest.mark.parametrize("baseline", ["fresh", "xy", "main", "previous_merge", "current_main"])
+@pytest.mark.parametrize("baseline", ["fresh", "our_branch", "main"])
 def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
     source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
     old_scripts = tmp_path / "old"
@@ -137,49 +137,75 @@ def test_branch_migrations_preserve_data_and_upgrade_once(tmp_path, baseline):
     for script in source.glob("*.sql"):
         if script.name[:4] < "0015":
             (old_scripts / script.name).write_bytes(script.read_bytes())
-    if baseline == "xy":
-        (old_scripts / "0015_capture_time.sql").write_bytes((source / "0018_capture_time.sql").read_bytes())
+    if baseline == "our_branch":
+        # 153 既有库：本分支 0015–0026 已经应用，只差 0027 的拍摄时间列。
+        for script in source.glob("*.sql"):
+            if script.name[:4] < "0027":
+                (old_scripts / script.name).write_bytes(script.read_bytes())
     elif baseline == "main":
-        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0015_text_vectors.sql").read_bytes())
-    if baseline == "previous_merge":
-        for name in ("0015_text_vectors.sql", "0018_capture_time.sql"):
-            target = name.replace("0018", "0016")
-            (old_scripts / target).write_bytes((source / name).read_bytes())
-    elif baseline == "current_main":
-        for name in ("0015_text_vectors.sql", "0016_video_jobs.sql", "0017_video_job_config_hash.sql"):
-            (old_scripts / name).write_bytes((source / name).read_bytes())
+        # main 的编号：0015 文本向量、0016 视频任务、0017 配置哈希、0018 拍摄时间。
+        (old_scripts / "0015_text_vectors.sql").write_bytes((source / "0024_text_vectors.sql").read_bytes())
+        (old_scripts / "0016_video_jobs.sql").write_bytes((source / "0025_video_jobs.sql").read_bytes())
+        (old_scripts / "0017_video_job_config_hash.sql").write_bytes(
+            (source / "0026_video_job_config_hash.sql").read_bytes()
+        )
+        (old_scripts / "0018_capture_time.sql").write_bytes((source / "0027_capture_time.sql").read_bytes())
     path = tmp_path / "t.db"
-    old = Database(path, old_scripts)
-    old.migrate()
-    with old.connect() as connection:
-        connection.execute("CREATE TABLE regression_sentinel (value TEXT)")
-        connection.execute("INSERT INTO regression_sentinel VALUES ('preserved')")
-        if baseline == "xy":
-            connection.execute(
-                "CREATE TABLE capture_audit AS SELECT applied_at FROM schema_migrations WHERE version='0015'"
-            )
-        connection.commit()
+    if baseline != "fresh":
+        old = Database(path, old_scripts)
+        old.migrate()
+        with old.connect() as connection:
+            connection.execute("CREATE TABLE regression_sentinel (value TEXT)")
+            connection.execute("INSERT INTO regression_sentinel VALUES ('preserved')")
+            if baseline == "main":
+                connection.execute(
+                    "CREATE TABLE capture_audit AS SELECT applied_at FROM schema_migrations"
+                    " WHERE version='0018'"
+                )
+            connection.commit()
     current = Database(path, source)
     current.migrate()
     assert current.migrate() == []
     with current.connect() as connection:
-        assert connection.execute("SELECT value FROM regression_sentinel").fetchone()[0] == "preserved"
-        versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations")]
-        assert versions.count("0015") == versions.count("0016") == versions.count("0018") == 1
-        assert connection.execute("SELECT COUNT(*) FROM text_vectors").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM video_jobs").fetchone()[0] == 0
+        if baseline != "fresh":
+            assert connection.execute("SELECT value FROM regression_sentinel").fetchone()[0] == "preserved"
+        versions = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+        for table in (
+            "text_vectors",
+            "video_jobs",
+            "import_jobs",
+            "scope_postprocess",
+            "memory_rotation_sequences",
+        ):
+            assert (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone()
+                is not None
+            )
         assert "config_hash" in {row[1] for row in connection.execute("PRAGMA table_info(video_jobs)")}
         assert "capture_time_json" in {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
         assert "nearest_evidence_json" in {
             row[1] for row in connection.execute("PRAGMA table_info(asset_places)")
         }
-        if baseline == "xy":
+        assert "cancel_requested" in {row[1] for row in connection.execute("PRAGMA table_info(import_jobs)")}
+        assert "idempotency_key" in {row[1] for row in connection.execute("PRAGMA table_info(agent_turns)")}
+        if baseline == "main":
+            # main 的数值版本被别的迁移占用；本分支用带后缀的版本记录补齐。
+            assert {
+                "0015_import_jobs",
+                "0016_import_replay_keys",
+                "0017_turn_recovery",
+                "0018_memory_rotation",
+            } <= versions
             assert (
                 connection.execute(
                     "SELECT applied_at FROM schema_migrations WHERE version='0018'"
                 ).fetchone()[0]
                 == connection.execute("SELECT applied_at FROM capture_audit").fetchone()[0]
             )
+        if baseline == "our_branch":
+            assert "0027" in versions
         assert connection.execute("SELECT capture_sort_key('2026-11-06T12:00:00+08:00')").fetchone()[0]
         assert (
             connection.execute(
@@ -199,7 +225,12 @@ def test_concurrent_migrations_apply_each_schema_once(tmp_path):
     assert Database(path, source).migrate() == []
 
 
-def test_unknown_0015_schema_is_not_silently_relabelled(tmp_path):
+def test_legacy_0015_version_does_not_block_import_tables(tmp_path):
+    """main 的 0015 是文本向量；本分支的 0015 是导入作业。
+
+    同一个版本号被两种历史占用时，旧记录不能删除，也不能当作本分支的表已经存在；
+    补齐本分支缺的表后用带后缀的版本记录，下一次启动不再重复执行。
+    """
     source = Path(__file__).resolve().parents[2] / "src/sentrix/infrastructure/persistence/migrations"
     old_scripts = tmp_path / "old"
     old_scripts.mkdir()
@@ -211,10 +242,16 @@ def test_unknown_0015_schema_is_not_silently_relabelled(tmp_path):
     with database.connect() as connection:
         connection.execute("INSERT INTO schema_migrations (version) VALUES ('0015')")
         connection.commit()
-    with pytest.raises(MigrationError, match="表结构不一致"):
-        Database(database.path, source).migrate()
-    assert "0015" in database.applied_versions()
-    assert "0016" not in database.applied_versions()
+
+    Database(database.path, source).migrate()
+
+    versions = database.applied_versions()
+    assert "0015" in versions
+    assert "0015_import_jobs" in versions
+    with database.connect() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='import_jobs'"
+        ).fetchone()
 
 
 def test_nested_repository_connections_complete(tmp_path):

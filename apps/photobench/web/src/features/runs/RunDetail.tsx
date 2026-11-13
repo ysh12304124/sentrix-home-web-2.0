@@ -32,6 +32,7 @@ import { albumName, duration, fmtDate, modelName, qaName } from "../../lib/forma
 import { MemoryLayerPanel } from "../memory/MemoryLayerPanel.tsx";
 import type { MemoryLayerPanelProps } from "../memory/MemoryLayerPanel.tsx";
 import { ErrorAnalysisPanel } from "../analysis/ErrorAnalysisPanel.tsx";
+import { VideoComparisonPanel } from "./VideoComparisonPanel.tsx";
 import { KeyMetrics } from "./KeyMetrics.tsx";
 import { ExecutionHistory } from "./ExecutionHistory.tsx";
 import { RunTaskStatus } from "./RunTaskStatus.tsx";
@@ -151,6 +152,7 @@ export function RunDetail({
             </div>
           </details> : null}
           <KeyMetrics run={activeRun} />
+          <VideoComparisonPanel key={activeRun.run_id} runId={activeRun.run_id} />
           <ExecutionHistory run={activeRun} />
           <ErrorAnalysisPanel key={[activeRun.run_id,activeRun.selected_scoring_profile,activeRun.selected_scoring_batch].join(":")} scoringProfile={OPEN_PROFILE} scoringBatch={String(activeRun.selected_scoring_batch || "")} runId={activeRun.run_id} terminal={["completed", "completed_with_errors", "failed", "cancelled", "interrupted"].includes(activeRun.status || "")} />
           {memory ? <MemoryLayerPanel key={`memory-${activeRun.run_id}`} {...memory} /> : null}

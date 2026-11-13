@@ -1,18 +1,12 @@
 /**
- * 模态框。直译 1.0 `src/app.js:1123` 的 `.modal-backdrop` / `.modal-panel` 结构：
- * 遮罩 + 面板 + 右上角关闭。
+ * 模态框：遮罩 + 面板 + 右上角关闭。
  *
- * 只保留 2.0 用得到的两个行为：
- * 1. **Esc 关闭**；2. 点遮罩关闭（点面板内部不关）。
- * 1.0 还有一个「返回上一页」的 `.modal-back`，那是它用模态历史模拟页面栈的产物；
- * 2.0 已经是 URL 路由，面板里再放一个返回键会让人以为在页面栈里。命令面板与帮助
- * 都是单层模态，不需要它。
- *
- * `role="dialog"` / `aria-modal` 不只是无障碍标记：`useAutoRefresh` 靠
- * `[role="dialog"]` 判断「用户正在操作模态」，据此暂停后台刷新。
+ * 键盘与焦点行为集中在这里，引导与帮助共用一套：打开时焦点进入面板，Tab 限在
+ * 面板内，Escape 关闭，关闭后焦点回到触发位置。`role="dialog"` / `aria-modal`
+ * 也是 `useAutoRefresh` 判断“用户正在操作模态”的依据。
  */
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import "./Modal.css";
 
@@ -23,14 +17,47 @@ interface Props {
   readonly children: ReactNode;
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Modal({ kicker, title, onClose, children }: Props) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const panel = panelRef.current;
+    const first = panel?.querySelector<HTMLElement>(FOCUSABLE);
+    (first ?? panel)?.focus();
+
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || panel === null) return;
+      const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (nodes.length === 0) return;
+      const firstNode = nodes[0];
+      const lastNode = nodes[nodes.length - 1];
+      if (event.shiftKey && document.activeElement === firstNode) {
+        event.preventDefault();
+        lastNode.focus();
+      } else if (!event.shiftKey && document.activeElement === lastNode) {
+        event.preventDefault();
+        firstNode.focus();
+      }
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previous?.focus?.();
+    };
+  }, []);
 
   return (
     <div
@@ -40,12 +67,20 @@ export function Modal({ kicker, title, onClose, children }: Props) {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="modal-panel" role="dialog" aria-modal="true" aria-label={title}>
-        <button type="button" className="modal-close" aria-label="关闭" onClick={onClose}>
-          ×
+      <div
+        ref={panelRef}
+        className="modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+      >
+        <button type="button" className="modal-close" aria-label="关闭对话框" onClick={onClose}>
+          <span aria-hidden="true">×</span>
+          关闭
         </button>
         {kicker ? <div className="modal-kicker">{kicker}</div> : null}
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
     </div>

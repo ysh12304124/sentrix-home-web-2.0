@@ -12,8 +12,9 @@ import { useMemo, useState } from "react";
 
 import type { FamilyPerson, FamilyMembershipValue } from "../../../shared/api/client";
 import { EmptyState } from "../../../shared/ui/EmptyState";
+import { MergePeopleDialog } from "./MergePeopleDialog";
 import { PersonCard } from "./PersonCard";
-import { isNamed, membershipLabel, membershipOf } from "./membership";
+import { isNamed, membershipLabel, membershipOf, personDisplayName } from "./membership";
 
 type Filter = "all" | FamilyMembershipValue;
 
@@ -39,11 +40,37 @@ interface Props {
   readonly people: FamilyPerson[];
   readonly selectedId: string | null;
   readonly onSelect: (personId: string) => void;
+  /** 手动合并成功后调用（参数是保留的人）。不给就不显示「合并人物」入口。 */
+  readonly onMerged?: (targetId: string) => void | Promise<void>;
 }
 
-export function FamilyRoster({ people, selectedId, onSelect }: Props) {
+export function FamilyRoster({ people, selectedId, onSelect, onMerged }: Props) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  // 合并模式：卡片变成勾选；勾满两个以上、且同一相册，才能打开确认框。
+  const [merging, setMerging] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [confirming, setConfirming] = useState(false);
+
+  const pickedPeople = picked
+    .map((id) => people.find((person) => person.id === id))
+    .filter((person): person is FamilyPerson => person !== undefined);
+  const mixedScopes = new Set(pickedPeople.map((person) => person.scope_id)).size > 1;
+
+  function exitMerge() {
+    setMerging(false);
+    setPicked([]);
+    setConfirming(false);
+  }
+
+  function togglePick(personId: string) {
+    setPicked((current) =>
+      current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId],
+    );
+  }
+
+  const cardSelect = merging ? togglePick : onSelect;
+  const isSelected = (personId: string) => (merging ? picked.includes(personId) : personId === selectedId);
 
   const counts = useMemo(() => {
     const base: Record<Filter, number> = { all: people.length, family: 0, friend: 0, unknown: 0 };
@@ -56,9 +83,19 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
     return sortPeople(people).filter((person) => {
       if (filter !== "all" && membershipOf(person) !== filter) return false;
       if (needle === "") return true;
-      return person.display_name.toLowerCase().includes(needle);
+      return personDisplayName(person).toLowerCase().includes(needle);
     });
   }, [people, query, filter]);
+
+  // 默认视图不主动铺开「只出现一两次」的人；搜索或筛选时全部展开，否则搜到了却藏在
+  // 折叠区里等于没搜到。
+  const collapsedMode = query.trim() === "" && filter === "all";
+  const frequent = collapsedMode
+    ? visible.filter((person) => person.appearance_count > 2)
+    : visible;
+  const rare = collapsedMode
+    ? visible.filter((person) => person.appearance_count <= 2)
+    : [];
 
   return (
     <section className="family-roster">
@@ -85,14 +122,57 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
             </button>
           ))}
         </div>
+        {onMerged === undefined || people.length < 2 ? null : (
+          <button
+            type="button"
+            className={merging ? "button ghost small active" : "button ghost small"}
+            aria-pressed={merging}
+            onClick={() => (merging ? exitMerge() : setMerging(true))}
+          >
+            {merging ? "退出合并" : "合并人物"}
+          </button>
+        )}
       </div>
+
+      {merging ? (
+        <div className="roster-merge-bar" role="region" aria-label="合并人物">
+          <span>
+            {picked.length === 0
+              ? "点选同一个人的几张卡片（年龄、光线不同被分开的也算），再点「合并」。"
+              : `已选 ${picked.length} 人`}
+            {mixedScopes ? " · 只能合并同一相册里的人物" : ""}
+          </span>
+          <button
+            type="button"
+            className="button primary small"
+            disabled={picked.length < 2 || mixedScopes}
+            onClick={() => setConfirming(true)}
+          >
+            合并所选
+          </button>
+          <button type="button" className="button ghost small" onClick={exitMerge}>
+            取消
+          </button>
+        </div>
+      ) : null}
+
+      {confirming && onMerged !== undefined ? (
+        <MergePeopleDialog
+          people={pickedPeople}
+          onCancel={() => setConfirming(false)}
+          onMerged={async (targetId) => {
+            exitMerge();
+            await onMerged(targetId);
+          }}
+        />
+      ) : null}
 
       {visible.length === 0 ? (
         people.length === 0 ? (
           <EmptyState
             symbol="◎"
             title="还没有可显示的人物"
-            description="导入照片并跑一次家庭图谱推断后，这里会出现人物卡片。"
+            description="先在「添加资料」导入真实照片。系统整理出的人物会出现在这里，点开详情即可确认身份、建立关系。"
           />
         ) : (
           <EmptyState
@@ -115,18 +195,41 @@ export function FamilyRoster({ people, selectedId, onSelect }: Props) {
         )
       ) : (
         <>
-          <ul className="person-grid">
-            {visible.map((person) => (
-              <PersonCard
-                key={person.id}
-                person={person}
-                selected={person.id === selectedId}
-                onSelect={onSelect}
-              />
-            ))}
-          </ul>
+          {frequent.length === 0 ? null : (
+            <ul className="person-grid">
+              {frequent.map((person) => (
+                <PersonCard
+                  key={person.id}
+                  person={person}
+                  selected={isSelected(person.id)}
+                  onSelect={cardSelect}
+                  picking={merging}
+                />
+              ))}
+            </ul>
+          )}
+          {rare.length === 0 ? null : (
+            <details className="roster-rare">
+              <summary>
+                出现 2 次及以下的人物 · {rare.length} 人
+                <small>展开查看</small>
+              </summary>
+              <ul className="person-grid">
+                {rare.map((person) => (
+                  <PersonCard
+                    key={person.id}
+                    person={person}
+                    selected={isSelected(person.id)}
+                    onSelect={cardSelect}
+                    picking={merging}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
           <p className="roster-count">
             共 {people.length} 人
+            {rare.length > 0 ? `，其中 ${rare.length} 人已折叠` : ""}
             {visible.length === people.length ? "" : `，当前显示 ${visible.length} 人`}
           </p>
         </>

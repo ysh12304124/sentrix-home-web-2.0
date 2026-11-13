@@ -103,6 +103,7 @@ class EvidenceRequest:
     # 那是一个**具体的空间**——不传 scope 时去查它，而它在 2.0 的空库里不存在。
     scope_id: str | None = None
     limit: int = 20
+    graph_enabled: bool = True
     media_types: tuple[MediaType, ...] = ()
     negated_media: tuple[MediaType, ...] = ()
     time_bounds: tuple[datetime, datetime] | None = None
@@ -607,7 +608,7 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
-        if self._graph is not None:
+        if request.graph_enabled and self._graph is not None:
             graph_started = time.monotonic()
             try:
                 graph_result = self._graph.execute(
@@ -686,7 +687,7 @@ class RetrieveEvidence:
                 )
             )
         fallback = self._graph_fallback(primary=primary_fused, graph=graph_candidates, limit=limit)
-        if self._utility is not None:
+        if request.graph_enabled and self._utility is not None:
             # Score the complete ordinary+graph recall pool, not only the six
             # delivery slots and not only three graph candidates.
             utility_selected = self._utility_select(

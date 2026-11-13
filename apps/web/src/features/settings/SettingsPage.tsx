@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
+import { scopeDisplayName } from "../../shared/spaceName";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Section } from "../../shared/ui/Section";
 import { useToast } from "../../shared/ui/Toast";
@@ -47,7 +48,7 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [busyFact, setBusyFact] = useState<string | null>(null);
   const [result, setResult] = useState<ReclusterFacesResponse | null>(null);
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const scopeName = scopeDisplayName(spaces, scopeId);
 
   const loadHealth = useCallback(async () => {
     try {

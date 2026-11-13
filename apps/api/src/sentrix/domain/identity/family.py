@@ -23,6 +23,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sentrix.domain.identity.models import ENTITY_STATUS_PENDING
+
 # 1.0 ``db.py:5617`` 的 ``_FAMILY_MEMBERSHIPS``。**"unknown" 是合法值不是缺失**——
 # 模型推断不出归属时要显式写 unknown，而不是不写行（那样下次读出来是 None，
 # 与「确实是 unknown」在响应里长得一样）。
@@ -44,10 +46,9 @@ STATE_EFFECTIVE = "effective"
 STATE_SUPERSEDED = "superseded"
 STATE_RETRACTED = "retracted"
 
-# 1.0 ``db.py:5677`` 在 ``family_graph_people`` 里硬编码的占位名。**与 ``app.py`` 那处
-# 的「待命名成员」不是同一个串**（``domain/identity/models.py`` 的 ``PENDING_CLUSTER_NAME``）
-# ——1.0 两个端点用两个词，这个端点照搬它自己那个。
-FAMILY_PENDING_DISPLAY_NAME = "待命名人物"
+# 家庭图谱里未命名人物的占位名。与 ``PENDING_CLUSTER_NAME`` 用同一句用户文案：
+# 两个端点过去各叫一个词，用户在同一页看到两个“待命名”没有意义。
+FAMILY_PENDING_DISPLAY_NAME = "未确认姓名人物"
 
 # 1.0 ``family_graph_people`` 的代表照上限（``db.py:5668`` 的 ``LIMIT 3``）。
 REPRESENTATIVE_MEDIA_LIMIT = 3
@@ -164,6 +165,9 @@ class FamilyPersonProjection:
     avatar_face_instance_id: str | None
     appearance_count: int
     representative_media: tuple[Mapping[str, object], ...] = field(default_factory=tuple)
+    # 实体自己的 ``status``（``pending`` / ``confirmed``）。名录与详情据此决定给「确认身份」
+    # 还是「改名」：只改名不确认，问答与按人找照片都看不到这个人（2026-11-11 王王事故）。
+    status: str = ENTITY_STATUS_PENDING
 
 
 @dataclass(frozen=True, slots=True)

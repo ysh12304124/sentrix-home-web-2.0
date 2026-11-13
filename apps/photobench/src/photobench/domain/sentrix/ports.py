@@ -60,6 +60,10 @@ API_PREFIX = "/api/v1"
 class SentrixClient(Protocol):
     """主产品侧的一次评测主链所需的全部调用。"""
 
+    def ensure_space(self, *, scope_id: str, name: str, kind: str, timeout: int = 30) -> dict[str, Any]:
+        """在导入前显式登记空间用途；冲突或登记失败必须抛错，不得继续导入。"""
+        ...
+
     def diagnostics(self, *, timeout: int = 10) -> dict[str, Any]:
         """Read effective runtime configuration; transport failures propagate."""
         ...

@@ -21,6 +21,7 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_PENDING,
     FACE_VALIDITY_UNCERTAIN,
     FACE_VALIDITY_VERIFIED,
+    NAME_STATE_CONFIRMED,
     PENDING_CLUSTER_NAME,
     FaceClusterRecord,
     FaceInstanceRecord,
@@ -33,7 +34,7 @@ from sentrix.infrastructure.persistence.database import Database
 _CLUSTER_COLUMNS = (
     "fc.id, fc.scope_id, fc.status, fc.entity_id, fc.representative_embedding_json,"
     " fc.member_count, fc.confidence, fc.revision, fc.created_at, fc.updated_at,"
-    " e.canonical_name, e.family_role, e.status AS entity_status"
+    " e.canonical_name, e.family_role, e.status AS entity_status, e.name_state"
 )
 _INSTANCE_COLUMNS = (
     "fi.id, fi.asset_id, fi.observation_id, fi.cluster_id, fi.bbox_json, fi.embedding_json,"
@@ -68,7 +69,8 @@ def _row_to_cluster(row: sqlite3.Row) -> FaceClusterRecord:
     # 未确认的簇不许把内部名字与家庭角色漏出去（1.0 ``app.py:1976`` 在路由层做这件事，
     # 2.0 落在出口处）。判据是**实体**状态而不是簇状态：簇可以已经 confirmed 而实体还在
     # pending，那种情况下名字同样还没被用户认可。
-    pending = row["entity_status"] == ENTITY_STATUS_PENDING
+    # 改名只转 name_state，不改 status；用户已经给过名字的簇要显示真名。
+    pending = row["entity_status"] == ENTITY_STATUS_PENDING and row["name_state"] != NAME_STATE_CONFIRMED
     return FaceClusterRecord(
         id=row["id"],
         scope_id=row["scope_id"],
@@ -479,6 +481,15 @@ class SqliteFaceRepository:
                             LIMIT 3
                         )
                     ) AS quality,
+                    (
+                        SELECT fi_best.id
+                        FROM face_instances fi_best
+                        WHERE fi_best.cluster_id = c.id
+                        ORDER BY fi_best.quality DESC,
+                                 fi_best.detection_confidence DESC,
+                                 fi_best.created_at ASC
+                        LIMIT 1
+                    ) AS avatar_face_instance_id,
                     CASE WHEN ent.status = 'confirmed' THEN 1 ELSE 0 END AS confirmed
                 FROM face_clusters c
                 LEFT JOIN face_instances fi ON fi.cluster_id = c.id
@@ -500,6 +511,7 @@ class SqliteFaceRepository:
                 "co_person_count": int(row["co_person_count"] or 0),
                 "scene_count": int(row["scene_count"] or 0),
                 "quality": float(row["quality"] or 0),
+                "avatar_face_instance_id": row["avatar_face_instance_id"],
                 "confirmed": bool(row["confirmed"]),
             }
             for row in rows

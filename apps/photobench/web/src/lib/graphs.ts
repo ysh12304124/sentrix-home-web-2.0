@@ -858,7 +858,7 @@ export function memoryRecallMatrices(
 ): RecallMatrix[] {
   const details = memoryEffectiveness?.details || {};
   const attribution = dict(details.memory_answer_attribution);
-  const evidenceBlocks = dict(details.evidence_effectiveness);
+  const delivery = dict(details.delivery_statistics);
   const correctness = dict(details.answer_correctness);
   const judgedTotal =
     Number(correctness.correct || 0) + Number(correctness.partial || 0) + Number(correctness.incorrect || 0);
@@ -887,11 +887,18 @@ export function memoryRecallMatrices(
     const hit = Number(scope.hit_items || 0);
     const miss = Number(scope.miss_items || 0);
     const eligible = Number(scope.eligible || 0);
-    const evBlock = dict(evidenceBlocks[dim.key]);
-    const evRow = (k: string): Dict => dict(evBlock[k]);
-    const imageEv = evRow("image");
-    const videoEv = evRow("video_keyframe");
-    const eventEv = dict(evidenceBlocks.event);
+    const videoDelivery = dict(delivery.video_keyframe);
+    const videoTotal = Number(videoDelivery.eligible_items || 0);
+    const videoNode = (candidate: boolean): RecallNode => {
+      const count = candidate ? videoDelivery.candidate_hit_items : videoDelivery.delivered_items;
+      const rate = candidate ? videoDelivery.candidate_hit_rate : videoDelivery.delivery_rate;
+      return {
+        label: candidate ? "候选中找到对应视频关键帧" : "最终交付正确视频素材",
+        value: count == null ? "未记录" : `${Number(count)}/${videoTotal} 题`,
+        note: rate == null ? "缺少记录，无法计算" :
+          `${fmtPct(rate)} · ${candidate ? "未找到" : "未交付"} ${videoTotal - Number(count)} 题`,
+      };
+    };
     const hitWrong = Number(matrix.hit_incorrect || 0);
     const missWrong = Number(matrix.miss_incorrect || 0);
     return {
@@ -978,24 +985,8 @@ export function memoryRecallMatrices(
           ],
         },
         {
-          key: "L3", name: "证据有效性", stage: "原图 / 关键帧 / 事件 → Judge 验证",
-          nodes: [
-            {
-              label: "原图片证据有效率",
-              value: imageEv.effective_rate_on_returned == null ? "未计算" : fmtPct(imageEv.effective_rate_on_returned),
-              note: `${Number(imageEv.effective_items || 0)}/${Number(imageEv.returned_items || 0)} 有效 · 无效 ${Number(imageEv.ineffective_items || 0)}`,
-            },
-            {
-              label: "视频 / 关键帧有效率",
-              value: videoEv.effective_rate_on_returned == null ? "未计算" : fmtPct(videoEv.effective_rate_on_returned),
-              note: `${Number(videoEv.effective_items || 0)}/${Number(videoEv.returned_items || 0)} 有效 · 无效 ${Number(videoEv.ineffective_items || 0)}`,
-            },
-            {
-              label: "事件上下文有效率",
-              value: eventEv.effective_rate_on_returned == null ? "未计算" : fmtPct(eventEv.effective_rate_on_returned),
-              note: `${Number(eventEv.effective_items || 0)}/${Number(eventEv.returned_items || 0)} 有效 · 无效 ${Number(eventEv.ineffective_items || 0)}`,
-            },
-          ],
+          key: "L3", name: "视频召回与交付", stage: "仅看本次视频题，不使用 Judge 分数",
+          nodes: [videoNode(true), videoNode(false)],
         },
       ],
     };

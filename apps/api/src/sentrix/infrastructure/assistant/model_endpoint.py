@@ -39,6 +39,7 @@ from typing import Any
 import httpx
 
 from sentrix.domain.assistant.ports import ModelServiceError, PromptTooLongError
+from sentrix.infrastructure.models.gateway import model_auth_headers, props_url
 
 # 独立探测的默认期限。应用装配使用已有模型请求期限：繁忙的 MLX 服务可能
 # 同时延迟元数据响应，10 秒没有响应不能证明推理服务已退出。
@@ -183,7 +184,11 @@ class ServedModel:
 
     def _probe(self) -> str:
         try:
-            response = httpx.get(f"{self._base_url}/models", timeout=self._timeout_s)
+            response = httpx.get(
+                f"{self._base_url}/models",
+                timeout=self._timeout_s,
+                headers=model_auth_headers(),
+            )
         except httpx.HTTPError as error:
             raise ModelServiceError(
                 f"模型端点 {self._base_url} 元数据查询失败：{error}",
@@ -263,7 +268,7 @@ def probe_context_tokens(base_url: str, *, timeout: float = PROBE_TIMEOUT_S) -> 
     base = base_url.rstrip("/")
     # vLLM 那一支。
     try:
-        body = httpx.get(f"{base}/models", timeout=timeout).json()
+        body = httpx.get(f"{base}/models", timeout=timeout, headers=model_auth_headers()).json()
         for item in (body or {}).get("data") or []:
             if not isinstance(item, dict):
                 continue
@@ -273,10 +278,9 @@ def probe_context_tokens(base_url: str, *, timeout: float = PROBE_TIMEOUT_S) -> 
     except (httpx.HTTPError, ValueError, TypeError):
         pass
 
-    # llama.cpp 那一支。``/props`` 挂在根上，不在 ``/v1`` 下。
-    root = base[:-3] if base.endswith("/v1") else base
+    # llama.cpp 那一支。``/props`` 挂在根上，不在 ``/v1`` 下；控制面入口除外。
     try:
-        props = httpx.get(f"{root}/props", timeout=timeout).json()
+        props = httpx.get(props_url(base), timeout=timeout, headers=model_auth_headers()).json()
         settings = (props or {}).get("default_generation_settings") or {}
         value = settings.get("n_ctx")
         if isinstance(value, int) and value > 0:

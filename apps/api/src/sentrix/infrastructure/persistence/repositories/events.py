@@ -33,11 +33,24 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def _scope_clause(scope_id: str | None, place: str) -> tuple[str, tuple[object, ...]]:
+PLACE_PLACEHOLDERS = ("", "其他或不确定", "未知", "未知地点")
+
+
+def _scope_clause(
+    scope_id: str | None,
+    place: str,
+    *,
+    has_place: bool = False,
+    date: str = "",
+) -> tuple[str, tuple[object, ...]]:
     """拼 WHERE。``scope_id=None`` = 跨全部相册（1.0 ``db.py:1514`` 的 ``if scope_id:``）。
 
     无条件写 ``WHERE scope_id = ?`` 会让空串查 ``scope_id = ''``，返回空表——
     **而那个空表看起来与「这个范围真的没有事件」一模一样**。
+
+    日期索引、计数与按日列表共用同一组谓词。**事件按 ``time_start`` 归日，缺失时不再
+    退回 ``created_at``**：上传时间不是拍摄时间。缺失的事件归入 ``unknown`` 分组，
+    与 ``ReadTimeline._day_key`` 一致。
     """
     clause = " WHERE status = 'active'"
     params: list[object] = []
@@ -47,6 +60,14 @@ def _scope_clause(scope_id: str | None, place: str) -> tuple[str, tuple[object, 
     if place:
         clause += " AND (place LIKE ? OR admin_district LIKE ?)"
         params.extend((f"%{place}%", f"%{place}%"))
+    if has_place:
+        clause += " AND TRIM(COALESCE(place, '')) NOT IN (?, ?, ?, ?)"
+        params.extend(PLACE_PLACEHOLDERS)
+    if date == "unknown":
+        clause += " AND (time_start IS NULL OR time_start = '')"
+    elif date:
+        clause += " AND substr(time_start, 1, 10) = ?"
+        params.append(date)
     return clause, tuple(params)
 
 
@@ -162,22 +183,59 @@ class SqliteEventRepository:
         return [_row_to_event(row) for row in rows]
 
     def list_by_scope(
-        self, scope_id: str | None, *, limit: int, offset: int = 0, place: str = ""
+        self,
+        scope_id: str | None,
+        *,
+        limit: int,
+        offset: int = 0,
+        place: str = "",
+        has_place: bool = False,
+        date: str = "",
     ) -> Sequence[EventRecord]:
-        clause, params = _scope_clause(scope_id, place)
+        clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"SELECT {_COLUMNS} FROM events{clause}"
-                " ORDER BY capture_sort_key(COALESCE(time_start, created_at)) DESC, id DESC LIMIT ? OFFSET ?",
+                # 未知时间排在最后；内部仍按拍摄时间/上传时间倒序，分组才能稳定地
+                # 落成末尾那一个「未知时间」桶，而不是被 created_at 打散到各天之间。
+                " ORDER BY (time_start IS NULL OR time_start = '') ASC,"
+                " capture_sort_key(COALESCE(time_start, created_at)) DESC, id DESC"
+                " LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
         return [_row_to_event(row) for row in rows]
 
-    def count_by_scope(self, scope_id: str | None, *, place: str = "") -> int:
-        clause, params = _scope_clause(scope_id, place)
+    def count_by_scope(
+        self,
+        scope_id: str | None,
+        *,
+        place: str = "",
+        has_place: bool = False,
+        date: str = "",
+    ) -> int:
+        clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
             row = connection.execute(f"SELECT COUNT(*) AS n FROM events{clause}", params).fetchone()
         return int(row["n"]) if row else 0
+
+    def calendar(
+        self, scope_id: str | None, *, place: str = "", has_place: bool = False
+    ) -> Sequence[tuple[str, int]]:
+        """有活动事件的日期及计数；只查日期，不展开事件或媒体。
+
+        没有 ``time_start`` 的事件归到特殊的 ``unknown`` 桶——**不拿 ``created_at``
+        冒充拍摄日**。调用方把它渲染成单独的「时间未知」分组。
+        """
+        clause, params = _scope_clause(scope_id, place, has_place=has_place)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT CASE WHEN time_start IS NULL OR time_start = '' THEN 'unknown'"
+                " ELSE substr(time_start, 1, 10) END AS day,"
+                " COUNT(*) AS n FROM events"
+                f"{clause} GROUP BY day ORDER BY day ASC",
+                params,
+            ).fetchall()
+        return [(str(row["day"]), int(row["n"])) for row in rows if row["day"]]
 
     def apply_summary(
         self,
@@ -221,6 +279,23 @@ class SqliteEventRepository:
                 (event_id,),
             ).fetchall()
         return [row["observation_id"] for row in rows]
+
+    def observation_ids_many(self, event_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """一页事件的观察 ID，一次 IN 查完；避免每条事件各查一次。"""
+        unique = list(dict.fromkeys(event_ids))
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT event_id, observation_id FROM event_observations"
+                f" WHERE event_id IN ({placeholders}) ORDER BY event_id, observation_id",
+                tuple(unique),
+            ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["event_id"]), []).append(str(row["observation_id"]))
+        return {key: tuple(values) for key, values in grouped.items()}
 
     def events_for_observations(self, observation_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         """这些观察各自落在哪些事件上（``event_observations`` 的反向查询）。
@@ -331,6 +406,14 @@ class SqliteEventRepository:
             )
             # 上面是 OR IGNORE：两事件共有的观察已经在 target 上，这里把剩下的删掉。
             connection.execute("DELETE FROM event_observations WHERE event_id = ?", (source_event_id,))
+            # 人物瞬间（``person_moments``）也指向 events(id)。参与者与 ``event_entities``
+            # 由调用方先 ``rehome`` 过，这张表没人搬：漏掉它，下面的 DELETE 就撞外键——
+            # 2026-11-11 确认真实相册里的人物时，重分段就是在这里失败的。它的唯一键
+            # ``(person_id, observation_id, prompt_version)`` 不含 event_id，直接改挂不会冲突。
+            connection.execute(
+                "UPDATE person_moments SET event_id = ? WHERE event_id = ?",
+                (target_event_id, source_event_id),
+            )
             connection.execute("DELETE FROM events WHERE id = ?", (source_event_id,))
             starts = [value for value in (target.time_start, source.time_start) if value is not None]
             ends = [value for value in (target.time_end, source.time_end) if value is not None]

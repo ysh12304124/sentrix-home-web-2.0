@@ -86,8 +86,8 @@ class FamilyRepresentativeMedia(BaseModel):
 
 
 class FamilyPersonPayload(BaseModel):
-    """``people[]`` 的一项。``display_name`` 的占位是 **「待命名人物」**（1.0 这个端点
-    里的原词，与 ``app.py`` 那处的「待命名成员」不是一个串）。"""
+    """``people[]`` 的一项。``display_name`` 的占位统一为 **「未确认姓名人物」**，
+    任何端点都不把落库的内部 cluster id 带给用户。"""
 
     id: str
     scope_id: str
@@ -97,6 +97,9 @@ class FamilyPersonPayload(BaseModel):
     avatar_face_instance_id: str | None
     appearance_count: int
     representative_media: list[FamilyRepresentativeMedia]
+    # ``pending`` / ``confirmed``。待确认的人在名录里与已确认的人并列显示，界面靠它区分
+    # 「确认身份」与「改名」两种动作。
+    status: str
 
 
 class FamilyGraphResponse(BaseModel):

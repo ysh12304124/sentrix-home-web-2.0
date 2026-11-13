@@ -14,10 +14,10 @@ from fastapi import APIRouter, Depends, Query
 
 from sentrix.api.deps import get_container
 from sentrix.api.routes.corrections import memory_write
-from sentrix.api.routes.media import refresh_memory_graph
 from sentrix.api.schemas.facts import FactListResponse, FactPayload
 from sentrix.application.memories.review_fact import ReviewFact
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.memories.facts import Fact
 
 DEFAULT_LIMIT = 200

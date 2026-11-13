@@ -2,7 +2,7 @@
 
 只跑 HTTP，不碰模型：容器里的检测器与嵌入器是 ``conftest`` 的确定性假件，簇与实例由
 用例自己插进真 SQLite。这里验的是传输层——四审阅端点的 400 / 404 / 409、裁剪端点的
-``thumbnail`` 尺寸与缓存头、以及 ``pending`` 实体在**接口上**叫「待命名成员」。
+``thumbnail`` 尺寸与缓存头、以及 ``pending`` 实体在**接口上**叫「未确认姓名人物」。
 
 **裁决③之后的形状**：领域错误一律走 ``{"code", "message", "detail"}``（``api/errors.py``
 的唯一处理器），不再是 ``HTTPException`` 的 ``{"detail"}``。所以断言里同时钉 **码**与
@@ -163,7 +163,7 @@ def test_a_pending_cluster_is_shown_as_an_unnamed_member(client: TestClient):
 
     cluster = client.get("/api/v1/face-clusters").json()["clusters"][0]
 
-    assert cluster["canonical_name"] == PENDING_CLUSTER_NAME == "待命名成员"
+    assert cluster["canonical_name"] == PENDING_CLUSTER_NAME == "未确认姓名人物"
     assert cluster["family_role"] is None
     assert cluster["entity_status"] == "pending"
     assert cluster["reviewable"] is True
@@ -347,6 +347,50 @@ def test_merge_moves_the_faces_and_retires_the_source(identity_client: TestClien
     assert (row["status"], row["member_count"]) == ("rejected", 0)
 
 
+def test_merging_two_confirmed_people_keeps_the_target_name(identity_client: TestClient):
+    """人物级合并：簇级合并拒绝的「两个已确认的人」，在这里由用户决定。"""
+    add_entity(identity_client, "ent_a", name="妈妈", status="confirmed")
+    add_entity(identity_client, "ent_b", name="母亲", status="confirmed")
+    add_cluster(identity_client, "cluster_a", status="confirmed", entity_id="ent_a", member_count=1)
+    add_cluster(identity_client, "cluster_b", status="confirmed", entity_id="ent_b", member_count=1)
+    add_instance(identity_client, "face_a", cluster_id="cluster_a")
+    add_instance(identity_client, "face_b", cluster_id="cluster_b")
+
+    response = identity_client.post(
+        "/api/v1/people/merge", json={"target_person_id": "ent_a", "source_person_ids": ["ent_b"]}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entity"]["id"] == "ent_a"
+    assert body["entity"]["canonical_name"] == "妈妈"
+    assert body["entity"]["aliases"] == ["母亲"]
+    assert body["merged_person_ids"] == ["ent_b"]
+    assert body["moved_face_count"] == 1
+    # 来源不再出现在人物列表里。
+    people = identity_client.get("/api/v1/people", params={"scope_id": HOME}).json()["people"]
+    assert [item["id"] for item in people] == ["ent_a"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "status", "code"),
+    [
+        ({"target_person_id": "ent_a", "source_person_ids": []}, 400, "invalid_request"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_a"]}, 400, "invalid_request"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_missing"]}, 404, "not_found"),
+        ({"target_person_id": "ent_a", "source_person_ids": ["ent_hidden"]}, 409, "conflict"),
+    ],
+)
+def test_merge_people_error_codes(identity_client: TestClient, payload: dict, status: int, code: str):
+    add_entity(identity_client, "ent_a", name="妈妈", status="confirmed")
+    add_entity(identity_client, "ent_hidden", name="别处的人", status="confirmed", scope_id=HIDDEN)
+
+    response = identity_client.post("/api/v1/people/merge", json=payload)
+
+    assert response.status_code == status
+    assert _error(response)[0] == code
+
+
 def test_splitting_a_foreign_face_is_404(identity_client: TestClient):
     add_entity(identity_client, "ent_1", name="待确认人物簇 · cluster_1")
     add_cluster(identity_client, "cluster_1", entity_id="ent_1", member_count=1)
@@ -458,7 +502,7 @@ def test_rename_with_a_blank_name_is_400(identity_client: TestClient):
 def test_renaming_a_pending_candidate_keeps_it_unnamed_on_the_wire(identity_client: TestClient):
     """改名不等于确认这个人（1.0 ``db.py:4459`` 只动 ``name_state``）。
 
-    所以 ``pending`` 的实体改完名字，接口上仍然显示「待命名成员」——界面据此知道这个人
+    所以 ``pending`` 的实体改完名字，接口上仍然显示「未确认姓名人物」——界面据此知道这个人
     还没被认过。这条钉住的是「改名」与「确认」是两件事。
     """
     add_entity(identity_client, "ent_1", name="待确认人物簇 · cluster_1")

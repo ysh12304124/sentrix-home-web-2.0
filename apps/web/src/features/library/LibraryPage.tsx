@@ -1,122 +1,179 @@
 /**
- * 资料库。对应 1.0 `src/app.js:683` 的 `libraryView()`（pageHeader 在 `:687`）。
+ * 资料库：分页、筛选与计数都由后端覆盖完整范围。
  *
- * 版式照 1.0：相册摘要行 → 四个统计 → 筛选行（全部/图片/音频/文本/视频 + 排序）→ 网格。
- *
- * **Observation 面板没做**：1.0 的资产详情能展开「处理状态、Observation、模型原始输出」，
- * 而 2.0 没有 `/observations` 端点。详情里据实说明，不放空壳。
+ * 前端不再用当前页长度推算“当前范围资产”，也不在已取回的 200 条里筛选。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useScope } from "../../app/ScopeProvider";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
-import { listAssets, listMediaDeletions, retryMediaCleanup, type AssetSummary, type MediaDeletionRecord } from "../../shared/api/client";
+import {
+  listAssetPage,
+  listMediaDeletions,
+  retryMediaCleanup,
+  type AssetSummary,
+  type MediaDeletionRecord,
+} from "../../shared/api/client";
+import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
 import { AssetGrid } from "./AssetGrid";
-import { countByScope } from "./scopeCounts";
 import "../../styles/library.css";
 
 type MediaFilter = "all" | "image" | "audio" | "text" | "video";
-type SortOrder = "newest" | "oldest";
+type SortKey = "captured" | "created";
+
+const PAGE_SIZE = 60;
 
 const FILTERS: readonly (readonly [MediaFilter, string])[] = [
   ["all", "全部"],
   ["image", "图片"],
+  ["video", "视频"],
   ["audio", "音频"],
   ["text", "文本"],
-  ["video", "视频"],
 ];
 
 export function LibraryPage() {
-  const { scopeId, spaces } = useScope();
+  const { scopeId } = useScope();
   const [assets, setAssets] = useState<readonly AssetSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
-  const [cleanupPending, setCleanupPending] = useState(false);
-  const [deletions, setDeletions] = useState<readonly MediaDeletionRecord[]>([]);
-  const [deletionsError, setDeletionsError] = useState<string | null>(null);
-  const [deletionsLoading, setDeletionsLoading] = useState(true);
-  const [deletionsRevision, setDeletionsRevision] = useState(0);
+  const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState<MediaFilter>("all");
-  const [order, setOrder] = useState<SortOrder>("newest");
+  const [sortKey, setSortKey] = useState<SortKey>("captured");
+  const [order, setOrder] = useState<"desc" | "asc">("desc");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [deletions, setDeletions] = useState<MediaDeletionRecord[]>([]);
+  const [deletionsError, setDeletionsError] = useState("");
+  const [deletionsLoading, setDeletionsLoading] = useState(false);
+  const [deletionsRevision, setDeletionsRevision] = useState(0);
+  const requestSeq = useRef(0);
+  const knownTotal = useRef<number | null>(null);
+
+
+  useEffect(() => {
+    void reportClientEvent({
+      eventName: "library.view",
+      result: "ok",
+      operationId: newOperationId(),
+      scopeId,
+    });
+  }, [scopeId]);
 
   useEffect(() => {
     let cancelled = false;
-    listAssets(scopeId)
-      .then((items) => {
-        if (cancelled) return;
-        setAssets(items);
-        setError(null);
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setError(null);
+    setNotice("");
+    listAssetPage(scopeId, {
+      limit: PAGE_SIZE,
+      mediaType: filter === "all" ? "" : filter,
+      sort: sortKey,
+      order,
+    })
+      .then((page) => {
+        if (cancelled || seq !== requestSeq.current) return;
+        if (knownTotal.current !== null && (page.counts.all ?? 0) > knownTotal.current) {
+          setNotice("有新资料，刷新后可看到最新内容。");
+        }
+        knownTotal.current = page.counts.all ?? page.total;
+        setAssets(page.items);
+        setTotal(page.total);
+        setCounts(page.counts);
       })
-      .catch((cause: Error) => !cancelled && setError(cause.message));
+      .catch((cause: Error) => {
+        if (!cancelled && seq === requestSeq.current) setError(cause.message);
+      })
+      .finally(() => {
+        if (!cancelled && seq === requestSeq.current) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [scopeId]);
+  }, [filter, order, reloadKey, scopeId, sortKey]);
 
   useEffect(() => {
     let cancelled = false;
     setDeletionsLoading(true);
     listMediaDeletions(scopeId)
-      .then((records) => {
-        if (cancelled) return;
-        setDeletions(records);
-        setDeletionsError(null);
-      })
-      .catch((cause: Error) => !cancelled && setDeletionsError(cause.message))
+      .then((items) => { if (!cancelled) { setDeletions(items); setDeletionsError(""); } })
+      .catch((cause: Error) => { if (!cancelled) setDeletionsError(cause.message); })
       .finally(() => { if (!cancelled) setDeletionsLoading(false); });
     return () => { cancelled = true; };
-  }, [scopeId, deletionsRevision]);
+  }, [deletionsRevision, scopeId]);
 
-  const visible = useMemo(() => {
-    const filtered = filter === "all" ? assets : assets.filter((a) => a.media_type === filter);
-    // 1.0 的 `toggle-sort` 语义：按导入时间，默认最近在前。没有拍摄时间的排在后面。
-    return [...filtered].sort((left, right) => {
-      const a = left.captured_at ?? "";
-      const b = right.captured_at ?? "";
-      return order === "newest" ? b.localeCompare(a) : a.localeCompare(b);
+  const loadMore = useCallback(async () => {
+    if (loadingMore || assets.length >= total) return;
+    setLoadingMore(true);
+    try {
+      const page = await listAssetPage(scopeId, {
+        offset: assets.length,
+        limit: PAGE_SIZE,
+        mediaType: filter === "all" ? "" : filter,
+        sort: sortKey,
+        order,
+      });
+      if (knownTotal.current !== null && (page.counts.all ?? 0) > knownTotal.current) {
+        setNotice("有新资料，刷新后可看到最新内容。");
+      }
+      knownTotal.current = page.counts.all ?? knownTotal.current;
+      setAssets((previous) => {
+        const seen = new Set(previous.map((asset) => asset.id));
+        return [...previous, ...page.items.filter((asset) => !seen.has(asset.id))];
+      });
+      setTotal(page.total);
+      setCounts(page.counts);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [assets, filter, loadingMore, order, scopeId, sortKey, total]);
+
+  const changeFilter = (next: MediaFilter) => {
+    if (next === filter) return;
+    setFilter(next);
+    void reportClientEvent({
+      eventName: "library.filter",
+      result: "ok",
+      operationId: newOperationId(),
+      scopeId,
     });
-  }, [assets, filter, order]);
+  };
 
-  const countOf = (type: MediaFilter) =>
-    type === "all" ? assets.length : assets.filter((a) => a.media_type === type).length;
-  const scopeName = spaces.find((space) => space.id === scopeId)?.name ?? "全部相册";
+  const changeSort = (value: string) => {
+    const [nextKey, nextOrder] = value.split(":") as [SortKey, "asc" | "desc"];
+    setSortKey(nextKey);
+    setOrder(nextOrder);
+    void reportClientEvent({
+      eventName: "library.filter",
+      result: "ok",
+      operationId: newOperationId(),
+      scopeId,
+    });
+  };
 
-  // 后端目前不给 `AssetSummary.scope_id`，所以这里通常是空对象；只有它真的返回时
-  // 才显示按相册的汇总。**字段缺失不等于「0 个相册」**，两者要分开呈现。
-  const scopeCounts = useMemo(() => countByScope(assets), [assets]);
-  const scopedEntries = Object.entries(scopeCounts);
+  const count = (type: string) => counts[type] ?? 0;
+  const emptyAll = count("all") === 0;
 
   return (
     <>
       <PageHeader
-        kicker="家庭资料 / 全部内容"
-        title="所有资料，都有回到记忆的路径。"
-        description={`当前范围：${scopeName}。这里展示真实导入的原始 Asset。点击任意条目可查看文件与处理状态。`}
+        kicker="家庭资料"
+        title="所有资料"
+        description="可以按类型筛选、按拍摄或导入时间排序；这里的总数来自服务器上的全部资料。"
       />
 
-      <div className="album-summary-row">
-        <strong>相册内容</strong>
-        <span className="album-badge">{scopeName}</span>
-        {scopedEntries.length > 0 ? (
-          scopedEntries.map(([id, count]) => (
-            <span key={id}>
-              {spaces.find((space) => space.id === id)?.name ?? id} · {count}
-            </span>
-          ))
-        ) : (
-          <span className="scope-count-note">
-            按相册汇总需要 <code>/assets</code> 返回 <code>scope_id</code>（当前未返回）
-          </span>
-        )}
-      </div>
-
       <div className="library-summary">
-        <div><strong>{assets.length}</strong><span>当前范围资产</span></div>
-        <div><strong>{countOf("image")}</strong><span>图片</span></div>
-        <div><strong>{countOf("audio") + countOf("text")}</strong><span>音频 / 文本</span></div>
-        <div className="muted-stat"><strong>{countOf("video")}</strong><span>视频与场景</span></div>
+        <div><strong>{count("all")}</strong><span>全部资料</span></div>
+        <div><strong>{count("image")}</strong><span>图片</span></div>
+        <div><strong>{count("video")}</strong><span>视频</span></div>
+        <div><strong>{count("audio")}</strong><span>音频</span></div>
+        <div className="muted-stat"><strong>{count("text")}</strong><span>文本</span></div>
       </div>
 
       <div className="filter-row">
@@ -125,70 +182,149 @@ export function LibraryPage() {
             key={key}
             type="button"
             className={filter === key ? "filter-chip active" : "filter-chip"}
-            onClick={() => setFilter(key)}
+            aria-pressed={filter === key}
+            onClick={() => changeFilter(key)}
           >
             {label}
           </button>
         ))}
         <span className="filter-spacer" />
+        <label className="sort-select">
+          排序
+          <select
+            value={`${sortKey}:${order}`}
+            onChange={(event) => changeSort(event.target.value)}
+          >
+            <option value="captured:desc">按拍摄时间（最近）</option>
+            <option value="captured:asc">按拍摄时间（最早）</option>
+            <option value="created:desc">按导入时间（最近）</option>
+            <option value="created:asc">按导入时间（最早）</option>
+          </select>
+        </label>
         <button
           type="button"
           className="sort-label"
-          onClick={() => setOrder(order === "newest" ? "oldest" : "newest")}
+          onClick={() => setReloadKey((value) => value + 1)}
         >
-          按{order === "newest" ? "最近" : "最早"}导入 ↕
+          刷新 ↻
         </button>
       </div>
 
-      {error ? <p className="error">{error}</p> : null}
-      {deleteNotice ? <p role="status">{deleteNotice}</p> : null}
-      {(cleanupPending || deletions.some((record) => !record.files_done || !record.vectors_done)) ? <button type="button" onClick={() => {
-        void retryMediaCleanup()
-          .then((result) => {
-            setCleanupPending(result.warnings.some((warning) => warning.includes("待重试")));
-            setDeleteNotice(result.warnings.length ? result.warnings.join("；") : "外部索引和文件清理已完成");
-            setDeletionsRevision((revision) => revision + 1);
-          })
-          .catch((cause: Error) => setDeleteNotice(`重试失败：${cause.message}`));
-      }}>重试外部清理</button> : null}
+      {notice !== "" ? (
+        <p className="library-notice" role="status">
+          {notice}
+          <button type="button" className="text-button" onClick={() => setReloadKey((value) => value + 1)}>
+            刷新
+          </button>
+        </p>
+      ) : null}
+
+      {error ? (
+        <p className="error">
+          资料读取失败：{error}
+          <button type="button" className="text-button" onClick={() => setReloadKey((value) => value + 1)}>
+            重试
+          </button>
+        </p>
+      ) : null}
+
       <details className="deletion-history">
         <summary>删除记录 · 最近 50 条</summary>
         <div className="deletion-history-content">
-          <p className="config-help">数据库中的媒体和独占记忆已在删除时提交；文件与向量镜像的清理状态单独显示。</p>
-          <button type="button" onClick={() => setDeletionsRevision((revision) => revision + 1)}>刷新记录</button>
-          {deletionsError ? <p role="alert" className="error">读取删除记录失败：{deletionsError}</p> : null}
+          <p>数据库中的媒体和独占记忆已在删除时提交；受控文件与向量镜像清理状态单独记录。</p>
+          <div className="deletion-history-actions">
+            <button type="button" onClick={() => setDeletionsRevision((value) => value + 1)}>刷新记录</button>
+            {deletions.some((item) => !item.files_done || !item.vectors_done) ? (
+              <button type="button" onClick={() => {
+                void retryMediaCleanup()
+                  .then((result) => { setNotice(result.warnings.join("；") || "待重试的外部清理已完成"); setDeletionsRevision((value) => value + 1); })
+                  .catch((cause: Error) => setDeletionsError(cause.message));
+              }}>重试外部清理</button>
+            ) : null}
+          </div>
+          {deletionsError ? <p className="error" role="alert">读取/清理失败：{deletionsError}</p> : null}
           {deletionsLoading ? <p>正在读取删除记录…</p> : deletions.length === 0 ? <p>当前范围暂无删除记录。</p> : (
             <div className="deletion-history-scroll"><table>
-              <thead><tr><th>资源</th><th>删除时间</th><th>关联资产</th><th>文件</th><th>向量镜像</th><th>清理详情</th></tr></thead>
-              <tbody>{deletions.map((record) => <tr key={record.asset_id}>
-                <td><strong>{record.file_name || record.asset_id}</strong><small>{record.asset_id}</small></td>
-                <td>{record.deleted_at ? new Date(record.deleted_at).toLocaleString("zh-CN") : "未记录"}</td>
-                <td>{record.asset_count}</td>
-                <td>{record.files_done ? "完成" : "待重试"}</td>
-                <td>{record.vectors_done ? "完成" : "待重试"}</td>
-                <td>{record.last_error || (record.files_done && record.vectors_done ? "全部完成" : "等待清理")}</td>
+              <thead><tr><th>资源</th><th>删除时间</th><th>资产数</th><th>文件</th><th>向量</th><th>错误</th></tr></thead>
+              <tbody>{deletions.map((item) => <tr key={item.asset_id}>
+                <td>{item.file_name || item.asset_id}</td>
+                <td>{item.deleted_at ? new Date(item.deleted_at).toLocaleString("zh-CN") : "未记录"}</td>
+                <td>{item.asset_count}</td><td>{item.files_done ? "完成" : "待清理"}</td>
+                <td>{item.vectors_done ? "完成" : "待清理"}</td><td>{item.last_error || "—"}</td>
               </tr>)}</tbody>
             </table></div>
           )}
         </div>
       </details>
-      {visible.length === 0 ? (
+
+      {loading ? (
+        <p className="library-loading">正在读取资料…</p>
+      ) : assets.length === 0 ? (
         <EmptyState
           symbol="▦"
-          title={assets.length === 0 ? "还没有资料" : "没有匹配的资料"}
+          title={emptyAll ? "还没有资料" : "没有匹配的资料"}
           description={
-            assets.length === 0
-              ? "导入一份原始文件后，它会出现在这里。"
-              : "调整筛选条件，或切换到其它相册范围。"
+            emptyAll
+              ? "添加照片或视频后，整理完成的资料会出现在这里。"
+              : "调整类型筛选，或切换到其它相册范围。"
           }
         />
       ) : (
-        <AssetGrid assets={visible} onDeleted={(id, warnings) => {
-          setAssets((current) => current.filter((asset) => asset.id !== id && asset.parent_asset_id !== id));
-          setDeleteNotice(warnings.length ? `媒体已删除；${warnings.join("；")}` : "媒体及关联记忆已删除");
-          setCleanupPending(warnings.some((warning) => warning.includes("待重试")));
-          setDeletionsRevision((revision) => revision + 1);
-        }} />
+        <>
+          <AssetGrid
+            assets={assets}
+            onOpen={(asset) =>
+              void reportClientEvent({
+                eventName: "library.detail_open",
+                result: "ok",
+                operationId: newOperationId(),
+                scopeId,
+                assetId: asset.id,
+              })
+            }
+            onMediaError={(asset) =>
+              void reportClientEvent({
+                eventName: "library.media_error",
+                result: "failed",
+                errorCode: "media_load",
+                operationId: newOperationId(),
+                scopeId,
+                assetId: asset.id,
+              })
+            }
+            onDeleted={(assetId, warnings) => {
+              const removed = assets.find((asset) => asset.id === assetId);
+              setAssets((current) => current.filter((asset) => asset.id !== assetId));
+              setTotal((current) => Math.max(0, current - 1));
+              if (removed) {
+                setCounts((current) => ({
+                  ...current,
+                  all: Math.max(0, (current.all ?? 0) - 1),
+                  [removed.media_type]: Math.max(0, (current[removed.media_type] ?? 0) - 1),
+                }));
+              }
+              setNotice(warnings.length ? `媒体已删除，但有外部清理待完成：${warnings.join("；")}` : "媒体及独占记忆已删除。");
+              setReloadKey((value) => value + 1);
+              setDeletionsRevision((value) => value + 1);
+            }}
+          />
+          <div className="library-footer">
+            <span>
+              已显示 {assets.length} / {total} 份
+              {total > assets.length ? "，继续加载不会重复已显示的条目。" : "。"}
+            </span>
+            {assets.length < total ? (
+              <button
+                type="button"
+                className="button ghost"
+                disabled={loadingMore}
+                onClick={() => void loadMore()}
+              >
+                {loadingMore ? "正在加载…" : "加载更多"}
+              </button>
+            ) : null}
+          </div>
+        </>
       )}
     </>
   );

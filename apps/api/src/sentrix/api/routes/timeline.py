@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -16,11 +15,13 @@ from sentrix.api.deps import get_container
 from sentrix.api.routes.family import TRIGGER_INGEST, run_family_graph_for_scope
 from sentrix.api.routes.identity import _confirmed_person_events
 from sentrix.api.routes.insights import run_insights_for_scope
-from sentrix.api.routes.media import build_import_assets, refresh_memory_graph
 from sentrix.api.schemas.family import FamilyRunResponse
 from sentrix.api.schemas.operations import OperationCancellationResponse
 from sentrix.api.schemas.timeline import (
     AssetImportBatchResponse,
+    CalendarDay,
+    CalendarMonth,
+    CalendarYear,
     ImportBatchRequest,
     ImportBatchResponse,
     ImportFailure,
@@ -30,8 +31,10 @@ from sentrix.api.schemas.timeline import (
     PipelineProcessRequest,
     PipelineProcessResponse,
     PipelineStageSpan,
+    TimelineCalendarResponse,
     TimelineDay,
     TimelineEvent,
+    TimelineEventSummary,
     TimelinePhoto,
     TimelineResponse,
 )
@@ -51,8 +54,12 @@ from sentrix.application.memories.read_timeline import (
 from sentrix.application.memories.read_timeline import (
     TimelineEvent as TimelineEventResult,
 )
+from sentrix.application.memories.read_timeline import (
+    TimelineEventSummary as TimelineEventSummaryResult,
+)
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import build_import_assets, refresh_memory_graph
 from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.api.timeline")
@@ -81,7 +88,37 @@ def _event_payload(event: TimelineEventResult) -> TimelineEvent:
             )
             for photo in event.photos
         ],
+        timeline_date=event.timeline_date,
+        scope_id=event.scope_id,
     )
+
+
+def _summary_payload(event: TimelineEventSummaryResult) -> TimelineEventSummary:
+    return TimelineEventSummary(
+        id=event.id,
+        title=event.title,
+        time_start=event.time_start.isoformat() if event.time_start else None,
+        time_end=event.time_end.isoformat() if event.time_end else None,
+        place=event.place,
+        admin_district=event.admin_district,
+        summary=event.summary,
+        representative_asset_id=event.representative_asset_id,
+        representative_media_type=event.representative_media_type,
+        asset_count=event.asset_count,
+    )
+
+
+def _validate_date(value: str) -> str:
+    # ``unknown`` 是没有拍摄时间的事件桶，与 YYYY-MM-DD 一样是服务端的合法筛选值。
+    if value in {"", "unknown"}:
+        return value
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD") from None
+    if parsed.isoformat() != value:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+    return value
 
 
 def _read_timeline(container: Container) -> ReadTimeline:
@@ -119,10 +156,17 @@ def read_timeline(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(0, ge=0),
     place: str = Query("", max_length=60, description="地点筛选，服务端按地点/行政区匹配"),
+    has_place: bool = False,
+    date_value: str = Query("", alias="date", pattern=r"^$|^unknown$|^\d{4}-\d{2}-\d{2}$"),
     container: Container = Depends(get_container),
 ) -> TimelineResponse:
     result = _read_timeline(container).execute(
-        scope_id=scope_id or None, limit=limit, offset=offset, place=place.strip()
+        scope_id=scope_id or None,
+        limit=limit,
+        offset=offset,
+        place=place.strip(),
+        has_place=has_place,
+        date=_validate_date(date_value),
     )
     return TimelineResponse(
         scope_id=result.scope_id,
@@ -130,8 +174,38 @@ def read_timeline(
         offset=result.offset,
         limit=result.limit,
         days=[
-            TimelineDay(date=day.date, events=[_event_payload(item) for item in day.events])
+            TimelineDay(date=day.date, events=[_summary_payload(item) for item in day.events])
             for day in result.days
+        ],
+    )
+
+
+@router.get("/timeline/calendar")
+def timeline_calendar(
+    scope_id: str = "",
+    place: str = Query("", max_length=60),
+    has_place: bool = False,
+    container: Container = Depends(get_container),
+) -> TimelineCalendarResponse:
+    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
+    years = index.years
+    return TimelineCalendarResponse(
+        scope_id=scope_id,
+        unknown_count=index.unknown_count,
+        years=[
+            CalendarYear(
+                year=year.year,
+                count=year.count,
+                months=[
+                    CalendarMonth(
+                        month=month.month,
+                        count=month.count,
+                        days=[CalendarDay(date=day.date, count=day.count) for day in month.days],
+                    )
+                    for month in year.months
+                ],
+            )
+            for year in years
         ],
     )
 
@@ -330,41 +404,22 @@ def process_album_pipeline(
     )
     stage_timings = StageTimings()
     with stage_timings.activate(), stage_timings.measure("pipeline_total"):
-        result = _run_pipeline_stage(
-            request.scope_id,
-            "media_and_memory_processing",
-            lambda: pipeline.execute(
-                AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
-            ),
+        result = pipeline.execute(
+            AlbumProcessRequest(scope_id=request.scope_id, asset_ids=tuple(request.asset_ids))
         )
         timings = dict(result.timings)
 
         with stage_timings.measure("finalize"):
             participant_started = time.perf_counter()
             with stage_timings.measure("participant_projection"):
-
-                def project_participants() -> None:
-                    observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
-                    _confirmed_person_events(container).refresh_participants(
-                        [item.id for item in observations]
-                    )
-
-                _run_pipeline_stage(request.scope_id, "participant_projection", project_participants)
+                observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
+                _confirmed_person_events(container).refresh_participants([item.id for item in observations])
             timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
 
-            graph = None
             graph_started = time.perf_counter()
-            if request.graph_enabled:
-                with stage_timings.measure("memory_graph"):
-                    graph = _run_pipeline_stage(
-                        request.scope_id,
-                        "memory_graph",
-                        lambda: refresh_memory_graph(container, request.scope_id),
-                    )
-                # GraphBuildStats 只返回计数；这一段墙钟覆盖构图和图写入。
-                timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
-            else:
-                timings["memory_graph"] = 0.0
+            with stage_timings.measure("memory_graph"):
+                graph = refresh_memory_graph(container, request.scope_id)
+            timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
             timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
 
             family_started = time.perf_counter()
@@ -373,20 +428,8 @@ def process_album_pipeline(
             timings["family_graph"] = round(time.perf_counter() - family_started, 3)
 
             insights_started = time.perf_counter()
-            insight_failure: ImportFailure | None = None
             with stage_timings.measure("person_insights"):
-                try:
-                    insights = _maybe_run_insights(container, request.scope_id, result.processed)
-                except Exception as error:  # noqa: BLE001 - 辅助画像失败不应丢弃已完成的记忆图
-                    log.exception(
-                        "显式流水线的人物画像阶段失败；保留媒体记忆与图 scope=%s",
-                        request.scope_id,
-                    )
-                    insights = None
-                    insight_failure = ImportFailure(
-                        file_name="person_insights",
-                        reason=f"{type(error).__name__}: {error}",
-                    )
+                insights = _maybe_run_insights(container, request.scope_id, result.processed)
             timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
         timings["total"] = round(time.perf_counter() - total_started, 3)
 
@@ -401,16 +444,12 @@ def process_album_pipeline(
         summarized=result.summarized,
         timings=timings,
         timing_spans=[PipelineStageSpan(**span) for span in stage_timings.spans()],
-        failures=[
-            *[ImportFailure(file_name=item.file_name, reason=item.reason) for item in result.failures],
-            *([insight_failure] if insight_failure is not None else []),
-        ],
+        failures=[ImportFailure(file_name=item.file_name, reason=item.reason) for item in result.failures],
         memory_graph=(
             MemoryGraphBuildResponse(
                 scope_id=graph.scope_id,
                 node_count=graph.node_count,
                 edge_count=graph.edge_count,
-                graph_structure_seconds=timings["memory_graph"],
                 causal_candidate_pairs=graph.causal_candidate_pairs,
                 causal_edges=graph.causal_edges,
                 causal_status=graph.causal_status,
@@ -500,15 +539,6 @@ def _maybe_run_insights(container: Container, scope_id: str, imported: int) -> I
         return None
     counts = run_insights_for_scope(container, scope_id)
     return InsightCounts(**counts)
-
-
-def _run_pipeline_stage(scope_id: str, stage: str, operation: Callable[[], Any]) -> Any:
-    """记录显式测评流水线收尾阶段的完整异常，避免客户端只看到无上下文的 HTTP 500。"""
-    try:
-        return operation()
-    except Exception:
-        log.exception("显式流水线失败 scope=%s stage=%s", scope_id, stage)
-        raise
 
 
 @router.post("/imports/{operation_id}/cancel", status_code=202)

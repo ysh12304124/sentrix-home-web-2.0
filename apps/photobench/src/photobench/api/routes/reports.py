@@ -21,6 +21,11 @@ from photobench.domain.runs import exports
 router = APIRouter(tags=["reports"])
 
 
+@router.get("/runs/{run_id}/video-comparison")
+def video_comparison(request: Request, run_id: str) -> dict[str, Any]:
+    return get_container(request).reports.video_comparison(run_id)
+
+
 @router.get("/runs/{run_id}/keyframe-analysis")
 def keyframe_analysis(request: Request, run_id: str) -> dict[str, Any]:
     """1.0 ``:7724-7727``。"""

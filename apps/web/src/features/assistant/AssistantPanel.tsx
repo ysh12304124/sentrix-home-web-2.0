@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  deliveredPhotoThumbUrl,
   deliveredPhotoUrl,
   getConversation,
+  pollTurn,
   type AssistantAttachment,
   type AssistantProgressEvent,
+  type AssistantTurnPoll,
   type ConversationDetail,
 } from "../../shared/api/client";
 import { Lightbox } from "../../shared/ui/Lightbox";
@@ -30,7 +33,9 @@ interface Exchange {
  * 消息与回合是两个数组：`messages` 给顺序与文本，`turns` 给附件与终态。用
  * `turn_id` 对起来——**交付的照片只存在回合那一侧**，只看 messages 会全部丢掉。
  */
-function replayExchanges(detail: ConversationDetail): Exchange[] {
+function replayExchanges(
+  detail: Pick<ConversationDetail, "messages" | "turns">,
+): Exchange[] {
   const turns = new Map(detail.turns.map((turn) => [turn.id, turn]));
   const exchanges: Exchange[] = [];
   const byTurn = new Map<string, Exchange>();
@@ -83,7 +88,8 @@ function replayExchanges(detail: ConversationDetail): Exchange[] {
     });
   }
 
-  return exchanges;
+  // 界面要求最新的问答在最上面；后端仍按时间正序返回（分页游标也依赖这个顺序）。
+  return exchanges.reverse();
 }
 
 /**
@@ -113,7 +119,21 @@ export function AssistantPanel({
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const { progress, result, busy, error, ask } = useTurnStream();
+  const [historyCursor, setHistoryCursor] = useState("");
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const {
+    progress,
+    result,
+    busy,
+    error,
+    ask,
+    cancel,
+    cancelled,
+    executionState,
+    attemptNo,
+    turnId: liveTurnId,
+  } = useTurnStream();
 
   const settled = useRef<string | null>(null);
   /** 当前这一轮是哪个会话的哪条 exchange——切换会话后到达的结果不该串台。 */
@@ -122,6 +142,8 @@ export function AssistantPanel({
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
   const progressRef = useRef<AssistantProgressEvent[]>([]);
   const historyToken = useRef(0);
+  const pollTimers = useRef<Map<string, number>>(new Map());
+  const pollGeneration = useRef(0);
   const sequence = useRef(0);
 
   useEffect(() => {
@@ -142,11 +164,15 @@ export function AssistantPanel({
     }
 
     setExchanges([]);
+    setHistoryCursor("");
+    setHistoryHasMore(false);
     setHistoryLoading(true);
     getConversation(conversationId)
       .then((detail) => {
         if (token !== historyToken.current) return;
         setExchanges(replayExchanges(detail));
+        setHistoryCursor(detail.next_cursor ?? "");
+        setHistoryHasMore(detail.has_more === true);
       })
       .catch((cause: Error) => {
         if (token !== historyToken.current) return;
@@ -158,13 +184,101 @@ export function AssistantPanel({
       });
   }, [conversationId]);
 
+  const loadEarlier = useCallback(async () => {
+    if (conversationId === null || historyCursor === "" || loadingEarlier) return;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    const token = historyToken.current;
+    try {
+      const page = await getConversation(conversationId, historyCursor);
+      if (token !== historyToken.current) return;
+      const older = replayExchanges(page);
+      // 最新在上：更早的一页接在列表末尾，不会把用户正在看的内容顶走。
+      setExchanges((previous) => {
+        const keys = new Set(previous.map((item) => item.key));
+        return [...previous, ...older.filter((item) => !keys.has(item.key))];
+      });
+      setHistoryCursor(page.next_cursor ?? "");
+      setHistoryHasMore(page.has_more === true);
+    } catch (cause) {
+      if (token === historyToken.current) {
+        setHistoryError((cause as Error).message);
+      }
+    } finally {
+      if (token === historyToken.current) setLoadingEarlier(false);
+    }
+  }, [conversationId, historyCursor, loadingEarlier]);
+
+  // R7：历史里的非终态回合用现有轮询接口跟踪；切换会话时清空所有定时器。
+  useEffect(() => {
+    const token = ++pollGeneration.current;
+    return () => {
+      pollGeneration.current += 1;
+      for (const timer of pollTimers.current.values()) window.clearTimeout(timer);
+      pollTimers.current.clear();
+      void token;
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    const generation = pollGeneration.current;
+    const apply = (poll: AssistantTurnPoll) => {
+      setExchanges((previous) =>
+        previous.map((item) =>
+          item.turnId === poll.turn_id
+            ? {
+                ...item,
+                status: poll.status,
+                reason: poll.waiting_reason || item.reason,
+                answer: poll.result?.answer || item.answer,
+                attachments: poll.result?.attachments ?? item.attachments,
+              }
+            : item,
+        ),
+      );
+    };
+    const schedule = (turnId: string, delay: number) => {
+      if (pollTimers.current.has(turnId)) return;
+      const timer = window.setTimeout(async () => {
+        pollTimers.current.delete(turnId);
+        if (generation !== pollGeneration.current) return;
+        try {
+          const poll = await pollTurn(turnId);
+          if (generation !== pollGeneration.current) return;
+          apply(poll);
+          if (!isTerminalStatus(poll.status)) schedule(turnId, 2000);
+        } catch {
+          if (generation === pollGeneration.current) {
+            schedule(turnId, Math.min(10_000, delay * 2));
+          }
+        }
+      }, delay);
+      pollTimers.current.set(turnId, timer);
+    };
+
+    for (const exchange of exchanges) {
+      if (exchange.turnId === "") continue;
+      if (isTerminalStatus(exchange.status)) {
+        const timer = pollTimers.current.get(exchange.turnId);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          pollTimers.current.delete(exchange.turnId);
+        }
+        continue;
+      }
+      // 当前页面发起的回合由 SSE 负责，避免同一回合重复轮询。
+      if (busy && exchange.turnId === liveTurnId) continue;
+      schedule(exchange.turnId, 1500);
+    }
+  }, [busy, conversationId, exchanges, liveTurnId]);
+
   const runQuestion = useCallback(
     (question: string) => {
       if (conversationId === null) return;
       const key = `live-${(sequence.current += 1)}`;
       setLive({ conversationId, key });
       setExchanges((previous) => [
-        ...previous,
         {
           key,
           question,
@@ -175,6 +289,7 @@ export function AssistantPanel({
           turnId: "",
           events: [],
         },
+        ...previous,
       ]);
       void ask(conversationId, question);
     },
@@ -218,6 +333,18 @@ export function AssistantPanel({
     );
   }, [error, live]);
 
+  // 用户点了停止：就地收尾这一条，不再等一个不会到达的 complete。
+  useEffect(() => {
+    if (!cancelled || live === null) return;
+    setExchanges((previous) =>
+      previous.map((item) =>
+        item.key === live.key && item.status === "running"
+          ? { ...item, status: "cancelled", reason: "已停止" }
+          : item,
+      ),
+    );
+  }, [cancelled, live]);
+
   // 自动提问：等会话历史读完、且这个问题还没被消费过。
   useEffect(() => {
     const trimmed = initialQuestion.trim();
@@ -243,7 +370,8 @@ export function AssistantPanel({
     runQuestion(question);
   }
 
-  const lastKey = exchanges[exchanges.length - 1]?.key ?? "";
+  // 最新一轮在最上面；“下一页”只挂在它上面，不能挂到列表末尾的旧问题上。
+  const lastKey = exchanges[0]?.key ?? "";
 
   return (
     <section className="assistant">
@@ -262,6 +390,11 @@ export function AssistantPanel({
         >
           {busy ? "处理中…" : "发送"}
         </button>
+        {busy ? (
+          <button type="button" className="ghost-action" onClick={() => void cancel()}>
+            停止回答
+          </button>
+        ) : null}
       </form>
 
       {error !== null ? <p className="error">{error}</p> : null}
@@ -279,11 +412,17 @@ export function AssistantPanel({
           return (
             <article key={exchange.key} className="assistant-exchange">
               {exchange.question ? <p className="question">{exchange.question}</p> : null}
+              {liveExchange && executionState !== "" ? (
+                <p className="note" role="status">
+                  {executionLabel(executionState, attemptNo)}
+                </p>
+              ) : null}
               {exchange.answer ? <p className="answer">{exchange.answer}</p> : null}
-              {exchange.status !== "running" && exchange.status !== "complete" ? (
+              {["cancelled", "failed", "blocked"].includes(exchange.status) ? (
                 <p className="note">
-                  这一轮的状态：{exchange.status}
-                  {exchange.reason !== "" ? `（${exchange.reason}）` : ""}
+                  {exchange.status === "cancelled"
+                    ? "已停止回答。"
+                    : "这次回答没有完成，可以再问一次。"}
                 </p>
               ) : null}
               {exchange.attachments.length > 0 ? (
@@ -298,13 +437,13 @@ export function AssistantPanel({
                         onClick={() =>
                           setLightbox({
                             src: deliveredPhotoUrl(photo.asset_id, photo.file_name),
-                            caption: photo.file_name,
+                            caption: "相关照片",
                           })
                         }
                       >
                         <img
-                          src={deliveredPhotoUrl(photo.asset_id, photo.file_name)}
-                          alt={photo.file_name}
+                          src={deliveredPhotoThumbUrl(photo.asset_id)}
+                          alt="相关照片"
                           loading="lazy"
                         />
                       </button>
@@ -334,6 +473,16 @@ export function AssistantPanel({
             </article>
           );
         })}
+        {historyHasMore ? (
+          <button
+            type="button"
+            className="button ghost assistant-load-earlier"
+            disabled={loadingEarlier}
+            onClick={() => void loadEarlier()}
+          >
+            {loadingEarlier ? "正在加载更早消息…" : "加载更早消息"}
+          </button>
+        ) : null}
       </div>
       {lightbox === null ? null : (
         <Lightbox
@@ -344,4 +493,12 @@ export function AssistantPanel({
       )}
     </section>
   );
+}
+
+function executionLabel(state: string, attemptNo: number): string {
+  const suffix = attemptNo > 1 ? `（第 ${attemptNo} 次尝试）` : "";
+  if (state === "recovering") return `正在恢复这次回答${suffix}…`;
+  if (state === "waiting_dependency") return "模型服务暂不可用，恢复后会自动继续，不需要重新提问。";
+  if (state === "retry_scheduled") return `这次回答稍后会自动重试${suffix}…`;
+  return "";
 }

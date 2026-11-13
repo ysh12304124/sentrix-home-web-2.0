@@ -6,20 +6,24 @@ import hashlib
 import json
 import logging
 import os
+import re
+import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import ConflictError, NotFoundError
+from sentrix.api.schemas.import_jobs import UploadAcceptedResponse
 from sentrix.api.schemas.media import (
     AssetListResponse,
     AssetSummary,
@@ -29,23 +33,23 @@ from sentrix.api.schemas.media import (
     MediaDeletionHistoryResponse,
     MediaDeletionRecordResponse,
 )
-from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.media.delete_asset import DeleteAsset
-from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets, ImportRequest, StagedImport
-from sentrix.application.media.index_place import IndexAssetPlace
-from sentrix.application.media.maintain_entities import MaintainObservationEntities
-from sentrix.application.media.observe_asset import ObserveAsset
-from sentrix.application.memories.assign_events import AssignEvents, EventVisualSimilarity
-from sentrix.application.memories.build_graph import BuildMemoryGraph
-from sentrix.application.memories.maintain_facts import MaintainFacts
-from sentrix.application.retrieval.index_observation_text import IndexObservationText
-from sentrix.application.retrieval.index_visual import IndexAssetVisual
+from sentrix.application.media.import_assets import ImportRequest, StagedImport
 from sentrix.bootstrap.container import Container
-from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
+from sentrix.bootstrap.import_wiring import (
+    build_import_assets,
+    build_video_scenes,
+    refresh_memory_graph,
+)
+from sentrix.domain.media.import_jobs import (
+    IdempotencyConflict,
+    ImportJob,
+    UploadBusy,
+    UploadQuotaExceeded,
+)
+from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import TranscriptionSegment
 from sentrix.domain.media.scenes import SceneWindow
-from sentrix.domain.memories.graph import GraphBuildStats
 
 router = APIRouter(tags=["media"])
 log = logging.getLogger("sentrix.api.media")
@@ -57,9 +61,50 @@ VIDEO_RETRY_DELAY_SECONDS = 2.0
 
 PREVIEW_MAX_DIMENSION = 1600
 PREVIEW_QUALITY = 85
+THUMBNAIL_MAX_DIMENSION = 480
+THUMBNAIL_QUALITY = 78
+IMAGE_CACHE_CONTROL = "private, max-age=86400"
 
 
-def to_summary(asset: Asset) -> AssetSummary:
+def _cached_image_response(
+    asset: Asset,
+    container: Container,
+    *,
+    max_dimension: int,
+    quality: int,
+) -> Response:
+    """按资产 id + 尺寸落盘缓存一张 JPEG；页面反复打开时不再重复解码原图。"""
+    source = Path(asset.path)
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="media file missing on disk")
+    cache_dir = container.settings.preview_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / f"{asset.id}-{max_dimension}.jpg"
+    try:
+        if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+            return FileResponse(
+                target,
+                media_type="image/jpeg",
+                headers={"Cache-Control": IMAGE_CACHE_CONTROL},
+            )
+    except OSError:
+        pass
+    payload = container.preview_encoder.encode_jpeg(source, max_dimension=max_dimension, quality=quality)
+    try:
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(payload)
+        os.replace(temporary, target)
+    except OSError:
+        # 缓存写失败不影响本次返回。
+        pass
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers={"Cache-Control": IMAGE_CACHE_CONTROL},
+    )
+
+
+def to_summary(asset: Asset, place: str = "") -> AssetSummary:
     return AssetSummary(
         id=asset.id,
         file_name=asset.file_name,
@@ -68,6 +113,7 @@ def to_summary(asset: Asset) -> AssetSummary:
         size_bytes=asset.size_bytes,
         status=asset.status.value,
         captured_at=asset.captured_at.isoformat() if asset.captured_at else None,
+        place=place,
         gps=(
             {"latitude": asset.captured_location.latitude, "longitude": asset.captured_location.longitude}
             if asset.captured_location
@@ -171,6 +217,161 @@ async def import_media(
         video_scenes=result.video_scenes,
         audio_probed=result.audio_probed,
     )
+
+
+_UPLOAD_CHUNK = 1024 * 1024
+_SCOPE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _sniff_media_type(head: bytes) -> MediaType | None:
+    """按文件头判定类型；文件名与上传方 content-type 只作提示。"""
+    if head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return MediaType.IMAGE
+    if head[:6] in {b"GIF87a", b"GIF89a"}:
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return MediaType.IMAGE
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return MediaType.VIDEO
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return MediaType.AUDIO
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in {b"heic", b"heix", b"hevc", b"mif1", b"msf1", b"avif"}:
+            return MediaType.IMAGE
+        if brand in {b"M4A ", b"M4B "}:
+            return MediaType.AUDIO
+        return MediaType.VIDEO
+    if head.startswith(b"ID3") or head[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return MediaType.AUDIO
+    if head.startswith((b"OggS", b"fLaC")):
+        return MediaType.AUDIO
+    return None
+
+
+def _upload_limit(media: MediaType, container: Container) -> int:
+    if media is MediaType.IMAGE:
+        return container.settings.upload_photo_max_bytes
+    return container.settings.upload_video_max_bytes
+
+
+@router.post("/media/uploads", status_code=202)
+async def upload_media(
+    request: Request,
+    file: UploadFile = File(...),
+    scope_id: str = Form("home-default"),
+    container: Container = Depends(get_container),
+) -> UploadAcceptedResponse:
+    """流式接收一个文件。只有原件落盘且作业入库后才返回 202。"""
+    settings = container.settings
+    idempotency_key = request.headers.get("idempotency-key", "").strip()
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 缺失或过长")
+    # 上传必须落到一个具体相册；“全部相册”是读侧筛选，不适用于写入。
+    scope_id = (scope_id or "").strip() or "home-default"
+    if not _SCOPE_PATTERN.fullmatch(scope_id):
+        raise HTTPException(status_code=400, detail="scope_id 不合法")
+    file_name = file.filename or "unnamed"
+    declared = MediaType.from_upload(file.content_type, file_name)
+    try:
+        declared_size = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        declared_size = 0
+    if declared_size > settings.upload_video_max_bytes:
+        raise HTTPException(status_code=413, detail="文件超过单文件上限")
+
+    expected = declared_size or settings.upload_video_max_bytes
+    try:
+        free_bytes = shutil.disk_usage(settings.data_dir).free
+    except OSError:
+        free_bytes = 0
+    try:
+        reservation = await run_in_threadpool(
+            container.import_jobs.reserve_upload,
+            expected,
+            quota_bytes=settings.upload_quota_bytes,
+            max_inflight=settings.upload_max_inflight,
+            free_bytes=free_bytes,
+            min_free_bytes=settings.upload_min_free_bytes,
+        )
+    except UploadBusy as error:
+        raise HTTPException(status_code=429, detail="同时上传的文件已达到上限，请稍后重试") from error
+    except UploadQuotaExceeded as error:
+        raise HTTPException(status_code=507, detail="存储配额或磁盘空间不足，暂停接收新上传") from error
+
+    staging_path = container.media_storage.staging_dir / f"{reservation}.part"
+    final_path: Path | None = None
+    accepted = False
+    digest = hashlib.sha256()
+    size = 0
+    media: MediaType | None = None
+    try:
+        with staging_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                if media is None:
+                    media = _sniff_media_type(chunk) or declared
+                if media is MediaType.TEXT:
+                    raise HTTPException(status_code=415, detail="仅支持照片、视频和音频")
+                size += len(chunk)
+                if size > _upload_limit(media, container):
+                    raise HTTPException(status_code=413, detail="文件超过该媒体类型的大小上限")
+                digest.update(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if size == 0:
+            raise HTTPException(status_code=400, detail="空文件")
+        if media is None:
+            media = declared
+
+        asset_id = f"asset_{uuid.uuid4().hex[:12]}"
+        final_path = container.media_storage.move_from_path(asset_id, file_name, staging_path)
+        now = datetime.now(UTC)
+        job = ImportJob(
+            id=f"job_{uuid.uuid4().hex[:16]}",
+            asset_id=asset_id,
+            scope_id=scope_id,
+            # 真实接收序号在 accept() 的写锁事务里分配。
+            receive_seq=0,
+            file_name=file_name,
+            media_type=media.value,
+            content_sha256=digest.hexdigest(),
+            size_bytes=size,
+            status="accepted",
+            stage="accepted",
+            attempts=0,
+            error_category="",
+            error_message="",
+            idempotency_key=idempotency_key,
+            accepted_at=now,
+            updated_at=now,
+            original_path=str(final_path),
+        )
+        try:
+            stored, created = await run_in_threadpool(
+                container.import_jobs.accept,
+                job,
+                reservation_id=reservation,
+                quota_bytes=settings.upload_quota_bytes,
+            )
+        except IdempotencyConflict as error:
+            raise HTTPException(status_code=409, detail="同一幂等键已用于不同内容") from error
+        except UploadQuotaExceeded as error:
+            raise HTTPException(status_code=507, detail="存储配额不足，暂停接收新上传") from error
+        accepted = True
+        if not created and stored.asset_id != asset_id:
+            # 重试的新副本不是权威原件，删掉；返回第一次接收的作业。
+            final_path.unlink(missing_ok=True)
+        return UploadAcceptedResponse(job_id=stored.id, asset_id=stored.asset_id, status="accepted")
+    finally:
+        if not accepted:
+            await run_in_threadpool(container.import_jobs.release_upload, reservation)
+            staging_path.unlink(missing_ok=True)
+            if final_path is not None:
+                final_path.unlink(missing_ok=True)
 
 
 def schedule_video_job(container: Container, job_id: str) -> None:
@@ -701,286 +902,56 @@ def _job_progress(container: Container, job_id: str) -> float:
     return round(weighted_progress / sum(weights.values()), 4)
 
 
-def build_memory_graph(container: Container) -> BuildMemoryGraph:
-    """把 2.0 标准记忆端口接到独立图投影用例。"""
-    return BuildMemoryGraph(
-        assets=container.asset_repository,
-        observations=container.observation_repository,
-        events=container.event_repository,
-        participants=container.event_participant_repository,
-        entities=container.entity_repository,
-        facts=container.fact_repository,
-        relationships=container.relationship_repository,
-        graph=container.memory_graph,
-        family=container.family_graph_repository,
-        causal_judge=container.causal_judge,
-        vectors=container.vector_repository,
-    )
-
-
-def refresh_memory_graph(container: Container, scope_id: str) -> GraphBuildStats | None:
-    """在写入链路结束后重建派生图；图失败不阻断权威记忆写入。"""
-    try:
-        return build_memory_graph(container).execute(scope_id)
-    except Exception as error:  # noqa: BLE001 - 派生投影必须可降级
-        log.warning("记忆图重建失败（scope=%s），保留主链路结果: %s", scope_id, error)
-        return None
-
-
-def build_import_assets(container: Container, *, observe: bool) -> ImportAssets:
-    """把导入用例的协作者接起来。**只在这里接一次**。
-
-    单张上传与整册导入共用同一条链：分开接的话，「整册少了词法投影」这类差异会以
-    「单张能搜到、批量搜不到」的形式出现，而那种 bug 在两端各看一半时都看不出来。
-
-    ``observe`` 控制要不要为每张图付视觉观察的模型调用（首轮 + 补全 + 中文化，
-    最多 3 次）。单张上传走快路径（1.0 的 ``_commit_fast_image`` 同样时机），
-    整册导入才接观察器。
-
-    **视频抽帧链（S8b）也挂在这一处**，理由同上：单张上传与整册导入都必须建场景，
-    分开接会让「整册导入的视频没有场景」以「单张有、批量没有」的形式出现。
-    """
-    # 关键帧走**另一条 import 实例**，而且固定 ``observe=True``：视频的语义整个都在
-    # 关键帧上，跳过观察等于让视频一条语义都不进库——正是 S8a 要修的那种「收下了但
-    # 什么都没发生」。裁决④要的是关键帧白得 observation，不是白得一张空观察。
-    # 用独立实例而不是复用入参那个，是因为入参的 ``observe`` 由调用方按「一张照片
-    # 值不值得三次模型调用」定的，与视频无关。
-    keyframe_importer = _build_importer(container, observe=True)
-    extractor = _build_video_scenes(container, keyframe_importer.process_image)
-    return _build_importer(
-        container,
-        observe=observe,
-        video_scene_extractor=extractor.execute,
-    )
-
-
-def build_video_scenes(
-    container: Container,
-    *,
-    checkpoint: Callable[[str, int, int, int], None] | None = None,
-    resume_event_completed: int = 0,
-) -> ExtractVideoScenes:
-    """独立的抽取链，给 ``POST /videos/{id}/reprocess`` 重跑用（S8b T514）。
-
-    与导入时走的是同一个 ``_build_video_scenes``：重跑与首次导入是同一条链，
-    差别只在重跑前先 ``cleanup_derivatives`` 清场。分开写一遍会让「重跑出来的场景
-    与首次不一样」，而那种差异只有在对比两次结果时才看得出来。
-    """
-    return _build_video_scenes(
-        container,
-        _build_importer(container, observe=True).process_image,
-        checkpoint=checkpoint,
-        resume_event_completed=resume_event_completed,
-    )
-
-
-def _build_video_scenes(
-    container: Container,
-    process_image: Callable[..., object],
-    *,
-    checkpoint: Callable[[str, int, int, int], None] | None = None,
-    resume_event_completed: int = 0,
-) -> ExtractVideoScenes:
-    return ExtractVideoScenes(
-        assets=container.asset_repository,
-        events=container.event_repository,
-        places=container.asset_place_repository,
-        video_repository=container.video_repository,
-        keyframes=container.video_keyframe_extractor,
-        process_image=lambda asset, event_id: process_image(asset, forced_event_id=event_id),
-        scene_planner=container.video_scene_planner,
-        transcriber=container.audio_transcriber,
-        cross_modal_embedder=container.cross_modal_embedder,
-        has_memory=lambda asset: bool(container.observation_repository.list_by_asset(asset.id)),
-        checkpoint=checkpoint,
-        resume_event_completed=resume_event_completed,
-    )
-
-
-def _build_importer(
-    container: Container,
-    *,
-    observe: bool,
-    video_scene_extractor: Callable[[str], VideoSceneExtraction | int] | None = None,
-) -> ImportAssets:
-    """``ImportAssets`` 的装配本体。两个调用方共用：导入本身，以及关键帧那条流水线。"""
-    assigner = AssignEvents(
-        events=container.event_repository,
-        observations=container.observation_repository,
-        assets=container.asset_repository,
-        places=container.asset_place_repository,
-        visual_similarity=EventVisualSimilarity(
-            vectors=container.vector_repository,
-            observations=container.observation_repository,
-            assets=container.asset_repository,
-        ),
-        # 事件打分的 person 分量（权重 0.20）的两个来源。装配点**只有这里**：
-        # 单张上传与整册导入共用同一条链，分开接会让「整册少了人物桥」以
-        # 「批量导入时事件分得更碎」的形式出现，而那种差异在两端口各看一半时看不出来。
-        confirmed_people=container.entity_repository.confirmed_people_for_observation,
-        confirmed_event_people=container.entity_repository.confirmed_people_for_event,
-    )
-    return ImportAssets(
-        assets=container.asset_repository,
-        observations=container.observation_repository,
-        storage=container.media_storage,
-        metadata=container.metadata_reader,
-        resolve_capture_time=container.capture_time_resolver,
-        visual_indexer=IndexAssetVisual(
-            embedder=container.visual_embedder,
-            vectors=container.vector_repository,
-            index=container.vector_index,
-        ),
-        place_indexer=IndexAssetPlace(
-            resolver=container.place_resolver, places=container.asset_place_repository
-        ),
-        observer=(
-            ObserveAsset(
-                observer=container.vlm_observer,
-                observations=container.observation_repository,
-            )
-            if observe
-            else None
-        ),
-        event_assigner=lambda observation: _event_id(assigner, observation),
-        # 关键帧的强制归属（S8b T513）。**不受 ``observe`` 影响**：只要有人给了
-        # ``forced_event_id`` 就需要它，而那一条路只有视频抽帧会走。
-        event_attacher=lambda event_id, observation: container.event_repository.attach(
-            event_id, observation.id
-        ),
-        face_enroller=_face_enroller(container),
-        fact_maintainer=_fact_maintainer(container),
-        text_indexer=_text_indexer(container),
-        entity_extractor=_entity_extractor(container),
-        lexical_index=container.lexical_index,
-        # 记忆空间行（裁决一）。**只在这里接**：簇列表内连 ``memory_spaces``，
-        # 少接这一处，全新部署导入一整册之后审阅页一个簇都不显示（第 97 / 103 条）。
-        spaces=container.spaces,
-        # 视频探测链（S8a T505）。**接在这里而不是路由里**：单张上传与整册导入共用
-        # 这一处装配，分开接会让「整册导入的视频不读元数据」以「单张能读到、批量读不到」
-        # 的形式出现——而那种差异在两端各看一半时都看不出来（与上面几处同一条理由）。
-        video_metadata=container.video_metadata_reader,
-        video_transcoder=container.video_transcoder,
-        video_repository=container.video_repository,
-        # 音频探测链（S8c T521）。**同样接在这一处**：单张上传与整册导入共用它，
-        # 分开接会让「整册导入的音频不读元数据」以「单张能读到、批量读不到」的形式出现。
-        audio_metadata=container.audio_metadata_reader,
-        audio_repository=container.audio_repository,
-        # 抽帧链（S8b T511–T513）。只有导入那条实例拿得到它；关键帧那条实例传 None，
-        # 从根上杜绝「关键帧再去抽一层关键帧」的递归。
-        video_scene_extractor=video_scene_extractor,
-    )
-
-
-def _face_enroller(container: Container) -> EnrollFaces:
-    """人脸登记：检测 → 在线匹配。**两段式**（``EnrollFaces``）。
-
-    **它必须排在事件归并之前**——1.0 在 ``pipeline.py:316-320`` 用注释钉过这件事：
-    与已确认的人相像的脸会在这一步写下 ``entity_mentions``，而事件归并的
-    ``person_score`` 读的正是它。顺序写在 ``ImportAssets.commit_image`` 里，
-    这里只负责接。
-
-    **能并行的是 ``prepare`` 那一次检测，不是匹配**：匹配读同 scope 的候选簇，
-    而那些簇是同批前一张照片刚写进去的（``FaceEnroller`` 的 docstring）。
-
-    权重没装的机器上 ``detect`` 返回空表，这条链路整个不生效——**不需要在这里判空**：
-    让它自然地「没有脸」比在这里分叉出第二条路径更省事，也更难写错。
-    """
-    return EnrollFaces(
-        detector=container.face_detector,
-        enroll=EnrollFace(
-            faces=container.face_repository,
-            entities=container.entity_repository,
-            vectors=container.vector_repository,
-            assets=container.asset_repository,
-        ),
-    )
-
-
-def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
-    """文本向量写入的接线。
-
-    **排在事件归并之后**（``ImportAssets.execute`` 的顺序），所以入参带 ``event_id``——
-    1.0 那条 ``episodic/event`` 行要的就是它。
-    """
-    index = IndexObservationText(embedder=container.text_embedder, vectors=container.text_vector_repository)
-
-    def run(observation: Observation, event_id: str | None) -> int:
-        return index.index(observation, event_id).rows
-
-    return run
-
-
-def _entity_extractor(container: Container) -> Callable[[Observation, str], tuple[str, ...]]:
-    """非人物实体抽取的接线（S6 T127）。
-
-    **排在事件判定之后**（``ImportAssets.execute`` 的顺序），所以入参带 ``event_id``——
-    抽出来的地点/物件/时间要挂到那个事件上（``event_entities``）。与 1.0
-    ``pipeline.py:336`` 的位置一致。
-    """
-    maintain = MaintainObservationEntities(
-        entities=container.entity_repository,
-        events=container.event_participant_repository,
-        assets=container.asset_repository,
-        relationships=container.relationship_repository,
-    )
-
-    def run(observation: Observation, event_id: str) -> tuple[str, ...]:
-        return tuple(entity.id for entity in maintain.execute(observation, event_id=event_id).entities)
-
-    return run
-
-
-def _fact_maintainer(container: Container) -> Callable[[Observation], tuple[str, ...]]:
-    """事实写入的接线。S5b 起两半都在（用户裁决④），S4 的「按设计为空」到此结束。
-
-    1. **候选来源**：模型自报的 ``facts``，落库在 ``observations.facts_json``，读出来
-       就是 ``Observation.facts``。1.0 的候选来自 ``analyze_image`` 的同一个数组
-       （``model_clients.py:1130-1198``）。
-    2. **门禁**：``confirmed_person_names`` 是 1.0 ``is_confirmed_person_name``
-       （``db.py:1494-1503``）的集合形态——本 scope 内已确认人物的**本名**。
-
-    **两个入参都不再有默认值**（Task 80 的同一口径）：门禁留一个恒空默认值的话，
-    「忘了接线」与「真的没有已确认人物」在类型上完全一样，而事实恒空不报错、
-    只是永远查不到。少写一个参数现在是 ``TypeError``。
-    """
-    maintain = MaintainFacts(
-        facts=container.fact_repository,
-        candidates=lambda observation: observation.facts,
-        confirmed_people=container.entity_repository.confirmed_person_names,
-    )
-    return maintain.maintain
-
-
-def _event_id(assigner: AssignEvents, observation: Observation) -> str:
-    return assigner.execute(observation).event.id
-
-
 @router.get("/assets")
 def list_assets(
     # 默认与空串都表示**全部相册**：1.0 的 `list_assets(scope_id=None)` 是 `if scope_id:`
-    # 才加过滤，而前端用 `""` 表达「全部」（`src/app.js` 的约定）。默认值从
-    # `"home-default"` 改成 `""` 是**行为修正**——原来不传 scope 会查一个叫
-    # home-default 的空间，而那个空间在 2.0 的空库里根本不存在。
+    # 才加过滤，而前端用 `""` 表达「全部」（`src/app.js` 的约定）。
     scope_id: str = "",
     limit: int = 200,
+    offset: int = 0,
+    media_type: str = "",
+    sort: str = "captured",
+    order: str = "desc",
     container: Container = Depends(get_container),
 ) -> AssetListResponse:
-    assets = container.asset_repository.list_by_scope(scope_id or None, min(limit, 1000))
-    return AssetListResponse(items=[to_summary(asset) for asset in assets])
+    if media_type not in {"", "image", "video", "audio", "text"}:
+        raise HTTPException(status_code=422, detail="unsupported media_type")
+    if sort not in {"captured", "created"}:
+        raise HTTPException(status_code=422, detail="unsupported sort key")
+    if order not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="unsupported sort order")
+    size = max(1, min(limit, 500))
+    assets, total, counts = container.asset_repository.list_page(
+        scope_id or None,
+        media_type=media_type or None,
+        sort=sort,
+        order=order,
+        offset=max(0, offset),
+        limit=size,
+    )
+    places = container.asset_place_repository.get_many([asset.id for asset in assets])
+    return AssetListResponse(
+        items=[
+            to_summary(asset, places[asset.id].display() if asset.id in places else "") for asset in assets
+        ],
+        total=total,
+        offset=max(0, offset),
+        limit=size,
+        counts=counts,
+    )
 
 
-@router.get("/assets/deletions")
+@router.get("/assets/deletions", response_model=MediaDeletionHistoryResponse)
 def list_media_deletions(
     scope_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     container: Container = Depends(get_container),
 ) -> MediaDeletionHistoryResponse:
-    """Read committed media deletions and current external-cleanup status."""
-    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
-    records = use_case.list_records(scope_id=scope_id or None, limit=limit)
+    records = DeleteAsset(
+        container.media_deletion, container.media_storage, container.vector_index
+    ).list_records(scope_id=scope_id or None, limit=limit)
     return MediaDeletionHistoryResponse(
-        items=[MediaDeletionRecordResponse.model_validate(record, from_attributes=True) for record in records]
+        items=[MediaDeletionRecordResponse.model_validate(item, from_attributes=True) for item in records]
     )
 
 
@@ -989,29 +960,34 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
     asset = container.asset_repository.get(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
-    return to_summary(asset)
+    place = container.asset_place_repository.get(asset_id)
+    return to_summary(asset, place.display() if place else "")
 
 
-@router.delete("/assets/{asset_id}")
-def delete_asset(asset_id: str, container: Container = Depends(get_container)) -> DeleteAssetResponse:
-    """Delete one source asset and retry its durable external cleanup."""
-    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
+@router.get("/assets/{asset_id}/poster")
+def asset_poster(asset_id: str, container: Container = Depends(get_container)) -> Response:
+    """视频封面：优先复用已抽取的关键帧，没有就抽第一帧；图片直接给预览。"""
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type is not MediaType.VIDEO:
+        return deliver_asset(asset_id, original=False, container=container)
+
+    cache = {"Cache-Control": "private, max-age=86400"}
+    for derived in container.video_repository.list_derived(asset.id):
+        derived_asset = container.asset_repository.get(derived.id)
+        if derived_asset is None:
+            continue
+        path = Path(derived_asset.path)
+        if path.is_file():
+            return FileResponse(path, media_type="image/jpeg", headers=cache)
     try:
-        result = use_case.execute(asset_id)
-    except ValueError as error:
-        raise ConflictError(str(error)) from error
-    if result is None:
-        raise NotFoundError("asset not found")
-    return DeleteAssetResponse(
-        asset_id=result.asset_id, deleted=result.deleted, warnings=list(result.warnings)
-    )
-
-
-@router.post("/assets/deletion-cleanup/retry")
-def retry_media_cleanup(container: Container = Depends(get_container)) -> MediaCleanupRetryResponse:
-    """Retry outstanding Qdrant and managed-file cleanup after a partial failure."""
-    warnings = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index).retry()
-    return MediaCleanupRetryResponse(warnings=list(warnings))
+        path = container.video_keyframe_extractor.extract(Path(asset.path), asset.id, 0, 0.0)
+    except Exception as error:  # noqa: BLE001 - 取不到封面就明确 404
+        raise HTTPException(status_code=404, detail="video poster unavailable") from error
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="video poster unavailable")
+    return FileResponse(path, media_type="image/jpeg", headers=cache)
 
 
 def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Response:
@@ -1029,10 +1005,12 @@ def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Res
         raise HTTPException(status_code=404, detail="media file missing on disk")
     if original:
         return FileResponse(path, media_type=asset.mime_type or "application/octet-stream")
-    payload = container.preview_encoder.encode_jpeg(
-        path, max_dimension=PREVIEW_MAX_DIMENSION, quality=PREVIEW_QUALITY
+    return _cached_image_response(
+        asset,
+        container,
+        max_dimension=PREVIEW_MAX_DIMENSION,
+        quality=PREVIEW_QUALITY,
     )
-    return Response(content=payload, media_type="image/jpeg")
 
 
 def deliver_media(asset: Asset, container: Container) -> Response:
@@ -1084,6 +1062,22 @@ def _self_served_or_none(asset_id: str, container: Container) -> Asset | None:
     return asset
 
 
+@router.get("/assets/{asset_id}/thumbnail")
+def asset_thumbnail(asset_id: str, container: Container = Depends(get_container)) -> Response:
+    """列表缩略图。480px 足够 4 列网格，避免把原图整张传给浏览器。"""
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    if asset.media_type is not MediaType.IMAGE:
+        raise HTTPException(status_code=404, detail="thumbnail available for images only")
+    return _cached_image_response(
+        asset,
+        container,
+        max_dimension=THUMBNAIL_MAX_DIMENSION,
+        quality=THUMBNAIL_QUALITY,
+    )
+
+
 @router.get("/assets/{asset_id}/file")
 def get_asset_file(
     asset_id: str,
@@ -1109,3 +1103,23 @@ def get_asset_preview(asset_id: str, container: Container = Depends(get_containe
     if asset is not None:
         return deliver_media(asset, container)
     return deliver_asset(asset_id, original=False, container=container)
+
+
+@router.delete("/assets/{asset_id}", response_model=DeleteAssetResponse)
+def delete_asset(asset_id: str, container: Container = Depends(get_container)) -> DeleteAssetResponse:
+    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
+    try:
+        result = use_case.execute(asset_id)
+    except ValueError as error:
+        raise ConflictError(str(error)) from error
+    if result is None:
+        raise NotFoundError("asset not found")
+    return DeleteAssetResponse(
+        asset_id=result.asset_id, deleted=result.deleted, warnings=list(result.warnings)
+    )
+
+
+@router.post("/assets/deletion-cleanup/retry", response_model=MediaCleanupRetryResponse)
+def retry_media_cleanup(container: Container = Depends(get_container)) -> MediaCleanupRetryResponse:
+    warnings = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index).retry()
+    return MediaCleanupRetryResponse(warnings=list(warnings))

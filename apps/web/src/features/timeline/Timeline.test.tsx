@@ -123,7 +123,13 @@ describe("时间线", () => {
 
   it("focusEventId 会展开所在这一天、滚动并高亮该事件", async () => {
     vi.mocked(client.fetchTimeline).mockResolvedValue(days(DAYS));
-    vi.mocked(client.fetchEvent).mockResolvedValue(DAYS[0].events[0]);
+    vi.mocked(client.fetchEvent).mockResolvedValue({
+      ...DAYS[0].events[0],
+      event_type: "outing",
+      activity: "",
+      confidence: 0.8,
+      photos: [],
+    });
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
 

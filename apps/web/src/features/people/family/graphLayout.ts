@@ -75,6 +75,21 @@ export function dedupeRelationships(
 }
 
 /**
+ * 用户确认过的关系。模型推断与角色补边（`model` / `role_seed`）都不算——
+ * 关系图谱只画用户真正认过的边，没有已确认关系时显示空状态。
+ */
+export function isConfirmedRelationship(relation: FamilyRelationship): boolean {
+  return relation.locked || relation.source === "user_override";
+}
+
+/** 过滤 + 归并。图谱与详情侧栏都用这一条，避免两处判据漂开。 */
+export function confirmedRelationships(
+  relationships: readonly FamilyRelationship[],
+): RelationEdge[] {
+  return dedupeRelationships(relationships.filter(isConfirmedRelationship));
+}
+
+/**
  * 辈分：`level[object] = max(level[object], level[subject] + 1)`。
  *
  * 方向**原样保留**——subject 是长辈、object 是晚辈（1.0 `people_graph.js:73`），

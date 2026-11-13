@@ -3,7 +3,7 @@
  * 分层正确性、**待归类必须出现在结果里**、空图不炸、一对人多条边只出一条。
  *
  * 假件按契约的完整字段造，不省字段——省字段的假件比真实契约宽松，前端漏读一个字段
- * 它也能过，那种红灯要留到真后端上才亮（`PeopleView.test.tsx` 的同一条理由）。
+ * 它也能过，那种红灯要留到真后端上才亮。
  */
 
 import { describe, expect, it } from "vitest";
@@ -30,6 +30,7 @@ const STUB = {
   scope_id: "album1",
   avatar_face_instance_id: null,
   representative_media: [] as FamilyPerson["representative_media"],
+  status: "confirmed",
 };
 
 function person(id: string, overrides: Partial<FamilyPerson> = {}): FamilyPerson {

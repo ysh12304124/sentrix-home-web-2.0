@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -684,6 +685,8 @@ class TurnRequest:
     #: 收进 ``TurnRecord.trace["debug_calls"]``。默认关闭——产品对话不为它付体积。
     include_debug: bool = False
     graph_enabled: bool = True
+    #: 同一会话内的幂等键；重复提交返回已有回合，不重复提问。
+    idempotency_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -706,6 +709,8 @@ class _Session:
     state: TaskState
     ledger: EvidenceLedger
     emit: Callable[[ProgressEvent], None] | None = None
+    fence: int = 0
+    attempt_no: int = 1
     delivered: DeliveredPhotos = field(default_factory=DeliveredPhotos)
     search_returned_nothing: bool = False
     # 1.0 ``runtime.py:2759`` 的 ``l2_faithfulness_checked``：每问只评审一次。
@@ -743,6 +748,7 @@ class _Session:
     #: 与 ``model_calls`` 分开：前者是复盘用的输入输出，后者是评测指标；
     #: 混在一起会把体积带进 ``model_call_metrics`` 这个逐题投影里。
     include_debug: bool = False
+    graph_enabled: bool = True
     debug_calls: list[dict[str, Any]] = field(default_factory=list)
     #: 最近一次「需求 ↔ 事实」的绑定结果。只读投影，不改变账本状态；
     #: 守卫用它决定「提醒、放行还是如实报缺口」。
@@ -786,6 +792,13 @@ class RunTurn:
         self._use_claim_verifier = os.getenv("SENTRIX_CLAIM_VERIFIER", "1") != "0"
 
     def _check_cancel(self, turn_id: str) -> None:
+        record = self._turns.get(turn_id)
+        if record is not None and record.attempt_no > 0:
+            # 持久执行器可在重启后认领；原进程的 operation registry 已不存在。
+            # 取消路由已将标志落库，恢复和重试都必须读取同一份权威状态。
+            if record.cancel_requested:
+                raise OperationCancelled("turn:" + turn_id)
+            return
         if self._operation_control is not None:
             self._operation_control.check("turn:" + turn_id)
 
@@ -818,25 +831,23 @@ class RunTurn:
                 **({"include_debug": True} if request.include_debug else {}),
                 "graph_enabled": request.graph_enabled,
             },
+            idempotency_key=request.idempotency_key,
         )
         operation = "turn:" + record.id
         if self._operation_control is not None:
             self._operation_control.start(operation)
         try:
-            self._turns.create(record)
-            self._conversations.add_message(
-                conversation_id=record.conversation_id,
-                scope_id=record.scope_id,
-                turn_id=record.id,
-                role=ChatRole.USER.value,
-                content=request.question,
-                created_at=now,
+            stored, created = self._turns.create_with_user_message(
+                record, message_id=f"msg_{uuid.uuid4().hex[:12]}"
             )
         except Exception:
             if self._operation_control is not None:
                 self._operation_control.finish(operation)
             raise
-        return record
+        if not created and self._operation_control is not None:
+            # 重试命中已有回合：不再登记新的执行操作。
+            self._operation_control.finish(operation)
+        return stored
 
     def fail_start(self, turn_id: str) -> None:
         """Record a worker startup failure; no model request has been issued."""
@@ -858,13 +869,28 @@ class RunTurn:
 
     # ---- 跑回合 -------------------------------------------------------------
 
-    def run(self, turn_id: str, *, emit: Callable[[ProgressEvent], None] | None = None) -> TurnResult:
-        """执行回合。``emit`` 在每条进度事件落库之后被调用一次（SSE 靠它推送）。"""
+    def run(
+        self,
+        turn_id: str,
+        *,
+        emit: Callable[[ProgressEvent], None] | None = None,
+        fence: int | None = None,
+        attempt_no: int | None = None,
+    ) -> TurnResult:
+        """执行回合。``emit`` 在每条进度事件落库之后被调用一次（SSE 靠它推送）。
+
+        ``fence``/``attempt_no`` 由执行器认领时给出；不传则走旧的 pending→running
+        认领，保持评测/脚本入口的兼容。
+        """
         record = self._turns.get(turn_id)
         if record is None:
             raise TurnNotFoundError("turn not found")
-        if not self._turns.claim(turn_id, datetime.now(UTC)):
-            raise TurnAlreadyClaimedError(turn_id)
+        if fence is None:
+            if not self._turns.claim(turn_id, datetime.now(UTC)):
+                raise TurnAlreadyClaimedError(turn_id)
+            record = self._turns.get(turn_id) or record
+            fence = record.fence
+            attempt_no = record.attempt_no or 1
 
         session = _Session(
             state=TaskState(
@@ -874,9 +900,13 @@ class RunTurn:
                 question=record.question,
                 profile=self._profile,
             ),
-            ledger=EvidenceLedger(scope_id=record.scope_id, requirements=[]),
+            # “全部相册”在会话里是空串；账本只要求一个非空绑定值，检索仍用原 scope。
+            ledger=EvidenceLedger(scope_id=record.scope_id or "all", requirements=[]),
             emit=emit,
+            fence=fence,
+            attempt_no=attempt_no or 1,
             include_debug=bool(record.trace.get("include_debug")),
+            graph_enabled=record.trace.get("graph_enabled") is not False,
         )
 
         # 政策拒答那条出口**不经过规划**，所以 ``planned`` 可能从头到尾没被赋值。
@@ -974,19 +1004,12 @@ class RunTurn:
         )
 
         now = datetime.now(UTC)
-        # 顺序有意义：**先**把回答写成消息，**再**把回合标成终态。
-        # 「终态」是「这一切都已经落库」的承诺——SSE 的 complete 帧就发在这个状态上，
-        # 反过来的话，读到 complete 的调用方会看到一个还没有回答的会话。
-        self._conversations.add_message(
-            conversation_id=record.conversation_id,
-            scope_id=record.scope_id,
-            turn_id=turn_id,
-            role=ChatRole.ASSISTANT.value,
-            content=answer,
-            created_at=now,
-        )
-        self._turns.finish(
+        # 助手消息与终态在**同一事务**里提交；围栏不匹配说明这个尝试已经过期，
+        # 晚到的旧答案不得覆盖新尝试的结果。
+        self._turns.finish_with_message(
             turn_id,
+            fence=fence,
+            now=now,
             status=status.value,
             termination_reason=reason.value,
             answer=answer,
@@ -994,7 +1017,9 @@ class RunTurn:
             requirements=list(session.ledger.as_payload()),
             retrieved_candidates=session.state.retrieved_candidates,
             trace=_turn_trace(session, planned),
-            updated_at=now,
+            message_id=f"msg_{uuid.uuid4().hex[:12]}",
+            conversation_id=record.conversation_id,
+            scope_id=record.scope_id,
         )
         return TurnResult(
             turn_id=turn_id,
@@ -1966,6 +1991,7 @@ class RunTurn:
             # （``tools.py:2162-2165``）。1.0 从可变的 ``task_state`` 里取，2.0 的
             # ``TaskState`` 没有那一格——**这不是加状态，是把已经在手上的那个字符串传下去**。
             question=state.question,
+            graph_enabled=session.graph_enabled,
         )
         duration_ms = round((time.perf_counter() - started_at) * 1000, 1)
         state.record(
@@ -2175,9 +2201,28 @@ class RunTurn:
         self._publish(session, state.emit(stage, status, text, kind=kind, payload=payload))
 
     def _publish(self, session: _Session, event: ProgressEvent) -> None:
-        self._turns.append_event(session.state.turn_id, event)
+        sequence = self._turns.append_event(
+            session.state.turn_id,
+            event,
+            fence=session.fence,
+            attempt_no=session.attempt_no,
+            now=datetime.now(UTC),
+        )
+        if sequence is None:
+            # 围栏已过期：旧尝试不能再向事件流里写东西。
+            return
         if session.emit is not None:
-            session.emit(event)
+            session.emit(
+                ProgressEvent(
+                    step_index=sequence,
+                    stage=event.stage,
+                    status=event.status,
+                    text=event.text,
+                    kind=event.kind,
+                    timestamp=event.timestamp,
+                    payload={**dict(event.payload), "attempt_no": session.attempt_no},
+                )
+            )
 
 
 def _status_for(reason: TerminationReason) -> TurnStatus:

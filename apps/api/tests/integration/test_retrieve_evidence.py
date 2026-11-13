@@ -208,12 +208,19 @@ class ScriptedReranker:
         return [self._scores.get(document, 0.0) for document in documents]
 
 
-def build(library, *, graph=None, reranker=None, rerank_top_k=24) -> RetrieveEvidence:
+def build(library, *, graph=None, reranker=None, utility=None, rerank_top_k=24) -> RetrieveEvidence:
     def recognize_place(asset_id: str) -> bool:
         """「这张图本来就该有地点」= asset 上有 GPS（与 ``routes/search.py`` 同一判据）。"""
         asset = library["assets"].get(asset_id)
         return asset is not None and asset.captured_location is not None
 
+    storage = None
+    if utility is not None:
+        storage = type(
+            "Storage",
+            (),
+            {"read_asset": lambda _self, asset: Path(asset.path).read_bytes()},
+        )()
     return RetrieveEvidence(
         visual=RetrieveVisual(embedder=library["embedder"], vectors=library["vectors"], index=None),
         entity=RetrieveEntity(index=library["index"], observations=library["observations"]),
@@ -229,6 +236,9 @@ def build(library, *, graph=None, reranker=None, rerank_top_k=24) -> RetrieveEvi
         reranker=reranker,
         observations=library["observations"],
         rerank_top_k=rerank_top_k,
+        utility=utility,
+        assets=library["assets"] if utility is not None else None,
+        media_storage=storage,
     )
 
 
@@ -239,7 +249,11 @@ def channels_of(hit) -> dict[str, int]:
 class PathOnlyGraph:
     """返回一条只有图路径分数、没有查询通道支持的候选。"""
 
+    def __init__(self):
+        self.called = False
+
     def execute(self, *, seed_asset_ids, scope_id, limit, question):
+        self.called = True
         return GraphSearchResult(
             hits=(
                 CandidateHit(
@@ -333,6 +347,31 @@ def test_graph_result_without_legacy_provenance_uses_reserved_slot(library):
 
     assert result.graph_asset_ids == ("asset_graph_only",)
     assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
+
+
+def test_graph_off_skips_graph_expansion_and_returns_primary_only(library):
+    graph = PathOnlyGraph()
+
+    class Utility:
+        model_id = "test"
+
+        def __init__(self):
+            self.scores = []
+
+        def score(self, question, image):
+            self.scores.append((question, image))
+            return 1.0
+
+    utility = Utility()
+    result = build(library, graph=graph, utility=utility).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=3, graph_enabled=False)
+    )
+
+    assert graph.called is False
+    assert utility.scores == []
+    assert result.graph_asset_ids == ()
+    assert result.hits
+    assert all("graph" not in hit.channels for hit in result.hits)
 
 
 # ---- 名次与权重对得上基线 --------------------------------------------------------

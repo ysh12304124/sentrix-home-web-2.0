@@ -158,3 +158,10 @@ class RunReadViews(Protocol):
     def load_overview(self, run_id: str) -> dict[str, Any]: ...
 
     def telemetry_revision(self, run_id: str) -> str: ...
+
+
+@runtime_checkable
+class RunVideoComparisonStore(Protocol):
+    def read_video_comparison(self, run_id: str) -> dict[str, Any] | None:
+        """Read an optional persisted, question-level historical comparison."""
+        ...

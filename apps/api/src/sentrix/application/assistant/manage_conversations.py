@@ -21,11 +21,17 @@ TITLE_MAX_CHARS = 24
 DEFAULT_TITLE = "新对话"
 
 
+class InvalidCursor(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationDetail:
     conversation: Conversation
     messages: Sequence[Message]
     turns: Sequence[TurnRecord]
+    has_more: bool = False
+    next_cursor: str | None = None
 
 
 def title_from(question: str) -> str:
@@ -48,14 +54,23 @@ class ManageConversations:
     def list_for_scope(self, scope_id: str, limit: int = 50) -> Sequence[Conversation]:
         return self._conversations.list_for_scope(scope_id, limit)
 
-    def detail(self, conversation_id: str, limit: int = 200) -> ConversationDetail | None:
+    def detail(self, conversation_id: str, limit: int = 50, cursor: str = "") -> ConversationDetail | None:
         conversation = self._conversations.get(conversation_id)
         if conversation is None:
             return None
+        try:
+            turns, has_more, next_cursor = self._turns.list_for_conversation_page(
+                conversation_id, limit=limit, cursor=cursor
+            )
+        except KeyError as error:
+            raise InvalidCursor(str(error)) from None
+        messages = self._conversations.list_messages_for_turns(conversation_id, [turn.id for turn in turns])
         return ConversationDetail(
             conversation=conversation,
-            messages=self._conversations.list_messages(conversation_id, limit),
-            turns=self._turns.list_for_conversation(conversation_id, limit),
+            messages=messages,
+            turns=turns,
+            has_more=has_more,
+            next_cursor=next_cursor,
         )
 
     def rename(self, conversation_id: str, title: str) -> bool:

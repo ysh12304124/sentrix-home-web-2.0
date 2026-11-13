@@ -67,6 +67,34 @@ def test_keyframe_of_the_gt_video_counts_as_hitting_that_video():
     assert out["retrieval"]["candidate_precision"] == 1.0
 
 
+def test_video_candidate_source_keyframe_id_drives_keyframe_metrics():
+    """Persisted video candidates put the parent in asset_id and the frame separately."""
+    candidate = {"asset_id": "v1", "source_keyframe_asset_id": "k1", "media_type": "video"}
+    out = keyframe_analysis.keyframe_analysis(
+        _state(items=[_one_item([candidate], predicted=[candidate])]),
+        [_video("v1"), _keyframe("k1", "v1")],
+    )
+    assert out["retrieval"]["video_parent_recall"] == 1.0
+    assert out["retrieval"]["candidate_keyframes"] == 1
+    assert out["retrieval"]["candidate_precision"] == 1.0
+    assert out["retrieval"]["predicted_keyframes"] == 1
+    assert out["retrieval"]["predicted_precision"] == 1.0
+
+
+def test_search_trace_asset_ids_count_as_retrieved_keyframe_candidates():
+    """Older persisted traces have result.asset_ids but no observation.preview."""
+    item = _one_item([], score=2)
+    item["tool_trace"] = [{"tool": "search_memories", "result": {"asset_ids": ["k1"]}}]
+    out = keyframe_analysis.keyframe_analysis(
+        _state(items=[item]),
+        [_video("v1"), _keyframe("k1", "v1")],
+    )
+    assert out["retrieval"]["candidate_keyframes"] == 1
+    assert out["retrieval"]["candidate_precision"] == 1.0
+    assert out["retrieval"]["video_parent_recall"] == 1.0
+    assert out["usefulness"]["qa_with_keyframe"] == 1
+
+
 def test_a_keyframe_of_another_video_does_not_hit():
     """同一个代码路径，只把父级换掉，结论必须翻转——否则上面的断言什么也没证明。"""
     out = keyframe_analysis.keyframe_analysis(
@@ -710,3 +738,91 @@ def test_export_sft_keeps_every_2_0_debug_call_and_builds_samples():
     assert out["count"] == 4
     assert out["samples"][0]["messages"][-1] == {"role": "assistant", "content": "P"}
     assert out["samples"][-1]["step"] == "step_8"
+
+
+def test_unjudged_answers_are_not_counted_as_incorrect():
+    out = memory_effectiveness.memory_effectiveness(
+        _mem_state(
+            [
+                {"judge": {"score": 2}},
+                {"judge": {"score": 0}},
+                {"judge": {"score": None, "judge_status": "failed"}},
+            ]
+        ),
+        [],
+    )
+    correctness = out["details"]["answer_correctness"]
+    assert correctness["exact_accuracy"] == 0.5
+    assert correctness["unjudged"] == 1
+
+
+def test_delivery_stats_are_typed_and_do_not_depend_on_judge():
+    import copy
+
+    items = [
+        {
+            "gt_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v1", "media_type": "video"},
+            ],
+            "predicted_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v2", "media_type": "video"},
+            ],
+            "retrieved_candidate_media": [
+                {"asset_id": "image-1", "media_type": "image"},
+                {"asset_id": "v1", "media_type": "video"},
+            ],
+            "judge": {"score": 2},
+        },
+        {
+            "gt_media": [{"asset_id": "v1", "media_type": "video"}],
+            "predicted_media": [{"asset_id": "k1", "media_type": "image"}],
+            "retrieved_candidate_media": [{"asset_id": "k1", "media_type": "image"}],
+            "judge": {"score": None},
+        },
+        {
+            "gt_media": [{"asset_id": "v1", "media_type": "video"}],
+            "predicted_media": [],
+            "answerability": "unanswerable",
+        },
+    ]
+    assets = [_video("v1"), _video("v2"), _keyframe("k1", "v1")]
+
+    def stats(rows):
+        return memory_effectiveness.memory_effectiveness(_mem_state(rows), assets)["details"][
+            "delivery_statistics"
+        ]
+
+    result = stats(items)
+    assert result["image"]["eligible_items"] == result["image"]["delivered_items"] == 1
+    assert result["video_keyframe"] == {
+        "eligible_items": 2,
+        "candidate_hit_items": 1,
+        "candidate_unrecorded_items": 0,
+        "candidate_hit_rate": 0.5,
+        "delivered_items": 1,
+        "not_delivered_items": 1,
+        "extra_delivery_items": 1,
+        "unrecorded_items": 0,
+        "delivery_rate": 0.5,
+    }
+    changed = copy.deepcopy(items)
+    for row in changed:
+        row["judge"] = {"score": 0}
+    assert stats(changed) == result
+
+
+def test_missing_delivery_record_is_not_counted_as_no_delivery():
+    out = memory_effectiveness.memory_effectiveness(
+        _mem_state(
+            [
+                {"gt_media": [{"asset_id": "v1", "media_type": "video"}]},
+            ]
+        ),
+        [_video("v1")],
+    )
+    delivery = out["details"]["delivery_statistics"]["video_keyframe"]
+    assert delivery["delivery_rate"] is None
+    assert delivery["unrecorded_items"] == 1
+    assert delivery["not_delivered_items"] == 0

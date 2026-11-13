@@ -7,6 +7,7 @@
  */
 
 import type { FamilyMembershipValue, FamilyPerson } from "../../../shared/api/client";
+import { publicPersonName, UNNAMED_PERSON_NAME } from "../reviewErrors";
 
 /** 筛选与下拉的顺序即此。`unknown` 排在最后：它是默认态，不是异常态。 */
 export const MEMBERSHIP_VALUES: readonly FamilyMembershipValue[] = ["family", "friend", "unknown"];
@@ -34,19 +35,42 @@ export function membershipOf(person: FamilyPerson): FamilyMembershipValue {
   return raw === "family" || raw === "friend" ? raw : "unknown";
 }
 
-/** 后端给未命名人物的占位串（`schemas/family.py` 写明是 1.0 这个端点的原词）。 */
-export const UNNAMED = "待命名人物";
+/** 确认身份时可选的家庭角色（1.0 ``app.js:956`` 的 ``<select>``，原样保留）。 */
+export const FAMILY_ROLES: readonly string[] = ["母亲", "父亲", "孩子", "祖父母", "其他家庭成员"];
 
-/** 显示名：空串兜底成占位串。不从别的字段反推该显示什么，那是服务端的判断。 */
+/** 实体是不是还待确认。只认后端给的 `status`，前端不从名字或出现次数反推。 */
+export function isPendingPerson(person: FamilyPerson): boolean {
+  return person.status === "pending";
+}
+
+/**
+ * 默认保留谁：有名字的 > 已确认的 > 出现多的 > id 小的。
+ * 与名录排序同一个思路——用户最可能想保留的是那个「已经认识的人」。
+ */
+export function defaultMergeTarget(people: readonly FamilyPerson[]): string {
+  const ranked = [...people].sort((a, b) => {
+    const named = Number(isNamed(b)) - Number(isNamed(a));
+    if (named !== 0) return named;
+    const confirmed = Number(!isPendingPerson(b)) - Number(!isPendingPerson(a));
+    if (confirmed !== 0) return confirmed;
+    if (a.appearance_count !== b.appearance_count) return b.appearance_count - a.appearance_count;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return ranked[0]?.id ?? "";
+}
+
+/** 后端给未命名人物的占位串。与簇/人物介绍用同一句用户文案。 */
+export const UNNAMED = UNNAMED_PERSON_NAME;
+
+/** 显示名：空串与内部 cluster id 都收成用户文案，不把内部 id 带进界面。 */
 export function personDisplayName(person: FamilyPerson): string {
-  const name = person.display_name.trim();
-  return name === "" ? UNNAMED : name;
+  return publicPersonName(person.display_name);
 }
 
 /** 有没有真名字。占位串不算——「有名在前」的排序要按这一条。 */
 export function isNamed(person: FamilyPerson): boolean {
-  const name = person.display_name.trim();
-  return name !== "" && name !== UNNAMED;
+  const name = personDisplayName(person);
+  return name !== UNNAMED_PERSON_NAME;
 }
 
 /**

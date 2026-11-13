@@ -29,7 +29,13 @@ def album(tmp_path: Path, *, count: int = 1) -> Path:
 
 def photos(client: TestClient, scope_id: str = "album1") -> list[dict]:
     body = client.get("/api/v1/timeline", params={"scope_id": scope_id}).json()
-    return [photo for day in body["days"] for event in day["events"] for photo in event["photos"]]
+    # 按日列表给的是紧凑事件卡；photos 只在事件详情里。
+    result: list[dict] = []
+    for day in body["days"]:
+        for event in day["events"]:
+            detail = client.get(f"/api/v1/events/{event['id']}").json()
+            result.extend(detail["photos"])
+    return result
 
 
 def test_timeline_is_empty_before_any_import(client: TestClient):

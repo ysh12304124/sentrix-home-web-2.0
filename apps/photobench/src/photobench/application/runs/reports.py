@@ -38,10 +38,10 @@ from typing import Any
 from urllib.parse import quote
 
 from photobench.domain.datasets.ports import AlbumSource
-from photobench.domain.evaluation.profile_view import profile_state
+from photobench.domain.evaluation.profile_view import primary_profile_state, profile_state
 from photobench.domain.http.ports import JsonHttpClient
-from photobench.domain.results.ports import RunRevisions, RunStore
-from photobench.domain.runs import analysis, exports, graph_quality, keyframe_analysis, memory_effectiveness
+from photobench.domain.results.ports import RunRevisions, RunStore, RunVideoComparisonStore
+from photobench.domain.runs import exports, graph_quality, keyframe_analysis, memory_effectiveness
 
 #: 2.0 的 REST 前缀。1.0 是 ``/api``。
 API_PREFIX = "/api/v1"
@@ -109,7 +109,13 @@ class RunReports:
 
     def _state(self, run_id: str) -> dict[str, Any]:
         """不存在抛 ``KeyError``（HTTP 层映射成 404）。"""
-        return self._store.load_state(run_id)
+        saved = self._store.load_state(run_id)
+        projected = primary_profile_state(saved)
+        # Scoring receipts supersede legacy pending_judge placeholders. Preserve
+        # execution telemetry (e.g. agent2_trace) while using the primary batch.
+        if projected is not saved:
+            projected["summary"] = {**saved.get("summary", {}), **projected.get("summary", {})}
+        return projected
 
     def _assets(self, scope_id: str) -> tuple[list[dict[str, Any]] | None, str]:
         """取 scope 的资产清单。
@@ -190,6 +196,66 @@ class RunReports:
             self._memo_put(cache_key, result)
         return result
 
+    def video_comparison(self, run_id: str) -> dict[str, Any]:
+        if not isinstance(self._store, RunVideoComparisonStore):
+            return {"status": "not_available"}
+        document = self._store.read_video_comparison(run_id)
+        if document is None:
+            return {"status": "not_available"}
+        state = self._state(run_id)
+        if document.get("current_run_id") != run_id:
+            raise ValueError("comparison belongs to a different run")
+        current = {item["qa_id"]: item for item in state.get("items", [])}
+        rows = document.get("questions") or []
+        ids = [row["qa_id"] for row in rows]
+        if not rows or len(ids) != len(set(ids)):
+            raise ValueError("comparison questions must be nonempty and unique")
+        for row in rows:
+            item = current.get(row["qa_id"], {})
+            if (
+                row.get("question") != item.get("question")
+                or row.get("reference_answer") != item.get("reference_answer")
+                or row.get("new_answer") != item.get("answer")
+                or item.get("answerability") == "unanswerable"
+            ):
+                return {"status": "stale", "reason": "对照记录与当前问题或回答不一致，请重新生成对照"}
+            for field in (
+                "old_keyframe_hit",
+                "new_keyframe_hit",
+                "old_correct_video_delivered",
+                "new_correct_video_delivered",
+            ):
+                if not isinstance(row.get(field), bool):
+                    raise ValueError("comparison outcomes must be explicit booleans")
+        # Recompute UI counts from persisted per-question receipts, not hand-entered totals.
+        metrics = []
+        for name, field in (
+            ("候选中找到对应视频关键帧", "keyframe_hit"),
+            ("最终交付正确视频素材", "correct_video_delivered"),
+        ):
+            old = sum(row["old_" + field] for row in rows)
+            new = sum(row["new_" + field] for row in rows)
+            metrics.append(
+                {
+                    "name": name,
+                    "old": old,
+                    "new": new,
+                    "total": len(rows),
+                    "gained": sum(not row["old_" + field] and row["new_" + field] for row in rows),
+                    "lost": sum(row["old_" + field] and not row["new_" + field] for row in rows),
+                }
+            )
+        return {
+            "status": "ready",
+            "run_id": run_id,
+            "baseline_run_id": document.get("baseline_run_id"),
+            "definition": (document.get("summary") or {}).get("definition"),
+            "limitation": (document.get("summary") or {}).get("limitation"),
+            "source_sha256": document.get("source_sha256", {}),
+            "metrics": metrics,
+            "questions": rows,
+        }
+
     def memory_effectiveness(self, run_id: str) -> dict[str, Any]:
         cache_key = (
             ("memory", run_id, self._store.revision(run_id))
@@ -264,169 +330,6 @@ class RunReports:
         state = self._state(run_id)
         scope_id = str(state.get("scope_id") or "").strip()
         items = [item for item in (state.get("items") or []) if isinstance(item, dict)]
-        baseline_run_id = str(state.get("graph_baseline_run_id") or "").strip()
-        baseline_state: dict[str, Any] | None = None
-        pairing_error: str | None = None
-
-        def model_key(run_state: dict[str, Any]) -> str:
-            identity = run_state.get("model_identity")
-            identity = identity if isinstance(identity, dict) else {}
-            return str(
-                run_state.get("endpoint_model") or identity.get("raw_id") or run_state.get("model_name") or ""
-            ).strip()
-
-        pairing_source: str | None = "explicit" if baseline_run_id else None
-        if baseline_run_id:
-            try:
-                baseline_state = self._state(baseline_run_id)
-            except KeyError:
-                pairing_error = "绑定的 graph-off 对照 run 不存在"
-        elif state.get("graph_enabled") is True:
-            # Older runs may not have a saved baseline selection. Only pair an
-            # independently completed graph-off run with the exact frozen QA
-            # snapshot; album/model labels alone are insufficient evidence.
-            snapshot = state.get("qa_snapshot")
-            snapshot = snapshot if isinstance(snapshot, dict) else {}
-            frozen_rows = snapshot.get("rows")
-            if snapshot.get("definition_sha256") and isinstance(frozen_rows, list) and frozen_rows:
-                candidates = sorted(
-                    (
-                        entry
-                        for entry in self._store.iter_entries()
-                        if entry.get("run_id") != run_id
-                        and entry.get("graph_enabled") is False
-                        and entry.get("status") == "completed"
-                        and entry.get("album_id") == state.get("album_id")
-                        and entry.get("qa_set") == state.get("qa_set")
-                        and model_key(entry) == model_key(state)
-                        and str(entry.get("started_at") or "") < str(state.get("started_at") or "")
-                    ),
-                    key=lambda entry: str(entry.get("started_at") or ""),
-                    reverse=True,
-                )
-                for entry in candidates:
-                    try:
-                        candidate = self._state(str(entry["run_id"]))
-                    except KeyError:
-                        continue
-                    candidate_snapshot = candidate.get("qa_snapshot") or {}
-                    if (
-                        isinstance(candidate_snapshot, dict)
-                        and candidate_snapshot.get("definition_sha256") == snapshot["definition_sha256"]
-                        and candidate_snapshot.get("rows") == frozen_rows
-                    ):
-                        baseline_state = candidate
-                        baseline_run_id = str(entry["run_id"])
-                        pairing_source = "auto"
-                        break
-
-        if state.get("graph_enabled") is not True:
-            pairing_error = pairing_error or "当前 run 未启用图结构检索"
-        if baseline_state is not None:
-            if baseline_state.get("graph_enabled") is not False:
-                pairing_error = pairing_error or "绑定的对照 run 不是 graph_enabled=false"
-            for key, label in (("album_id", "相册"), ("qa_set", "题集")):
-                if str(state.get(key) or "") != str(baseline_state.get(key) or ""):
-                    pairing_error = pairing_error or f"有图和无图 run 的{label}不一致"
-            if model_key(state) != model_key(baseline_state):
-                pairing_error = pairing_error or "有图和无图 run 的模型不一致"
-
-        graph_summary = analysis.list_summary(state)
-        graph_run_valid = state.get("status") == "completed" and graph_summary.get("run_valid") is True
-        baseline_items = (
-            [item for item in (baseline_state.get("items") or []) if isinstance(item, dict)]
-            if baseline_state is not None
-            else None
-        )
-        baseline_summary = analysis.list_summary(baseline_state) if baseline_state is not None else None
-        baseline_run_valid = (
-            baseline_state is not None
-            and baseline_state.get("status") == "completed"
-            and baseline_summary is not None
-            and baseline_summary.get("run_valid") is True
-        )
-
-        def media_ids(run_state: dict[str, Any] | None) -> set[str]:
-            return {
-                str(item.get("qa_id"))
-                for item in (run_state or {}).get("items") or []
-                if isinstance(item, dict)
-                and isinstance(item.get("media_retrieval_recall"), (int, float))
-                and isinstance(item.get("media_retrieval_precision"), (int, float))
-            }
-
-        def media_complete(run_state: dict[str, Any] | None, summary: dict[str, Any] | None) -> bool:
-            if run_state is None or summary is None:
-                return False
-            rows = run_state.get("items") or []
-            phases = run_state.get("phases") or {}
-            return bool(
-                run_state.get("status") in {"completed", "completed_with_errors"}
-                and rows
-                and len(rows) == int(run_state.get("qa_count") or 0)
-                and (
-                    run_state.get("mode") == "reuse"
-                    or (phases.get("pipeline_processing") or {}).get("status") == "done"
-                )
-                and isinstance(summary.get("media_retrieval_metric_count"), (int, float))
-                and summary["media_retrieval_metric_count"] > 0
-            )
-
-        graph_media_valid = media_complete(state, graph_summary)
-        baseline_media_valid = media_complete(baseline_state, baseline_summary)
-        if (
-            baseline_state is not None
-            and graph_media_valid
-            and baseline_media_valid
-            and media_ids(state) != media_ids(baseline_state)
-        ):
-            pairing_error = pairing_error or "两轮具有最终媒体指标的 QA 题目不一致"
-        graph_qa_overall = graph_quality.aggregate_graph_qa_overall(
-            items,
-            baseline_items,
-            baseline_run_id=baseline_run_id or None,
-            graph_run_id=run_id,
-            graph_run_valid=graph_run_valid,
-            baseline_run_valid=baseline_run_valid,
-            pairing_error=pairing_error,
-        )
-        # 总体卡片遵循列表页完全相同的最终媒体宏平均口径（例如 39.3%）。
-        # primary → fused 的候选头指标仍独立留在 candidate_effect 里。
-        final_media_effect = graph_quality.final_media_effect_from_run_summaries(
-            graph_summary,
-            baseline_summary,
-            baseline_run_id=baseline_run_id or None,
-            graph_run_id=run_id,
-            graph_run_valid=graph_run_valid,
-            baseline_run_valid=baseline_run_valid,
-            graph_media_valid=graph_media_valid,
-            baseline_media_valid=baseline_media_valid,
-            pairing_error=pairing_error,
-        )
-        final_media_effect["pairing_source"] = pairing_source
-        graph_qa_overall["final_media_effect"] = final_media_effect
-        if final_media_effect.get("available"):
-            without = final_media_effect["without_graph"]
-            with_graph = final_media_effect["with_graph"]
-            delta = final_media_effect["delta"]
-            graph_qa_overall["comparison_basis"] = "final_media_delivery"
-            graph_qa_overall["without_graph"] = {
-                "retrieval_recall": without["media_retrieval_recall"],
-                "retrieval_precision": without["media_retrieval_precision"],
-                "answer_quality_mean": without["answer_quality_mean"],
-            }
-            graph_qa_overall["with_graph"] = {
-                "retrieval_recall": with_graph["media_retrieval_recall"],
-                "retrieval_precision": with_graph["media_retrieval_precision"],
-                "answer_quality_mean": with_graph["answer_quality_mean"],
-                "judge_valid_count": final_media_effect["with_graph_sample_count"],
-            }
-            graph_qa_overall["delta"] = {
-                "retrieval_recall": delta["media_retrieval_recall"],
-                "retrieval_precision": delta["media_retrieval_precision"],
-                "answer_quality_mean": delta["answer_quality_mean"],
-            }
-
         report: dict[str, Any] = {
             "status": "available" if scope_id else "unavailable",
             "run_id": run_id,
@@ -435,14 +338,7 @@ class RunReports:
             if scope_id
             else {"available": False, "reason": "scope_missing"},
             "face_clustering": {"available": False, "reason": "scope_missing"},
-            "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(
-                items,
-                baseline_items,
-                graph_run_valid=graph_run_valid,
-                baseline_run_valid=baseline_run_valid,
-                pairing_error=pairing_error,
-            ),
-            "graph_qa_overall": graph_qa_overall,
+            "graph_qa_by_type": graph_quality.aggregate_graph_qa_by_type(items),
         }
         if scope_id:
             truth = self._identity_truth(str(state.get("album_id") or ""))

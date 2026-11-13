@@ -54,9 +54,14 @@ dependencies = [
     "insightface==1.0.1",
     # headless：服务端不装 GUI 那份，1.0 两份都装了是因为它还要在开发机上跑预览。
     "opencv-python-headless>=4.10,<6",
+    # 控制服务的内部 HTTP 转发与轻量主机采样。控制进程不构造产品 Container，
+    # 因此这里必须是运行期依赖，不能只在 dev 组里。
+    "httpx>=0.28,<1",
+    "psutil>=6,<8",
     "pyyaml>=6,<7",
-    # Katna image selection is called directly on the SVD-deduplicated frames;
-    # no temporary video is encoded between the two stages.
+    # Shot boundaries come from adjacent-frame appearance changes; Katna then
+    # selects an adaptive number of frames per shot. Endpoints are selected by
+    # singleton Katna inputs, with no temporary video encoding.
     "Katna==0.9.2",
 ]
 
@@ -89,4 +94,6 @@ sentrix = [
     # .gitignore 里（`/data/` 是运行期数据目录），放进去就不受版本控制，
     # 「可审查、可替换、可测试」三条一条都做不到。见 s4-deviations.md §2 第 5 项。
     "infrastructure/places/data/*.json",
+    # 控制库与用户库的迁移器是同一个；控制迁移缺失会让控制库静默空建。
+    "control/migrations/*.sql",
 ]

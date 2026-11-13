@@ -216,9 +216,10 @@ class AssistantToolbox:
         scope_id: str,
         now: datetime,
         question: str = "",
+        graph_enabled: bool = True,
     ) -> ToolOutcome:
         if name == "search_memories":
-            return self._search(arguments, scope_id=scope_id, now=now)
+            return self._search(arguments, scope_id=scope_id, now=now, graph_enabled=graph_enabled)
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -295,13 +296,25 @@ class AssistantToolbox:
 
     # ---- search_memories ----------------------------------------------------
 
-    def _search(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime) -> ToolOutcome:
+    def _search(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        scope_id: str,
+        now: datetime,
+        graph_enabled: bool = True,
+    ) -> ToolOutcome:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("empty_query", "query 不能为空，请用用户问题里的实词。")
 
         result = self._retrieval.execute(
-            EvidenceRequest(text=query, scope_id=scope_id, limit=_clamp_limit(arguments.get("limit")))
+            EvidenceRequest(
+                text=query,
+                scope_id=scope_id,
+                limit=_clamp_limit(arguments.get("limit")),
+                graph_enabled=graph_enabled,
+            )
         )
         result_set = ResultSet(
             id=f"rs_{uuid.uuid4().hex[:12]}",
@@ -428,6 +441,9 @@ class AssistantToolbox:
             "has_more": page.has_more,
             "asset_ids": list(result_set.asset_ids),
             "returned_asset_ids": [entry.asset_id for entry in page.entries],
+            # Persist exactly the evidence shown to the model. IDs alone cannot
+            # reconstruct the scene/event provenance used during this turn.
+            "preview": preview,
             "page": page.page,
         }
         if extra:

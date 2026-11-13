@@ -36,7 +36,6 @@ from fastapi import APIRouter, Depends
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError
 from sentrix.api.routes.corrections import memory_write
-from sentrix.api.routes.media import refresh_memory_graph
 from sentrix.api.schemas.relationships import (
     RelationshipBatchRequest,
     RelationshipBatchResponse,
@@ -53,6 +52,7 @@ from sentrix.application.identity.import_relationships import (
     RelationshipRequest,
 )
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.identity.models import ENTITY_TYPE_PERSON, RelationshipRecord
 
 # 1.0 ``app.py:2114`` 的原话，逐字（前端与 PhotoBench 都能拿到这句）。
@@ -239,7 +239,6 @@ def confirm_relationship(
     confirmed = container.relationship_repository.confirm(relationship_id)
     if confirmed is None:
         raise NotFoundError("relationship not found")
-    refresh_memory_graph(container, confirmed.scope_id)
     return _payload(confirmed)
 
 
@@ -253,5 +252,4 @@ def retract_relationship(
     retracted = container.relationship_repository.retract(relationship_id)
     if retracted is None:
         raise NotFoundError("relationship not found")
-    refresh_memory_graph(container, retracted.scope_id)
     return _payload(retracted)

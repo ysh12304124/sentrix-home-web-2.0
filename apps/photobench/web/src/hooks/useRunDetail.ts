@@ -350,7 +350,7 @@ export function useRunDetail(options: RunDetailOptions) {
         await loadReviews(runId);
       }
       await Promise.all([
-        ...(analysisOpen.current
+        ...(resetPage || analysisOpen.current
           ? [loadKeyframeAnalysis(runId), loadMemoryEffectiveness(runId)]
           : []),
         // 图质量面板始终展示在 run 详情中，不应依赖记忆分析面板是否展开。

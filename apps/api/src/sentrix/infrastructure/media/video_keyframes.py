@@ -56,6 +56,11 @@ class FfmpegVideoKeyframeExtractor:
                 str(source),
                 "-frames:v",
                 "1",
+                # 手机视频常见非方像素（例如 720x480 + SAR 32:27，显示比例 16:9）。
+                # 不做这一步，抽出的 JPEG 会按方像素显示，人像被横向压扁；海报与
+                # 资料库预览正是直接拿这张 JPEG。按 SAR 展开到显示宽度再标记方像素。
+                "-vf",
+                "scale=iw*sar:ih,setsar=1",
                 "-q:v",
                 str(FRAME_QUALITY),
                 str(target),

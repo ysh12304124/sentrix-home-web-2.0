@@ -115,19 +115,6 @@ class ConversationRepository(Protocol):
 
     def delete(self, conversation_id: str, updated_at: datetime) -> bool: ...
 
-    def add_message(
-        self,
-        *,
-        conversation_id: str,
-        scope_id: str,
-        turn_id: str,
-        role: str,
-        content: str,
-        created_at: datetime,
-    ) -> Message: ...
-
-    def list_messages(self, conversation_id: str, limit: int) -> Sequence[Message]: ...
-
     def history_for_prompt(self, conversation_id: str, limit: int) -> Sequence[Message]: ...
 
 
@@ -160,8 +147,6 @@ class TurnRepository(Protocol):
         trace: Mapping[str, Any],
         updated_at: datetime,
     ) -> None: ...
-
-    def list_for_conversation(self, conversation_id: str, limit: int) -> Sequence[TurnRecord]: ...
 
 
 class ResultSetRepository(Protocol):

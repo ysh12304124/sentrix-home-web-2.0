@@ -16,13 +16,12 @@ vi.mock("../../shared/api/client", async (importOriginal) => {
     ...actual,
     getFamilyGraph: vi.fn(),
     listMemorySpaces: vi.fn(),
-    listFaceClusters: vi.fn(),
     listPeople: vi.fn(),
-    confirmFaceCluster: vi.fn(),
     rejectFaceCluster: vi.fn(),
-    mergeFaceClusters: vi.fn(),
-    splitFaceCluster: vi.fn(),
     renamePerson: vi.fn(),
+    getPerson: vi.fn().mockResolvedValue({ entity: { aliases: [] } }),
+    getPersonPortrait: vi.fn().mockResolvedValue(null),
+    putFamilyRelationship: vi.fn(),
   };
 });
 
@@ -46,11 +45,11 @@ function relationRow(
     predicate,
     object_entity_id: object,
     inverse_predicate: inverse,
-    source: "model",
-    confidence: 0.8,
+    source: "user_override",
+    confidence: 1,
     evidence_refs: [],
     state: "active",
-    locked: false,
+    locked: true,
     revision: 1,
   };
 }
@@ -90,6 +89,7 @@ function realShapeGraph(): FamilyGraph {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    status: "confirmed",
   }));
   return { scope_id: "album1", run: null, people, scope_ids: ["album1"], relationships: [] };
 }
@@ -99,7 +99,6 @@ function mount(graph: FamilyGraph = realShapeGraph(), search = "/?scope=album1")
     { id: "album1", name: "第一册", kind: "benchmark", status: "active" },
   ]);
   vi.mocked(client.getFamilyGraph).mockResolvedValue(graph);
-  vi.mocked(client.listFaceClusters).mockResolvedValue([]);
   vi.mocked(client.listPeople).mockResolvedValue([]);
   // ScopeProvider 优先读 `?scope=`；设上它，取数才是 album1（而不是「全部相册」）。
   window.history.replaceState(null, "", search);
@@ -129,9 +128,9 @@ describe("/people 名人录（F7 §0 真实形状）", () => {
     });
     // 「有没有内容」由人数决定，关系条数为 0 不算空——这正是 1.0 画空图的那个坑。
     expect(screen.queryByText("还没有可显示的人物")).toBeNull();
-    expect(screen.getByText("8 人 · 0 条关系")).toBeTruthy();
+    expect(screen.getByText("8 人 · 0 条已确认关系")).toBeTruthy();
     // 默认视图是名录（计划书裁决②），图谱 tab 此时不该被卸载掉门槛
-    expect(screen.getByRole("tab", { name: "名录" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "人物" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("点一张卡走 ?person= 打开详情侧栏（不加路由）", async () => {
@@ -156,27 +155,53 @@ describe("图谱 tab", () => {
   }
 
   async function openGraph(container: HTMLElement) {
-    fireEvent.click(screen.getByRole("tab", { name: "关系图谱" }));
+    fireEvent.click(screen.getByRole("tab", { name: "关系" }));
     await waitFor(() => {
-      expect(container.querySelector(".graph-svg")).not.toBeNull();
+      expect(container.querySelector(".graph-shell, .graph-empty")).not.toBeNull();
     });
   }
 
-  it("0 条边（8 人全 unknown）：8 个节点都画出来，初始变换不是 NaN", async () => {
+  it("全部相册中创建同空间关系后，详情、计数与关系图都从刷新结果更新", async () => {
+    const base = realShapeGraph();
+    const dad = { ...base.people[0], display_name: "爸爸" };
+    const son = { ...base.people[1], display_name: "儿子" };
+    const other = { ...base.people[2], scope_id: "album2" };
+    const graph = { ...base, scope_id: "", people: [dad, son, other], scope_ids: ["album1", "album2"] };
+    const rows = [
+      relationRow(dad.id, "父亲", "儿子", son.id),
+      relationRow(son.id, "儿子", "父亲", dad.id),
+    ];
+    vi.mocked(client.putFamilyRelationship).mockImplementation(async () => {
+      vi.mocked(client.getFamilyGraph).mockResolvedValue({ ...graph, relationships: rows });
+      return rows;
+    });
+    const { container } = mount(graph, `/?person=${dad.id}`);
+    await screen.findByRole("complementary");
+    fireEvent.change(screen.getByLabelText("对方"), { target: { value: son.id } });
+    fireEvent.click(screen.getByRole("button", { name: "建立关系" }));
+
+    await screen.findByText("3 人 · 1 条已确认关系");
+    expect(client.putFamilyRelationship).toHaveBeenCalledWith({
+      scopeId: "album1",
+      subjectEntityId: dad.id,
+      predicate: "父亲",
+      objectEntityId: son.id,
+      inversePredicate: "儿子",
+    });
+    expect(client.getFamilyGraph).toHaveBeenLastCalledWith("");
+    expect(container.querySelectorAll(".detail-relations li")).toHaveLength(1);
+    await openGraph(container);
+    expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(2);
+  });
+
+  it("没有已确认关系时图谱为空，只显示一行提示", async () => {
     const { container } = mount();
     await openGraph(container);
 
-    // 夹具是 8 人 0 边——节点数 8 与边数 0 是两个不同的量，0 比 0 抓不到东西。
-    await waitFor(() => {
-      expect(container.querySelectorAll("[data-node-id]")).toHaveLength(8);
-    });
+    expect(screen.getByText("当前无已确认关系")).toBeTruthy();
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(0);
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(0);
-
-    // fit() 跑过才会写 transform；漏写或算出 NaN 都会在这里现形。
-    const transform = transformOf(container);
-    expect(transform).not.toBeNull();
-    expect(transform).not.toContain("NaN");
-    expect(transform).toMatch(/^translate\(-?[\d.]+ -?[\d.]+\) scale\([\d.]+\)$/);
   });
 
   it("后端一次写两行 + 一条同对的其他关系：图上只画 1 条边，且是优先级最高的那条", async () => {
@@ -206,5 +231,8 @@ describe("图谱 tab", () => {
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
     expect(container.querySelectorAll(".graph-edge-label")).toHaveLength(1);
     expect(container.querySelector(".graph-edge-label")?.textContent).toBe("父亲");
+    const transform = transformOf(container);
+    expect(transform).not.toBeNull();
+    expect(transform).not.toContain("NaN");
   });
 });

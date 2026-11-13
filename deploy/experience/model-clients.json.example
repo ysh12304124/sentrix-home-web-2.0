@@ -1,0 +1,7 @@
+{
+  "clients": {
+    "replace-with-alice-model-gateway-token": { "kind": "user", "user_id": "alice" },
+    "replace-with-bob-model-gateway-token": { "kind": "user", "user_id": "bob" },
+    "replace-with-photobench-model-gateway-token": { "kind": "benchmark", "user_id": "photobench" }
+  }
+}

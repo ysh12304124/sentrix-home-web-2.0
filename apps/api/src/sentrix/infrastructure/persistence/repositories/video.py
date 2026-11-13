@@ -332,6 +332,24 @@ class SqliteVideoRepository:
             else {},
         )
 
+    def derived_parent_ids(self, parent_asset_ids: Sequence[str]) -> frozenset[str]:
+        """这批源片里哪些已经有派生物；一次 ``IN`` 查完。
+
+        回忆首页只关心「这个视频有没有可用的关键帧」，不需要派生物整行。逐片调用
+        ``list_derived`` 会把 533 个视频变成 533 次连接。
+        """
+        unique = list(dict.fromkeys(parent_asset_ids))
+        if not unique:
+            return frozenset()
+        placeholders = _placeholders(unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT parent_asset_id FROM assets"
+                f" WHERE parent_asset_id IN ({placeholders}) AND derived_kind IS NOT NULL",
+                tuple(unique),
+            ).fetchall()
+        return frozenset(str(row["parent_asset_id"]) for row in rows)
+
     def list_derived(self, parent_asset_id: str, *, scene_index: int | None = None) -> Sequence[DerivedAsset]:
         where = "parent_asset_id = ? AND derived_kind IS NOT NULL"
         params: list[object] = [parent_asset_id]

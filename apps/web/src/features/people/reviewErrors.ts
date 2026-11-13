@@ -26,12 +26,24 @@ export function describeReviewError(error: unknown): string {
   }
 }
 
+/** 未确认人物的统一用户文案。内部 cluster id 永远不显示。 */
+export const UNNAMED_PERSON_NAME = "未确认姓名人物";
+
+const INTERNAL_CLUSTER_PREFIX = "待确认人物簇";
+
 /**
- * 簇的显示名。``canonical_name`` 为空就是**未命名**（``schemas/identity.py`` 的类注释）。
+ * 人物显示名。空值与落库的内部名都收成同一句用户文案。
  *
- * 只做空值兜底，不从 ``status`` / ``entity_status`` 反推该显示什么——那是服务端的判断。
+ * 后端出口已经会替换 pending 实体，这里再兜一层：旧数据、缓存响应或某个漏改的
+ * 端点把「待确认人物簇 · cluster-x」带上来时，界面也不该露出内部 id。
  */
+export function publicPersonName(value: string | null | undefined): string {
+  const name = (value ?? "").trim();
+  if (name === "" || name.startsWith(INTERNAL_CLUSTER_PREFIX)) return UNNAMED_PERSON_NAME;
+  return name;
+}
+
+/** 簇的显示名。只做展示兜底，不从 ``status`` / ``entity_status`` 反推服务端判断。 */
 export function clusterDisplayName(cluster: { canonical_name: string | null }): string {
-  const name = (cluster.canonical_name ?? "").trim();
-  return name === "" ? "未命名" : name;
+  return publicPersonName(cluster.canonical_name);
 }

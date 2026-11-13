@@ -40,6 +40,15 @@ def test_every_call_goes_through_the_v1_prefix():
     assert all(url.startswith(f"{BASE}/api/v1/") for url, *_ in http.calls)
 
 
+def test_space_registration_declares_purpose_before_import():
+    client, http = _client({"memory-spaces": {"id": "s1", "kind": "benchmark"}})
+    result = client.ensure_space(scope_id="s1", name="Test", kind="benchmark")
+    assert result["kind"] == "benchmark"
+    assert http.calls == [
+        (f"{BASE}/api/v1/memory-spaces", {"id": "s1", "name": "Test", "kind": "benchmark"}, "POST", 30)
+    ]
+
+
 def test_the_base_url_is_read_at_call_time_not_at_construction():
     """1.0 的 ``DEFAULT_SENTRIX_URL`` 是模块级全局量，``POST /api/config`` 就地改它，
     而主链是在**跑起来之后**读的。传当前值会让「改回配置」之后仍然打旧地址。"""

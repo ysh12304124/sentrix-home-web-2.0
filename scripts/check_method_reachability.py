@@ -64,6 +64,12 @@ DEFAULT_SRC = REPO_ROOT / "apps" / "api" / "src"
 #     动工前先核依赖、核出缺口再写任务定义，**核查本身就是一个有交付物的任务**。
 #     把它们硬塞进一个编号会更像有归属，实际只是把问题推后。
 PENDING_METHODS: dict[str, str] = {
+    # 存量回填专用：唯一调用者是 ``scripts/backfill_person_bridge.py``（维护脚本，不在本门禁
+    # 扫描的 ``apps/api/src`` 里）。增量那一路不走端口：``sync_person_bridge`` 在写人物快照的
+    # 同一个事务里调。见 ``docs/refactor/2026-11-11-entity-channel-all-albums.md``。
+    "LexicalIndex.rebuild_person_bridge": (
+        "维护脚本 scripts/backfill_person_bridge.py 调用；若改成维护端点则接线后按反向规则删除"
+    ),
     # VideoJob 工作流把旧的「清空派生物后重跑」改为保留产物并续跑。该仓储方法仍保留，
     # 供未来显式的管理员清理流程复用；普通重处理不得调用它或删除已有产物。
     "VideoRepository.cleanup_derivatives": (

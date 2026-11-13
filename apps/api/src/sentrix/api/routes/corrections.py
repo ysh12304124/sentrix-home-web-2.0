@@ -14,9 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError
-from sentrix.api.routes.media import build_memory_graph
 from sentrix.application.memories.sync_corrections import SYNC_LOCK, ReindexCorrectedMemories, SyncCorrections
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import build_memory_graph
 
 router = APIRouter(tags=["memory-corrections"])
 
@@ -55,6 +55,9 @@ def memory_write(kind: str, key: str) -> Callable[..., Any]:
             if not scope:
                 if kind == "face":
                     record = container.face_repository.get_cluster(target)
+                    scope = record.scope_id if record else ""
+                elif kind in {"entity", "family"}:
+                    record = container.entity_repository.get(target)
                     scope = record.scope_id if record else ""
                 else:
                     data = container.memory_corrections.read(kind, target)

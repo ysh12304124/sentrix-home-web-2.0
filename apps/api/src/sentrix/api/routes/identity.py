@@ -26,8 +26,7 @@ from fastapi.responses import Response
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError, UnprocessableError
-from sentrix.api.routes.corrections import memory_write, synchronizer
-from sentrix.api.routes.media import refresh_memory_graph
+from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.identity import (
     BatchConfirmFailure,
     BatchConfirmOutcome,
@@ -56,6 +55,8 @@ from sentrix.api.schemas.identity import (
     FaceClusterSummary,
     FaceCropRef,
     MergeClustersRequest,
+    MergePeopleRequest,
+    MergePeopleResponse,
     PersonDetailResponse,
     PersonListResponse,
     PersonPayload,
@@ -65,6 +66,7 @@ from sentrix.api.schemas.identity import (
     SeedIdentityResponse,
     SplitClusterRequest,
 )
+from sentrix.application.identity.merge_people import MergePeople
 from sentrix.application.identity.name_person import NamePerson
 from sentrix.application.identity.observe_appearance import ObserveAppearance
 from sentrix.application.identity.read_entity_detail import EntityDetail, ReadEntityDetail
@@ -82,6 +84,7 @@ from sentrix.application.identity.seed_identity import (
 )
 from sentrix.application.memories.assign_events import ConfirmedPersonEvents, EventVisualSimilarity
 from sentrix.bootstrap.container import Container
+from sentrix.bootstrap.import_wiring import refresh_memory_graph
 from sentrix.domain.identity.decoration import is_reviewable, is_single_sample, private_place
 from sentrix.domain.identity.models import (
     CLUSTER_SAMPLES_LIMIT,
@@ -91,13 +94,13 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_PENDING,
     ENTITY_TYPE_PERSON,
     ENTITY_TYPE_PLACE,
-    PENDING_CLUSTER_NAME,
     PENDING_SUMMARY_DISPLAY,
     EntityDecoration,
     EntityPropertyRecord,
     EntityRecord,
     FaceClusterRecord,
     FaceInstanceRecord,
+    entity_display_name,
 )
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
 
@@ -180,6 +183,16 @@ def _name_person(container: Container) -> NamePerson:
     )
 
 
+def _merge_people(container: Container) -> MergePeople:
+    return MergePeople(
+        entities=container.entity_repository,
+        faces=container.face_repository,
+        merges=container.person_merge_repository,
+        events=_confirmed_person_events(container),
+        appearance=_observe_appearance(container),
+    )
+
+
 def _seed_identity(container: Container) -> SeedIdentity:
     return SeedIdentity(
         detector=container.face_detector,
@@ -213,7 +226,9 @@ def _person_payload(container: Container, entity: EntityRecord) -> PersonPayload
     return PersonPayload(
         id=entity.id,
         scope_id=entity.scope_id,
-        canonical_name=PENDING_CLUSTER_NAME if pending else entity.canonical_name,
+        # 改名只把 name_state 转 confirmed，不改 status；只看 status 会把刚改完名的
+        # 人物继续显示成占位串。
+        canonical_name=entity_display_name(entity),
         status=entity.status,
         family_role=None if pending else entity.family_role,
         summary=PENDING_SUMMARY_DISPLAY if pending else entity.summary,
@@ -307,11 +322,9 @@ def confirm_face_cluster(
     payload: ConfirmClusterRequest,
     container: Container = Depends(get_container),
 ) -> ConfirmClusterResponse:
-    cluster = container.face_repository.get_cluster(cluster_id)
     result = _review_cluster(container).confirm(
         cluster_id, name=payload.name, family_role=payload.family_role
     )
-    refresh_memory_graph(container, cluster.scope_id if cluster is not None else result.entity.scope_id)
     return ConfirmClusterResponse(
         entity=_person_payload(container, result.entity), merged_into=result.merged_into
     )
@@ -323,10 +336,7 @@ def reject_face_cluster(
     cluster_id: str, container: Container = Depends(get_container)
 ) -> RejectClusterResponse:
     # 用例找不到簇时抛 ClusterNotFoundError（404），由统一处理器映射；这里不做二次判断。
-    cluster = container.face_repository.get_cluster(cluster_id)
     rejected = _review_cluster(container).reject(cluster_id)
-    if cluster is not None:
-        refresh_memory_graph(container, cluster.scope_id)
     return RejectClusterResponse(cluster_id=cluster_id, rejected_entity_id=rejected)
 
 
@@ -340,13 +350,8 @@ def merge_face_clusters(
     # 报成「这个簇不存在」。
     if not payload.target_cluster_id or not payload.source_cluster_id:
         raise InvalidRequestError("target_cluster_id and source_cluster_id are required")
-    target_before = container.face_repository.get_cluster(payload.target_cluster_id)
     target = _review_cluster(container).merge(
         target_cluster_id=payload.target_cluster_id, source_cluster_id=payload.source_cluster_id
-    )
-    refresh_memory_graph(
-        container,
-        target_before.scope_id if target_before is not None else target.scope_id,
     )
     return _cluster_payload(container, target)
 
@@ -360,12 +365,7 @@ def split_face_cluster(
 ) -> FaceClusterSummary:
     if not payload.face_instance_id:
         raise InvalidRequestError("face_instance_id is required")
-    cluster_before = container.face_repository.get_cluster(cluster_id)
     created = _review_cluster(container).split(cluster_id, face_instance_id=payload.face_instance_id)
-    refresh_memory_graph(
-        container,
-        cluster_before.scope_id if cluster_before is not None else created.scope_id,
-    )
     return _cluster_payload(container, created)
 
 
@@ -397,7 +397,8 @@ def _entity_summary(
     single_sample: bool | None = None
     private: bool | None = None
     if entity.entity_type == ENTITY_TYPE_PERSON and entity.status == ENTITY_STATUS_PENDING:
-        canonical_name = PENDING_CLUSTER_NAME
+        # 改名后的 pending 人物已经有可展示名（name_state=confirmed），不能再换成占位串。
+        canonical_name = entity_display_name(entity)
         family_role = None
         summary = PENDING_SUMMARY_DISPLAY
     if entity.entity_type == ENTITY_TYPE_PERSON:
@@ -507,7 +508,8 @@ def _entity_detail_payload(detail: EntityDetail, container: Container) -> Entity
         # 而同仓库的 ``/api/people/{id}/profile``（``app.py:1545-1549``）与
         # ``/evidence``（``:1561-1565``）两处都改了。**三处不一致是 1.0 的原样**，
         # 照搬——顺手「统一」会让这个端点的 ``summary`` 从落库原文变成展示文案。
-        canonical_name = PENDING_CLUSTER_NAME
+        # 名字同样走统一判据：改名过的人物不该退回占位串。
+        canonical_name = entity_display_name(entity)
     return EntityDetailResponse(
         entity=EntityDetailEntity(
             id=entity.id,
@@ -844,7 +846,6 @@ def rename_person(
     result = _name_person(container).rename(person_id, payload.name)
     if result is None:
         raise NotFoundError("person not found")
-    refresh_memory_graph(container, result.entity.scope_id)
     return RenamePersonResponse(
         entity=_person_payload(container, result.entity), aliases=list(result.aliases)
     )
@@ -861,11 +862,7 @@ def batch_confirm_people(
     scopes: set[str] = set()
     for item in payload.items:
         try:
-            person_before = container.entity_repository.get(item.person_id)
-            if person_before is None:
-                raise NotFoundError("person not found")
-            with container.memory_corrections.track(person_before.scope_id, "entity", item.person_id):
-                result = use_case.confirm_entity(item.person_id, name=item.name, family_role=item.family_role)
+            result = use_case.confirm_entity(item.person_id, name=item.name, family_role=item.family_role)
         except Exception as error:  # noqa: BLE001 — 逐件回执正是要把失败收进响应
             failed.append(
                 BatchConfirmFailure(person_id=item.person_id, name=item.name, error=str(error)[:200])
@@ -887,8 +884,33 @@ def batch_confirm_people(
         )
         scopes.add(result.entity.scope_id)
     for scope_id in sorted(scopes):
-        synchronizer(container).execute(scope_id)
+        refresh_memory_graph(container, scope_id)
     return BatchConfirmResponse(confirmed=confirmed, failed=failed, count=len(confirmed))
+
+
+@router.post("/people/merge")
+@memory_write("family", "target_person_id")
+def merge_people(
+    payload: MergePeopleRequest, container: Container = Depends(get_container)
+) -> MergePeopleResponse:
+    """把几个人物并成一个（名录里的手动合并）。
+
+    与 ``POST /face-clusters/merge`` 的区别：那条是簇级、不许合并两个已确认的人；这条
+    是人物级，由用户指定保留谁、叫什么，提及、关系、归属、画像一并改挂。错误码沿用簇审阅
+    那一族：参数不成立 400、人不存在 404、跨空间/已被合并过/同名冲突 409。
+    """
+    result = _merge_people(container)(
+        target_person_id=payload.target_person_id,
+        source_person_ids=payload.source_person_ids,
+        name=payload.name,
+    )
+    return MergePeopleResponse(
+        entity=_person_payload(container, result.entity),
+        merged_person_ids=list(result.merged_person_ids),
+        moved_face_count=result.moved_face_count,
+        moved_relationship_count=result.moved_relationship_count,
+        dropped_relationship_count=result.dropped_relationship_count,
+    )
 
 
 # ---- 身份预置 --------------------------------------------------------------------
@@ -971,7 +993,6 @@ async def seed_person_identity(
     aliases: str | None = Form(None),
     scope_id: str = Form("home-default"),
     face_instance_ids: str | None = Form(None),
-    graph_enabled: bool = Form(True),
     files: list[UploadFile] = File(default=[]),
     container: Container = Depends(get_container),
 ) -> SeedIdentityResponse:
@@ -1032,8 +1053,13 @@ async def seed_person_identity(
     except NoSeedFacesError as error:
         # 1.0 在路由上抛 422（``app.py:2345``）：请求是好的，是这几张图里没有人脸。
         raise UnprocessableError(str(error)) from error
-    if graph_enabled:
-        refresh_memory_graph(container, scope_id)
+    # 样本照片上刚写了提及：按实例预置时它们是相册里的照片，所在事件的参与者要跟着刷新，
+    # 否则事件页与按人找事件看不到这个人（确认簇那条路在用例里做同一件事）。
+    seeded_observations = sorted(
+        {item.observation_id for item in container.face_repository.list_instances(result.cluster_id)}
+    )
+    _confirmed_person_events(container).refresh_participants(seeded_observations)
+    refresh_memory_graph(container, scope_id)
     return SeedIdentityResponse(
         entity_id=result.entity_id,
         cluster_id=result.cluster_id,

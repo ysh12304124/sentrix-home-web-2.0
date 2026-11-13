@@ -172,6 +172,20 @@ class SqliteConversationRepository:
             ).fetchall()
         return [_row_to_message(row) for row in rows]
 
+    def list_messages_for_turns(self, conversation_id: str, turn_ids: Sequence[str]) -> Sequence[Message]:
+        unique = list(dict.fromkeys(turn_ids))
+        if not unique:
+            return []
+        placeholders = ",".join("?" for _ in unique)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_MESSAGE_COLUMNS} FROM agent_conversation_messages"
+                f" WHERE conversation_id = ? AND turn_id IN ({placeholders})"
+                " ORDER BY created_at ASC, rowid ASC",
+                (conversation_id, *unique),
+            ).fetchall()
+        return [_row_to_message(row) for row in rows]
+
     def history_for_prompt(self, conversation_id: str, limit: int) -> Sequence[Message]:
         """最近 ``limit`` 条，按时间正序返回。
 

@@ -17,6 +17,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+#: 同机共享模型经控制面准入时使用的三个环境变量。application 与 infrastructure
+#: 两侧都要读；放在 domain 只放常量，不碰 os。
+BENCHMARK_GATEWAY_URL_ENV = "SENTRIX_BENCHMARK_GATEWAY_URL"
+BENCHMARK_GATEWAY_UPSTREAM_ENV = "SENTRIX_BENCHMARK_GATEWAY_UPSTREAM"
+BENCHMARK_GATEWAY_TOKEN_ENV = "SENTRIX_BENCHMARK_GATEWAY_TOKEN"
+
 
 @dataclass(frozen=True, slots=True)
 class RestartOutcome:
