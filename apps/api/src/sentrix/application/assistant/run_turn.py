@@ -78,7 +78,7 @@ from sentrix.domain.assistant.evidence_ledger import (
 )
 from sentrix.domain.assistant.final_guard import FinalGuard, GuardFacts, answered_with_gap
 from sentrix.domain.assistant.intent import json_output_fact
-from sentrix.domain.assistant.jit import select_tools
+from sentrix.domain.assistant.jit import select_turn_tools
 from sentrix.domain.assistant.request_context import acquire_slot, release_slot
 from sentrix.domain.assistant.models import (
     Attachment,
@@ -1136,6 +1136,10 @@ class RunTurn:
     def _converse(self, session: _Session, record: TurnRecord) -> str:
         state = session.state
         messages = self._initial_messages(record)
+        # planner 已声明本回合需求；工具表冻结，之后不再随结果集/需求销账增删。
+        # 这样同一回合的请求是 append-only，前缀缓存可以整段复用；收敛由下面两条
+        # 安全阀保证：连续失败移除工具、预算耗尽只留终止动作。
+        frozen_specs = select_turn_tools(session.ledger)
 
         while True:
             self._check_cancel(state.turn_id)
@@ -1155,28 +1159,21 @@ class RunTurn:
                 state.emit(ProgressStage.THINKING, ProgressStatus.RUNNING, "正在理解你的问题…"),
             )
 
-            # **JIT 剪枝。** 1.0 每一转只发当前这一步用得上的那几份精简契约
-            # （``jit_prompt.py`` 的 ``LITE_TOOL_SCHEMAS``，每工具 <40 token），
-            # 2.0 原先每次发全量八份完整 schema——实测 5408 字符 ≈ 2704 token，
-            # 而 1.0 的真实 ``prompt_tokens`` 中位数只有 1437。见 ``jit.py``。
+            # **冻结工具集 + 两条收敛安全阀。** 工具表在 planner 之后不再变化，
+            # 回合内前缀保持 append-only；但“工具一直可见”会让弱模型反复撞同一堵墙，
+            # 所以保留两条只在病态回合触发的安全阀：
             #
-            # ``tools_exhausted`` 传的是**两条**预算的合成：工具额度用完（``tool_calls``
-            # 到顶）与墙钟只剩写答案的时间（``has_final_reserve`` 为假）。两者都意味着
-            # 「这一转不该再调工具了」，而 ``select_tools`` 对它的处置是**一个工具都不发**：
-            # 模型于是别无选择，只能说话。实测 ``step_budget_exhausted`` 的 123 道里
-            # 102 道判 0，根子就是模型到最后几步仍然只在撞墙、从没被逼着开口。
-            specs = select_tools(
-                session.ledger,
-                has_result_set=state.current_result_set_id is not None,
-                tools_exhausted=not state.can_call_tool(),
-                page_available=_page_available(state),
-            )
-            # Match the existing execution policy: advertising a tool which
-            # already hit repeated_failure makes small models spend every
-            # remaining step requesting an action we will always deny.
-            specs = tuple(
-                spec for spec in specs if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
-            )
+            # 1. 连续失败 ``MAX_CONSECUTIVE_FAILURES`` 次的工具从本步可见表中移除
+            #    （正常回合不触发，工具表仍是单一变体）；
+            # 2. 工具预算/作答保留耗尽时只发终止动作，物理上逼模型开口，而不是继续
+            #    发注定被拒的调用。
+            if not state.can_call_tool():
+                specs = tuple(spec for spec in frozen_specs if spec.name == FINAL_ANSWER_TOOL)
+            else:
+                specs = tuple(
+                    spec for spec in frozen_specs
+                    if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
+                )
             try:
                 reply = self._complete_recorded(session, messages, specs)
             except PromptTooLongError as error:
@@ -1633,12 +1630,15 @@ class RunTurn:
         ]
 
         # 1.0 要求 ``available`` 非空：一个工具都给不出去时，提醒「请用工具」是空话。
-        available = select_tools(
-            session.ledger,
-            has_result_set=state.current_result_set_id is not None,
-            tools_exhausted=not state.can_call_tool(),
-            page_available=_page_available(state),
-        )
+        # 与主循环使用同一个冻结工具集和同两条安全阀，避免提醒里列出模型实际看不到的工具。
+        available = select_turn_tools(session.ledger)
+        if not state.can_call_tool():
+            available = tuple(spec for spec in available if spec.name == FINAL_ANSWER_TOOL)
+        else:
+            available = tuple(
+                spec for spec in available
+                if state.trailing_failures(spec.name) < MAX_CONSECUTIVE_FAILURES
+            )
         if unattempted and available and state.block_guard_code("required_evidence_missing"):
             self._reminder_event(session, "required_evidence_missing", [item.id for item in unattempted])
             return UNATTEMPTED_NUDGE_TEMPLATE.format(

@@ -137,7 +137,7 @@ class ToolPolicy:
             return ToolDecision(
                 action=ToolAction.DENY,
                 code="search_call_limit",
-                reason="本轮已检索一次。请基于已返回的预览作答，不要改词重搜。",
+                reason="本轮检索额度已用完。请基于已返回的预览作答，不要继续改词重搜。",
             )
 
         # 翻页额度。**排在工具总预算之前**，与 ``search_memories`` 那条同一个位置与理由：

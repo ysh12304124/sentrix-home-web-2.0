@@ -70,6 +70,21 @@ def select_tools(
     )
 
 
+def select_turn_tools(ledger: EvidenceLedger) -> tuple[ToolSpec, ...]:
+    """planner 结束后冻结的本回合工具集，**描述已换成 brief**。
+
+    与 ``select_tools`` 的区别是**不看当前结果集/需求状态**：同一回合的工具表
+    不再增删，请求前缀保持 append-only，缓存可以整段复用。代价是照片级工具会在
+    还没有结果集时提前暴露（被 ``ToolPolicy`` 拒绝）、``search_memories`` 在
+    检索额度用完后仍然可见；收敛交给失败移除与预算耗尽后的 final-only（见
+    ``run_turn._converse``）。
+    """
+    offered = {FINAL_ANSWER_TOOL, "search_memories"}
+    for item in ledger.requirements:
+        offered.update(_TOOLS_BY_REQUIREMENT.get(item.evidence_type, frozenset()))
+    return tuple(replace(spec, description=spec.brief) for spec in TOOL_SPECS if spec.name in offered)
+
+
 def _select_offered(
     ledger: EvidenceLedger,
     *,
@@ -92,8 +107,8 @@ def _select_offered(
     )
     offered = {FINAL_ANSWER_TOOL}
 
-    # 检索是唯一的入口，而 ``max_search_calls = 1``：一次成功的检索之后，
-    # ``ToolPolicy`` 会拒掉第二次——那时把 ``search_memories`` 留在表里就是留一个
+    # 检索是唯一的入口，而 ``max_search_calls`` 有上限：达到上限之后，
+    # ``ToolPolicy`` 会拒掉后续调用——那时把 ``search_memories`` 留在表里就是留一个
     # 明知会被拒的工具。但它也不能更早剪掉：**还没有结果集时它是唯一能打开局面的东西**
     # （1.0 ``jit_prompt.py:196`` 在没有未决需求时也专门把 ``search_memories`` 留着，
     # 理由是「避免模型在事实看似足够时凭空编数字」）。

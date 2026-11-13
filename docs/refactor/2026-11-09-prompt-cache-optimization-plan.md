@@ -2511,3 +2511,35 @@ JS
 - **2026-11-10，调研记录：** 用户要求提示词计划先维持现状，另调研各种 Harness 和端侧推理的 Agent 问答加速方法。独立调研稿记录 DeepSeek Harness、Codex、Claude Code、Qwen Code、Gemini CLI 与 llama.cpp 的公开机制，提出缓存诊断、Qwen3.5 检查点/JIT 对比、检索和独立工具并行、减少串行模型轮数等待验证选项；不把任何候选当作已确认实现。
 - **2026-11-10，已确认纳入文档：** 用户要求把上述 Harness/端侧加速技术方法完整并入这一份可执行文档，同时保留此前全部提示词、证据、人物身份和 JIT 决策。调研全文现位于“在线 Agent 加速技术调研与试验路线”，包含当前调用链、外部来源、七类候选方法和部署后验证顺序。此确认是纳入计划，不等于批准立即实施每项候选或声称已有速度收益。
 
+## 2026-11-13 补充调研：混合模型的前缀缓存与端侧可行性
+
+本节是基于用户提供的《Sentrix-端侧速度优化-汇报版-2026-11-12》及公开论文、代码的**候选技术记录**，不覆盖前文已确认的提示词决策，也不代表这些候选已被实施或在 Sentrix 上取得论文所报收益。汇报版记录：V1 保留 1333 字符系统提示词、V2 因媒体召回与交图下降而弃用；llama.cpp 已调 `cache-ram`、`ctx-checkpoints`、`checkpoint-min-step`，并测过冻结工具、隐藏无用翻页工具和工具后置模板。Mac 全部修改版的 487 题均值 e2e 为 36.7 秒，其中 prefill 15.3 秒、decode 16.5 秒；因此即使理想化地消除全部 prefill，总时间也约有 21.4 秒，不能把后续所有性能空间都归因于 KV 缓存。Mac aq 由控制组 1.072 到全部修改版 1.021，差 0.051，高于汇报版写的 judge 噪声约 ±0.03；应保留这项质量风险，不将整体改动称为已证明质量无损。
+
+### 先校正模型事实与缓存判据
+
+- 汇报版第 2 页写 Qwen3.5-4B 约 18 层 GatedDeltaNet + 6 层全注意力、全注意力位于 3/7/11/15/19/23。Qwen 官方 [4B `config.json`](https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/config.json) 实际列出 **32 层：24 层线性注意力、8 层全注意力**，全注意力为零起始索引 3/7/11/15/19/23/27/31。除非部署的 GGUF 是特别裁剪版本，否则汇报版这一行需要更正；部署时以该 GGUF 元数据核对。计数差异不推翻已测得的缓存收益，但会影响状态大小与后续方案的资源预算。
+- [Qwen 项目中的模板问题报告](https://github.com/QwenLM/Qwen3/issues/1826) 指出 `enable_thinking=false` 时，生成轮次与历史 assistant 轮次可能序列化成不同的 `<think>` 标记，造成跨轮前缀断裂。它不是已确认的 Sentrix 故障：要用**实际 GGUF、llama.cpp 版本和 Chat Completions 请求**比较连续两次请求的渲染 token ID。记录首个差异位置，并归类为工具集、thinking 标记、历史重写、动态元数据、检索结果或其他。若相同结构的请求在 assistant 轮次边界断裂，再考虑模板修复；保持模型看见的语义不变并重跑 aq。
+- [llama.cpp server 文档](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) 的 `--cache-reuse` 是基于 KV shifting 的另一种机制，不能等同于已开启的 `cache_prompt`。有 [Qwen 混合模型的服务器日志](https://github.com/ggml-org/llama.cpp/issues/24055) 明确显示该机制被禁用，故不能把它当成当前 Qwen3.5-4B 的即用开关。`/slots` 保存恢复也有 [未解决的混合模型检查点持久化问题](https://github.com/ggml-org/llama.cpp/issues/28194)；不要据此假定跨重启缓存可用。
+
+### 开源实现与论文：按本项目的可迁移程度排序
+
+| 技术 | 公开依据与实际做法 | Sentrix 端侧判断 |
+| --- | --- | --- |
+| 保持连续请求的真实 token 前缀一致 | 上述 [Qwen 模板问题](https://github.com/QwenLM/Qwen3/issues/1826)；检查工具、thinking、assistant/tool 历史的渲染结果 | **最先排查**。无需换协议或引擎。冻结工具已有收益，下一步重点查仍然触发 prefill 的调用类型。修复只有在实际复现后进行。 |
+| 混合状态的缓存准入与淘汰 | [Marconi 论文](https://arxiv.org/abs/2411.19379) 与 [公开代码](https://github.com/ruipeterpan/marconi) 按复用机会、节省计算/占用内存选择 checkpoint；公开 artifact 主要是请求轨迹与策略评估，并非可直接替换 llama.cpp 的端侧推理服务。[artifact 记录代码许可为 CC BY-NC](https://github.com/ruipeterpan/marconi/blob/main/artifact_evaluation.md)，直接复用代码前还需核查用途。 | 若 planner/agent/claim 与不同家庭会话互相挤掉热点缓存，可借鉴“单位内存节省的 prefill”指标；单用户、一个 VLM 槽且现有命中已较高时，预期收益有限。 |
+| 统一缓存与会话感知淘汰 | [SGLang Unified Radix Cache](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/unified_cache/components/README.md) 同时管理全注意力 KV 与循环状态；[会话感知淘汰](https://github.com/sgl-project/sglang/blob/main/docs/docs/advanced_features/session_radix_cache.mdx) 让活跃会话优先于无关缓存。 | 架构可借鉴，不能直接移植到 GGUF/llama.cpp；SGLang 的现成路径主要面向 GPU 服务，Mac M4/16GB 需另评估运行环境与模型格式。 |
+| 短后缀重放，减少大状态 checkpoint | [Tail-Replay](https://arxiv.org/abs/2608.30310)、[SuffixReplay](https://arxiv.org/abs/2609.33477) 将全注意力 KV 保留，并用近期 hidden state/anchor 重建 GatedDeltaNet 循环状态；后者明确在 Qwen3.5-4B 上评估，报告单个循环状态 checkpoint 约 49 MiB，SGLang 集成方案在分叉负载降低 p50 TTFT 15–70%。 | **研究价值高，当前不能直接部署**：论文实验用 H800 80GB、BF16/SGLang，未证明 4-bit GGUF + Metal + 16GB 下的收益与质量。若未来长上下文分叉请求占比高，可先在独立原型中验证；目前没有找到作者发布的可直接用于 llama.cpp 的实现。 |
+| 压缩循环状态 checkpoint | [DASC](https://arxiv.org/abs/2608.30386) 按衰减/保留时长选择状态单元，减少保存空间，论文在大型混合模型上报告缓存容量与 TTFT 收益。 | 适合研究 `ctx-checkpoints` 占内存、缓存被逐出的问题；含近似重建，且无已核实的 llama.cpp/Qwen3.5-4B 端侧现成实现。 |
+| Apple Silicon 专用推理缓存 | [oMLX](https://github.com/jundot/omlx) 提供 RAM+SSD 分层、块式前缀共享和 Qwen3.5 相关支持；项目仍有 [混合模型缓存正确性问题报告](https://github.com/jundot/omlx/issues/825)。 | 作为隔离的运行时对照可以考虑；换用 MLX 权重/服务会改变部署与量化，不是当前 GGUF 服务的参数优化。必须先验证工具调用、视觉问答、交图及 aq。 |
+| 非前缀 RAG 块复用 | [CacheBlend](https://arxiv.org/abs/2405.16444) 和 [Prompt Cache](https://arxiv.org/abs/2311.04934) 处理重复文档出现在不同位置的情形，后者 [开源实现](https://github.com/yale-sys/prompt-cache) 主要支持 Llama2/Falcon/MPT。 | Sentrix 检索预览常变化，想法相关；但循环状态、位置与跨块交互使其不能当作现有 Qwen3.5 精确前缀缓存使用。当前优先级低于真实前缀审计，且需要专门质量验证。 |
+
+补充边界：[vLLM 自动前缀缓存文档](https://docs.vllm.ai/en/latest/features/automatic_prefix_caching/) 对混合 Mamba 模型明确要求在可复用边界拥有状态 checkpoint；这也解释了为何单纯增加 KV 命中 token 数可能不等于 Qwen3.5 可直接恢复的前缀。Agent 在线 KV 压缩论文 [Practical Online KV Cache Compaction](https://arxiv.org/abs/2608.00902) 报告过早压缩可能伤质量，且其 Qwen3.5 实验不覆盖 GatedDeltaNet 状态，不应直接套用于本项目。
+
+### 下一轮建议的验证顺序（由用户部署与测试）
+
+1. 在现有冻结工具和缓存参数上，按 planner、Agent 每一步、claim/L2/L3 收集 `cache_n/prompt_n/prompt_ms/predicted_ms`，并记录请求 token 首个差异位置及 checkpoint 恢复/重算日志；优先定位 Mac 仍有约 15.3 秒 prefill 的具体请求。仅记录必要的长度、哈希和差异类别，避免保存家庭照片或私密文本。
+2. 若发现 thinking/历史格式导致可修的前缀断裂，修正实际 GGUF 模板或消息构建，并与现有 487 题控制组比较 aq、媒体召回、交图、e2e 和内存。若只是缓存被挤出，再评估热点 checkpoint 的保留策略；不继续盲目增加 `cache-ram` 或检查点数。
+3. 只有当较长的相同前缀分叉请求仍频繁重算，才立 SuffixReplay 或 oMLX 的隔离原型。两者必须在相同 Mac、相同模型能力与同一 487 题上核对质量；论文的 H800 加速数字不作为本项目预期值。
+
+- **2026-11-13，补充调研记录：** 用户说明前述计划已基本完成，并提供 2026-11-12 汇报版要求继续查端侧 KV 缓存相关开源技术和论文。本节只追加可核查的技术判断、现有结果中的质量风险与待验证项目；未修改业务代码，也未代用户运行模型实测。
+

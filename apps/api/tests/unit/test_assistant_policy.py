@@ -113,7 +113,8 @@ def test_a_missing_required_argument_is_denied(make_state):
     assert "result_set_id" in decision.reason
 
 
-def test_search_memories_cannot_be_called_twice(make_state):
+def test_search_memories_allows_one_retry_then_refuses(make_state):
+    """冻结工具集下 search 整轮可见；第一次查询失败/候选不足时允许一次重试（共 2 次）。"""
     state = make_state()
     policy = ToolPolicy()
     first = call("search_memories", query="海边")
@@ -121,10 +122,12 @@ def test_search_memories_cannot_be_called_twice(make_state):
     state.record(ToolCallRecord(call_id="c1", tool="search_memories", signature="x", status="ok"))
 
     second = policy.decide(call("search_memories", query="海边2"), state)
+    assert second.action is ToolAction.EXECUTE
+    state.record(ToolCallRecord(call_id="c2", tool="search_memories", signature="x", status="ok"))
 
-    assert second.action is ToolAction.DENY
-    assert second.code == "search_call_limit"
-    assert "get_result_page" in second.reason
+    third = policy.decide(call("search_memories", query="海边3"), state)
+    assert third.action is ToolAction.DENY
+    assert third.code == "search_call_limit"
 
 
 def test_search_limit_does_not_lapse_when_the_model_budget_is_gone(make_state):
@@ -132,13 +135,14 @@ def test_search_limit_does_not_lapse_when_the_model_budget_is_gone(make_state):
     模型步耗尽之后这个 ``and`` 短路，**第二次 search 会被真的执行**。2.0 的计数与预算
     分开，不存在这个短路。
 
-    反向验证：把模型步耗光、工具预算也耗光，拦截仍然成立。
+    反向验证：把模型步耗光、工具预算也耗光，达到 2 次额度后拦截仍然成立。
     """
     state = make_state()
     state.model_steps = state.profile.max_steps
     state.record(ToolCallRecord(call_id="c1", tool="search_memories", signature="x", status="ok"))
+    state.record(ToolCallRecord(call_id="c2", tool="search_memories", signature="x", status="ok"))
 
-    decision = ToolPolicy().decide(call("search_memories", query="海边2"), state)
+    decision = ToolPolicy().decide(call("search_memories", query="海边3"), state)
 
     assert decision.action is ToolAction.DENY
     assert decision.code == "search_call_limit"

@@ -108,6 +108,56 @@ PHOTOBENCH_QA_CONCURRENCY=4 ...
 153 不设 profile（默认 `server`）；158 只需在启动时设
 `SENTRIX_DEPLOYMENT_PROFILE=mac`，再补齐上面这些部署项。
 
+### llama.cpp 启动参数（缓存/端侧速度已验证）
+
+> 2026-11-12/13 的 487 题实测配置；模型路径按部署位置替换。
+> 这组参数只影响缓存复用与 prefill，不改变模型权重或答案本身。
+
+**153（server，RTX 3090 24GB）**
+
+```bash
+/home/asus/llama.cpp/build/bin/llama-server \
+  -m /home/asus/models/llama/qwen3.5/qwen35-q4km.gguf \
+  --mmproj /home/asus/models/llama/qwen3.5/qwen35-mmproj-f16.gguf \
+  --alias qwen35-q4km --host 0.0.0.0 --port 8100 \
+  --n-gpu-layers 999 --ctx-size 65536 --parallel 4 \
+  --metrics --reasoning off \
+  --cache-ram 12288 --ctx-checkpoints 8 --checkpoint-min-step 256 \
+  --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 \
+  --ubatch-size 2048
+```
+
+**158 Mac mini（16GB，单用户）**
+
+```bash
+/opt/homebrew/bin/llama-server \
+  -m /Users/saas/GitHub/Sentrix-Home-Web/models/llama/qwen35-q4km.gguf \
+  --mmproj /Users/saas/GitHub/Sentrix-Home-Web/models/llama/qwen35-mmproj-f16.gguf \
+  --alias qwen35-q4km --host 0.0.0.0 --port 8100 \
+  --n-gpu-layers 999 --ctx-size 65536 --parallel 4 \
+  --metrics --reasoning off \
+  --cache-ram 2048 --ctx-checkpoints 8 --checkpoint-min-step 256 \
+  --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
+# --ubatch-size 2048 在 Metal 上复测后再加
+```
+
+参数含义：
+
+- `--cache-ram`（MiB，默认 8192；0 关闭，-1 不限）：主机内存里的 prompt 缓存总预算，
+  保存槽位状态（KV、循环状态、checkpoint）供后续请求恢复前缀。153 用 12288；
+  Mac 16GB 用 2048，避免 OOM。
+- `--ctx-checkpoints`（每槽个数，默认 32）：Qwen3.5 是混合线性注意力，循环状态不能
+  任意截断，回到较早位置必须有 checkpoint；实测 8 已足够。
+- `--checkpoint-min-step`（token，默认 8192）：checkpoint 的最小间隔；调到 256 才能
+  让 1–3k token 的短对话在末尾附近找到可恢复点。
+- `--ctx-size/--parallel`：`--ctx-size` 是总窗口，`--parallel 4` 时每槽 16384 token。
+- `--ubatch-size 2048`：只影响 prefill 的物理批大小；153 实测冷 prefill +4.7%，
+  decode 与缓存命中不变。
+- `--flash-attn on`、`--cache-type-k/v q8_0`：KV 用 8-bit 量化，显存约为 f16 的一半，
+  实测对 decode/质量影响在噪声内。
+- API 侧建议 `SENTRIX_VLM_SLOTS=1`（不 pin，交给服务端 LCP）；只有需要确定性槽位
+  隔离时才设为与 `--parallel` 一致。
+
 ---
 
 ## 目录

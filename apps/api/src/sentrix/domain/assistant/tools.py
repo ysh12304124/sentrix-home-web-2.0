@@ -324,7 +324,7 @@ QUERY_PHOTO_PEOPLE = ToolSpec(
     # ``person_profile`` 的回合里 **13 个**是这么被抢先销账的（有一回它返回
     # ``people: []`` 也照样销），**全 487 题 ``get_person_profile`` 调用 0 次**。
     satisfies=(EvidenceType.PHOTO_IDENTITY,),
-    required=("result_set_id", "asset_handle"),
+    required=("asset_handle",),
 )
 
 
@@ -365,9 +365,9 @@ INSPECT_PHOTO = ToolSpec(
     satisfies=(EvidenceType.VISUAL_OBSERVATION, EvidenceType.PHOTO_IDENTITY),
     # 1.0 的 ``required_inputs=("asset_handle", "question")`` 与它自己的描述
     # （「asset_handle …可省略」）**互相矛盾**。2.0 保留描述里那条行为（省略就用第一张），
-    # 所以这里只把 ``question`` 与 ``result_set_id`` 列为必填——照 required_inputs 抄会
+    # 所以这里只把 ``question`` 列为必填；``result_set_id`` 由后端注入。照 required_inputs 抄会
     # 让「可省略」当场失效（策略层会以 ``missing_argument`` 拒掉）。
-    required=("result_set_id", "question"),
+    required=("question",),
     cost_class=CostClass.EXPENSIVE,
 )
 
@@ -410,7 +410,7 @@ READ_PHOTO_TEXT = ToolSpec(
     # 恢复昂贵之后两者共用「每轮 3 次照片级取证」，这不是两件事被硬凑到一起：
     # 它们本来就是同一件事——**对某一张照片做一次取证**。1.0 的 ``budget_unit="image"``
     # 说的就是这句话。
-    required=("result_set_id",),
+    required=(),
     cost_class=CostClass.EXPENSIVE,
 )
 

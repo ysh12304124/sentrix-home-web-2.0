@@ -695,9 +695,8 @@ def test_an_unattempted_requirement_earns_one_reminder(env):
 
     run_turn.run(turn_id)
 
-    assert reminder_count(model, "还有声明的证据需求尚未尝试：") == 1
-    nudged = [call for call in model.calls if any("尚未尝试" in m.content for m in call)]
-    assert any("read_photo_text" in message.content for call in nudged for message in call)
+    assert reminder_count(model, "尚有必要内容未核对：") == 1
+    nudged = [call for call in model.calls if any("尚有必要内容未核对：" in m.content for m in call)]
     assert any("visible_text" in message.content for call in nudged for message in call)
 
 
@@ -853,12 +852,14 @@ def test_an_attempted_but_unmet_requirement_says_attempt_failed(env):
 # ---- 收敛与预算 --------------------------------------------------------------
 
 
-def test_a_second_search_is_refused_and_the_model_is_told_to_page(env):
+def test_a_third_search_is_refused_after_one_retry(env):
+    """冻结工具集下允许一次重试（共 2 次检索）；第 3 次被 ToolPolicy 拒绝，不再引导翻页。"""
     _conversations, turns, conversation, _db = env
     model = ScriptedModel(
         [
             tool_call("search_memories", "c1", query="海边"),
             tool_call("search_memories", "c2", query="海边2"),
+            tool_call("search_memories", "c3", query="海边3"),
             final("这是你要的照片。"),
         ]
     )
@@ -868,9 +869,9 @@ def test_a_second_search_is_refused_and_the_model_is_told_to_page(env):
 
     run_turn.run(turn_id)
 
-    assert [name for name, _ in toolbox.calls] == ["search_memories"]
-    refusals = [event for _, _, event in turns.events_after(turn_id, 0) if event.status.value == "denied"]
-    assert refusals and "get_result_page" in refusals[0].text
+    assert [name for name, _ in toolbox.calls] == ["search_memories", "search_memories"]
+    refusals = [event for _seq, _attempt, event in turns.events_after(turn_id, 0) if event.status.value == "denied"]
+    assert refusals and "检索额度" in refusals[0].text
 
 
 def test_a_model_stuck_on_failing_tools_is_told_to_answer(env):
