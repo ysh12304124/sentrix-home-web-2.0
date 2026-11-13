@@ -179,6 +179,11 @@ def get_video(asset_id: str, container: Container = Depends(get_container)) -> V
     return VideoDetailResponse(
         video=_video_payload(asset, container.video_repository.probe(asset_id)),
         scenes=_video_scenes_payload(asset_id, container),
+        keyframe_assets=[
+            _keyframe_payload(frame)
+            for frame in container.video_repository.list_derived(asset_id)
+            if frame.media_type == MediaType.IMAGE
+        ],
     )
 
 

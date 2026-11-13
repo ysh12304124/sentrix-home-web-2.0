@@ -31,6 +31,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply
 from sentrix.domain.assistant.ports import ChatModel
 from sentrix.domain.media.models import Observation
@@ -231,6 +232,7 @@ class SummarizeEvent:
         assets: AssetRepository,
         participants: EventParticipantRepository | None = None,
         model: ChatModel | None = None,
+        generation_guard: GenerationGuard = unguarded_generation,
     ) -> None:
         self._events = events
         self._observations = observations
@@ -239,8 +241,16 @@ class SummarizeEvent:
         # 「一名男子」那种描述，与这次改动之前的行为一致。
         self._participants = participants
         self._model = model
+        self._generation_guard = generation_guard
 
     def execute(self, event_id: str) -> EventRecord:
+        event = self._events.get(event_id)
+        if event is None:
+            raise KeyError(event_id)
+        with self._generation_guard(event.scope_id):
+            return self._execute(event_id)
+
+    def _execute(self, event_id: str) -> EventRecord:
         """总结一个事件并落库。事件不存在时抛 ``KeyError``。
 
         返回的是**落库之后**的那一行：调用方拿到的是 title/summary 已更新的记录，

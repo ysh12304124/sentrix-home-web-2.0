@@ -18,7 +18,11 @@
 from __future__ import annotations
 
 import subprocess
+import uuid
 from pathlib import Path
+
+from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.media_barrier import publish_media_file
 
 # ``-q:v 2`` 是 JPEG 的质量档（2 = 接近最高，1.0 没有对应物）。关键帧要喂给 VLM 与
 # 嵌入模型，画质是这两个下游的唯一输入，所以取高档；体积代价由 MAX_SCENES 封顶兜住。
@@ -32,7 +36,8 @@ KEYFRAME_TIMEOUT_S = 300
 class FfmpegVideoKeyframeExtractor:
     """domain ``VideoKeyframeExtractor`` 的 ffmpeg 实现。"""
 
-    def __init__(self, media_dir: Path) -> None:
+    def __init__(self, media_dir: Path, *, database: Database | None = None) -> None:
+        self._database = database
         self._root = Path(media_dir) / "derived" / "video"
 
     def extract(self, source: Path, asset_id: str, scene_index: int, timestamp_sec: float) -> Path:
@@ -43,6 +48,9 @@ class FfmpegVideoKeyframeExtractor:
         ``-frames:v 1`` 保证只写一帧就退出。
         """
         target = self._root / asset_id / "scenes" / f"{scene_index:03d}" / "kf_0001.jpg"
+        final_target = target
+        if self._database is not None:
+            target = target.with_name(f".pending-{uuid.uuid4().hex}.jpg")
         target.parent.mkdir(parents=True, exist_ok=True)
         process = subprocess.run(
             [
@@ -74,4 +82,6 @@ class FfmpegVideoKeyframeExtractor:
         # 与 ``transcode_to_h264`` 同一条口径。
         if process.returncode or not target.is_file():
             raise RuntimeError(process.stderr.strip()[-1000:] or "ffmpeg keyframe extraction failed")
-        return target
+        if self._database is not None:
+            publish_media_file(self._database, asset_id, target, final_target)
+        return final_target

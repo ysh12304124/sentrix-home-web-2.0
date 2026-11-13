@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.identity.ports import EntityRepository, RelationshipRepository
 from sentrix.domain.media.capture_time import elapsed_seconds, time_sort_key
 from sentrix.domain.media.models import Observation
@@ -82,6 +83,7 @@ class BuildMemoryGraph:
         graph: MemoryGraphRepository,
         causal_judge: CausalJudge | None = None,
         vectors: VectorRepository | None = None,
+        generation_guard: GenerationGuard = unguarded_generation,
     ) -> None:
         self._assets = assets
         self._observations = observations
@@ -93,8 +95,13 @@ class BuildMemoryGraph:
         self._graph = graph
         self._causal_judge = causal_judge
         self._vectors = vectors
+        self._generation_guard = generation_guard
 
     def execute(self, scope_id: str) -> GraphBuildStats:
+        with self._generation_guard(scope_id):
+            return self._execute(scope_id)
+
+    def _execute(self, scope_id: str) -> GraphBuildStats:
         scope = str(scope_id or "").strip()
         if not scope:
             raise ValueError("构建记忆图需要明确的 scope_id")

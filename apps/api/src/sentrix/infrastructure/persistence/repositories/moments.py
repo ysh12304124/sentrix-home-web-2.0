@@ -25,6 +25,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from datetime import UTC, datetime
 
 from sentrix.domain.identity.models import PersonMomentRecord
@@ -123,7 +124,25 @@ class SqliteMomentRepository:
         )
         now = datetime.now(UTC).isoformat()
         moment_id = _new_id("moment")
-        with self._database.connect() as connection, connection:
+        with self._database.write_transaction() as connection, ExitStack() as permissions:
+            scoped = connection.execute(
+                "SELECT 1 FROM media_scope_epochs WHERE scope_id=?", (scope_id,)
+            ).fetchone()
+            if scoped:
+                from sentrix.domain.media.deletion import MediaIsolated
+
+                if not connection.execute("SELECT media_generation_allowed(?)", (scope_id,)).fetchone()[0]:
+                    raise MediaIsolated("moment inference generation changed")
+                proof = connection.execute(
+                    "SELECT 1 FROM readable_face_instances f JOIN readable_observatio"
+                    "ns o ON o.id=f.observation_id "
+                    "JOIN face_clusters fc ON fc.id=f.cluster_id WHERE f.id=? AND f.asset_id=? AND o.id=? "
+                    "AND fc.id=? AND fc.entity_id=?",
+                    (face_instance_id, asset_id, observation_id, cluster_id, person_id),
+                ).fetchone()
+                if not proof:
+                    raise MediaIsolated("moment source identity mismatch")
+                permissions.enter_context(self._database.reconciliation(connection))
             connection.execute(
                 "INSERT INTO person_moments("
                 " id, scope_id, person_id, cluster_id, event_id, observation_id, asset_id,"
@@ -169,8 +188,28 @@ class SqliteMomentRepository:
                     now,
                 ),
             )
+            if scoped:
+                actual = connection.execute(
+                    "SELECT id FROM person_moments WHERE person_id=? AND observation_"
+                    "id=? AND prompt_version=?",
+                    (person_id, observation_id, prompt_version),
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE media_object_states SET validity='valid',summary_valid=1,"
+                    "generation=generation+1,reason='current_generation_moment' WHERE"
+                    " object_table='person_moments' AND object_key=json_object('id',?"
+                    ")",
+                    (actual,),
+                )
+                connection.execute(
+                    "INSERT INTO media_rebuild_publications VALUES ('person_moments',"
+                    "json_object('id',?),?,(SELECT generation FROM media_scope_epochs"
+                    " WHERE scope_id=?)) ON CONFLICT(object_table,object_key) DO UPDA"
+                    "TE SET generation=excluded.generation,scope_id=excluded.scope_id",
+                    (actual, scope_id, scope_id),
+                )
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_moments"
+                f"SELECT {_COLUMNS} FROM readable_person_moments"
                 " WHERE person_id = ? AND observation_id = ? AND prompt_version = ?",
                 (person_id, observation_id, prompt_version),
             ).fetchone()
@@ -199,7 +238,7 @@ class SqliteMomentRepository:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_moments {where} ORDER BY created_at DESC",
+                f"SELECT {_COLUMNS} FROM readable_person_moments {where} ORDER BY created_at DESC",
                 tuple(params),
             ).fetchall()
         return [record for row in rows if (record := _record(row)) is not None]
@@ -254,7 +293,7 @@ class SqliteMomentRepository:
     def _face_instance_scope(self, face_instance_id: str) -> str | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT asset_id FROM face_instances WHERE id = ?", (face_instance_id,)
+                "SELECT asset_id FROM readable_face_instances WHERE id = ?", (face_instance_id,)
             ).fetchone()
         return self._scope_of("asset", str(row["asset_id"])) if row is not None else None
 

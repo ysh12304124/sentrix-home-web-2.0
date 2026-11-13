@@ -206,7 +206,7 @@ class SqliteFamilyGraphRepository:
         再判空间——因为「不是 person」与「不在同一个空间」是两种不同的用户错误。
         """
         row = connection.execute(
-            "SELECT entity_type, scope_id FROM entities WHERE id = ?", (entity_id,)
+            "SELECT entity_type, scope_id FROM readable_entities WHERE id = ?", (entity_id,)
         ).fetchone()
         if row is None or row["entity_type"] != "person":
             raise ValueError("family graph requires a person entity")
@@ -223,7 +223,7 @@ class SqliteFamilyGraphRepository:
         所以最多两行）。
         """
         return connection.execute(
-            f"SELECT {_RELATIONSHIP_COLUMNS} FROM family_relationships"
+            f"SELECT {_RELATIONSHIP_COLUMNS} FROM readable_family_relationships"
             " WHERE scope_id = ? AND state = ? AND ("
             " (subject_entity_id = ? AND object_entity_id = ?)"
             " OR (subject_entity_id = ? AND object_entity_id = ?))"
@@ -285,22 +285,22 @@ class SqliteFamilyGraphRepository:
     # ---- 读投影 ----------------------------------------------------------------
 
     _AVATAR_SQL = (
-        "SELECT fi.id AS id FROM face_instances fi"
-        " JOIN face_clusters fc ON fc.id = fi.cluster_id"
+        "SELECT fi.id AS id FROM readable_face_instances fi"
+        " JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
         " WHERE fc.entity_id = ? AND fc.status != 'rejected'"
         " ORDER BY fi.quality DESC, fi.detection_confidence DESC, fi.created_at ASC LIMIT 1"
     )
     _MEDIA_SQL = (
         "SELECT DISTINCT a.id AS id, a.media_type AS media_type, a.file_name AS file_name"
-        " FROM face_instances fi"
-        " JOIN face_clusters fc ON fc.id = fi.cluster_id"
-        " JOIN assets a ON a.id = fi.asset_id"
+        " FROM readable_face_instances fi"
+        " JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
+        " JOIN readable_assets a ON a.id = fi.asset_id"
         " WHERE fc.entity_id = ? AND fc.status != 'rejected'"
         " ORDER BY a.id DESC LIMIT 3"
     )
     _APPEARANCE_SQL = (
-        "SELECT COUNT(*) AS count FROM face_instances fi"
-        " JOIN face_clusters fc ON fc.id = fi.cluster_id"
+        "SELECT COUNT(*) AS count FROM readable_face_instances fi"
+        " JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
         " WHERE fc.entity_id = ? AND fc.status != 'rejected'"
     )
 
@@ -347,7 +347,7 @@ class SqliteFamilyGraphRepository:
     def get_effective_membership(self, scope_id: str, entity_id: str) -> FamilyMembershipRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_MEMBERSHIP_COLUMNS} FROM family_person_memberships"
+                f"SELECT {_MEMBERSHIP_COLUMNS} FROM readable_family_person_memberships"
                 " WHERE scope_id = ? AND entity_id = ? AND state = ?"
                 " ORDER BY locked DESC, revision DESC, updated_at DESC LIMIT 1",
                 (scope_id, entity_id, STATE_EFFECTIVE),
@@ -374,7 +374,7 @@ class SqliteFamilyGraphRepository:
         with self._database.connect() as connection, connection:
             self._family_entity(connection, scope_id, entity_id)
             current = connection.execute(
-                f"SELECT {_MEMBERSHIP_COLUMNS} FROM family_person_memberships"
+                f"SELECT {_MEMBERSHIP_COLUMNS} FROM readable_family_person_memberships"
                 " WHERE scope_id = ? AND entity_id = ? AND state = ?"
                 " ORDER BY locked DESC, revision DESC, updated_at DESC LIMIT 1",
                 (scope_id, entity_id, STATE_EFFECTIVE),
@@ -412,7 +412,7 @@ class SqliteFamilyGraphRepository:
                 ),
             )
             written = connection.execute(
-                f"SELECT {_MEMBERSHIP_COLUMNS} FROM family_person_memberships WHERE id = ?",
+                f"SELECT {_MEMBERSHIP_COLUMNS} FROM readable_family_person_memberships WHERE id = ?",
                 (record_id,),
             ).fetchone()
         return _row_to_membership(written) if written else None
@@ -425,7 +425,7 @@ class SqliteFamilyGraphRepository:
         with self._database.connect() as connection:
             if entity_id:
                 rows = connection.execute(
-                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM family_relationships"
+                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM readable_family_relationships"
                     " WHERE scope_id = ? AND state = ?"
                     " AND (subject_entity_id = ? OR object_entity_id = ?)"
                     " ORDER BY locked DESC, updated_at DESC",
@@ -433,7 +433,7 @@ class SqliteFamilyGraphRepository:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM family_relationships"
+                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM readable_family_relationships"
                     " WHERE scope_id = ? AND state = ? ORDER BY locked DESC, updated_at DESC",
                     (scope_id, STATE_EFFECTIVE),
                 ).fetchall()
@@ -525,7 +525,7 @@ class SqliteFamilyGraphRepository:
                 inserted.append(record_id)
             # 用一条 IN 一次取回，顺序按传入的 id 顺序排（正行在前、反行在后）。
             rows = connection.execute(
-                f"SELECT {_RELATIONSHIP_COLUMNS} FROM family_relationships"
+                f"SELECT {_RELATIONSHIP_COLUMNS} FROM readable_family_relationships"
                 f" WHERE id IN ({','.join('?' * len(inserted))})",
                 inserted,
             ).fetchall()
@@ -577,7 +577,7 @@ class SqliteFamilyGraphRepository:
             rows = []
             if current:
                 rows = connection.execute(
-                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM family_relationships"
+                    f"SELECT {_RELATIONSHIP_COLUMNS} FROM readable_family_relationships"
                     f" WHERE id IN ({','.join('?' * len(current))})",
                     [row["id"] for row in current],
                 ).fetchall()
@@ -588,7 +588,7 @@ class SqliteFamilyGraphRepository:
     def get_active_portrait(self, scope_id: str, entity_id: str) -> FamilyPortraitRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_PORTRAIT_COLUMNS} FROM family_person_portraits"
+                f"SELECT {_PORTRAIT_COLUMNS} FROM readable_family_person_portraits"
                 " WHERE scope_id = ? AND entity_id = ? AND state = ?"
                 " ORDER BY created_at DESC LIMIT 1",
                 (scope_id, entity_id, STATE_EFFECTIVE),
@@ -610,7 +610,7 @@ class SqliteFamilyGraphRepository:
         缺口照搬，别顺手补：补上会让某个 1.0 能跑通的调用在这里抛错。"""
         with self._database.connect() as connection, connection:
             current = connection.execute(
-                f"SELECT {_PORTRAIT_COLUMNS} FROM family_person_portraits"
+                f"SELECT {_PORTRAIT_COLUMNS} FROM readable_family_person_portraits"
                 " WHERE scope_id = ? AND entity_id = ? AND state = ?"
                 " ORDER BY created_at DESC LIMIT 1",
                 (scope_id, entity_id, STATE_EFFECTIVE),
@@ -644,7 +644,7 @@ class SqliteFamilyGraphRepository:
                 ),
             )
             written = connection.execute(
-                f"SELECT {_PORTRAIT_COLUMNS} FROM family_person_portraits WHERE id = ?",
+                f"SELECT {_PORTRAIT_COLUMNS} FROM readable_family_person_portraits WHERE id = ?",
                 (portrait_id,),
             ).fetchone()
         return _row_to_portrait(written) if written else None
@@ -745,11 +745,11 @@ class SqliteFamilyGraphRepository:
                 " o.id AS observation_id, o.caption, o.activity, o.detail_json,"
                 " o.place, o.event_type, o.ocr_text, o.objects_json, o.clothing_json,"
                 " o.people_json, o.facts_json"
-                " FROM face_instances fi"
-                " JOIN face_clusters fc ON fc.id = fi.cluster_id"
-                " JOIN entities e ON e.id = fc.entity_id"
-                " JOIN observations o ON o.id = fi.observation_id"
-                " LEFT JOIN entity_mentions em"
+                " FROM readable_face_instances fi"
+                " JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
+                " JOIN readable_entities e ON e.id = fc.entity_id"
+                " JOIN readable_observations o ON o.id = fi.observation_id"
+                " LEFT JOIN readable_entity_mentions em"
                 "   ON em.entity_id = fc.entity_id AND em.face_instance_id = fi.id"
                 " WHERE o.scope_id = ? AND e.scope_id = ?"
                 " AND e.entity_type = 'person' AND e.status NOT IN ('rejected', 'superseded')"

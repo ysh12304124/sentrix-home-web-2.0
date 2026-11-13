@@ -71,6 +71,20 @@ class SqliteMemoryGraphRepository:
             for edge in edges
         ]
         with self._database.connect() as connection, connection:
+            from sentrix.domain.media.deletion import MediaIsolated
+
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            if (
+                not connection.execute(
+                    "SELECT media_reconcile_allowed() OR media_generation_allowed(?)", (scope_id,)
+                ).fetchone()[0]
+                and connection.execute(
+                    "SELECT 1 FROM media_tombstones WHERE scope_id=? AND kind='asset' LIMIT 1",
+                    (scope_id,),
+                ).fetchone()
+            ):
+                raise MediaIsolated("scope graph rebuild is deferred during isolation")
             # 边先于节点删除，保持派生表内部始终自洽，即使未来加上 FK 也不需要改顺序。
             connection.execute("DELETE FROM memory_graph_edges WHERE scope_id = ?", (scope_id,))
             connection.execute("DELETE FROM memory_graph_nodes WHERE scope_id = ?", (scope_id,))
@@ -98,7 +112,8 @@ class SqliteMemoryGraphRepository:
     def status(self, scope_id: str) -> GraphStatus:
         with self._database.connect() as connection:
             build = connection.execute(
-                "SELECT build_revision, node_count, edge_count FROM memory_graph_builds WHERE scope_id = ?",
+                "SELECT build_revision, node_count, edge_count FROM readable_memory_graph_bui"
+                "lds WHERE scope_id = ?",
                 (scope_id,),
             ).fetchone()
         if build is None:
@@ -128,12 +143,12 @@ class SqliteMemoryGraphRepository:
             }
         with self._database.connect() as connection:
             node_rows = connection.execute(
-                "SELECT id, node_type, attributes_json FROM memory_graph_nodes WHERE scope_id = ?",
+                "SELECT id, node_type, attributes_json FROM readable_memory_graph_nodes WHERE scope_id = ?",
                 (scope_id,),
             ).fetchall()
             edge_rows = connection.execute(
                 "SELECT source_id, target_id, relation, attributes_json"
-                " FROM memory_graph_edges WHERE scope_id = ?",
+                " FROM readable_memory_graph_edges WHERE scope_id = ?",
                 (scope_id,),
             ).fetchall()
 
@@ -324,7 +339,7 @@ class SqliteMemoryGraphRepository:
                 frontier_ids = tuple(frontier)
                 placeholders = ",".join("?" for _ in frontier_ids)
                 rows = connection.execute(
-                    "SELECT source_id, target_id, relation, weight FROM memory_graph_edges"
+                    "SELECT source_id, target_id, relation, weight FROM readable_memory_graph_edges"
                     f" WHERE scope_id = ? AND (source_id IN ({placeholders})"
                     f" OR target_id IN ({placeholders}))"
                     " ORDER BY id LIMIT 10000",
@@ -335,7 +350,7 @@ class SqliteMemoryGraphRepository:
                     break
                 neighbor_placeholders = ",".join("?" for _ in neighbor_ids)
                 node_rows = connection.execute(
-                    "SELECT id, node_type FROM memory_graph_nodes"
+                    "SELECT id, node_type FROM readable_memory_graph_nodes"
                     f" WHERE scope_id = ? AND id IN ({neighbor_placeholders})",
                     (scope_id, *neighbor_ids),
                 ).fetchall()

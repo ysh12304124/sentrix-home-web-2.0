@@ -18,10 +18,7 @@ export interface AssetSummary {
   parent_asset_id?: string | null;
   /** 派生关键帧在源视频里的秒数；用它把 `<video>` 定位到命中帧。 */
   source_timestamp_sec?: number | null;
-  /**
-   * 后端**目前不返回**。若将来 `/assets` 带上它，资料库就能按相册聚合；
-   * 现在消费方必须按「可能为空」处理，不能把它当成一册一个值。
-   */
+  /** 素材所属相册。旧响应可能没有此字段。 */
   scope_id?: string;
 }
 
@@ -37,6 +34,7 @@ export interface AssetPageOptions {
   offset?: number;
   limit?: number;
   mediaType?: string;
+  includeDerived?: boolean;
   sort?: "captured" | "created";
   order?: "asc" | "desc";
 }
@@ -56,6 +54,7 @@ export async function listAssetPage(
   if (options.mediaType !== undefined && options.mediaType !== "") {
     params.set("media_type", options.mediaType);
   }
+  if (options.includeDerived === false) params.set("include_derived", "false");
   return request<AssetPage>(`/assets?${params.toString()}`);
 }
 
@@ -1527,6 +1526,12 @@ export interface VideoSpeechSegment {
 export interface VideoDetailResponse {
   video: VideoPayload;
   scenes: VideoScenePayload[];
+  keyframe_assets?: VideoKeyframe[];
+}
+
+export interface VideoKeyframe {
+  id: string;
+  source_timestamp_sec: number | null;
 }
 
 /** `GET /videos/{id}`：源视频详情 + 场景列表（`api/schemas/videos.py`）。 */
@@ -2027,4 +2032,32 @@ export async function listClientEvents(
     throw new ApiError(response.status, parseApiError(raw), raw);
   }
   return (await response.json()) as ClientEventPage;
+}
+
+export interface LibraryDeletion {
+  deletion_id: string;
+  root_asset_id: string;
+  scope_id: string;
+  library_state: "pending" | "submitted" | "failed" | "blocked";
+  lifecycle_state: "isolated" | "cleaning" | "rebuilding" | "completed" | "failed" | "blocked";
+}
+
+function deletionPost(scopeId: string, fields = {}): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope_id: scopeId, ...fields }),
+  };
+}
+
+export function deleteLibraryAsset(assetId: string, scopeId: string): Promise<LibraryDeletion> {
+  return request(`/assets/${encodeURIComponent(assetId)}/deletion`, deletionPost(scopeId, { library: true }));
+}
+
+export function listLibraryDeletions(scopeId: string, signal: AbortSignal): Promise<LibraryDeletion[]> {
+  return request(`/media-deletions?${new URLSearchParams({ scope_id: scopeId })}`, { signal });
+}
+
+export function retryLibraryDeletion(deletionId: string, scopeId: string): Promise<LibraryDeletion> {
+  return request(`/media-deletions/${encodeURIComponent(deletionId)}/retry`, deletionPost(scopeId));
 }

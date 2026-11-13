@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
     return RetrieveEvidence(
+        active_assets=lambda ids: set(container.asset_repository.get_many(ids)),
         visual=RetrieveVisual(
             embedder=container.visual_embedder,
             vectors=container.vector_repository,

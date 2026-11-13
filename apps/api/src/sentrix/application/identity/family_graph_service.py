@@ -38,6 +38,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
 from sentrix.domain.assistant.ports import ChatModel
 from sentrix.domain.identity.family import (
@@ -150,6 +151,7 @@ class FamilyGraphService:
         events: EventRepository,
         entities: EntityRepository | None = None,
         model: ChatModel | None = None,
+        generation_guard: GenerationGuard = unguarded_generation,
     ) -> None:
         self._family = family
         self._events = events
@@ -159,8 +161,13 @@ class FamilyGraphService:
         # 这里以「自己」为中心，把已知角色补成确定性的边。可空是为了不强制测试造实体仓储。
         self._entities = entities
         self._model = model
+        self._generation_guard = generation_guard
 
     def run(self, run_id: str, scope_id: str) -> FamilyAnalysisRunRecord | None:
+        with self._generation_guard(scope_id):
+            return self._execute(run_id, scope_id)
+
+    def _execute(self, run_id: str, scope_id: str) -> FamilyAnalysisRunRecord | None:
         """跑一趟，返回**收尾那次** ``update_run`` 的结果。
 
         两条前置校验**在 try 之外**：run 不存在抛 ``KeyError``、已在跑抛 ``RuntimeError``

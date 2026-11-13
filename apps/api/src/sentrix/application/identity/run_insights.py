@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sentrix.application.identity.extract_moments import ExtractMoments
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.identity.insights import (
     CORE_PEOPLE_LIMIT,
     REPRESENTATIVE_LIMIT,
@@ -91,6 +92,7 @@ class RunInsights:
         portraits: PortraitRepository,
         extract_moments: ExtractMoments,
         vision: PersonVision,
+        generation_guard: GenerationGuard = unguarded_generation,
     ) -> None:
         self._faces = faces
         self._entities = entities
@@ -99,8 +101,13 @@ class RunInsights:
         self._portraits = portraits
         self._extract_moments = extract_moments
         self._vision = vision
+        self._generation_guard = generation_guard
 
     def __call__(self, scope_id: str) -> InsightRun:
+        with self._generation_guard(scope_id):
+            return self._execute(scope_id)
+
+    def _execute(self, scope_id: str) -> InsightRun:
         ranked = rank_core_people(self._faces.person_candidate_features(scope_id), limit=CORE_PEOPLE_LIMIT)
         # ``tier`` 由 ``rank_core_people`` 判（1.0 ``:203`` 的写法）：排进前 N 且跨够
         # 天数的才算「核心人物」。非核心的仍留在 ``ranked`` 里——1.0 把它们留在

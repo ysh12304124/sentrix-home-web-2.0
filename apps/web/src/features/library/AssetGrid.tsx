@@ -6,7 +6,7 @@
  * 查询必须返回可打开的原始 Asset。
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import {
   assetPosterUrl,
@@ -15,7 +15,7 @@ import {
   type AssetDetailResponse,
   type AssetSummary,
 } from "../../shared/api/client";
-import { AssetDetail } from "./AssetDetail";
+import { AssetDetail, isDeletableAsset } from "./AssetDetail";
 
 const TYPE_MARK: Readonly<Record<string, string>> = { image: "▦", video: "▶", audio: "♪", text: "¶" };
 
@@ -51,48 +51,79 @@ function AssetThumb({
 export function AssetGrid({
   assets,
   onOpen,
+  deletion,
   onMediaError,
 }: {
   assets: readonly AssetSummary[];
+  deletion?: { onAccepted: (assetId: string) => void };
   onOpen?: (asset: AssetSummary) => void;
   onMediaError?: (asset: AssetSummary) => void;
 }) {
-  const [selected, setSelected] = useState<AssetDetailResponse | null>(null);
+  const [selected, setSelected] = useState<{ asset: AssetDetailResponse; confirmDeletion: boolean } | null>(null);
+  const openRequest = useRef(0);
 
   /**
    * 详情优先走 `GET /assets/{id}`：这样后端哪天在响应里补上 `observations`，
    * 列表这边不用改就能显示。请求失败时退回列表已有的摘要，点开仍然可用。
    */
   async function open(asset: AssetSummary) {
+    const request = ++openRequest.current;
     onOpen?.(asset);
-    try {
-      setSelected(await getAsset(asset.id));
-    } catch {
-      setSelected(asset);
+    const detail = await getAsset(asset.id).catch(() => asset);
+    if (request === openRequest.current) {
+      setSelected({ asset: detail, confirmDeletion: false });
     }
+  }
+
+  function openDeletion(asset: AssetSummary) {
+    ++openRequest.current;
+    setSelected({ asset, confirmDeletion: true });
   }
 
   return (
     <>
       <section className="asset-grid library-grid">
         {assets.map((asset) => (
-          <button key={asset.id} type="button" className="asset-card" onClick={() => void open(asset)}>
-            <div className="asset-thumb">
-              <AssetThumb asset={asset} onMediaError={onMediaError} />
-              <b>{mediaLabel(asset.media_type)}</b>
-            </div>
-            <div className="asset-info">
-              <small className="asset-time">
-                {asset.captured_at ? asset.captured_at.slice(0, 10) : "时间未记录"}
-              </small>
-              <span className="asset-place">
-                {asset.place !== undefined && asset.place !== "" ? asset.place : "地点未记录"}
-              </span>
-            </div>
-          </button>
+          <div key={asset.id} className="library-asset-tile">
+            <button type="button" className="asset-card" onClick={() => void open(asset)}>
+              <div className="asset-thumb">
+                <AssetThumb asset={asset} onMediaError={onMediaError} />
+                <b>{mediaLabel(asset.media_type)}</b>
+              </div>
+              <div className="asset-info">
+                <small className="asset-time">
+                  {asset.captured_at ? asset.captured_at.slice(0, 10) : "时间未记录"}
+                </small>
+                <span className="asset-place">
+                  {asset.place !== undefined && asset.place !== "" ? asset.place : "地点未记录"}
+                </span>
+              </div>
+            </button>
+            {deletion && asset.scope_id && isDeletableAsset(asset) && (
+              <button
+                type="button"
+                className="library-asset-delete"
+                aria-label={`删除${mediaLabel(asset.media_type)} ${asset.file_name}`}
+                onClick={() => openDeletion(asset)}
+              >
+                删除
+              </button>
+            )}
+          </div>
         ))}
       </section>
-      {selected ? <AssetDetail asset={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? (
+        <AssetDetail
+          key={selected.asset.id}
+          asset={selected.asset}
+          confirmDeletionOnOpen={selected.confirmDeletion}
+          onClose={() => setSelected(null)}
+          deletion={deletion && selected.asset.scope_id ? {
+            scopeId: selected.asset.scope_id,
+            onAccepted: (id) => { setSelected(null); deletion.onAccepted(id); },
+          } : undefined}
+        />
+      ) : null}
     </>
   );
 }

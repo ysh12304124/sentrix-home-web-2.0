@@ -60,7 +60,9 @@ class SqliteAudioRepository:
         """**合并写**，不整包覆盖 ``metadata_json``：那里可能已经有别的东西
         （1.0 同一列上还压着反地理、事实 id 等），覆盖会把它们一起抹掉。"""
         with self._database.connect() as connection, connection:
-            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT metadata_json FROM readable_assets WHERE id = ?", (asset_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(asset_id)
             payload = _parse_metadata(row["metadata_json"])

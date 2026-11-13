@@ -23,7 +23,8 @@ from sentrix.infrastructure.persistence.database import Database
 _ASSET_COLUMNS = (
     "id, scope_id, file_name, media_type, path, mime_type, size_bytes, status,"
     " content_sha256, captured_at, gps_latitude, gps_longitude, created_at, updated_at,"
-    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json"
+    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json,"
+    " deletion_state, deletion_generation"
 )
 
 
@@ -35,6 +36,8 @@ def _row_to_asset(row: sqlite3.Row) -> Asset:
     latitude, longitude = row["gps_latitude"], row["gps_longitude"]
     capture_time = CaptureTime(**json.loads(row["capture_time_json"]))
     return Asset(
+        deletion_state=row["deletion_state"],
+        deletion_generation=row["deletion_generation"],
         id=row["id"],
         scope_id=row["scope_id"],
         file_name=row["file_name"],
@@ -99,7 +102,7 @@ class SqliteAssetRepository:
     def get(self, asset_id: str) -> Asset | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_ASSET_COLUMNS} FROM assets WHERE id = ?", (asset_id,)
+                f"SELECT {_ASSET_COLUMNS} FROM readable_assets WHERE id = ?", (asset_id,)
             ).fetchone()
         return _row_to_asset(row) if row else None
 
@@ -110,7 +113,7 @@ class SqliteAssetRepository:
         placeholders = ",".join("?" for _ in unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})",
+                f"SELECT {_ASSET_COLUMNS} FROM readable_assets WHERE id IN ({placeholders})",
                 tuple(unique),
             ).fetchall()
         return {str(row["id"]): _row_to_asset(row) for row in rows}
@@ -125,7 +128,7 @@ class SqliteAssetRepository:
         where, params = ("", ()) if scope_id is None else (" WHERE scope_id = ?", (scope_id,))
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
+                f"SELECT {_ASSET_COLUMNS} FROM readable_assets{where}"
                 " ORDER BY capture_sort_key(COALESCE(captured_at, created_at)) DESC, id DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
@@ -140,43 +143,40 @@ class SqliteAssetRepository:
         order: str = "desc",
         offset: int = 0,
         limit: int = 200,
+        include_derived: bool = True,
     ) -> tuple[Sequence[Asset], int, dict[str, int]]:
         """资料库分页：返回 (当页资产, 当前筛选总数, 当前范围各类型计数)。
 
         计数查询覆盖完整范围，先取 200 条再统计会把「前 200 条」冒充总量。
         排序键与方向由调用方按白名单给；SQL 里只拼这两列常量表达式。
         """
-        scope_clause = "" if scope_id is None else " WHERE scope_id = ?"
-        scope_params: tuple[object, ...] = () if scope_id is None else (scope_id,)
-        type_clause = " WHERE media_type = ?" if media_type else ""
-        type_params: tuple[object, ...] = (media_type,) if media_type else ()
-        if scope_id is None:
-            where = type_clause
-            params = type_params
-        else:
-            where = scope_clause if not media_type else f"{scope_clause} AND media_type = ?"
-            params = (*scope_params, *type_params)
+        conditions = []
+        scope_params: tuple[object, ...] = ()
+        if scope_id is not None:
+            conditions.append("scope_id = ?")
+            scope_params = (scope_id,)
+        if not include_derived:
+            conditions.append("(media_type != 'image' OR (parent_asset_id IS NULL AND derived_kind IS NULL))")
+        count_where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        params = scope_params
+        if media_type:
+            conditions.append("media_type = ?")
+            params = (*params, media_type)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        sort_expression = (
-            "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
-        )
+        sort_expression = "COALESCE(captured_at, created_at)" if sort == "captured" else "created_at"
         direction = "ASC" if order == "asc" else "DESC"
 
         with self._database.connect() as connection:
             counts_rows = connection.execute(
-                "SELECT media_type, COUNT(*) AS n FROM assets"
-                f"{scope_clause} GROUP BY media_type",
+                f"SELECT media_type, COUNT(*) AS n FROM readable_assets{count_where} GROUP BY media_type",
                 scope_params,
             ).fetchall()
             counts = {str(row["media_type"]): int(row["n"]) for row in counts_rows}
             counts["all"] = sum(counts.values())
-            total = (
-                counts.get(media_type or "", 0)
-                if media_type
-                else counts["all"]
-            )
+            total = counts.get(media_type or "", 0) if media_type else counts["all"]
             rows = connection.execute(
-                f"SELECT {_ASSET_COLUMNS} FROM assets{where}"
+                f"SELECT {_ASSET_COLUMNS} FROM readable_assets{where}"
                 f" ORDER BY {sort_expression} {direction}, id {direction}"
                 " LIMIT ? OFFSET ?",
                 (*params, max(1, limit), max(0, offset)),
@@ -186,7 +186,8 @@ class SqliteAssetRepository:
     def find_by_hash(self, scope_id: str, content_sha256: str) -> Asset | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_ASSET_COLUMNS} FROM assets WHERE scope_id = ? AND content_sha256 = ? LIMIT 1",
+                f"SELECT {_ASSET_COLUMNS} FROM readable_assets WHERE scope_id = ? AND "
+                f"content_sha256 = ? LIMIT 1",
                 (scope_id, content_sha256),
             ).fetchone()
         return _row_to_asset(row) if row else None
@@ -356,7 +357,7 @@ class SqliteObservationRepository:
     def get(self, observation_id: str) -> Observation | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE id = ?", (observation_id,)
+                f"SELECT {_OBSERVATION_COLUMNS} FROM readable_observations WHERE id = ?", (observation_id,)
             ).fetchone()
         return row_to_observation(row) if row else None
 
@@ -367,7 +368,7 @@ class SqliteObservationRepository:
         placeholders = ",".join("?" for _ in unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE id IN ({placeholders})",
+                f"SELECT {_OBSERVATION_COLUMNS} FROM readable_observations WHERE id IN ({placeholders})",
                 tuple(unique),
             ).fetchall()
         return {str(row["id"]): row_to_observation(row) for row in rows}
@@ -375,7 +376,7 @@ class SqliteObservationRepository:
     def list_by_asset(self, asset_id: str) -> Sequence[Observation]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE asset_id = ?"
+                f"SELECT {_OBSERVATION_COLUMNS} FROM readable_observations WHERE asset_id = ?"
                 " ORDER BY created_at DESC",
                 (asset_id,),
             ).fetchall()
@@ -385,7 +386,8 @@ class SqliteObservationRepository:
         """1.0 ``ocr_tool.py:544-548`` 的原样，只取一列、只取最新那条。"""
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT ocr_text FROM observations WHERE asset_id = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT ocr_text FROM readable_observations WHERE asset_id = ? ORDER BY "
+                "updated_at DESC LIMIT 1",
                 (asset_id,),
             ).fetchone()
         return str(row["ocr_text"] or "").strip() if row else ""
@@ -400,7 +402,8 @@ class SqliteObservationRepository:
         """
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT people_json FROM observations WHERE asset_id = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT people_json FROM readable_observations WHERE asset_id = ? ORDER BY "
+                "updated_at DESC LIMIT 1",
                 (asset_id,),
             ).fetchone()
         return people_snapshot(row["people_json"]) if row else ()
@@ -408,7 +411,7 @@ class SqliteObservationRepository:
     def list_scope(self, scope_id: str, *, limit: int) -> Sequence[Observation]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_OBSERVATION_COLUMNS} FROM observations WHERE scope_id = ?"
+                f"SELECT {_OBSERVATION_COLUMNS} FROM readable_observations WHERE scope_id = ?"
                 " ORDER BY created_at DESC LIMIT ?",
                 (scope_id, limit),
             ).fetchall()

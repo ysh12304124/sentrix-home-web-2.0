@@ -32,6 +32,7 @@ class ImportResponse(BaseModel):
 
 class AssetSummary(BaseModel):
     id: str
+    scope_id: str
     file_name: str
     media_type: str
     mime_type: str | None

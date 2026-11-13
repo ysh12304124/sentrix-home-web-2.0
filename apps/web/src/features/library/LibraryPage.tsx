@@ -14,6 +14,7 @@ import {
   type AssetSummary,
 } from "../../shared/api/client";
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
+import { DeletionProgress } from "./DeletionProgress";
 import { AssetGrid } from "./AssetGrid";
 import "../../styles/library.css";
 
@@ -64,6 +65,7 @@ export function LibraryPage() {
     setNotice("");
     listAssetPage(scopeId, {
       limit: PAGE_SIZE,
+      includeDerived: false,
       mediaType: filter === "all" ? "" : filter,
       sort: sortKey,
       order,
@@ -92,14 +94,17 @@ export function LibraryPage() {
   const loadMore = useCallback(async () => {
     if (loadingMore || assets.length >= total) return;
     setLoadingMore(true);
+    const seq = requestSeq.current;
     try {
       const page = await listAssetPage(scopeId, {
         offset: assets.length,
         limit: PAGE_SIZE,
+        includeDerived: false,
         mediaType: filter === "all" ? "" : filter,
         sort: sortKey,
         order,
       });
+      if (seq !== requestSeq.current) return;
       if (knownTotal.current !== null && (page.counts.all ?? 0) > knownTotal.current) {
         setNotice("有新资料，刷新后可看到最新内容。");
       }
@@ -111,7 +116,7 @@ export function LibraryPage() {
       setTotal(page.total);
       setCounts(page.counts);
     } catch (cause) {
-      setError((cause as Error).message);
+      if (seq === requestSeq.current) setError((cause as Error).message);
     } finally {
       setLoadingMore(false);
     }
@@ -193,6 +198,8 @@ export function LibraryPage() {
         </button>
       </div>
 
+      <DeletionProgress key={scopeId} scopeId={scopeId} revision={reloadKey} />
+
       {notice !== "" ? (
         <p className="library-notice" role="status">
           {notice}
@@ -226,6 +233,14 @@ export function LibraryPage() {
       ) : (
         <>
           <AssetGrid
+            key={scopeId}
+            deletion={{
+              onAccepted: (id) => {
+                ++requestSeq.current;
+                setAssets((current) => current.filter((item) => item.id !== id && item.parent_asset_id !== id));
+                setReloadKey((value) => value + 1);
+              },
+            }}
             assets={assets}
             onOpen={(asset) =>
               void reportClientEvent({

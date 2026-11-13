@@ -233,6 +233,31 @@ def test_video_scene_detail_carries_the_lineage(client: TestClient):
     assert body["keyframe_assets"][0]["source_timestamp_sec"] == pytest.approx(12.5)
     assert body["keyframe_assets"][0]["parent_asset_id"] == asset_id
 
+    # The library filters frames before applying LIMIT and computing counts.
+    library = client.get(
+        "/api/v1/assets",
+        params={
+            "scope_id": "album1",
+            "include_derived": False,
+            "limit": 1,
+        },
+    ).json()
+    assert [item["id"] for item in library["items"]] == [asset_id]
+    assert library["counts"] == {"video": 1, "all": 1}
+    images = client.get(
+        "/api/v1/assets",
+        params={
+            "scope_id": "album1",
+            "include_derived": False,
+            "media_type": "image",
+        },
+    ).json()
+    assert images["items"] == [] and images["total"] == 0
+
+    video = client.get(f"/api/v1/videos/{asset_id}").json()
+    assert {"asset_frame", "asset_other"} <= {item["id"] for item in video["keyframe_assets"]}
+    assert client.get("/api/v1/assets/asset_frame").status_code == 200
+
 
 def test_video_scene_detail_404s_on_a_plain_event(client: TestClient):
     """不是 ``video_scene`` 的事件走这条路由必须是 404，而不是交出一份没有血缘的详情。"""

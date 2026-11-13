@@ -20,8 +20,10 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Lock
+from time import monotonic
 from typing import Any
 
 from sentrix.domain.retrieval.ports import (
@@ -30,12 +32,15 @@ from sentrix.domain.retrieval.ports import (
     VectorIndexUnavailable,
     VectorRecord,
 )
+from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.media_barrier import vector_write_barrier
 
 DEFAULT_PREFIX = "sentrix_home"
 # 与 1.0 的 uuid 命名空间不同：同一个 source_id 在 2.0 的索引里是不同的 point，
 # 免得两套系统的点互相覆盖。
 _POINT_NAMESPACE = uuid.UUID("1f6f2a4e-0f9c-4d2f-9a3b-6c9f1f2b7d51")
 _BATCH_SIZE = 256
+_OPEN_RETRY_DELAY_S = 5.0
 
 
 def _safe(value: str, limit: int = 24) -> str:
@@ -44,17 +49,19 @@ def _safe(value: str, limit: int = 24) -> str:
 
 
 class QdrantVectorIndex:
-    def __init__(self, path: Path, prefix: str = DEFAULT_PREFIX) -> None:
+    def __init__(self, path: Path, prefix: str = DEFAULT_PREFIX, *, database: Database | None = None) -> None:
+        self._database = database
         self.path = Path(path)
         self.prefix = prefix
         self._client: Any = None
         self._error = ""
+        self._retry_open_at = 0.0
         self._client_lock = Lock()
 
     # ---- 客户端 ----------------------------------------------------------
 
     def _get_client(self) -> Any:
-        """惰性取客户端。失败后缓存原因，不再每次重试——重试只是反复抛同一个异常。"""
+        """Open lazily and let temporary storage failures recover after a cooldown."""
         if self._client is not None:
             return self._client
         # A restored local index may take time to load before Qdrant acquires its
@@ -62,7 +69,7 @@ class QdrantVectorIndex:
         with self._client_lock:
             if self._client is not None:
                 return self._client
-            if self._error:
+            if self._error and monotonic() < self._retry_open_at:
                 raise VectorIndexUnavailable(self._error)
             from qdrant_client import QdrantClient
 
@@ -71,7 +78,9 @@ class QdrantVectorIndex:
                 self._client = QdrantClient(path=str(self.path))
             except Exception as error:  # noqa: BLE001 - 目录锁/权限/磁盘满都归为「索引不可用」
                 self._error = f"{type(error).__name__}: {error}"
+                self._retry_open_at = monotonic() + _OPEN_RETRY_DELAY_S
                 raise VectorIndexUnavailable(self._error) from error
+            self._error = ""
             return self._client
 
     def close(self) -> None:
@@ -95,6 +104,11 @@ class QdrantVectorIndex:
         for record in records:
             if not record.vector:
                 raise ValueError("拒绝写入空向量：空向量在检索侧表现为「这张图就是搜不到」")
+        guard = vector_write_barrier(self._database, records) if self._database else nullcontext()
+        with guard:
+            return self._upsert_active(records)
+
+    def _upsert_active(self, records: Sequence[VectorRecord]) -> int:
         client = self._get_client()
         from qdrant_client import models
 
@@ -129,6 +143,66 @@ class QdrantVectorIndex:
                 written += len(batch)
         return written
 
+    @classmethod
+    def locator(
+        cls,
+        space: str,
+        source_type: str,
+        source_id: str,
+        model_name: str,
+        dimension: int,
+        *,
+        prefix: str = DEFAULT_PREFIX,
+    ) -> dict[str, object]:
+        """Full expected identity; does not open Qdrant or claim a point exists."""
+        identity = f"{space}\0{source_type}\0{source_id}\0{model_name}"
+        return {
+            "collection": f"{prefix}_{_safe(space)}_{dimension}_{_safe(model_name)}",
+            "point_id": str(uuid.uuid5(_POINT_NAMESPACE, identity)),
+            "point_id_type": "uuid",
+            "space": space,
+            "source_type": source_type,
+            "source_id": source_id,
+            "model_name": model_name,
+            "dimension": dimension,
+        }
+
+    def deletion_inventory(self) -> list[dict[str, object]]:
+        """Read raw payloads, including quarantined and orphan points; never mutate collections."""
+        client = self._get_client()
+        points: list[dict[str, object]] = []
+        for collection in sorted(c.name for c in client.get_collections().collections):
+            namespace_owned = collection.startswith(self.prefix + "_")
+            config = client.get_collection(collection).config.params.vectors
+            dimensions = (
+                {name: int(params.size) for name, params in config.items()}
+                if isinstance(config, dict)
+                else {"default": int(config.size)}
+            )
+            offset = None
+            while True:
+                page, offset = client.scroll(
+                    collection_name=collection,
+                    limit=_BATCH_SIZE,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                points.extend(
+                    {
+                        "collection": collection,
+                        "namespace_owned": namespace_owned,
+                        "point_id": point.id if isinstance(point.id, int) else str(point.id),
+                        "point_id_type": "integer" if isinstance(point.id, int) else "uuid",
+                        "dimensions": dimensions,
+                        "payload": dict(point.payload or {}),
+                    }
+                    for point in page
+                )
+                if offset is None:
+                    break
+        return points
+
     def search(
         self,
         *,
@@ -161,6 +235,24 @@ class QdrantVectorIndex:
                 with_vectors=False,
             )
             hits.extend(self._hit(point) for point in response.points)
+        if self._database is not None and hits:
+            ids = list({hit.source_id for hit in hits if hit.source_type == "asset"})
+            active: dict[str, str] = {}
+            if ids:
+                with self._database.connect() as connection:
+                    placeholders = ",".join("?" for _ in ids)
+                    active = dict(
+                        connection.execute(
+                            f"SELECT id,scope_id FROM readable_assets WHERE id IN ({placeholders})", ids
+                        ).fetchall()
+                    )
+            hits = [
+                hit
+                for hit in hits
+                if hit.source_type == "asset"
+                and active.get(hit.source_id) == hit.scope_id
+                and (scope_id is None or active.get(hit.source_id) == scope_id)
+            ]
         hits.sort(key=lambda item: (-item.score, item.source_id))
         return hits[:limit]
 
@@ -224,3 +316,35 @@ class QdrantVectorIndex:
             score=float(point.score),
             metadata=dict(payload.get("metadata") or {}),
         )
+
+    def delete_exact(self, locator: dict[str, object]) -> None:
+        """Delete one inventoried point only if every payload identity still matches."""
+        from qdrant_client import models
+
+        client = self._get_client()
+        collection = str(locator["collection"])
+        if not collection.startswith(self.prefix + "_"):
+            raise ValueError("unmanaged_qdrant_collection")
+        names = {c.name for c in client.get_collections().collections}
+        if collection not in names:
+            return
+        identity = locator["point_id"]
+        if not isinstance(identity, (int, str)):
+            raise ValueError("invalid_qdrant_point_id")
+        existing = client.retrieve(collection_name=collection, ids=[identity], with_payload=True)
+        if not existing:
+            return
+        expected = locator["payload"]
+        if not isinstance(expected, dict):
+            raise ValueError("missing_qdrant_payload_identity")
+        actual = existing[0].payload or {}
+        keys = ("scope_id", "space", "source_type", "source_id", "model_name")
+        if any(not expected.get(k) or actual.get(k) != expected[k] for k in keys):
+            raise ValueError("qdrant_identity_changed")
+        if actual.get("metadata", {}) != expected.get("metadata", {}):
+            raise ValueError("qdrant_evidence_changed")
+        client.delete(
+            collection_name=collection, points_selector=models.PointIdsList(points=[identity]), wait=True
+        )
+        if client.retrieve(collection_name=collection, ids=[identity], with_payload=False):
+            raise RuntimeError("qdrant_point_remains_after_delete")

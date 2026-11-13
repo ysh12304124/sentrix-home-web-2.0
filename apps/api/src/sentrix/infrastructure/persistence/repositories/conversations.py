@@ -166,22 +166,20 @@ class SqliteConversationRepository:
     def list_messages(self, conversation_id: str, limit: int) -> Sequence[Message]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_MESSAGE_COLUMNS} FROM agent_conversation_messages"
+                f"SELECT {_MESSAGE_COLUMNS} FROM readable_agent_conversation_messages"
                 " WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
                 (conversation_id, max(1, limit)),
             ).fetchall()
         return [_row_to_message(row) for row in rows]
 
-    def list_messages_for_turns(
-        self, conversation_id: str, turn_ids: Sequence[str]
-    ) -> Sequence[Message]:
+    def list_messages_for_turns(self, conversation_id: str, turn_ids: Sequence[str]) -> Sequence[Message]:
         unique = list(dict.fromkeys(turn_ids))
         if not unique:
             return []
         placeholders = ",".join("?" for _ in unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_MESSAGE_COLUMNS} FROM agent_conversation_messages"
+                f"SELECT {_MESSAGE_COLUMNS} FROM readable_agent_conversation_messages"
                 f" WHERE conversation_id = ? AND turn_id IN ({placeholders})"
                 " ORDER BY created_at ASC, rowid ASC",
                 (conversation_id, *unique),
@@ -197,7 +195,7 @@ class SqliteConversationRepository:
         """
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_MESSAGE_COLUMNS} FROM agent_conversation_messages"
+                f"SELECT {_MESSAGE_COLUMNS} FROM readable_agent_conversation_messages"
                 " WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (conversation_id, max(1, limit)),
             ).fetchall()

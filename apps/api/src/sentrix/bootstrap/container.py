@@ -498,8 +498,8 @@ class Container:
             video_metadata_reader=FfprobeVideoMetadataReader(),
             # 预览转码件落在 ``media_dir/derived/video`` 下：与其余媒体文件同一个根，
             # 换数据目录就整体换（与 ``Settings`` 里 preview_dir / qdrant_dir 同一条理由）。
-            video_transcoder=FfmpegVideoTranscoder(settings.media_dir),
-            video_keyframe_extractor=FfmpegVideoKeyframeExtractor(settings.media_dir),
+            video_transcoder=FfmpegVideoTranscoder(settings.media_dir, database=database),
+            video_keyframe_extractor=FfmpegVideoKeyframeExtractor(settings.media_dir, database=database),
             video_scene_planner=video_scene_planner,
             video_repository=SqliteVideoRepository(database),
             audio_metadata_reader=FfprobeAudioMetadataReader(),
@@ -516,7 +516,7 @@ class Container:
             audio_repository=SqliteAudioRepository(database),
             vector_repository=SqliteVectorRepository(database),
             text_vector_repository=SqliteTextVectorRepository(database),
-            vector_index=QdrantVectorIndex(settings.qdrant_dir),
+            vector_index=QdrantVectorIndex(settings.qdrant_dir, database=database),
             visual_embedder=visual_embedder,
             cross_modal_embedder=(
                 None

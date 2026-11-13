@@ -356,6 +356,7 @@ def _family_graph_service(container: Container) -> FamilyGraphService:
     照样 completed」的降级路径（见 ``FamilyGraphService`` 的 docstring）。
     """
     return FamilyGraphService(
+        generation_guard=container.database.model_generation,
         family=container.family_graph_repository,
         events=container.event_repository,
         # 已确认人物的 family_role 用来补确定性的关系边（模型那条推断被证据闸挡住）。

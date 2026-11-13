@@ -30,10 +30,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.identity.moments import PERSON_MOMENT_PROMPT_VERSION
 from sentrix.domain.identity.ports import (
     EntityRepository,
@@ -71,7 +73,9 @@ class ExtractMoments:
         previews: PersonPreviewRenderer,
         vision: PersonVision,
         workers: int = 1,
+        generation_guard: GenerationGuard = unguarded_generation,
     ) -> None:
+        self._generation_guard = generation_guard
         self._assets = assets
         self._faces = faces
         self._entities = entities
@@ -84,6 +88,10 @@ class ExtractMoments:
         self._workers = max(1, int(workers))
 
     def __call__(self, *, scope_id: str, selections: Sequence[Mapping[str, Any]]) -> MomentExtraction:
+        with self._generation_guard(scope_id):
+            return self._execute(scope_id=scope_id, selections=selections)
+
+    def _execute(self, *, scope_id: str, selections: Sequence[Mapping[str, Any]]) -> MomentExtraction:
         by_asset: dict[str, list[Mapping[str, Any]]] = {}
         for selection in selections:
             # 不用 ``.get``：``asset_id`` 缺了是上游（select 阶段）算错了，静默归进一个
@@ -106,7 +114,7 @@ class ExtractMoments:
         # 要的是一张图上多人之间的关系，不能拆成每人一次）。
         with ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="sentrix-moments") as pool:
             futures = {
-                pool.submit(self._extract_asset, scope_id, asset_id, items): asset_id
+                pool.submit(copy_context().run, self._extract_asset, scope_id, asset_id, items): asset_id
                 for asset_id, items in by_asset.items()
             }
             for future in as_completed(futures):

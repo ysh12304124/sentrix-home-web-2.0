@@ -118,7 +118,7 @@ class VectorTableRepository:
     def has_vector(self, *, space: str, source_type: str, source_id: str, model_name: str) -> bool:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT 1 FROM {self._TABLE} WHERE space = ? AND source_type = ?"
+                f"SELECT 1 FROM readable_{self._TABLE} WHERE space = ? AND source_type = ?"
                 " AND source_id = ? AND model_name = ? LIMIT 1",
                 (space, source_type, source_id, model_name),
             ).fetchone()
@@ -132,7 +132,10 @@ class VectorTableRepository:
         source_id: str,
         model_name: str | None = None,
     ) -> VectorRecord | None:
-        sql = f"SELECT {_COLUMNS} FROM {self._TABLE} WHERE space = ? AND source_type = ? AND source_id = ?"
+        sql = (
+            f"SELECT {_COLUMNS} FROM readable_{self._TABLE}"
+            " WHERE space = ? AND source_type = ? AND source_id = ?"
+        )
         params: list[Any] = [space, source_type, source_id]
         if model_name:
             sql += " AND model_name = ?"
@@ -160,7 +163,7 @@ class VectorTableRepository:
         模型维度必须可选且**默认不过滤**：应用层要用同一个口径去和 Qdrant 的
         collection 计数比对，两边只要有一边多带了过滤条件，比对就恒不成立。
         """
-        sql = f"SELECT COUNT(*) FROM {self._TABLE} WHERE space = ?"
+        sql = f"SELECT COUNT(*) FROM readable_{self._TABLE} WHERE space = ?"
         params: list[Any] = [space]
         if model_name:
             sql += " AND model_name = ?"
@@ -203,7 +206,7 @@ class VectorTableRepository:
         return scored[:limit]
 
     def _fetch(self, *, space: str, scope_id: str | None, model_name: str | None) -> list[sqlite3.Row]:
-        sql = f"SELECT {_COLUMNS} FROM {self._TABLE} WHERE space = ?"
+        sql = f"SELECT {_COLUMNS} FROM readable_{self._TABLE} WHERE space = ?"
         params: list[Any] = [space]
         if scope_id:
             sql += " AND scope_id = ?"

@@ -18,10 +18,12 @@ import {
   assetFileUrl,
   assetInlineUrl,
   assetPosterUrl,
+  assetThumbnailUrl,
   getVideo,
+  deleteLibraryAsset,
   type AssetDetailResponse,
   type ObservationPayload,
-  type VideoScenePayload,
+  type VideoDetailResponse,
 } from "../../shared/api/client";
 import "./asset-detail.css";
 
@@ -66,9 +68,16 @@ function ObservationList({ observations }: { observations: readonly ObservationP
   );
 }
 
+export function isDeletableAsset(asset: AssetDetailResponse): boolean {
+  return (asset.media_type === "image" || asset.media_type === "video")
+    && asset.parent_asset_id == null && asset.derived_kind == null;
+}
+
 export interface AssetDetailProps {
   asset: AssetDetailResponse;
   onClose: () => void;
+  deletion?: { scopeId: string; onAccepted: (assetId: string) => void };
+  confirmDeletionOnOpen?: boolean;
   /** 视频命中帧的秒数；非视频忽略。 */
   initialTimeSec?: number | null;
   /** 调用方已经有 Observation 时直接传入（实体详情 / 实体组详情）。 */
@@ -78,21 +87,46 @@ export interface AssetDetailProps {
 export function AssetDetail({
   asset,
   onClose,
+  deletion,
+  confirmDeletionOnOpen = false,
   initialTimeSec = null,
   observations: providedObservations,
 }: AssetDetailProps) {
   const observations = providedObservations ?? asset.observations ?? [];
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textError, setTextError] = useState<string | null>(null);
-  const [videoScenes, setVideoScenes] = useState<{ id: string; scenes: VideoScenePayload[]; error: string | null } | null>(null);
+  const [videoDetail, setVideoDetail] = useState<{
+    id: string;
+    response: VideoDetailResponse | null;
+    error: string | null;
+  } | null>(null);
+  const currentVideo = videoDetail?.id === asset.id ? videoDetail : null;
+  const [confirming, setConfirming] = useState(confirmDeletionOnOpen);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const canDelete = deletion && isDeletableAsset(asset);
+  const mediaLabel = MEDIA_LABEL[asset.media_type];
+  async function confirmDelete() {
+    if (!deletion || !canDelete || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteLibraryAsset(asset.id, deletion.scopeId);
+      deletion.onAccepted(asset.id);
+    } catch {
+      setDeleteError("未能确认删除请求。请重试，重复请求不会创建额外任务。");
+      setDeleting(false);
+    }
+  }
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     if (asset.media_type !== "video") return;
     let cancelled = false;
     getVideo(asset.id)
-      .then((response) => !cancelled && setVideoScenes({ id: asset.id, scenes: response.scenes, error: null }))
-      .catch((cause: Error) => !cancelled && setVideoScenes({ id: asset.id, scenes: [], error: cause.message }));
+      .then((response) => !cancelled && setVideoDetail({ id: asset.id, response, error: null }))
+      .catch((cause: Error) => !cancelled && setVideoDetail({ id: asset.id, response: null, error: cause.message }));
     return () => { cancelled = true; };
   }, [asset.id, asset.media_type]);
 
@@ -154,14 +188,51 @@ export function AssetDetail({
 
   return (
     <div className="detail asset-detail" role="dialog" aria-modal="true" aria-label="资料详情">
-      <button type="button" className="close" aria-label="关闭资料详情" onClick={onClose}>
+      <button type="button" className="close" aria-label="关闭资料详情" onClick={onClose} disabled={deleting}>
         关闭
       </button>
+      {canDelete && confirming && (
+        <section className="asset-delete" aria-label="确认删除">
+          <p>确定删除这{asset.media_type === "video" ? "段视频及其关键帧" : "张图片"}吗？资料会立即从相册隐藏，删除后无法撤销。</p>
+          <button type="button" autoFocus disabled={deleting} onClick={() => {
+            if (confirmDeletionOnOpen) onClose();
+            else setConfirming(false);
+          }}>取消</button>
+          <button type="button" className="asset-delete-danger" disabled={deleting} onClick={() => void confirmDelete()}>
+            {deleting ? "正在提交…" : "确认删除"}
+          </button>
+          {deleteError && <p role="alert">{deleteError}</p>}
+        </section>
+      )}
       <div className="asset-detail-media">{media}</div>
+      {asset.media_type === "video" && Boolean(currentVideo?.response?.keyframe_assets?.length) && (
+        <section aria-label="视频关键帧">
+          <h3>关键帧</h3>
+          <ul className="asset-keyframes">
+            {currentVideo?.response?.keyframe_assets?.map((frame, index) => {
+              const seconds = frame.source_timestamp_sec;
+              const label = seconds === null ? `关键帧 ${index + 1}` : formatVideoTime(seconds);
+              const thumbnail = <img loading="lazy" src={assetThumbnailUrl(frame.id)} alt={label} />;
+              return (
+                <li key={frame.id}>
+                  {seconds === null ? thumbnail : (
+                    <button type="button" onClick={() => {
+                      if (videoRef.current) videoRef.current.currentTime = Math.max(0, seconds);
+                    }}>
+                      {thumbnail}
+                      <span aria-hidden="true">{label}</span>
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
       {asset.media_type === "video" ? (
         <VideoSpeechTranscript
-          scenes={videoScenes?.id === asset.id ? videoScenes.scenes : null}
-          error={videoScenes?.id === asset.id ? videoScenes.error : null}
+          scenes={currentVideo?.response?.scenes ?? null}
+          error={currentVideo?.error ?? null}
           onSeek={(seconds) => {
             if (videoRef.current) {
               videoRef.current.currentTime = seconds;
@@ -190,6 +261,16 @@ export function AssetDetail({
         <dt>原始文件</dt>
         <dd><a href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件</a></dd>
       </dl>
+      {canDelete && !confirming && (
+        <section className="asset-delete" aria-label="删除资料">
+          <button type="button" className="asset-delete-danger" onClick={() => {
+            setDeleteError(null);
+            setConfirming(true);
+          }}>
+            删除{mediaLabel}
+          </button>
+        </section>
+      )}
     </div>
   );
 }
@@ -204,7 +285,7 @@ function VideoSpeechTranscript({
   error,
   onSeek,
 }: {
-  scenes: VideoScenePayload[] | null;
+  scenes: VideoDetailResponse["scenes"] | null;
   error: string | null;
   onSeek: (seconds: number) => void;
 }) {

@@ -50,6 +50,7 @@ ANONYMOUS_NAME = PENDING_CLUSTER_NAME
 
 def _extract_moments(container: Container) -> ExtractMoments:
     return ExtractMoments(
+        generation_guard=container.database.model_generation,
         assets=container.asset_repository,
         faces=container.face_repository,
         entities=container.entity_repository,
@@ -64,6 +65,7 @@ def _extract_moments(container: Container) -> ExtractMoments:
 
 def _run_insights(container: Container) -> RunInsights:
     return RunInsights(
+        generation_guard=container.database.model_generation,
         faces=container.face_repository,
         entities=container.entity_repository,
         moments=container.moment_repository,
@@ -128,9 +130,7 @@ def list_person_insights(
                 **item,
                 # pending 实体的 canonical_name 是落库的内部名
                 # （「待确认人物簇 · cluster-x」），不能直接给用户看。
-                "display_name": (
-                    entity_display_name(person) if person is not None else ANONYMOUS_NAME
-                ),
+                "display_name": (entity_display_name(person) if person is not None else ANONYMOUS_NAME),
                 "family_role": person.family_role if person else None,
                 "status": person.status if person else None,
                 "avatar_face_instance_id": item.get("avatar_face_instance_id"),

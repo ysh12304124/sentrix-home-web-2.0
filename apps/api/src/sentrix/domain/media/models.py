@@ -225,6 +225,8 @@ class Asset:
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
     capture_time: CaptureTime = CaptureTime()
+    deletion_state: str = "active"
+    deletion_generation: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):

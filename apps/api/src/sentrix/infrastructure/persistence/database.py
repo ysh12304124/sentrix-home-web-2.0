@@ -12,8 +12,10 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Literal, cast
 
 from sentrix.domain.media.capture_time import time_sort_key, within_time_bounds
 
@@ -31,16 +33,45 @@ def _statements(sql_text: str) -> list[str]:
 
     不用 ``Connection.executescript``：它会先把挂起事务隐式 COMMIT 掉，那样
     ``BEGIN IMMEDIATE`` 拿到的写锁会在脚本执行前就释放，串行化与回滚保护同时失效。
-    代价是这里不解析字符串字面量——迁移脚本里不要写含 ``;`` 的字符串常量。
+    使用 SQLite complete_statement 划分完整语句，支持触发器 BEGIN/END 与字符串分号。
     """
     lines = [line for line in sql_text.splitlines() if not line.strip().startswith("--")]
-    return [statement.strip() for statement in "\n".join(lines).split(";") if statement.strip()]
+    statements: list[str] = []
+    pending = ""
+    for char in "\n".join(lines):
+        pending += char
+        if char == ";" and sqlite3.complete_statement(pending):
+            statements.append(pending.strip())
+            pending = ""
+    if pending.strip():
+        statements.append(pending.strip())
+    return statements
+
+
+class _BorrowedConnection:
+    """Nested repositories join the outer asset commit without committing it."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+    def __enter__(self) -> _BorrowedConnection:
+        return self
+
+    def __exit__(self, *_args: object) -> Literal[False]:
+        return False
 
 
 class Database:
     def __init__(self, path: Path, migrations_dir: Path) -> None:
         self.path = Path(path)
         self.migrations_dir = Path(migrations_dir)
+        self._asset_commit: ContextVar[sqlite3.Connection | None] = ContextVar("asset_commit", default=None)
+        self._model_epochs: ContextVar[dict[str, int] | None] = ContextVar("model_epochs", default=None)
+        self._source_generation: ContextVar[str | None] = ContextVar("source_generation", default=None)
+        self._reconciliation_depth: ContextVar[int] = ContextVar("reconciliation_depth", default=0)
         # 同一文件的实例共享连接锁，避免并发切换WAL及SQLite文件句柄竞争。
         # 图谱/家庭图谱会在同一线程嵌套读取，因此连接锁必须是可重入的 RLock。
         with _connection_locks_guard:
@@ -48,9 +79,27 @@ class Database:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        borrowed = self._asset_commit.get()
+        if borrowed is not None:
+            yield cast(sqlite3.Connection, _BorrowedConnection(borrowed))
+            return
         with self._connect_lock:
             connection = sqlite3.connect(self.path)
             connection.row_factory = sqlite3.Row
+            connection.create_function(
+                "media_realpath", 1, lambda value: str(Path(value).resolve()) if value else ""
+            )
+            connection.create_function(
+                "media_source_generation_allowed",
+                1,
+                lambda scope: self._source_generation_allowed(connection, str(scope)),
+            )
+            connection.create_function(
+                "media_generation_allowed", 1, lambda scope: self._generation_allowed(connection, str(scope))
+            )
+            connection.create_function(
+                "media_reconcile_allowed", 0, lambda: int(self._reconciliation_depth.get() > 0)
+            )
             connection.create_function(
                 "capture_sort_key",
                 1,
@@ -62,8 +111,108 @@ class Database:
             connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             try:
                 yield connection
+            except sqlite3.IntegrityError as error:
+                if str(error) in {"media_isolated", "invalid_deletion_generation"}:
+                    from sentrix.domain.media.deletion import MediaIsolated
+
+                    raise MediaIsolated(str(error)) from error
+                raise
             finally:
                 connection.close()
+
+    def _source_generation_allowed(self, connection: sqlite3.Connection, scope: str) -> int:
+        expected = (self._model_epochs.get() or {}).get(scope)
+        if expected is None:
+            return 0
+        row = connection.execute(
+            "SELECT generation FROM media_scope_epochs WHERE scope_id=?", (scope,)
+        ).fetchone()
+        return int(
+            (expected == 0 if row is None else row[0] == expected) or self._source_generation.get() == scope
+        )
+
+    def _generation_allowed(self, connection: sqlite3.Connection, scope: str) -> int:
+        if not self._source_generation_allowed(connection, scope):
+            return 0
+        row = connection.execute(
+            "SELECT paused FROM media_scope_epochs WHERE scope_id=?", (scope,)
+        ).fetchone()
+        return int(row is None or not row[0])
+
+    @contextmanager
+    def model_generation(self, scope: str) -> Iterator[None]:
+        previous = self._model_epochs.get() or {}
+        if scope in previous:
+            yield
+            return
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT generation FROM media_scope_epochs WHERE scope_id=?", (scope,)
+            ).fetchone()
+            epoch = int(row[0]) if row else 0
+        token = self._model_epochs.set({**previous, scope: epoch})
+        try:
+            yield
+        finally:
+            self._model_epochs.reset(token)
+
+    @contextmanager
+    def write_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Joinable write transaction for plan validation and checkpointed reconciliation."""
+        existing = self._asset_commit.get()
+        if existing is not None:
+            yield existing
+            return
+        with self.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            token = self._asset_commit.set(connection)
+            try:
+                yield connection
+            finally:
+                self._asset_commit.reset(token)
+
+    @contextmanager
+    def reconciliation(self, connection: sqlite3.Connection) -> Iterator[None]:
+        """Trusted internal, transaction-bound shared-memory updates; source guards remain on."""
+        if not connection.in_transaction:
+            raise RuntimeError("reconciliation requires a write transaction")
+        token = self._reconciliation_depth.set(self._reconciliation_depth.get() + 1)
+        try:
+            yield
+        finally:
+            self._reconciliation_depth.reset(token)
+
+    @contextmanager
+    def asset_commit(self, asset_id: str) -> Iterator[None]:
+        """Atomic multi-repository commit after inference; no model work belongs here."""
+        from sentrix.infrastructure.persistence.media_barrier import require_active
+
+        existing = self._asset_commit.get()
+        if existing is not None:
+            require_active(existing, asset_id)
+            yield
+            return
+        with self.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            require_active(connection, asset_id)
+            scope = connection.execute("SELECT scope_id FROM assets WHERE id=?", (asset_id,)).fetchone()[0]
+            with self.model_generation(scope):
+                allowed = self._source_generation_allowed(connection, scope)
+            source_token = self._source_generation.set(scope if allowed else None)
+            epoch_row = connection.execute(
+                "SELECT generation FROM media_scope_epochs WHERE scope_id=?", (scope,)
+            ).fetchone()
+            old_epochs = self._model_epochs.get() or {}
+            epoch_token = self._model_epochs.set(
+                {**old_epochs, scope: old_epochs.get(scope, int(epoch_row[0]) if epoch_row else 0)}
+            )
+            token = self._asset_commit.set(connection)
+            try:
+                yield
+            finally:
+                self._asset_commit.reset(token)
+                self._source_generation.reset(source_token)
+                self._model_epochs.reset(epoch_token)
 
     def migrations(self) -> list[tuple[str, Path]]:
         """磁盘上的 ``(版本号, 脚本路径)``，按版本号排序。
@@ -200,9 +349,7 @@ class Database:
                 and script.name == "0024_text_vectors.sql"
                 and Database._table_exists(connection, "text_vectors")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if (
@@ -210,9 +357,7 @@ class Database:
                 and script.name == "0025_video_jobs.sql"
                 and Database._table_exists(connection, "video_jobs")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if (
@@ -220,27 +365,16 @@ class Database:
                 and script.name == "0026_video_job_config_hash.sql"
                 and Database._column_exists(connection, "video_jobs", "config_hash")
             ):
-                connection.execute(
-                    "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                )
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 connection.execute("COMMIT")
                 return True
             if done is None and script.name == "0027_capture_time.sql":
                 # main 用 0018 记录同一组列，本分支从 0027 起接。跨分支升级时
                 # 列已经存在就只补版本记录，绝不重复 ALTER。
-                capture_columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(assets)")
-                }
-                place_columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(asset_places)")
-                }
-                if (
-                    "capture_time_json" in capture_columns
-                    and "nearest_evidence_json" in place_columns
-                ):
-                    connection.execute(
-                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                    )
+                capture_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)")}
+                place_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_places)")}
+                if "capture_time_json" in capture_columns and "nearest_evidence_json" in place_columns:
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                     connection.execute("COMMIT")
                     return True
             if done is not None:
@@ -248,9 +382,7 @@ class Database:
                 return False
             for statement in _statements(script.read_text(encoding="utf-8")):
                 connection.execute(statement)
-            connection.execute(
-                "INSERT INTO schema_migrations (version) VALUES (?)", (record_version,)
-            )
+            connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (record_version,))
             connection.execute("COMMIT")
             return True
         except BaseException:
