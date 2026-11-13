@@ -27,7 +27,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 from sentrix.domain.identity.faces import compute_face_quality, cosine, normalize_embedding, pose_bucket
@@ -129,7 +130,9 @@ class EnrollFace:
         entities: EntityRepository,
         vectors: VectorRepository,
         assets: AssetRepository,
+        commit_guard: Callable[[str], AbstractContextManager[None]] | None = None,
     ) -> None:
+        self._commit_guard = commit_guard
         self._faces = faces
         self._entities = entities
         self._vectors = vectors
@@ -143,6 +146,21 @@ class EnrollFace:
         *,
         threshold: float = MATCH_THRESHOLD,
         model_name: str = DEFAULT_EMBEDDING_MODEL,
+    ) -> FaceEnrollment:
+        guard = self._commit_guard(asset_id) if self._commit_guard else nullcontext()
+        with guard:
+            return self._enroll_active(
+                asset_id, observation_id, face, threshold=threshold, model_name=model_name
+            )
+
+    def _enroll_active(
+        self,
+        asset_id: str,
+        observation_id: str,
+        face: FaceDetection,
+        *,
+        threshold: float,
+        model_name: str,
     ) -> FaceEnrollment:
         # scope 只能从 asset 读：1.0 ``db.py:4816`` 的 ``asset.get("scope_id")``。
         # 让调用方传进来等于开一条「把这张脸算进别人家簇里」的入口，而它不报错。

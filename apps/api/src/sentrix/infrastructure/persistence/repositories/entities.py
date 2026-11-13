@@ -166,7 +166,7 @@ class SqliteEntityRepository:
     def get(self, entity_id: str) -> EntityRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id = ?", (entity_id,)
+                f"SELECT {_ENTITY_COLUMNS} FROM readable_entities WHERE id = ?", (entity_id,)
             ).fetchone()
         return _row_to_entity(row) if row else None
 
@@ -195,7 +195,7 @@ class SqliteEntityRepository:
             params.append(scope_id)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_ENTITY_COLUMNS} FROM entities"
+                f"SELECT {_ENTITY_COLUMNS} FROM readable_entities"
                 f" WHERE {clause} AND scope_id NOT IN {excluded}"
                 " ORDER BY updated_at DESC",
                 params,
@@ -213,8 +213,8 @@ class SqliteEntityRepository:
         """
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT o.id FROM entity_observations eob"
-                " JOIN observations o ON o.id = eob.observation_id"
+                "SELECT o.id FROM readable_entity_observations eob"
+                " JOIN readable_observations o ON o.id = eob.observation_id"
                 " WHERE eob.entity_id = ? ORDER BY capture_sort_key(o.captured_at) DESC, o.id DESC LIMIT ?",
                 (entity_id, limit),
             ).fetchall()
@@ -250,7 +250,8 @@ class SqliteEntityRepository:
         with self._database.connect() as connection:
             clusters: dict[str, list[ClusterState]] = {}
             for row in connection.execute(
-                f"SELECT entity_id, status, member_count FROM face_clusters WHERE entity_id IN ({marks})",
+                "SELECT entity_id, status, member_count FROM readable_face_clusters "
+                f"WHERE entity_id IN ({marks})",
                 ids,
             ).fetchall():
                 clusters.setdefault(row["entity_id"], []).append(
@@ -259,9 +260,9 @@ class SqliteEntityRepository:
             photo_counts = {
                 row["entity_id"]: int(row["c"])
                 for row in connection.execute(
-                    "SELECT fc.entity_id, COUNT(DISTINCT a.id) AS c FROM face_instances fi"
-                    " JOIN face_clusters fc ON fc.id = fi.cluster_id"
-                    " JOIN assets a ON a.id = fi.asset_id"
+                    "SELECT fc.entity_id, COUNT(DISTINCT a.id) AS c FROM readable_face_instances fi"
+                    " JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
+                    " JOIN readable_assets a ON a.id = fi.asset_id"
                     f" WHERE fc.entity_id IN ({marks}) AND fc.status != 'rejected'"
                     " GROUP BY fc.entity_id",
                     ids,
@@ -270,7 +271,7 @@ class SqliteEntityRepository:
             mention_counts = {
                 row["entity_id"]: int(row["c"])
                 for row in connection.execute(
-                    "SELECT entity_id, COUNT(*) AS c FROM entity_mentions"
+                    "SELECT entity_id, COUNT(*) AS c FROM readable_entity_mentions"
                     f" WHERE entity_id IN ({marks}) GROUP BY entity_id",
                     ids,
                 ).fetchall()
@@ -278,7 +279,7 @@ class SqliteEntityRepository:
             evidence_counts = {
                 row["entity_id"]: int(row["c"])
                 for row in connection.execute(
-                    "SELECT entity_id, COUNT(*) AS c FROM entity_observations"
+                    "SELECT entity_id, COUNT(*) AS c FROM readable_entity_observations"
                     f" WHERE entity_id IN ({marks}) GROUP BY entity_id",
                     ids,
                 ).fetchall()
@@ -290,7 +291,7 @@ class SqliteEntityRepository:
                     " SELECT fc.entity_id, fi.id,"
                     " ROW_NUMBER() OVER (PARTITION BY fc.entity_id"
                     "  ORDER BY fi.detection_confidence DESC, fi.created_at ASC) AS rn"
-                    " FROM face_instances fi JOIN face_clusters fc ON fc.id = fi.cluster_id"
+                    " FROM readable_face_instances fi JOIN readable_face_clusters fc ON fc.id = fi.cluster_id"
                     f" WHERE fc.entity_id IN ({marks}) AND fc.status != 'rejected'"
                     ") WHERE rn = 1",
                     ids,
@@ -299,7 +300,7 @@ class SqliteEntityRepository:
             as_subject = {
                 row["eid"]: int(row["c"])
                 for row in connection.execute(
-                    "SELECT subject_entity_id AS eid, COUNT(*) AS c FROM relationships"
+                    "SELECT subject_entity_id AS eid, COUNT(*) AS c FROM readable_relationships"
                     f" WHERE subject_entity_id IN ({marks}) AND status != 'retracted'"
                     " GROUP BY subject_entity_id",
                     ids,
@@ -308,7 +309,7 @@ class SqliteEntityRepository:
             as_object = {
                 row["eid"]: int(row["c"])
                 for row in connection.execute(
-                    "SELECT object_entity_id AS eid, COUNT(*) AS c FROM relationships"
+                    "SELECT object_entity_id AS eid, COUNT(*) AS c FROM readable_relationships"
                     f" WHERE object_entity_id IN ({marks}) AND status != 'retracted'"
                     " GROUP BY object_entity_id",
                     ids,
@@ -321,9 +322,9 @@ class SqliteEntityRepository:
                     " SELECT eob.entity_id, a.id AS asset_id, a.file_name, a.media_type,"
                     " ROW_NUMBER() OVER (PARTITION BY eob.entity_id"
                     "  ORDER BY capture_sort_key(o.captured_at) DESC, o.id DESC) AS rn"
-                    " FROM entity_observations eob"
-                    " JOIN observations o ON o.id = eob.observation_id"
-                    " JOIN assets a ON a.id = o.asset_id"
+                    " FROM readable_entity_observations eob"
+                    " JOIN readable_observations o ON o.id = eob.observation_id"
+                    " JOIN readable_assets a ON a.id = o.asset_id"
                     f" WHERE eob.entity_id IN ({marks})"
                     ") WHERE rn = 1",
                     ids,
@@ -382,7 +383,7 @@ class SqliteEntityRepository:
             for entity_type, names in grouped.items():
                 placeholders = ",".join("?" for _ in names)
                 rows = connection.execute(
-                    f"SELECT {_ENTITY_COLUMNS} FROM entities"
+                    f"SELECT {_ENTITY_COLUMNS} FROM readable_entities"
                     " WHERE scope_id = ? AND entity_type = ? AND status != ?"
                     f" AND canonical_name IN ({placeholders})"
                     " ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'confirmed' THEN 1 ELSE 2 END",
@@ -425,7 +426,7 @@ class SqliteEntityRepository:
                     ),
                 )
                 row = connection.execute(
-                    f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id = ?", (entity_id,)
+                    f"SELECT {_ENTITY_COLUMNS} FROM readable_entities WHERE id = ?", (entity_id,)
                 ).fetchone()
                 assert row is not None
                 found[(spec.entity_type, spec.name)] = _row_to_entity(row)
@@ -483,7 +484,7 @@ class SqliteEntityRepository:
                 ),
             )
             row = connection.execute(
-                f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id = ?", (entity_id,)
+                f"SELECT {_ENTITY_COLUMNS} FROM readable_entities WHERE id = ?", (entity_id,)
             ).fetchone()
         assert row is not None
         return _row_to_entity(row)
@@ -498,7 +499,7 @@ class SqliteEntityRepository:
                 (name, ENTITY_STATUS_CONFIRMED, family_role, summary, _now(), entity_id),
             )
             row = connection.execute(
-                f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id = ?", (entity_id,)
+                f"SELECT {_ENTITY_COLUMNS} FROM readable_entities WHERE id = ?", (entity_id,)
             ).fetchone()
         assert row is not None
         return _row_to_entity(row)
@@ -513,7 +514,7 @@ class SqliteEntityRepository:
             cluster_ids = [
                 row["id"]
                 for row in connection.execute(
-                    "SELECT id FROM face_clusters WHERE entity_id = ?", (entity_id,)
+                    "SELECT id FROM readable_face_clusters WHERE entity_id = ?", (entity_id,)
                 ).fetchall()
             ]
             for cluster_id in cluster_ids:
@@ -561,7 +562,7 @@ class SqliteEntityRepository:
             return None
         with self._database.connect() as connection:
             exact = connection.execute(
-                f"SELECT {_ENTITY_COLUMNS} FROM entities"
+                f"SELECT {_ENTITY_COLUMNS} FROM readable_entities"
                 " WHERE scope_id = ? AND entity_type = ? AND status = ? AND canonical_name = ?"
                 " ORDER BY updated_at DESC LIMIT 1",
                 (scope_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED, target),
@@ -570,7 +571,7 @@ class SqliteEntityRepository:
                 return PersonNameMatch(entity_id=exact["id"], via_alias=False)
             # 精确名没有才轮到别名。顺序不能反：反了的话，A 的别名会抢走名字真的叫这个的 B。
             candidates = connection.execute(
-                "SELECT id FROM entities WHERE scope_id = ? AND entity_type = ? AND status = ?",
+                "SELECT id FROM readable_entities WHERE scope_id = ? AND entity_type = ? AND status = ?",
                 (scope_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED),
             ).fetchall()
         for candidate in candidates:
@@ -644,7 +645,7 @@ class SqliteEntityRepository:
         clause = "" if include_history else " AND status IN ('active', 'pending')"
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_PROPERTY_COLUMNS} FROM entity_properties WHERE entity_id = ?{clause}"
+                f"SELECT {_PROPERTY_COLUMNS} FROM readable_entity_properties WHERE entity_id = ?{clause}"
                 " ORDER BY property_key, revision DESC, updated_at DESC",
                 (entity_id,),
             ).fetchall()
@@ -846,7 +847,7 @@ class SqliteEntityRepository:
             ),
         )
         row = connection.execute(
-            f"SELECT {_PROPERTY_COLUMNS} FROM entity_properties WHERE id = ?", (property_id,)
+            f"SELECT {_PROPERTY_COLUMNS} FROM readable_entity_properties WHERE id = ?", (property_id,)
         ).fetchone()
         assert row is not None
         return _row_to_property(row)
@@ -854,7 +855,7 @@ class SqliteEntityRepository:
     @staticmethod
     def _property_by_id(connection: sqlite3.Connection, property_id: str) -> EntityPropertyRecord:
         row = connection.execute(
-            f"SELECT {_PROPERTY_COLUMNS} FROM entity_properties WHERE id = ?", (property_id,)
+            f"SELECT {_PROPERTY_COLUMNS} FROM readable_entity_properties WHERE id = ?", (property_id,)
         ).fetchone()
         assert row is not None
         return _row_to_property(row)
@@ -869,7 +870,7 @@ class SqliteEntityRepository:
         「当前值」仍然是那条已确认的旧值，直到有人确认新值为止。
         """
         row = connection.execute(
-            f"SELECT {_PROPERTY_COLUMNS} FROM entity_properties"
+            f"SELECT {_PROPERTY_COLUMNS} FROM readable_entity_properties"
             " WHERE entity_id = ? AND property_key = ? AND status IN ('active', 'pending')"
             " ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, revision DESC,"
             " updated_at DESC LIMIT 1",
@@ -902,9 +903,7 @@ class SqliteEntityRepository:
         # 旧数据里可能存着改名时折进来的内部簇名（「待确认人物簇 · cluster-x」）。
         # 那是落库标识，不是用户起的名字，读侧统一滤掉。
         return tuple(
-            str(item)
-            for item in raw
-            if str(item or "").strip() and not is_pending_cluster_name(str(item))
+            str(item) for item in raw if str(item or "").strip() and not is_pending_cluster_name(str(item))
         )
 
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:
@@ -1013,7 +1012,7 @@ class SqliteEntityRepository:
                 ),
             )
             row = connection.execute(
-                f"SELECT {_MENTION_COLUMNS} FROM entity_mentions"
+                f"SELECT {_MENTION_COLUMNS} FROM readable_entity_mentions"
                 " WHERE entity_id = ? AND observation_id = ? AND face_instance_id IS ?",
                 (entity_id, observation_id, face_instance_id),
             ).fetchone()
@@ -1037,7 +1036,7 @@ class SqliteEntityRepository:
         不跑。投影跟着快照一起提交，两者才不会分叉。
         """
         row = connection.execute(
-            "SELECT people_json FROM observations WHERE id = ?", (observation_id,)
+            "SELECT people_json FROM readable_observations WHERE id = ?", (observation_id,)
         ).fetchone()
         if row is None:
             return
@@ -1060,7 +1059,7 @@ class SqliteEntityRepository:
     def confirmed_person_names(self, scope_id: str) -> frozenset[str]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT canonical_name FROM entities"
+                "SELECT DISTINCT canonical_name FROM readable_entities"
                 " WHERE scope_id = ? AND entity_type = ? AND status = ?",
                 (scope_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED),
             ).fetchall()
@@ -1071,8 +1070,8 @@ class SqliteEntityRepository:
             return frozenset()
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT em.entity_id FROM entity_mentions em"
-                " JOIN entities e ON e.id = em.entity_id"
+                "SELECT DISTINCT em.entity_id FROM readable_entity_mentions em"
+                " JOIN readable_entities e ON e.id = em.entity_id"
                 " WHERE em.observation_id = ? AND e.entity_type = ? AND e.status = ?",
                 (observation_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED),
             ).fetchall()
@@ -1083,9 +1082,9 @@ class SqliteEntityRepository:
             return frozenset()
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT em.entity_id FROM entity_mentions em"
-                " JOIN entities e ON e.id = em.entity_id"
-                " JOIN event_observations eo ON eo.observation_id = em.observation_id"
+                "SELECT DISTINCT em.entity_id FROM readable_entity_mentions em"
+                " JOIN readable_entities e ON e.id = em.entity_id"
+                " JOIN readable_event_observations eo ON eo.observation_id = em.observation_id"
                 " WHERE eo.event_id = ? AND e.entity_type = ? AND e.status = ?",
                 (event_id, ENTITY_TYPE_PERSON, ENTITY_STATUS_CONFIRMED),
             ).fetchall()
@@ -1096,7 +1095,7 @@ class SqliteEntityRepository:
             cursor = connection.execute(
                 "UPDATE entities SET status = ?, summary = ?, updated_at = ?"
                 " WHERE entity_type = ? AND status != ?"
-                " AND NOT EXISTS (SELECT 1 FROM face_clusters fc WHERE fc.entity_id = entities.id"
+                " AND NOT EXISTS (SELECT 1 FROM readable_face_clusters fc WHERE fc.entity_id = entities.id"
                 " AND fc.status IN ('pending', 'confirmed') AND fc.member_count > 0)",
                 (
                     ENTITY_STATUS_REJECTED,
@@ -1112,14 +1111,14 @@ class SqliteEntityRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 """SELECT DISTINCT event_id FROM (
-                    SELECT eo.event_id FROM entity_mentions em
-                    JOIN event_observations eo ON eo.observation_id = em.observation_id
+                    SELECT eo.event_id FROM readable_entity_mentions em
+                    JOIN readable_event_observations eo ON eo.observation_id = em.observation_id
                     WHERE em.entity_id = ?
                     UNION
-                    SELECT event_id FROM event_participants WHERE person_id = ?
+                    SELECT event_id FROM readable_event_participants WHERE person_id = ?
                     UNION
-                    SELECT eo.event_id FROM entity_observations eob
-                    JOIN event_observations eo ON eo.observation_id = eob.observation_id
+                    SELECT eo.event_id FROM readable_entity_observations eob
+                    JOIN readable_event_observations eo ON eo.observation_id = eob.observation_id
                     WHERE eob.entity_id = ?
                 )""",
                 (entity_id, entity_id, entity_id),

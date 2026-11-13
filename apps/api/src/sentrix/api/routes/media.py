@@ -56,6 +56,12 @@ THUMBNAIL_QUALITY = 78
 IMAGE_CACHE_CONTROL = "private, max-age=86400"
 
 
+def _publish_artifact(container: Container, asset_id: str, temporary: Path, target: Path) -> None:
+    from sentrix.infrastructure.persistence.media_barrier import publish_media_file
+
+    publish_media_file(container.database, asset_id, temporary, target)
+
+
 def _cached_image_response(
     asset: Asset,
     container: Container,
@@ -85,7 +91,7 @@ def _cached_image_response(
     try:
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_bytes(payload)
-        os.replace(temporary, target)
+        _publish_artifact(container, asset.id, temporary, target)
     except OSError:
         # 缓存写失败不影响本次返回。
         pass
@@ -99,6 +105,7 @@ def _cached_image_response(
 def to_summary(asset: Asset, place: str = "") -> AssetSummary:
     return AssetSummary(
         id=asset.id,
+        scope_id=asset.scope_id,
         file_name=asset.file_name,
         media_type=asset.media_type.value,
         mime_type=asset.mime_type,
@@ -572,14 +579,14 @@ def _run_video_job(container: Container, job_id: str) -> None:
                         json.dump(payload, output, ensure_ascii=False)
                         output.flush()
                         os.fsync(output.fileno())
-                    os.replace(speech_tmp, speech_path)
+                    _publish_artifact(container, asset.id, speech_tmp, speech_path)
                     speech_digest = hashlib.sha256(speech_path.read_bytes()).hexdigest()
                     mark("SPEECH_TRANSCRIPTION", artifact=str(speech_path), input_hash=speech_digest)
                 except Exception as error:  # noqa: BLE001 — speech is an optional evidence channel
                     log.warning("video ASR degraded job_id=%s video_id=%s: %s", job_id, asset_id, error)
                     speech_tmp = speech_path.with_suffix(".json.tmp")
                     speech_tmp.write_text("[]", encoding="utf-8")
-                    os.replace(speech_tmp, speech_path)
+                    _publish_artifact(container, asset.id, speech_tmp, speech_path)
                     speech_digest = hashlib.sha256(speech_path.read_bytes()).hexdigest()
                     container.video_repository.update_stage(
                         job_id,
@@ -754,7 +761,7 @@ def _run_video_job(container: Container, job_id: str) -> None:
                     output.write(payload)
                     output.flush()
                     os.fsync(output.fileno())
-                os.replace(temporary, plan_path)
+                _publish_artifact(container, asset.id, temporary, plan_path)
                 container.video_repository.update_stage(
                     job_id,
                     "FRAME_SAMPLE_VSD",
@@ -912,6 +919,7 @@ def list_assets(
     media_type: str = "",
     sort: str = "captured",
     order: str = "desc",
+    include_derived: bool = True,
     container: Container = Depends(get_container),
 ) -> AssetListResponse:
     if media_type not in {"", "image", "video", "audio", "text"}:
@@ -928,6 +936,7 @@ def list_assets(
         order=order,
         offset=max(0, offset),
         limit=size,
+        include_derived=include_derived,
     )
     places = container.asset_place_repository.get_many([asset.id for asset in assets])
     return AssetListResponse(

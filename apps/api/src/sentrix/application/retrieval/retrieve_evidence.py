@@ -228,7 +228,9 @@ class RetrieveEvidence:
         reranker: Reranker | None = None,
         observations: ObservationRepository | None = None,
         rerank_top_k: int = 24,
+        active_assets: Callable[[Sequence[str]], set[str]] | None = None,
     ) -> None:
+        self._active_assets = active_assets
         self._visual = visual
         self._lexical = lexical
         self._metadata = metadata
@@ -555,6 +557,16 @@ class RetrieveEvidence:
             fused = selected
         else:
             fused = primary_fused[:limit]
+
+        # Revalidate every channel against SQLite after fusion/reranking, including
+        # stale Qdrant and graph results. No model result can bypass this boundary.
+        if self._active_assets is not None:
+            active = self._active_assets([c.asset_id for c in [*fused, *primary_fused]])
+            fused = [c for c in fused if c.asset_id in active]
+            primary_fused = [c for c in primary_fused if c.asset_id in active]
+            channel_hits[GRAPH_CHANNEL] = [
+                c for c in channel_hits.get(GRAPH_CHANNEL, ()) if c.asset_id in active
+            ]
 
         graph_asset_ids = tuple(candidate.asset_id for candidate in channel_hits.get(GRAPH_CHANNEL, ()))
         primary_asset_ids = tuple(candidate.asset_id for candidate in primary_fused[:limit])

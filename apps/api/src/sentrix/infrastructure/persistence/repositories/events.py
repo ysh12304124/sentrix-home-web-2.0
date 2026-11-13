@@ -170,13 +170,15 @@ class SqliteEventRepository:
 
     def get(self, event_id: str) -> EventRecord | None:
         with self._database.connect() as connection:
-            row = connection.execute(f"SELECT {_COLUMNS} FROM events WHERE id = ?", (event_id,)).fetchone()
+            row = connection.execute(
+                f"SELECT {_COLUMNS} FROM readable_events WHERE id = ?", (event_id,)
+            ).fetchone()
         return _row_to_event(row) if row else None
 
     def list_active(self, scope_id: str, *, limit: int) -> Sequence[EventRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM events WHERE status = 'active' AND scope_id = ?"
+                f"SELECT {_COLUMNS} FROM readable_events WHERE status = 'active' AND scope_id = ?"
                 " ORDER BY capture_sort_key(time_start) DESC, id ASC LIMIT ?",
                 (scope_id, limit),
             ).fetchall()
@@ -195,7 +197,7 @@ class SqliteEventRepository:
         clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM events{clause}"
+                f"SELECT {_COLUMNS} FROM readable_events{clause}"
                 # 未知时间排在最后；内部仍按拍摄时间/上传时间倒序，分组才能稳定地
                 # 落成末尾那一个「未知时间」桶，而不是被 created_at 打散到各天之间。
                 " ORDER BY (time_start IS NULL OR time_start = '') ASC,"
@@ -215,7 +217,7 @@ class SqliteEventRepository:
     ) -> int:
         clause, params = _scope_clause(scope_id, place, has_place=has_place, date=date)
         with self._database.connect() as connection:
-            row = connection.execute(f"SELECT COUNT(*) AS n FROM events{clause}", params).fetchone()
+            row = connection.execute(f"SELECT COUNT(*) AS n FROM readable_events{clause}", params).fetchone()
         return int(row["n"]) if row else 0
 
     def calendar(
@@ -231,7 +233,7 @@ class SqliteEventRepository:
             rows = connection.execute(
                 "SELECT CASE WHEN time_start IS NULL OR time_start = '' THEN 'unknown'"
                 " ELSE substr(time_start, 1, 10) END AS day,"
-                " COUNT(*) AS n FROM events"
+                " COUNT(*) AS n FROM readable_events"
                 f"{clause} GROUP BY day ORDER BY day ASC",
                 params,
             ).fetchall()
@@ -275,7 +277,8 @@ class SqliteEventRepository:
     def observation_ids(self, event_id: str) -> Sequence[str]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT observation_id FROM event_observations WHERE event_id = ? ORDER BY observation_id",
+                "SELECT observation_id FROM readable_event_observations WHERE event_id = ? OR"
+                "DER BY observation_id",
                 (event_id,),
             ).fetchall()
         return [row["observation_id"] for row in rows]
@@ -288,7 +291,7 @@ class SqliteEventRepository:
         placeholders = ",".join("?" for _ in unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT event_id, observation_id FROM event_observations"
+                "SELECT event_id, observation_id FROM readable_event_observations"
                 f" WHERE event_id IN ({placeholders}) ORDER BY event_id, observation_id",
                 tuple(unique),
             ).fetchall()
@@ -311,7 +314,7 @@ class SqliteEventRepository:
         placeholders = ",".join("?" for _ in unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT event_id, observation_id FROM event_observations"
+                "SELECT event_id, observation_id FROM readable_event_observations"
                 f" WHERE observation_id IN ({placeholders})"
                 " ORDER BY event_id, observation_id",
                 tuple(unique),
@@ -464,7 +467,8 @@ class SqliteEventRepository:
         """
         with self._database.connect() as connection, connection:
             existing = connection.execute(
-                "SELECT id, summary, source_metadata_json FROM events WHERE source_type = 'video_scene'"
+                "SELECT id, summary, source_metadata_json FROM readable_events WHERE "
+                "source_type = 'video_scene'"
                 " AND source_asset_id = ? AND source_scene_index = ?",
                 (source_asset_id, int(source_scene_index)),
             ).fetchone()
@@ -530,7 +534,7 @@ class SqliteEventRepository:
         active / 按场景序号升序。"""
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM events WHERE source_type = 'video_scene'"
+                f"SELECT {_COLUMNS} FROM readable_events WHERE source_type = 'video_scene'"
                 " AND source_asset_id = ? AND status = 'active' ORDER BY source_scene_index",
                 (source_asset_id,),
             ).fetchall()

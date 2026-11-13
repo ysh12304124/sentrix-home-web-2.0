@@ -98,10 +98,10 @@ def build_base(filter: StructuredFilter, aliases: PlaceAliases) -> tuple[str, st
     joins = []
     if filter.entity_ids:
         # 有人物条件时是内连接：没有观察行的资产本来就无从证明「这个人出现过」。
-        joins.append("JOIN observations o ON o.asset_id = a.id")
-        joins.append("JOIN entity_mentions em ON em.observation_id = o.id")
+        joins.append("JOIN readable_observations o ON o.asset_id = a.id")
+        joins.append("JOIN readable_entity_mentions em ON em.observation_id = o.id")
     else:
-        joins.append("LEFT JOIN observations o ON o.asset_id = a.id")
+        joins.append("LEFT JOIN readable_observations o ON o.asset_id = a.id")
     # 地点子句要读 ap，无论这次筛不筛地点都挂上——挂不挂由 SQL 计划决定代价，
     # 但「筛地点时忘了搭这张表」会变成一个 no such column，而不是一个错数。
     joins.append("LEFT JOIN asset_places ap ON ap.asset_id = a.id")
@@ -136,7 +136,7 @@ def build_base(filter: StructuredFilter, aliases: PlaceAliases) -> tuple[str, st
 # 该资产最近一条非空观察的地点。用相关子查询而不是左连接上来的 ``o.place``：
 # 一个资产可以有多个观察行，直接读 ``o.place`` 取到哪一行由扫描顺序决定。
 _LATEST_OBSERVATION_PLACE = (
-    "(SELECT op.place FROM observations op"
+    "(SELECT op.place FROM readable_observations op"
     " WHERE op.asset_id = a.id AND op.place <> ''"
     " ORDER BY capture_sort_key(op.captured_at) DESC, op.id DESC LIMIT 1)"
 )
@@ -195,7 +195,9 @@ class SqliteStructuredQueryRepository:
 
     def count(self, filter: StructuredFilter) -> int:
         joins, where, params = build_base(filter, self._aliases)
-        rows = self._rows(f"SELECT COUNT(DISTINCT a.id) AS n FROM assets a {joins} WHERE {where}", params)
+        rows = self._rows(
+            f"SELECT COUNT(DISTINCT a.id) AS n FROM readable_assets a {joins} WHERE {where}", params
+        )
         return int(rows[0]["n"] or 0) if rows else 0
 
     def captured_bound(self, filter: StructuredFilter, *, latest: bool) -> str | None:
@@ -203,7 +205,7 @@ class SqliteStructuredQueryRepository:
         joins, where, params = build_base(filter, self._aliases)
         direction = "DESC" if latest else "ASC"
         rows = self._rows(
-            f"SELECT a.captured_at AS v FROM assets a {joins} WHERE {where}"
+            f"SELECT a.captured_at AS v FROM readable_assets a {joins} WHERE {where}"
             " AND a.captured_at IS NOT NULL"
             f" ORDER BY capture_sort_key(a.captured_at) {direction}, a.id LIMIT 1",
             params,
@@ -215,7 +217,7 @@ class SqliteStructuredQueryRepository:
         expression = group_expression(group_by)
         time_filter = " AND a.captured_at IS NOT NULL" if group_by in TIME_GROUP_KEYS else ""
         rows = self._rows(
-            f"SELECT {expression} AS g, COUNT(DISTINCT a.id) AS n FROM assets a {joins}"
+            f"SELECT {expression} AS g, COUNT(DISTINCT a.id) AS n FROM readable_assets a {joins}"
             f" WHERE {where}{time_filter} GROUP BY g ORDER BY n DESC, g",
             params,
         )
@@ -232,9 +234,9 @@ class SqliteStructuredQueryRepository:
         joins, where, params = build_base(filter, self._aliases)
         rows = self._rows(
             "SELECT a.id AS asset_id, a.captured_at, a.media_type,"
-            " (SELECT COALESCE(o2.caption, '') FROM observations o2"
+            " (SELECT COALESCE(o2.caption, '') FROM readable_observations o2"
             "  WHERE o2.asset_id = a.id ORDER BY capture_sort_key(o2.captured_at) DESC LIMIT 1) AS caption"
-            f" FROM assets a {joins} WHERE {where}"
+            f" FROM readable_assets a {joins} WHERE {where}"
             " ORDER BY capture_sort_key(a.captured_at) DESC, a.id DESC LIMIT ?",
             [*params, limit],
         )

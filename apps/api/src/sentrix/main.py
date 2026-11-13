@@ -27,6 +27,7 @@ from sentrix.api.deps import internal_call_guard
 from sentrix.api.errors import domain_error_handler
 from sentrix.api.routes import (
     assistant,
+    deletions,
     diagnostics,
     facts,
     family,
@@ -142,11 +143,20 @@ def _mount_web(app: FastAPI, settings: Settings) -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """启动后台执行器，并完成视频恢复与嵌入方案冒烟。"""
+    from sentrix.bootstrap.library_deletion import advance_library_deletion
+    from sentrix.bootstrap.rebuild_wiring import build_rebuilder
+    from sentrix.infrastructure.media.rebuild_worker import MediaRebuildWorker
+
+    app.state.media_rebuild_worker = MediaRebuildWorker(
+        lambda: build_rebuilder(app.state.container),
+        lambda: advance_library_deletion(app.state.container),
+    )
     executors = [
         executor
         for executor in (
             getattr(app.state, "import_executor", None),
             getattr(app.state, "turn_executor", None),
+            app.state.media_rebuild_worker,
         )
         if executor is not None
     ]
@@ -172,6 +182,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         for executor in executors:
             executor.stop()
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     # 先限制算子线程再装配容器：人脸/视觉适配器在 build 时可能建 session，
@@ -202,6 +213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
     v1.include_router(media.router)
+    v1.include_router(deletions.router)
     v1.include_router(import_jobs.router)
     v1.include_router(internal.router)
     v1.include_router(search.router)

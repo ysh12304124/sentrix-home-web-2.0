@@ -139,6 +139,7 @@ def _summarize_event(container: Container) -> SummarizeEvent:
     重新变回占位值。``model is None`` 才是「接了也白接」的那条早退，这里不会发生。
     """
     return SummarizeEvent(
+        generation_guard=container.database.model_generation,
         events=container.event_repository,
         observations=container.observation_repository,
         assets=container.asset_repository,
@@ -187,9 +188,7 @@ def timeline_calendar(
     has_place: bool = False,
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    index = _read_timeline(container).calendar(
-        scope_id or None, place=place.strip(), has_place=has_place
-    )
+    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
     years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,
@@ -202,10 +201,7 @@ def timeline_calendar(
                     CalendarMonth(
                         month=month.month,
                         count=month.count,
-                        days=[
-                            CalendarDay(date=day.date, count=day.count)
-                            for day in month.days
-                        ],
+                        days=[CalendarDay(date=day.date, count=day.count) for day in month.days],
                     )
                     for month in year.months
                 ],

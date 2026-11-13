@@ -173,6 +173,11 @@ class SqliteLexicalIndex:
         now = datetime.now(UTC).isoformat()
         rows = self._term_rows(observation, now)
         with self._database.connect() as connection, connection:
+            from sentrix.infrastructure.persistence.media_barrier import require_active
+
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            require_active(connection, observation.asset_id)
             connection.execute(
                 "DELETE FROM observation_search_terms WHERE observation_id = ?",
                 (observation.id,),
@@ -274,11 +279,13 @@ class SqliteLexicalIndex:
         with self._database.connect() as connection:
             if scope_id:
                 row = connection.execute(
-                    "SELECT COUNT(*) AS n FROM observation_search_terms WHERE scope_id = ?",
+                    "SELECT COUNT(*) AS n FROM readable_observation_search_terms WHERE scope_id = ?",
                     (scope_id,),
                 ).fetchone()
             else:
-                row = connection.execute("SELECT COUNT(*) AS n FROM observation_search_terms").fetchone()
+                row = connection.execute(
+                    "SELECT COUNT(*) AS n FROM readable_observation_search_terms"
+                ).fetchone()
         return int(row["n"]) if row else 0
 
     # ---- 读取 ----------------------------------------------------------------
@@ -298,7 +305,9 @@ class SqliteLexicalIndex:
         hits: dict[str, int] = {}
         with self._database.connect() as connection:
             for token in tokens:
-                clause = "WHERE observation_search_fts MATCH ?"
+                clause = (
+                    "WHERE observation_search_fts MATCH ? AND asset_id IN (SELECT id FROM readable_assets)"
+                )
                 params: list[object] = [f'"{token}"']
                 if scope_id:
                     clause += " AND scope_id = ?"
@@ -340,7 +349,7 @@ class SqliteLexicalIndex:
             clause += f" AND scope_id NOT IN {_EXCLUDED_FROM_PEOPLE}"
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT asset_id FROM observation_search_terms" + clause, params
+                "SELECT DISTINCT asset_id FROM readable_observation_search_terms" + clause, params
             ).fetchall()
         return frozenset(row["asset_id"] for row in rows)
 
@@ -356,7 +365,7 @@ class SqliteLexicalIndex:
             params.append(scope_id)
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT asset_id FROM observation_search_terms" + clause, params
+                "SELECT DISTINCT asset_id FROM readable_observation_search_terms" + clause, params
             ).fetchall()
         return frozenset(row["asset_id"] for row in rows)
 

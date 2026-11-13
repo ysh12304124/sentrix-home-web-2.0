@@ -70,10 +70,7 @@ def _row_to_cluster(row: sqlite3.Row) -> FaceClusterRecord:
     # 2.0 落在出口处）。判据是**实体**状态而不是簇状态：簇可以已经 confirmed 而实体还在
     # pending，那种情况下名字同样还没被用户认可。
     # 改名只转 name_state，不改 status；用户已经给过名字的簇要显示真名。
-    pending = (
-        row["entity_status"] == ENTITY_STATUS_PENDING
-        and row["name_state"] != NAME_STATE_CONFIRMED
-    )
+    pending = row["entity_status"] == ENTITY_STATUS_PENDING and row["name_state"] != NAME_STATE_CONFIRMED
     return FaceClusterRecord(
         id=row["id"],
         scope_id=row["scope_id"],
@@ -141,8 +138,8 @@ class SqliteFaceRepository:
         params: list[object] = [status] if status else []
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 # INNER JOIN 有意为之：没有记忆空间行的 scope 查不到任何簇。1.0 就是这样，
                 # 而「默认空间没建过行」在 1.0 是真实发生过的——那时列表是空的，不是全量。
                 " JOIN memory_spaces ms ON ms.id = fc.scope_id"
@@ -155,8 +152,8 @@ class SqliteFaceRepository:
     def list_clusters_for_entity(self, entity_id: str) -> Sequence[FaceClusterRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 " WHERE fc.entity_id = ? ORDER BY fc.updated_at DESC",
                 (entity_id,),
             ).fetchall()
@@ -165,8 +162,8 @@ class SqliteFaceRepository:
     def list_candidates(self, scope_id: str) -> Sequence[FaceClusterRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 " WHERE fc.scope_id = ? AND fc.status IN ('pending', 'confirmed')"
                 " ORDER BY fc.updated_at DESC",
                 (scope_id,),
@@ -176,8 +173,8 @@ class SqliteFaceRepository:
     def get_cluster(self, cluster_id: str) -> FaceClusterRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id WHERE fc.id = ?",
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id WHERE fc.id = ?",
                 (cluster_id,),
             ).fetchone()
         return _row_to_cluster(row) if row else None
@@ -266,8 +263,8 @@ class SqliteFaceRepository:
     def active_cluster_for_entity(self, entity_id: str) -> FaceClusterRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 " WHERE fc.entity_id = ? AND fc.status IN ('pending', 'confirmed')"
                 " AND fc.member_count > 0"
                 " ORDER BY CASE fc.status WHEN 'pending' THEN 0 ELSE 1 END, fc.updated_at DESC"
@@ -279,8 +276,8 @@ class SqliteFaceRepository:
     def confirmed_cluster_for_entity(self, entity_id: str) -> FaceClusterRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 " WHERE fc.entity_id = ? AND fc.status = 'confirmed'"
                 " ORDER BY fc.member_count DESC, fc.updated_at DESC LIMIT 1",
                 (entity_id,),
@@ -360,9 +357,9 @@ class SqliteFaceRepository:
                        fi.detection_confidence, fi.quality,
                        fc.id AS cluster_id, fc.status AS cluster_status,
                        e.canonical_name, e.family_role, e.status AS entity_status
-                FROM face_instances fi
-                LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id
-                LEFT JOIN entities e ON e.id = fc.entity_id
+                FROM readable_face_instances fi
+                LEFT JOIN readable_face_clusters fc ON fc.id = fi.cluster_id
+                LEFT JOIN readable_entities e ON e.id = fc.entity_id
                 WHERE fi.asset_id = ?
                 ORDER BY fi.quality DESC, fi.detection_confidence DESC, fi.id
                 """,
@@ -395,7 +392,7 @@ class SqliteFaceRepository:
         """1.0 ``tools.py:2281-2300`` 那条 SQL，逐字。
 
         **两个 INNER JOIN 是判据本身**，不是写法：没有簇的脸、簇没绑实体的脸都不出现。
-        ``LEFT JOIN entity_mentions`` 则相反——没有那条提及也要出这一行，只是
+        ``LEFT JOIN readable_entity_mentions`` 则相反——没有那条提及也要出这一行，只是
         ``mention_confidence`` 是 ``None``。
 
         **一个状态过滤都没有**（``e.entity_type = 'person'`` 是唯一那条）。
@@ -410,10 +407,10 @@ class SqliteFaceRepository:
                        fi.detection_confidence, fi.quality,
                        fc.entity_id, e.canonical_name, e.family_role,
                        em.confidence AS mention_confidence
-                FROM face_instances fi
-                JOIN face_clusters fc ON fc.id = fi.cluster_id
-                JOIN entities e ON e.id = fc.entity_id
-                LEFT JOIN entity_mentions em
+                FROM readable_face_instances fi
+                JOIN readable_face_clusters fc ON fc.id = fi.cluster_id
+                JOIN readable_entities e ON e.id = fc.entity_id
+                LEFT JOIN readable_entity_mentions em
                   ON em.face_instance_id = fi.id
                  AND em.entity_id = fc.entity_id
                 WHERE fi.asset_id = ?
@@ -445,8 +442,8 @@ class SqliteFaceRepository:
     def _instances_where(self, clause: str, params: tuple[object, ...]) -> Sequence[FaceInstanceRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_INSTANCE_COLUMNS} FROM face_instances fi"
-                " JOIN assets a ON a.id = fi.asset_id"
+                f"SELECT {_INSTANCE_COLUMNS} FROM readable_face_instances fi"
+                " JOIN readable_assets a ON a.id = fi.asset_id"
                 f" WHERE {clause} ORDER BY fi.quality DESC, fi.created_at ASC",
                 params,
             ).fetchall()
@@ -465,11 +462,11 @@ class SqliteFaceRepository:
                     COUNT(DISTINCT eo.event_id) AS event_count,
                     (
                         SELECT COUNT(DISTINCT ep.person_id)
-                        FROM event_participants ep
+                        FROM readable_event_participants ep
                         WHERE ep.event_id IN (
                             SELECT DISTINCT eo2.event_id
-                            FROM event_observations eo2
-                            JOIN face_instances fi2 ON fi2.observation_id = eo2.observation_id
+                            FROM readable_event_observations eo2
+                            JOIN readable_face_instances fi2 ON fi2.observation_id = eo2.observation_id
                             WHERE fi2.cluster_id = c.id
                         )
                     ) AS co_person_count,
@@ -478,7 +475,7 @@ class SqliteFaceRepository:
                     (
                         SELECT AVG(quality) FROM (
                             SELECT fi3.quality AS quality
-                            FROM face_instances fi3
+                            FROM readable_face_instances fi3
                             WHERE fi3.cluster_id = c.id
                             ORDER BY fi3.quality DESC
                             LIMIT 3
@@ -486,7 +483,7 @@ class SqliteFaceRepository:
                     ) AS quality,
                     (
                         SELECT fi_best.id
-                        FROM face_instances fi_best
+                        FROM readable_face_instances fi_best
                         WHERE fi_best.cluster_id = c.id
                         ORDER BY fi_best.quality DESC,
                                  fi_best.detection_confidence DESC,
@@ -494,12 +491,12 @@ class SqliteFaceRepository:
                         LIMIT 1
                     ) AS avatar_face_instance_id,
                     CASE WHEN ent.status = 'confirmed' THEN 1 ELSE 0 END AS confirmed
-                FROM face_clusters c
-                LEFT JOIN face_instances fi ON fi.cluster_id = c.id
-                LEFT JOIN observations o ON o.id = fi.observation_id
-                LEFT JOIN event_observations eo ON eo.observation_id = o.id
-                LEFT JOIN events e ON e.id = eo.event_id
-                LEFT JOIN entities ent ON ent.id = c.entity_id
+                FROM readable_face_clusters c
+                LEFT JOIN readable_face_instances fi ON fi.cluster_id = c.id
+                LEFT JOIN readable_observations o ON o.id = fi.observation_id
+                LEFT JOIN readable_event_observations eo ON eo.observation_id = o.id
+                LEFT JOIN readable_events e ON e.id = eo.event_id
+                LEFT JOIN readable_entities ent ON ent.id = c.entity_id
                 WHERE c.scope_id = ? AND c.status != 'rejected'
                 GROUP BY c.id""",
                 (scope_id,),
@@ -527,10 +524,10 @@ class SqliteFaceRepository:
                 """SELECT fi.id AS face_instance_id, fi.asset_id, fi.quality,
                     COALESCE(fi.area_ratio, 0) AS body_visibility,
                     o.captured_at, eo.event_id, fi.cluster_id, c.entity_id AS person_id
-                FROM face_instances fi
-                JOIN face_clusters c ON c.id = fi.cluster_id
-                JOIN observations o ON o.id = fi.observation_id
-                LEFT JOIN event_observations eo ON eo.observation_id = o.id
+                FROM readable_face_instances fi
+                JOIN readable_face_clusters c ON c.id = fi.cluster_id
+                JOIN readable_observations o ON o.id = fi.observation_id
+                LEFT JOIN readable_event_observations eo ON eo.observation_id = o.id
                 WHERE c.entity_id = ? AND c.status != 'rejected'""",
                 (person_id,),
             ).fetchall()
@@ -544,10 +541,10 @@ class SqliteFaceRepository:
         """
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_INSTANCE_COLUMNS} FROM face_instances fi"
-                " JOIN assets a ON a.id = fi.asset_id"
-                " JOIN entity_mentions em ON em.face_instance_id = fi.id"
-                " JOIN event_observations eo ON eo.observation_id = fi.observation_id"
+                f"SELECT {_INSTANCE_COLUMNS} FROM readable_face_instances fi"
+                " JOIN readable_assets a ON a.id = fi.asset_id"
+                " JOIN readable_entity_mentions em ON em.face_instance_id = fi.id"
+                " JOIN readable_event_observations eo ON eo.observation_id = fi.observation_id"
                 " WHERE em.entity_id = ? AND eo.event_id = ?"
                 " ORDER BY fi.quality DESC, fi.detection_confidence DESC LIMIT 1",
                 (person_id, event_id),
@@ -557,8 +554,8 @@ class SqliteFaceRepository:
     def get_instance(self, instance_id: str) -> FaceInstanceRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_INSTANCE_COLUMNS} FROM face_instances fi"
-                " JOIN assets a ON a.id = fi.asset_id WHERE fi.id = ?",
+                f"SELECT {_INSTANCE_COLUMNS} FROM readable_face_instances fi"
+                " JOIN readable_assets a ON a.id = fi.asset_id WHERE fi.id = ?",
                 (instance_id,),
             ).fetchone()
         return _row_to_instance(row) if row else None
@@ -607,8 +604,8 @@ class SqliteFaceRepository:
     def list_confirmed_clusters(self, scope_id: str, *, minimum_members: int) -> Sequence[FaceClusterRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_CLUSTER_COLUMNS} FROM face_clusters fc"
-                " LEFT JOIN entities e ON e.id = fc.entity_id"
+                f"SELECT {_CLUSTER_COLUMNS} FROM readable_face_clusters fc"
+                " LEFT JOIN readable_entities e ON e.id = fc.entity_id"
                 " WHERE fc.scope_id = ? AND fc.status = ? AND fc.member_count >= ?"
                 " ORDER BY fc.member_count DESC, fc.updated_at DESC",
                 (scope_id, CLUSTER_STATUS_CONFIRMED, int(minimum_members)),
@@ -618,20 +615,34 @@ class SqliteFaceRepository:
     def list_prototypes(self, cluster_id: str) -> Sequence[FacePrototypeRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_PROTOTYPE_COLUMNS} FROM face_prototypes WHERE cluster_id = ?"
+                f"SELECT {_PROTOTYPE_COLUMNS} FROM readable_face_prototypes WHERE cluster_id = ?"
                 " ORDER BY quality DESC, pose_bucket ASC",
                 (cluster_id,),
             ).fetchall()
         return [_row_to_prototype(row) for row in rows]
 
     def refresh_prototypes(self, cluster_id: str) -> Sequence[FacePrototypeRecord]:
+        # After a deletion, only a fresh transactional projection may replace
+        # reconciled prototypes/counts. Never accept an old captured embedding.
+        with self._database.connect() as check:
+            state = check.execute(
+                "SELECT last_deletion_id FROM media_object_states WHERE object_table='face_clusters' "
+                "AND object_key=json_object('id',?)",
+                (cluster_id,),
+            ).fetchone()
+        if state is not None:
+            from sentrix.infrastructure.persistence.reconciliation_support import rebuild_cluster
+
+            with self._database.write_transaction() as connection, self._database.reconciliation(connection):
+                rebuild_cluster(connection, cluster_id, state["last_deletion_id"])
+            return self.list_prototypes(cluster_id)
         now = datetime.now(UTC).isoformat()
         with self._database.connect() as connection, connection:
             # ``quality DESC, created_at ASC`` 两个键都在用：第一个选最清晰的，第二个在
             # 同质量时选先到的那张——少第二个键，桶内容会随插入顺序漂移。
             rows = connection.execute(
                 "SELECT id, pose_bucket, embedding_json, quality, embedding_model, embedding_version"
-                " FROM face_instances WHERE cluster_id = ? ORDER BY quality DESC, created_at ASC",
+                " FROM readable_face_instances WHERE cluster_id = ? ORDER BY quality DESC, created_at ASC",
                 (cluster_id,),
             ).fetchall()
             best: dict[str, sqlite3.Row] = {}

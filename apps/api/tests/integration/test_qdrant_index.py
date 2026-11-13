@@ -327,3 +327,22 @@ def test_close_waits_for_in_progress_client_initialization(tmp_path: Path, monke
 
     assert client.closed
     assert instance._client is None
+
+
+def test_reopens_after_temporary_directory_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from sentrix.infrastructure.vector import qdrant_index
+
+    now = 100.0
+    monkeypatch.setattr(qdrant_index, "monotonic", lambda: now, raising=False)
+    owner = QdrantVectorIndex(tmp_path / "locked")
+    contender = QdrantVectorIndex(tmp_path / "locked")
+    try:
+        assert owner.status().available
+        assert not contender.status().available
+        owner.close()
+        now += 10
+        assert contender.status().available
+        assert contender.deletion_inventory() == []
+    finally:
+        owner.close()
+        contender.close()

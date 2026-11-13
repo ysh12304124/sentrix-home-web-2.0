@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -48,6 +49,7 @@ log = logging.getLogger("sentrix.bootstrap.import_wiring")
 def build_memory_graph(container: Container) -> BuildMemoryGraph:
     """把 2.0 标准记忆端口接到独立图投影用例。"""
     return BuildMemoryGraph(
+        generation_guard=container.database.model_generation,
         assets=container.asset_repository,
         observations=container.observation_repository,
         events=container.event_repository,
@@ -63,6 +65,8 @@ def build_memory_graph(container: Container) -> BuildMemoryGraph:
 
 def refresh_memory_graph(container: Container, scope_id: str) -> GraphBuildStats | None:
     """在写入链路结束后重建派生图；图失败不阻断权威记忆写入。"""
+    if not _shared_memory_writable(container, scope_id):
+        return None
     try:
         return build_memory_graph(container).execute(scope_id)
     except Exception as error:  # noqa: BLE001 - 派生投影必须可降级
@@ -92,7 +96,7 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
     def run(scope_id: str, generation: int) -> list[str]:
         # 整段后处理都是“建库”工作，模型调用必须按 import 准入；否则事件总结会
         # 被当成问答占满槽位，用户提问反而要排队。
-        with import_work():
+        with import_work(), container.database.model_generation(scope_id):
             return _run(scope_id, generation)
 
     def _stage(scope_id: str, generation: int, stage: str, total: int = 0) -> None:
@@ -114,13 +118,17 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
         )
 
     def _run(scope_id: str, generation: int) -> list[str]:
+        with container.database.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM media_scope_epochs WHERE scope_id=? AND paused=1 LIMIT 1",
+                (scope_id,),
+            ).fetchone():
+                return ["media_isolation_deferred"]
         failures: list[str] = []
         _stage(scope_id, generation, "participants")
         observations = container.observation_repository.list_scope(scope_id, limit=100000)
         try:
-            _confirmed_person_events(container).refresh_participants(
-                [item.id for item in observations]
-            )
+            _confirmed_person_events(container).refresh_participants([item.id for item in observations])
         except Exception as error:  # noqa: BLE001 - 单个后处理阶段失败不阻断其他阶段
             log.warning("参与者刷新失败（scope=%s）: %s", scope_id, error)
             failures.append("participants")
@@ -131,6 +139,7 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
             log.warning("记忆图刷新失败（scope=%s）: %s", scope_id, error)
             failures.append("memory_graph")
         summarizer = SummarizeEvent(
+            generation_guard=container.database.model_generation,
             events=container.event_repository,
             observations=container.observation_repository,
             assets=container.asset_repository,
@@ -157,18 +166,13 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
         done = 0
         workers = max(1, min(4, int(getattr(container.settings, "import_workers", 4))))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentrix-summary") as pool:
-            futures = {
-                pool.submit(summarize, event.id): event
-                for event in pending
-            }
+            futures = {pool.submit(copy_context().run, summarize, event.id): event for event in pending}
             for future in as_completed(futures):
                 done += 1
                 try:
                     future.result()
                 except Exception as error:  # noqa: BLE001 - 单个事件失败不阻断整代
-                    log.warning(
-                        "事件总结失败（event=%s）: %s", futures[future].id, error
-                    )
+                    log.warning("事件总结失败（event=%s）: %s", futures[future].id, error)
                     summary_failed = True
                 if done == total or done % 5 == 0:
                     _progress(scope_id, generation, done, total)
@@ -213,10 +217,9 @@ def _run_family_graph(container: Container, scope_id: str) -> bool:
         latest = repository.latest_run(scope_id)
         if latest is not None and latest.status in {"queued", "running"}:
             return True
-        run = repository.create_run(
-            scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"}
-        )
+        run = repository.create_run(scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"})
         service = FamilyGraphService(
+            generation_guard=container.database.model_generation,
             family=repository,
             events=container.event_repository,
             entities=container.entity_repository,
@@ -231,12 +234,14 @@ def _run_family_graph(container: Container, scope_id: str) -> bool:
 
 def _run_insights(container: Container) -> RunInsights:
     return RunInsights(
+        generation_guard=container.database.model_generation,
         faces=container.face_repository,
         entities=container.entity_repository,
         moments=container.moment_repository,
         relationships=container.relationship_repository,
         portraits=container.portrait_repository,
         extract_moments=ExtractMoments(
+            generation_guard=container.database.model_generation,
             assets=container.asset_repository,
             faces=container.face_repository,
             entities=container.entity_repository,
@@ -369,6 +374,11 @@ def _build_importer(
         confirmed_people=container.entity_repository.confirmed_people_for_observation,
         confirmed_event_people=container.entity_repository.confirmed_people_for_event,
     )
+
+    def assign_active(observation: Observation) -> str:
+        with container.database.asset_commit(observation.asset_id):
+            return _event_id(assigner, observation)
+
     return ImportAssets(
         assets=container.asset_repository,
         observations=container.observation_repository,
@@ -390,13 +400,12 @@ def _build_importer(
             if observe
             else None
         ),
-        event_assigner=lambda observation: _event_id(assigner, observation),
+        shared_memory_writable=lambda scope: _shared_memory_writable(container, scope),
+        event_assigner=assign_active,
         event_attacher=lambda event_id, observation: container.event_repository.attach(
             event_id, observation.id
         ),
-        observation_event=lambda observation_id: _observation_event(
-            container, observation_id
-        ),
+        observation_event=lambda observation_id: _observation_event(container, observation_id),
         face_manifest=container.face_repository.list_face_manifest,
         face_enroller=_face_enroller(container),
         fact_maintainer=_fact_maintainer(container),
@@ -417,6 +426,7 @@ def _face_enroller(container: Container) -> EnrollFaces:
     return EnrollFaces(
         detector=container.face_detector,
         enroll=EnrollFace(
+            commit_guard=container.database.asset_commit,
             faces=container.face_repository,
             entities=container.entity_repository,
             vectors=container.vector_repository,
@@ -427,7 +437,9 @@ def _face_enroller(container: Container) -> EnrollFaces:
 
 def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
     index = IndexObservationText(
-        embedder=container.text_embedder, vectors=container.vector_repository
+        embedder=container.text_embedder,
+        vectors=container.text_vector_repository,
+        generation_guard=container.database.model_generation,
     )
 
     def run(observation: Observation, event_id: str | None) -> int:
@@ -445,7 +457,8 @@ def _entity_extractor(container: Container) -> Callable[[Observation, str], tupl
     )
 
     def run(observation: Observation, event_id: str) -> tuple[str, ...]:
-        return tuple(entity.id for entity in maintain.execute(observation, event_id=event_id).entities)
+        with container.database.asset_commit(observation.asset_id):
+            return tuple(entity.id for entity in maintain.execute(observation, event_id=event_id).entities)
 
     return run
 
@@ -456,7 +469,12 @@ def _fact_maintainer(container: Container) -> Callable[[Observation], tuple[str,
         candidates=lambda observation: observation.facts,
         confirmed_people=container.entity_repository.confirmed_person_names,
     )
-    return maintain.maintain
+
+    def run(observation: Observation) -> tuple[str, ...]:
+        with container.database.asset_commit(observation.asset_id):
+            return maintain.maintain(observation)
+
+    return run
 
 
 def _event_id(assigner: AssignEvents, observation: Observation) -> str:
@@ -468,3 +486,13 @@ def _observation_event(container: Container, observation_id: str) -> str | None:
     mapping = container.event_repository.events_for_observations([observation_id])
     event_ids = mapping.get(observation_id, ())
     return event_ids[0] if event_ids else None
+
+
+def _shared_memory_writable(container: Container, scope_id: str) -> bool:
+    with container.database.connect() as connection:
+        return (
+            connection.execute(
+                "SELECT 1 FROM media_scope_epochs WHERE scope_id=? AND paused=1", (scope_id,)
+            ).fetchone()
+            is None
+        )

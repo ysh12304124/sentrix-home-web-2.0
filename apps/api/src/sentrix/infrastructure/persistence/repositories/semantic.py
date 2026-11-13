@@ -155,7 +155,7 @@ class SqliteSemanticRepository:
         """1.0 ``db.py:2614-2616``。``person_id`` 在库里是 UNIQUE，所以至多一行。"""
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_PROFILE_COLUMNS} FROM semantic_profiles WHERE person_id = ?",
+                f"SELECT {_PROFILE_COLUMNS} FROM readable_semantic_profiles WHERE person_id = ?",
                 (person_id,),
             ).fetchone()
         return _row_to_profile(row) if row else None
@@ -170,14 +170,14 @@ class SqliteSemanticRepository:
         with self._database.connect() as connection:
             if person_id:
                 rows = connection.execute(
-                    f"SELECT {_CLAIM_COLUMNS} FROM semantic_claims"
+                    f"SELECT {_CLAIM_COLUMNS} FROM readable_semantic_claims"
                     f" WHERE person_id = ? AND status IN ({marks})"
                     " ORDER BY updated_at DESC LIMIT ?",
                     (person_id, *ACTIVE_CLAIM_STATUSES, limit),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    f"SELECT {_CLAIM_COLUMNS} FROM semantic_claims"
+                    f"SELECT {_CLAIM_COLUMNS} FROM readable_semantic_claims"
                     f" WHERE status IN ({marks})"
                     " ORDER BY updated_at DESC LIMIT ?",
                     (*ACTIVE_CLAIM_STATUSES, limit),
@@ -215,7 +215,7 @@ class SqliteSemanticRepository:
         timestamp = _now()
         with self._database.connect() as connection, connection:
             matching = connection.execute(
-                f"SELECT {_CLAIM_COLUMNS} FROM semantic_claims"
+                f"SELECT {_CLAIM_COLUMNS} FROM readable_semantic_claims"
                 " WHERE person_id = ? AND dimension = ? AND predicate = ?"
                 " AND COALESCE(normalized_value_text, value_text) = ?"
                 f" AND status IN ({','.join('?' * len(ACTIVE_CLAIM_STATUSES))})"
@@ -251,7 +251,7 @@ class SqliteSemanticRepository:
                 )
                 return _row_to_claim(self._claim(connection, matching["id"]))
             active = connection.execute(
-                "SELECT id, revision FROM semantic_claims"
+                "SELECT id, revision FROM readable_semantic_claims"
                 " WHERE person_id = ? AND dimension = ? AND predicate = ? AND status = 'active'"
                 " ORDER BY revision DESC LIMIT 1",
                 (person_id, dimension, normalized_predicate),
@@ -292,7 +292,7 @@ class SqliteSemanticRepository:
     def _claim(self, connection: sqlite3.Connection, claim_id: str) -> sqlite3.Row:
         """1.0 ``get_semantic_claim``：按 id 取回刚写/刚并的那一行。**不筛 status。**"""
         row: sqlite3.Row | None = connection.execute(
-            f"SELECT {_CLAIM_COLUMNS} FROM semantic_claims WHERE id = ?", (claim_id,)
+            f"SELECT {_CLAIM_COLUMNS} FROM readable_semantic_claims WHERE id = ?", (claim_id,)
         ).fetchone()
         if row is None:  # 刚写完就读不到只会是磁盘坏了，但别让类型变成 Optional
             raise LookupError(f"semantic claim disappeared: {claim_id}")

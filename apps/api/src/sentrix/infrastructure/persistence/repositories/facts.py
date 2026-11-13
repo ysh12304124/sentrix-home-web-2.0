@@ -47,7 +47,7 @@ class SqliteFactRepository:
     def active_for(self, *, scope_id: str, subject: str, predicate: str) -> Fact | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM facts WHERE scope_id = ? AND subject = ? AND predicate = ?"
+                f"SELECT {_COLUMNS} FROM readable_facts WHERE scope_id = ? AND subject = ? AND predicate = ?"
                 " AND status = 'active' ORDER BY revision DESC LIMIT 1",
                 (scope_id, subject, predicate),
             ).fetchone()
@@ -55,7 +55,9 @@ class SqliteFactRepository:
 
     def get(self, fact_id: str) -> Fact | None:
         with self._database.connect() as connection:
-            row = connection.execute(f"SELECT {_COLUMNS} FROM facts WHERE id = ?", (fact_id,)).fetchone()
+            row = connection.execute(
+                f"SELECT {_COLUMNS} FROM readable_facts WHERE id = ?", (fact_id,)
+            ).fetchone()
         return _row_to_fact(row) if row else None
 
     def insert(self, fact: Fact) -> Fact:
@@ -135,9 +137,9 @@ class SqliteFactRepository:
         with self._database.connect() as connection, connection:
             cursor = connection.execute(
                 "DELETE FROM facts WHERE scope_id = ? AND NOT EXISTS ("
-                " SELECT 1 FROM entities WHERE entities.scope_id = facts.scope_id"
-                " AND entities.entity_type = 'person' AND entities.status = 'confirmed'"
-                " AND entities.canonical_name = facts.subject)",
+                " SELECT 1 FROM readable_entities WHERE readable_entities.scope_id = facts.scope_id"
+                " AND readable_entities.entity_type = 'person' AND readable_entities.status = 'confirmed'"
+                " AND readable_entities.canonical_name = facts.subject)",
                 (scope_id,),
             )
             return int(cursor.rowcount)
@@ -153,7 +155,7 @@ class SqliteFactRepository:
         params: tuple[object, ...] = (limit,) if scope_id is None else (scope_id, limit)
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM facts{where} ORDER BY updated_at DESC LIMIT ?",
+                f"SELECT {_COLUMNS} FROM readable_facts{where} ORDER BY updated_at DESC LIMIT ?",
                 params,
             ).fetchall()
         return [_row_to_fact(row) for row in rows]

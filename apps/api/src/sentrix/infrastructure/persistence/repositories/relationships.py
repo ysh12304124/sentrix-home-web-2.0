@@ -76,9 +76,9 @@ class SqliteRelationshipRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT r.*, s.canonical_name AS subject_name, o.canonical_name AS object_name"
-                " FROM relationships r"
-                " JOIN entities s ON s.id = r.subject_entity_id"
-                " JOIN entities o ON o.id = r.object_entity_id"
+                " FROM readable_relationships r"
+                " JOIN readable_entities s ON s.id = r.subject_entity_id"
+                " JOIN readable_entities o ON o.id = r.object_entity_id"
                 " WHERE s.entity_type = 'person' AND o.entity_type = 'person'"
                 f" AND r.status != '{RETRACTED}'{scope_clause}"
                 " ORDER BY r.updated_at DESC",
@@ -93,9 +93,9 @@ class SqliteRelationshipRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT r.*, s.canonical_name AS subject_name, o.canonical_name AS object_name"
-                " FROM relationships r"
-                " JOIN entities s ON s.id = r.subject_entity_id"
-                " JOIN entities o ON o.id = r.object_entity_id"
+                " FROM readable_relationships r"
+                " JOIN readable_entities s ON s.id = r.subject_entity_id"
+                " JOIN readable_entities o ON o.id = r.object_entity_id"
                 f"{scope_clause} ORDER BY r.updated_at DESC",
                 params,
             ).fetchall()
@@ -107,9 +107,9 @@ class SqliteRelationshipRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT r.*, s.canonical_name AS subject_name, o.canonical_name AS object_name"
-                " FROM relationships r"
-                " JOIN entities s ON s.id = r.subject_entity_id"
-                " JOIN entities o ON o.id = r.object_entity_id"
+                " FROM readable_relationships r"
+                " JOIN readable_entities s ON s.id = r.subject_entity_id"
+                " JOIN readable_entities o ON o.id = r.object_entity_id"
                 " WHERE (r.subject_entity_id = ? OR r.object_entity_id = ?)"
                 f"{scope_clause} ORDER BY r.updated_at DESC",
                 params,
@@ -119,7 +119,7 @@ class SqliteRelationshipRepository:
     def get(self, relationship_id: str) -> RelationshipRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM relationships WHERE id = ?", (relationship_id,)
+                f"SELECT {_COLUMNS} FROM readable_relationships WHERE id = ?", (relationship_id,)
             ).fetchone()
         return _record(row)
 
@@ -142,7 +142,7 @@ class SqliteRelationshipRepository:
         now = datetime.now(UTC).isoformat()
         with self._database.connect() as connection, connection:
             existing = connection.execute(
-                f"SELECT {_COLUMNS} FROM relationships"
+                f"SELECT {_COLUMNS} FROM readable_relationships"
                 " WHERE scope_id = ? AND subject_entity_id = ? AND predicate = ?"
                 " AND object_entity_id = ? AND status IN (?, ?)"
                 " ORDER BY revision DESC LIMIT 1",
@@ -164,7 +164,7 @@ class SqliteRelationshipRepository:
                     ),
                 )
                 row = connection.execute(
-                    f"SELECT {_COLUMNS} FROM relationships WHERE id = ?", (existing["id"],)
+                    f"SELECT {_COLUMNS} FROM readable_relationships WHERE id = ?", (existing["id"],)
                 ).fetchone()
             else:
                 relationship_id = _new_id()
@@ -188,7 +188,7 @@ class SqliteRelationshipRepository:
                     ),
                 )
                 row = connection.execute(
-                    f"SELECT {_COLUMNS} FROM relationships WHERE id = ?", (relationship_id,)
+                    f"SELECT {_COLUMNS} FROM readable_relationships WHERE id = ?", (relationship_id,)
                 ).fetchone()
         record = _record(row)
         assert record is not None, "刚写进去的那条关系读不回来"
@@ -242,7 +242,7 @@ class SqliteRelationshipRepository:
         """
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT id, scope_id FROM entities WHERE id IN (?, ?)",
+                "SELECT id, scope_id FROM readable_entities WHERE id IN (?, ?)",
                 (subject_entity_id, object_entity_id),
             ).fetchall()
         scopes = {str(row["scope_id"]) for row in rows}

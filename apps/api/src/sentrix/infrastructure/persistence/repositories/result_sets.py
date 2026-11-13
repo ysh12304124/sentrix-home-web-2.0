@@ -68,14 +68,14 @@ class SqliteResultSetRepository:
     def get(self, result_set_id: str) -> ResultSet | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM agent_result_sets WHERE id = ?", (result_set_id,)
+                "SELECT * FROM readable_agent_result_sets WHERE id = ?", (result_set_id,)
             ).fetchone()
         return _row_to_result_set(row) if row else None
 
     def list_for_scope(self, scope_id: str, limit: int) -> Sequence[ResultSet]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM agent_result_sets WHERE scope_id = ?"
+                "SELECT * FROM readable_agent_result_sets WHERE scope_id = ?"
                 " ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (scope_id, max(1, limit)),
             ).fetchall()

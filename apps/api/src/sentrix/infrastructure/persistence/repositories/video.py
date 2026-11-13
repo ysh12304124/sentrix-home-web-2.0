@@ -156,7 +156,7 @@ class SqliteVideoRepository:
         return self._job_dict(row) if row else None
 
     def list_jobs(self, scope_id: str | None = None) -> Sequence[dict[str, object]]:
-        query = "SELECT j.* FROM video_jobs j JOIN assets a ON a.id=j.asset_id"
+        query = "SELECT j.* FROM video_jobs j JOIN readable_assets a ON a.id=j.asset_id"
         params: tuple[object, ...] = ()
         if scope_id:
             query += " WHERE a.scope_id=?"
@@ -251,7 +251,9 @@ class SqliteVideoRepository:
         """**合并写**，不整包覆盖 ``metadata_json``：那里可能已经有别的东西
         （1.0 同一列上还压着反地理、事实 id 等），覆盖会把它们一起抹掉。"""
         with self._database.connect() as connection, connection:
-            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT metadata_json FROM readable_assets WHERE id = ?", (asset_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(asset_id)
             payload = _parse_metadata(row["metadata_json"])
@@ -271,7 +273,9 @@ class SqliteVideoRepository:
         """**合并写**，只动 ``video_processing_seconds`` 这一个键（与 ``save_probe`` 同一条
         理由：``metadata_json`` 上可能还压着别的东西，覆盖会把它们一起抹掉）。"""
         with self._database.connect() as connection, connection:
-            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT metadata_json FROM readable_assets WHERE id = ?", (asset_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(asset_id)
             payload = _parse_metadata(row["metadata_json"])
@@ -284,7 +288,9 @@ class SqliteVideoRepository:
     def save_processing_timings(self, asset_id: str, timings: Mapping[str, float]) -> None:
         """Persist measured keyframe stages without replacing other video metadata."""
         with self._database.connect() as connection, connection:
-            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT metadata_json FROM readable_assets WHERE id = ?", (asset_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(asset_id)
             payload = _parse_metadata(row["metadata_json"])
@@ -308,7 +314,9 @@ class SqliteVideoRepository:
 
     def probe(self, asset_id: str) -> VideoProbe | None:
         with self._database.connect() as connection:
-            row = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+            row = connection.execute(
+                "SELECT metadata_json FROM readable_assets WHERE id = ?", (asset_id,)
+            ).fetchone()
         if row is None:
             return None
         payload = _parse_metadata(row["metadata_json"])
@@ -344,7 +352,7 @@ class SqliteVideoRepository:
         placeholders = _placeholders(unique)
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT parent_asset_id FROM assets"
+                "SELECT DISTINCT parent_asset_id FROM readable_assets"
                 f" WHERE parent_asset_id IN ({placeholders}) AND derived_kind IS NOT NULL",
                 tuple(unique),
             ).fetchall()
@@ -358,7 +366,7 @@ class SqliteVideoRepository:
             params.append(int(scene_index))
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_DERIVED_COLUMNS} FROM assets WHERE {where}"
+                f"SELECT {_DERIVED_COLUMNS} FROM readable_assets WHERE {where}"
                 " ORDER BY source_scene_index, source_timestamp_sec, source_frame_index",
                 params,
             ).fetchall()
@@ -432,14 +440,15 @@ class SqliteVideoRepository:
             derived_ids = [
                 row["id"]
                 for row in connection.execute(
-                    "SELECT id FROM assets WHERE parent_asset_id = ? AND derived_kind IS NOT NULL",
+                    "SELECT id FROM readable_assets WHERE parent_asset_id = ? AND derived_kind IS NOT NULL",
                     (parent_asset_id,),
                 ).fetchall()
             ]
             scene_event_ids = [
                 row["id"]
                 for row in connection.execute(
-                    "SELECT id FROM events WHERE source_type = 'video_scene' AND source_asset_id = ?",
+                    "SELECT id FROM readable_events WHERE source_type = 'video_scene' AND "
+                    "source_asset_id = ?",
                     (parent_asset_id,),
                 ).fetchall()
             ]
@@ -447,7 +456,7 @@ class SqliteVideoRepository:
                 observation_ids = [
                     row["id"]
                     for row in connection.execute(
-                        "SELECT id FROM observations WHERE asset_id = ?", (asset_id,)
+                        "SELECT id FROM readable_observations WHERE asset_id = ?", (asset_id,)
                     ).fetchall()
                 ]
                 if not observation_ids:
@@ -461,7 +470,7 @@ class SqliteVideoRepository:
                 face_ids = [
                     row["id"]
                     for row in connection.execute(
-                        f"SELECT id FROM face_instances WHERE observation_id IN ({obs_slots})",
+                        f"SELECT id FROM readable_face_instances WHERE observation_id IN ({obs_slots})",
                         observations,
                     ).fetchall()
                 ]

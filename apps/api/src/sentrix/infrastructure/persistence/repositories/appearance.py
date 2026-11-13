@@ -40,7 +40,7 @@ _COLUMNS = (
     " pae.crop_bbox_json, pae.clothing_json, pae.confidence, pae.model_name, pae.status,"
     " pae.created_at, pae.updated_at, a.file_name, a.media_type"
 )
-_ASSET_JOIN = " JOIN assets a ON a.id = pae.asset_id"
+_ASSET_JOIN = " JOIN readable_assets a ON a.id = pae.asset_id"
 
 CONFIRMED = "confirmed"
 CONFIRMED_PERSON_STATUS = "confirmed"
@@ -102,13 +102,15 @@ class SqliteAppearanceRepository:
     ) -> AppearanceEvidenceRecord:
         """记一条外观证据，或覆盖同一 ``(人, 实例, 模型)`` 的那条。"""
         with self._database.connect() as connection:
-            person = connection.execute("SELECT status FROM entities WHERE id = ?", (person_id,)).fetchone()
+            person = connection.execute(
+                "SELECT status FROM readable_entities WHERE id = ?", (person_id,)
+            ).fetchone()
             instance = connection.execute(
-                "SELECT observation_id, asset_id FROM face_instances WHERE id = ?",
+                "SELECT observation_id, asset_id FROM readable_face_instances WHERE id = ?",
                 (face_instance_id,),
             ).fetchone()
             linked = connection.execute(
-                "SELECT 1 FROM entity_mentions WHERE entity_id = ? AND face_instance_id = ?",
+                "SELECT 1 FROM readable_entity_mentions WHERE entity_id = ? AND face_instance_id = ?",
                 (person_id, face_instance_id),
             ).fetchone()
 
@@ -126,7 +128,7 @@ class SqliteAppearanceRepository:
         model = str(model_name or "unknown")
         with self._database.connect() as connection, connection:
             existing = connection.execute(
-                "SELECT id FROM person_appearance_evidence"
+                "SELECT id FROM readable_person_appearance_evidence"
                 " WHERE person_id = ? AND face_instance_id = ? AND model_name = ?",
                 (person_id, face_instance_id, model),
             ).fetchone()
@@ -175,7 +177,8 @@ class SqliteAppearanceRepository:
     def get(self, evidence_id: str) -> AppearanceEvidenceRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_appearance_evidence pae{_ASSET_JOIN} WHERE pae.id = ?",
+                f"SELECT {_COLUMNS} FROM readable_person_appearance_evidence pae{_ASSET_JOIN} "
+                f"WHERE pae.id = ?",
                 (evidence_id,),
             ).fetchone()
         return _record(row)
@@ -195,7 +198,7 @@ class SqliteAppearanceRepository:
             where += " AND pae.clothing_json != '[]'"
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_appearance_evidence pae{_ASSET_JOIN}"
+                f"SELECT {_COLUMNS} FROM readable_person_appearance_evidence pae{_ASSET_JOIN}"
                 f" WHERE {where}"
                 " ORDER BY pae.confidence DESC, pae.updated_at DESC LIMIT ?",
                 (person_id, CONFIRMED, limit),

@@ -123,6 +123,7 @@ class SourceVideoPayload(BaseModel):
 class VideoDetailResponse(BaseModel):
     video: VideoPayload
     scenes: list[VideoScenePayload]
+    keyframe_assets: list[KeyframeAssetPayload]
 
 
 class VideoScenesResponse(BaseModel):

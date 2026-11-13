@@ -294,8 +294,10 @@ class ImportAssets:
         # 不传就退化成「只入库、不建场景」——正是 S8a 的行为，测试与不需要视频
         # 场景的调用方都不必构造它。
         video_scene_extractor: Callable[[str], VideoSceneExtraction | int] | None = None,
+        shared_memory_writable: Callable[[str], bool] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self._shared_memory_writable = shared_memory_writable
         self._assets = assets
         self._observations = observations
         self._storage = storage
@@ -349,18 +351,14 @@ class ImportAssets:
         self._ensure_space(request.scope_id)
 
         source_size = (
-            request.source_path.stat().st_size
-            if request.source_path is not None
-            else len(request.content)
+            request.source_path.stat().st_size if request.source_path is not None else len(request.content)
         )
         content_sha256 = request.content_sha256 or (
             _sha256_file(request.source_path)
             if request.source_path is not None
             else hashlib.sha256(request.content).hexdigest()
         )
-        media_type = request.media_type or MediaType.from_upload(
-            request.content_type, request.file_name
-        )
+        media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
 
         existing = self._assets.find_by_hash(request.scope_id, content_sha256)
         if existing is not None:
@@ -382,13 +380,9 @@ class ImportAssets:
         if request.source_path is None:
             stored_path = self._storage.store(asset_id, request.file_name, request.content)
         elif request.source_move:
-            stored_path = self._storage.move_from_path(
-                asset_id, request.file_name, request.source_path
-            )
+            stored_path = self._storage.move_from_path(asset_id, request.file_name, request.source_path)
         else:
-            stored_path = self._storage.copy_from_path(
-                asset_id, request.file_name, request.source_path
-            )
+            stored_path = self._storage.copy_from_path(asset_id, request.file_name, request.source_path)
 
         captured_at, gps, device = (None, None, None)
         if media_type is MediaType.IMAGE:
@@ -550,8 +544,7 @@ class ImportAssets:
             video_scenes=video_scenes.scene_count,
             video_scene_error=(
                 video_scenes.reason
-                if staged.media_type is MediaType.VIDEO
-                and video_scenes.reason not in {"", "not_a_video"}
+                if staged.media_type is MediaType.VIDEO and video_scenes.reason not in {"", "not_a_video"}
                 else ""
             ),
             audio_probed=staged.audio_probe is not None and staged.audio_probe.metadata is not None,
@@ -646,15 +639,20 @@ class ImportAssets:
             self._observations.add(observation)
 
         observation = self._observe(asset, observation, prepared) or observation
-        faces = self._enroll_faces(asset, observation, prepared)
-        event_id = self._assign_event(observation, forced_event_id)
+        aggregate_allowed = self._shared_memory_writable is None or self._shared_memory_writable(
+            asset.scope_id
+        )
+        # A deletion-invalidated scope accepts healthy source ingestion while
+        # its model-derived shared projections remain fenced until 3D.
+        faces = self._enroll_faces(asset, observation, prepared) if aggregate_allowed else 0
+        event_id = self._assign_event(observation, forced_event_id) if aggregate_allowed else None
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
         # 写在前面则 event_id 恒为空，而那条 metadata 只在召回时用得到——
         # 错了不报错，只是事件维度的扩展永远失效。
         text_rows = self._index_text(observation, event_id)
-        entity_ids = self._extract_entities(observation, event_id)
-        fact_ids = self._maintain_facts(observation)
+        entity_ids = self._extract_entities(observation, event_id) if aggregate_allowed else ()
+        fact_ids = self._maintain_facts(observation) if aggregate_allowed else ()
         lexical_terms = self._project_lexical(observation)
 
         return ProcessedAsset(

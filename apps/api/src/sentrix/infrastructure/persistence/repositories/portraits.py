@@ -64,14 +64,14 @@ class SqlitePortraitRepository:
     def get(self, revision_id: str) -> PortraitRevisionRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_portrait_revisions WHERE id = ?", (revision_id,)
+                f"SELECT {_COLUMNS} FROM readable_person_portrait_revisions WHERE id = ?", (revision_id,)
             ).fetchone()
         return _record(row)
 
     def get_active(self, person_id: str) -> PortraitRevisionRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_portrait_revisions"
+                f"SELECT {_COLUMNS} FROM readable_person_portrait_revisions"
                 " WHERE person_id = ? AND status IN (?, ?) ORDER BY revision DESC LIMIT 1",
                 (person_id, PORTRAIT_STATUS_ACTIVE, PORTRAIT_STATUS_USER_LOCKED),
             ).fetchone()
@@ -80,7 +80,7 @@ class SqlitePortraitRepository:
     def list_for_person(self, person_id: str) -> Sequence[PortraitRevisionRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_COLUMNS} FROM person_portrait_revisions"
+                f"SELECT {_COLUMNS} FROM readable_person_portrait_revisions"
                 " WHERE person_id = ? ORDER BY revision DESC",
                 (person_id,),
             ).fetchall()
@@ -104,7 +104,18 @@ class SqlitePortraitRepository:
         if current is not None and current.status == PORTRAIT_STATUS_USER_LOCKED:
             return current
 
-        revision = (current.revision if current is not None else 0) + 1
+        with self._database.connect() as check:
+            if check.execute(
+                "SELECT 1 FROM person_portrait_revisions WHERE person_id=? AND status='user_locked'",
+                (person_id,),
+            ).fetchone():
+                from sentrix.domain.media.deletion import MediaIsolated
+
+                raise MediaIsolated("locked invalid portrait requires explicit revalidation")
+            revision = check.execute(
+                "SELECT COALESCE(MAX(revision),0)+1 FROM person_portrait_revisions WHERE person_id=?",
+                (person_id,),
+            ).fetchone()[0]
         now = datetime.now(UTC).isoformat()
         revision_id = _new_id("portrait")
         with self._database.connect() as connection, connection:
@@ -118,7 +129,8 @@ class SqlitePortraitRepository:
                 " id, scope_id, person_id, revision, portrait_text, themes_json,"
                 " evidence_refs_json, trigger_type, model_name, prompt_version, status,"
                 " created_at, updated_at"
-                ") VALUES (?, (SELECT scope_id FROM entities WHERE id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ") VALUES (?, (SELECT scope_id FROM readable_entities WHERE id = ?), ?, ?, ?,"
+                " ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     revision_id,
                     person_id,
@@ -140,7 +152,14 @@ class SqlitePortraitRepository:
         return created
 
     def set_feedback(self, revision_id: str, feedback: str | None) -> PortraitRevisionRecord | None:
-        with self._database.connect() as connection, connection:
+        current = self.get(revision_id)
+        if current is None:
+            return None
+        with (
+            self._database.model_generation(current.scope_id),
+            self._database.connect() as connection,
+            connection,
+        ):
             connection.execute(
                 "UPDATE person_portrait_revisions SET user_feedback = ?, updated_at = ? WHERE id = ?",
                 (feedback, datetime.now(UTC).isoformat(), revision_id),
@@ -149,7 +168,14 @@ class SqlitePortraitRepository:
 
     def set_lock(self, revision_id: str, locked: bool) -> PortraitRevisionRecord | None:
         status = PORTRAIT_STATUS_USER_LOCKED if locked else PORTRAIT_STATUS_ACTIVE
-        with self._database.connect() as connection, connection:
+        current = self.get(revision_id)
+        if current is None:
+            return None
+        with (
+            self._database.model_generation(current.scope_id),
+            self._database.connect() as connection,
+            connection,
+        ):
             connection.execute(
                 "UPDATE person_portrait_revisions SET status = ?, updated_at = ? WHERE id = ?",
                 (status, datetime.now(UTC).isoformat(), revision_id),

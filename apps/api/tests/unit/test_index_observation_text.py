@@ -140,7 +140,9 @@ def test_event_row_points_at_the_event_and_the_observation():
 
     (event_row,) = [r for r in vectors.records if r.source_type == EVENT_SOURCE]
     assert event_row.source_id == "evt_1"
-    assert event_row.metadata == {"observation_id": "obs_1"}
+    assert event_row.metadata["observation_id"] == "obs_1"
+    assert event_row.metadata["source_revision"] == 1
+    assert event_row.metadata["text_digest"]
 
 
 def test_second_call_is_idempotent():

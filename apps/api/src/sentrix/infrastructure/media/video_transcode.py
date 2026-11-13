@@ -19,7 +19,11 @@ domain/application 碰它。端口声明在 ``domain/media/ports.py``（``VideoT
 from __future__ import annotations
 
 import subprocess
+import uuid
 from pathlib import Path
+
+from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.media_barrier import publish_media_file
 
 # 1.0 ``processor.py:59`` 的集合，逐字照抄。``avc1`` 是 MP4 里的 codec_tag 写法，
 # 不同的封装/工具会给出两种名字之一。
@@ -81,10 +85,17 @@ def transcode_to_h264(source: Path, target: Path, *, timeout_s: int = TRANSCODE_
 class FfmpegVideoTranscoder:
     """domain ``VideoTranscoder`` 的 ffmpeg 实现。派生预览统一放在 ``media_dir/derived/video``。"""
 
-    def __init__(self, media_dir: Path) -> None:
+    def __init__(self, media_dir: Path, *, database: Database | None = None) -> None:
+        self._database = database
         self._root = Path(media_dir) / "derived" / "video"
 
     def browser_preview(self, asset_id: str, source: Path, codec: str) -> Path | None:
         if is_browser_playable(codec):
             return None
-        return transcode_to_h264(source, self._root / asset_id / "preview.mp4")
+        target = self._root / asset_id / "preview.mp4"
+        if self._database is None:
+            return transcode_to_h264(source, target)
+        temporary = target.with_name(f".pending-{uuid.uuid4().hex}.mp4")
+        transcode_to_h264(source, temporary)
+        publish_media_file(self._database, asset_id, temporary, target, allow_unregistered=True)
+        return target

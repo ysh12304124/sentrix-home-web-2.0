@@ -45,6 +45,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from sentrix.application.media.analyze_deletion import digest
+from sentrix.application.media.model_generation import GenerationGuard, unguarded_generation
 from sentrix.domain.media.models import Observation
 from sentrix.domain.retrieval import scheme
 from sentrix.domain.retrieval.ports import TextEmbedder, VectorRecord, VectorRepository
@@ -94,11 +96,22 @@ def compose_text(observation: Observation) -> str:
 class IndexObservationText:
     """写入侧。构造参数与 ``IndexAssetVisual`` 对称：embedder + 权威仓储。"""
 
-    def __init__(self, *, embedder: TextEmbedder, vectors: VectorRepository) -> None:
+    def __init__(
+        self,
+        *,
+        embedder: TextEmbedder,
+        vectors: VectorRepository,
+        generation_guard: GenerationGuard = unguarded_generation,
+    ) -> None:
+        self._generation_guard = generation_guard
         self._embedder = embedder
         self._vectors = vectors
 
     def index(self, observation: Observation, event_id: str | None) -> TextIndexOutcome:
+        with self._generation_guard(observation.scope_id):
+            return self._index(observation, event_id)
+
+    def _index(self, observation: Observation, event_id: str | None) -> TextIndexOutcome:
         text = compose_text(observation)
         if not text:
             # 1.0 拼完可能得到空串（一条什么都没观察到的观察）。空串不该去打一次
@@ -148,7 +161,7 @@ class IndexObservationText:
         # 字段逐个写出来而不用 ``**common``：字典展开会让 mypy 把值推成 ``object``，
         # 于是 ``VectorRecord`` 的每个字段都成了 arg-type 错误——而那条错误指向的是
         # 展开处，不是真正写错的那个字段名。
-        def record(space: str, source_type: str, source_id: str, metadata: dict[str, str]) -> VectorRecord:
+        def record(space: str, source_type: str, source_id: str, metadata: dict[str, object]) -> VectorRecord:
             return VectorRecord(
                 scope_id=observation.scope_id,
                 space=space,
@@ -159,7 +172,12 @@ class IndexObservationText:
                 metadata=metadata,
             )
 
-        observation_meta = {"asset_id": observation.asset_id, "event_id": event_id or ""}
+        observation_meta: dict[str, object] = {
+            "asset_id": observation.asset_id,
+            "event_id": event_id or "",
+            "source_revision": observation.revision,
+            "text_digest": digest(compose_text(observation)),
+        }
         records = [
             record(scheme.EPISODIC_SPACE, OBSERVATION_SOURCE, observation.id, dict(observation_meta)),
             record(scheme.SEMANTIC_SPACE, OBSERVATION_SOURCE, observation.id, dict(observation_meta)),
@@ -173,7 +191,11 @@ class IndexObservationText:
                     scheme.EPISODIC_SPACE,
                     EVENT_SOURCE,
                     event_id,
-                    {"observation_id": observation.id},
+                    {
+                        "observation_id": observation.id,
+                        "source_revision": observation.revision,
+                        "text_digest": digest(compose_text(observation)),
+                    },
                 ),
             )
         return tuple(records)

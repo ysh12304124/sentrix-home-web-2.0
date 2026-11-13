@@ -17,7 +17,7 @@ class SqliteRotationRepository:
     def sequence_for(self, scope_id: str, day: str) -> RotationSequence | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM memory_rotation_sequences WHERE scope_id = ? AND day = ?",
+                "SELECT * FROM readable_memory_rotation_sequences WHERE scope_id = ? AND day = ?",
                 (scope_id, day),
             ).fetchone()
         return _sequence(row) if row is not None else None
@@ -52,14 +52,11 @@ class SqliteRotationRepository:
     def advance(self, sequence_id: str, position: int, *, now: datetime) -> None:
         with self._database.connect() as connection, connection:
             connection.execute(
-                "UPDATE memory_rotation_sequences SET position = ?, updated_at = ?"
-                " WHERE sequence_id = ?",
+                "UPDATE memory_rotation_sequences SET position = ?, updated_at = ? WHERE sequence_id = ?",
                 (max(0, position), now.isoformat(), sequence_id),
             )
 
-    def replace_sequence(
-        self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime
-    ) -> None:
+    def replace_sequence(self, sequence_id: str, event_ids: tuple[str, ...], *, now: datetime) -> None:
         """同一天的新一轮：保留 sequence_id，换候选并回到第一页。"""
         with self._database.connect() as connection, connection:
             connection.execute(
@@ -72,7 +69,7 @@ class SqliteRotationRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT v.event_id FROM memory_rotation_viewed v"
-                " JOIN memory_rotation_sequences s ON s.sequence_id = v.sequence_id"
+                " JOIN readable_memory_rotation_sequences s ON s.sequence_id = v.sequence_id"
                 " WHERE s.scope_id = ? ORDER BY v.viewed_at DESC LIMIT ?",
                 (scope_id, max(0, limit)),
             ).fetchall()

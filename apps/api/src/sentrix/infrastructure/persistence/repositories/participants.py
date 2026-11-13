@@ -114,7 +114,7 @@ class SqliteEventParticipantRepository:
         with self._database.connect() as connection, connection:
             timestamp = _now()
             existing = connection.execute(
-                "SELECT evidence_ids_json, confidence FROM event_entities"
+                "SELECT evidence_ids_json, confidence FROM readable_event_entities"
                 " WHERE event_id = ? AND entity_id = ? AND relation = ?",
                 (event_id, entity_id, relation),
             ).fetchone()
@@ -151,8 +151,8 @@ class SqliteEventParticipantRepository:
     def list_participants(self, event_id: str) -> Sequence[EventParticipantRecord]:
         with self._database.connect() as connection:
             rows = connection.execute(
-                f"SELECT {_PARTICIPANT_COLUMNS} FROM event_participants ep"
-                " JOIN entities e ON e.id = ep.person_id"
+                f"SELECT {_PARTICIPANT_COLUMNS} FROM readable_event_participants ep"
+                " JOIN readable_entities e ON e.id = ep.person_id"
                 " WHERE ep.event_id = ? ORDER BY ep.updated_at DESC",
                 (event_id,),
             ).fetchall()
@@ -162,7 +162,7 @@ class SqliteEventParticipantRepository:
         with self._database.connect() as connection:
             rows = connection.execute(
                 "SELECT event_id, entity_id, relation, evidence_ids_json, confidence"
-                " FROM event_entities WHERE event_id = ? ORDER BY relation, entity_id",
+                " FROM readable_event_entities WHERE event_id = ? ORDER BY relation, entity_id",
                 (event_id,),
             ).fetchall()
         return [
@@ -180,8 +180,8 @@ class SqliteEventParticipantRepository:
         """1.0 ``db.py:2517-2522`` 那条自连接的 ``SELECT DISTINCT``，逐字搬。"""
         with self._database.connect() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT ep.event_id FROM event_participants ep"
-                " JOIN event_participants other ON other.event_id = ep.event_id"
+                "SELECT DISTINCT ep.event_id FROM readable_event_participants ep"
+                " JOIN readable_event_participants other ON other.event_id = ep.event_id"
                 " WHERE ep.person_id = ? AND other.person_id = ?"
                 " AND ep.role = ? AND other.role = ?",
                 (
@@ -206,7 +206,7 @@ class SqliteEventParticipantRepository:
 
     @staticmethod
     def _person_exists(connection: sqlite3.Connection, person_id: str) -> bool:
-        row = connection.execute("SELECT 1 FROM entities WHERE id = ?", (person_id,)).fetchone()
+        row = connection.execute("SELECT 1 FROM readable_entities WHERE id = ?", (person_id,)).fetchone()
         return row is not None
 
     @classmethod
@@ -226,7 +226,7 @@ class SqliteEventParticipantRepository:
         """
         evidence = _dedupe(evidence_ids)
         row = connection.execute(
-            "SELECT id, evidence_ids_json FROM event_participants"
+            "SELECT id, evidence_ids_json FROM readable_event_participants"
             " WHERE event_id = ? AND person_id = ? AND role = ?",
             (event_id, person_id, role),
         ).fetchone()
@@ -263,7 +263,7 @@ class SqliteEventParticipantRepository:
     @classmethod
     def _rehome(cls, connection: sqlite3.Connection, source_event_id: str, target_event_id: str) -> int:
         rows = connection.execute(
-            "SELECT * FROM event_participants WHERE event_id = ?", (source_event_id,)
+            "SELECT * FROM readable_event_participants WHERE event_id = ?", (source_event_id,)
         ).fetchall()
         for row in rows:
             cls._upsert_participant(
@@ -286,12 +286,12 @@ class SqliteEventParticipantRepository:
         不能省**：外键在，哪天 S6 接上写入者，缺了它的 ``events.merge`` 会当场炸。
         """
         rows = connection.execute(
-            "SELECT * FROM event_entities WHERE event_id = ?", (source_event_id,)
+            "SELECT * FROM readable_event_entities WHERE event_id = ?", (source_event_id,)
         ).fetchall()
         timestamp = _now()
         for row in rows:
             existing = connection.execute(
-                "SELECT evidence_ids_json, confidence FROM event_entities"
+                "SELECT evidence_ids_json, confidence FROM readable_event_entities"
                 " WHERE event_id = ? AND entity_id = ? AND relation = ?",
                 (target_event_id, row["entity_id"], row["relation"]),
             ).fetchone()
@@ -331,8 +331,8 @@ class SqliteEventParticipantRepository:
     def _find(self, event_id: str, person_id: str, role: str) -> EventParticipantRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                f"SELECT {_PARTICIPANT_COLUMNS} FROM event_participants ep"
-                " JOIN entities e ON e.id = ep.person_id"
+                f"SELECT {_PARTICIPANT_COLUMNS} FROM readable_event_participants ep"
+                " JOIN readable_entities e ON e.id = ep.person_id"
                 " WHERE ep.event_id = ? AND ep.person_id = ? AND ep.role = ?",
                 (event_id, person_id, role),
             ).fetchone()
