@@ -89,6 +89,13 @@ def _sentrix_environment() -> tuple[tuple[str, str], ...]:
     the WEMM defaults even though the sidecars on 8101/8103 are healthy.
     """
     names = (
+        # PhotoBench may restart the local API when a benchmark selects a new
+        # VLM. Preserve this worktree's data root and import executor mode so a
+        # restart never falls back to an empty default database.
+        "SENTRIX_DATA_DIR",
+        "SENTRIX_EXPERIENCE_MODE",
+        "SENTRIX_API_PORT",
+        "SENTRIX_VLM_BASE_URL",
         "SENTRIX_EMBEDDING_SCHEME",
         "SENTRIX_TEXT_EMBEDDER_URL",
         "SENTRIX_LEGACY_CLIP_URL",

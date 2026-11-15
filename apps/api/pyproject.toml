@@ -59,8 +59,9 @@ dependencies = [
     "httpx>=0.28,<1",
     "psutil>=6,<8",
     "pyyaml>=6,<7",
-    # Katna image selection is called directly on the SVD-deduplicated frames;
-    # no temporary video is encoded between the two stages.
+    # Shot boundaries come from adjacent-frame appearance changes; Katna then
+    # selects an adaptive number of frames per shot. Endpoints are selected by
+    # singleton Katna inputs, with no temporary video encoding.
     "Katna==0.9.2",
 ]
 

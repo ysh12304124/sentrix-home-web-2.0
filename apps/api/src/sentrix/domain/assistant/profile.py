@@ -58,9 +58,9 @@ DEFAULT_PROFILE = TurnProfile(
     name="goal_driven_candidate",
     max_steps=8,
     max_tool_calls=6,
-    # 1.0 runtime.py:1895 的硬收敛。实测小模型会反复改 query 重搜，把工具预算耗光后
-    # 以空答案收场（e8c9d4 的 35 题里 52%）；收敛到 1 次后逼它翻页或直接作答。
-    max_search_calls=1,
+    # 冻结工具集下 search 整轮可见；第一次查询失败或候选不足时允许一次重试
+    # （共 2 次）。超过 2 次仍由 ToolPolicy 拒绝，避免弱模型把预算耗在改词重搜上。
+    max_search_calls=2,
     # 见 ``max_page_calls`` 的注释：生产检索=页宽=6，翻页工具不出现；2 次是未来
     # 提高上限时的翻页 + 失败重试余量。
     max_page_calls=2,

@@ -23,6 +23,7 @@ export function AnswerCorrectnessPanel({ memoryEffectiveness, validityLayers }: 
   const choices = scoreChoices({evaluation_summary: correctness?.evaluation_summary});
   const label = (value: string) => choices.find(s => s.value === value)?.label;
   const created = memoryEffectiveness?.levels?.find((level) => level.key === "L4+")?.created || 0;
+  const scored = Number(correctness?.correct || 0) + Number(correctness?.partial || 0) + Number(correctness?.incorrect || 0);
   return (
     <section className="answer-correctness-panel">
       <div className="answer-correctness-head">
@@ -34,18 +35,18 @@ export function AnswerCorrectnessPanel({ memoryEffectiveness, validityLayers }: 
           <small>{label("2")}</small>
           <b>{correctness?.correct}</b>
           <span>
-            {fmtPct(correctness?.exact_accuracy)} · 共 {created} 题
+            {fmtPct(correctness?.exact_accuracy)} · 已评分 {scored} / 共 {created} 题
           </span>
         </div>
         {label("1") && <div className="answer-correct answer-correct-partial">
           <small>{label("1")}</small>
           <b>{correctness?.partial}</b>
-          <span>{fmtPct((correctness?.partial || 0) / (created || 1))}</span>
+          <span>{fmtPct((correctness?.partial || 0) / (scored || 1))}</span>
         </div>}
         <div className="answer-correct answer-correct-bad">
           <small>{label("0")}</small>
           <b>{correctness?.incorrect}</b>
-          <span>{fmtPct((correctness?.incorrect || 0) / (created || 1))}</span>
+          <span>{fmtPct((correctness?.incorrect || 0) / (scored || 1))}</span>
         </div>
         <div className="answer-correct answer-correct-na">
           <small>未评分</small>

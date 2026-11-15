@@ -156,6 +156,7 @@ _TYPE_ALIASES: Mapping[str, str] = {
 
 _HEX_DIGITS = re.compile(r"^[0-9a-f]+$")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^>]*>")
+
 _UNKNOWN_SCOPE_VALUES = frozenset({"未知", "unknown", "n/a", "na", "none", "null", "-"})
 
 

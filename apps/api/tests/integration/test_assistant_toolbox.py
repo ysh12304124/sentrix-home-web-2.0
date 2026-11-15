@@ -251,6 +251,7 @@ def test_search_returns_a_result_set_with_a_preview(toolbox):
     assert outcome.observation["total"] == 2
     assert outcome.observation["asset_ids"][0] == "asset_0"
     preview = outcome.model_visible["preview"]
+    assert outcome.observation["preview"] == preview
     assert [item["handle"] for item in preview] == ["photo_1", "photo_2"]
     assert preview[0]["file_name"] == "海边.jpg"
 

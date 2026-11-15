@@ -90,19 +90,19 @@ def test_the_page_tool_disappears_after_it_has_been_used_once():
     assert "get_result_page" not in offered
 
 
-def test_paging_survives_a_satisfied_photo_set():
-    """翻页**不按需求剪**：``photo_set`` 销账不等于候选看完了，第一次翻页仍要可用。
+def test_paging_is_never_offered():
+    """翻页工具不再 advertise：检索固定返回 6 张、页宽也是 6，一次就取完。
 
-    但它是**一次性**的：成功翻过一次后调用方把 ``page_available`` 置假，工具物理上
-    消失（见下一条）；候选不足一页时从一开始就不出现。
+    工具定义与 handler 保留（历史调用仍返回正常错误），但模型可见表里不再出现，
+    避免弱模型在被拒的翻页上浪费步数。
     """
     ledger = ledger_with(EvidenceType.PHOTO_SET)
     ledger.satisfy(EvidenceType.PHOTO_SET, call_id="call_1")
 
     offered = names(select_tools(ledger, has_result_set=True, tools_exhausted=False))
 
-    assert "get_result_page" in offered
-    # 检索本身反而该退场：``max_search_calls = 1``，留着它只是留一个必然被拒的工具。
+    assert "get_result_page" not in offered
+    # 检索本身也退场：达到 ``max_search_calls`` 后留着它只是留一个必然被拒的工具。
     assert "search_memories" not in offered
 
 

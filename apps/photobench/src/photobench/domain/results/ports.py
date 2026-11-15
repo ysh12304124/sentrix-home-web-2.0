@@ -165,3 +165,10 @@ class ProcessDiagnosticStore(Protocol):
     """Derived observations are stored separately from immutable run snapshots."""
 
     def save_process_diagnostics(self, run_id: str, diagnostics: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class RunVideoComparisonStore(Protocol):
+    def read_video_comparison(self, run_id: str) -> dict[str, Any] | None:
+        """Read an optional persisted, question-level historical comparison."""
+        ...
