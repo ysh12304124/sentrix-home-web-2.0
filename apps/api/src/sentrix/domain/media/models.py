@@ -225,6 +225,10 @@ class Asset:
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
     capture_time: CaptureTime = CaptureTime()
+    # 失败原因（2026-11-11 添加）。当 status=failed 时记录具体错误信息，
+    # 避免 ReadTimeout 导致错误信息丢失。背景：24h 压力测试中 35 个资产标记为 FAILED，
+    # 但无法查询失败原因。
+    error: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):

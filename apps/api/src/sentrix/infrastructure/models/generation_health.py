@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Callable
@@ -14,6 +15,8 @@ from typing import Callable
 import httpx
 
 from sentrix.infrastructure.models.gateway import model_auth_headers
+
+log = logging.getLogger(__name__)
 
 PROBE_TIMEOUT_S = 10.0
 SUCCESS_TTL_S = 30.0
@@ -52,6 +55,7 @@ class ModelGenerationHealth:
             try:
                 model = self._model_name()
                 models_ok = True
+                log.info("VLM request from=generation_health, has_image=False, timeout=%ss", self._timeout_s)
                 response = httpx.post(
                     f"{self._base_url}/chat/completions",
                     headers={**model_auth_headers(), "Content-Type": "application/json"},

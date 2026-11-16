@@ -35,6 +35,7 @@ class OpenAICausalJudge:
             return ()
         model = self._served_model.current()
         try:
+            log.info("VLM request from=causal_judge, has_image=False, timeout=%ss", self._timeout_s)
             response = httpx.post(
                 f"{self._base_url}/chat/completions",
                 json={

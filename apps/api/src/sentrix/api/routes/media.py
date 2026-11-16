@@ -116,6 +116,7 @@ def to_summary(asset: Asset, place: str = "") -> AssetSummary:
         derived_kind=asset.derived_kind,
         parent_asset_id=asset.parent_asset_id,
         source_timestamp_sec=asset.source_timestamp_sec,
+        error=asset.error,
     )
 
 
@@ -920,7 +921,7 @@ def list_assets(
         raise HTTPException(status_code=422, detail="unsupported sort key")
     if order not in {"asc", "desc"}:
         raise HTTPException(status_code=422, detail="unsupported sort order")
-    size = max(1, min(limit, 500))
+    size = max(1, min(limit, 5000))
     assets, total, counts = container.asset_repository.list_page(
         scope_id or None,
         media_type=media_type or None,

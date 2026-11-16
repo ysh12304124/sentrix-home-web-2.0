@@ -53,6 +53,34 @@ PHASE_LABELS: dict[str, str] = {
     "unassigned": "未分配阶段",
 }
 
+# 内存中需要丢弃的字段（大数据，主要是进程列表）
+# aggregate()、apply_live_sample 等需要的所有小字段都保留
+# 进程列表是内存膨胀的主要原因（每个样本可能包含几十个进程，每个进程有很多属性）
+_DISCARD_FIELDS = frozenset({
+    "model_processes",
+    "model_system_processes",
+    "benchmark_processes",
+    "benchmark_gpu_processes",
+    "other_processes",
+    "all_processes",
+})
+
+
+def _extract_aggregate_fields(sample: dict[str, Any]) -> dict[str, Any]:
+    """从完整样本中丢弃大数据字段（进程列表等），保留其余所有字段。
+
+    完整样本（~70KB）主要大在进程列表：model_processes / all_processes 等，
+    每个样本可能包含几十个进程，每个进程有很多属性。24 小时运行后这些进程列表
+    累积到 3-4GB。
+
+    这个函数只丢弃进程列表，保留所有其他字段（包括 aggregate() 需要的元数据、
+    诊断信息等），确保聚合统计和 run.json 输出完全一致。
+
+    磁盘文件不受影响——所有样本的完整数据都通过 on_sample 回调写入。
+    注意：apply_live_sample 通过 on_sample 接收完整样本，不受此函数影响。
+    """
+    return {key: value for key, value in sample.items() if key not in _DISCARD_FIELDS}
+
 
 class GpuSampler:
     """按间隔轮询设备与被管模型的内存；一个采样点一次回调。
@@ -356,6 +384,11 @@ class GpuSampler:
             sample["non_torch_gib"] = memory_profile.get("non_torch_gib")
             sample["cuda_graph_gib"] = memory_profile.get("cuda_graph_gib")
             sample, _rejected = validated_telemetry_sample(sample)
+            # 内存优化：丢弃进程列表（大数据），保留其余所有字段
+            # 磁盘（on_sample）仍写入完整样本，不受影响
+            memory_sample = _extract_aggregate_fields(sample)
+            with self._samples_lock:
+                self.samples.append(memory_sample)
             if self.on_sample:
                 callback_started = time.monotonic()
                 try:

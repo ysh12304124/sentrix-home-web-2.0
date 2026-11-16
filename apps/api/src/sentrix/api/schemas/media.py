@@ -48,6 +48,8 @@ class AssetSummary(BaseModel):
     derived_kind: str | None = None
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
+    # status=failed 时记录具体错误信息。
+    error: str | None = None
 
 
 class AssetListResponse(BaseModel):

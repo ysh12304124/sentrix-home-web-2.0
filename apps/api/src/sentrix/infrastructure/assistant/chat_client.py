@@ -595,6 +595,12 @@ class OpenAIChatModel:
             payload["chat_template_kwargs"] = dict(chat_template_kwargs)
 
         exact_budget = self._model.apply_output_budget(payload, timeout_s=self._timeout_s)
+        has_image = any(
+            isinstance(getattr(msg, "content", None), list) and
+            any(isinstance(block, dict) and block.get("type") == "image_url" for block in msg.content)
+            for msg in messages
+        )
+        log.info("VLM request from=chat_client, has_image=%s, timeout=%ss", has_image, self._timeout_s)
         try:
             with httpx.Client(timeout=self._timeout_s) as client:
                 response = client.post(

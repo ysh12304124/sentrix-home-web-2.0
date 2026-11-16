@@ -141,10 +141,10 @@ class DatasetCatalog:
                 "ambiguous_count": 0,
             }
         try:
-            spaces_data = self._http.request_json(f"{base}{API_PREFIX}/memory-spaces?limit=1000", timeout=20)
+            spaces_data = self._http.request_json(f"{base}{API_PREFIX}/memory-spaces?limit=5000", timeout=20)
             spaces = spaces_data.get("spaces") if isinstance(spaces_data, dict) else spaces_data
             scope_id = qa_scope_id_for_album(spaces or [], album_id)
-            query = f"{base}{API_PREFIX}/assets?limit=1000"
+            query = f"{base}{API_PREFIX}/assets?limit=5000"
             if scope_id:
                 query += f"&scope_id={quote(scope_id)}"
             assets_data = self._http.request_json(query, timeout=30)

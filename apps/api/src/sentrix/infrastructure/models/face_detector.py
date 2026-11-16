@@ -18,6 +18,7 @@ ONNX 人脸模型的解码方式完全不同，混了会得到一堆位置离谱
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Sequence
@@ -25,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from sentrix.infrastructure.models.onnx_runtime import (
     RETINAFACE_PROVIDERS_ENV,
@@ -264,6 +267,14 @@ class RetinaFaceTiledDetector:
                     self._input_name = str(session.get_inputs()[0].name)
                     self._session = session
                 except Exception as error:  # 权重缺失/损坏：记下来，由调用方决定降级
+                    # 错误留痕：记录 ONNX session 加载失败的详细信息
+                    log.warning(
+                        "RetinaFace session load failed: %s: %s (model=%s, providers=%s)",
+                        type(error).__name__,
+                        error,
+                        self.model_path,
+                        self._providers,
+                    )
                     self.error = str(error)
                     raise
 

@@ -596,11 +596,33 @@ class ImportAssets:
         的协作者留成 ``None``——「协作者没接」与「算出来是空」必须分得开。
         """
         started = time.perf_counter()
-        prepared = PreparedImage(
-            visual=self._visual_indexer.prepare(asset) if self._visual_indexer is not None else None,
-            semantics=self._observer.prepare(asset) if self._observer is not None else None,
-            faces=self._face_enroller.prepare(asset.path) if self._face_enroller is not None else None,
-        )
+
+        # 错误留痕：每个推理步骤单独 try-except，记录失败的具体步骤
+        visual = None
+        if self._visual_indexer is not None:
+            try:
+                visual = self._visual_indexer.prepare(asset)
+            except Exception as error:
+                log.warning("prepare_image: visual_indexer (CLIP) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+                raise
+
+        semantics = None
+        if self._observer is not None:
+            try:
+                semantics = self._observer.prepare(asset)
+            except Exception as error:
+                log.warning("prepare_image: observer (VLM) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+                raise
+
+        faces = None
+        if self._face_enroller is not None:
+            try:
+                faces = self._face_enroller.prepare(asset.path)
+            except Exception as error:
+                log.warning("prepare_image: face_enroller failed for %s: %s: %s", asset.id, type(error).__name__, error)
+                raise
+
+        prepared = PreparedImage(visual=visual, semantics=semantics, faces=faces)
         return PreparedImage(
             visual=prepared.visual,
             semantics=prepared.semantics,
@@ -621,8 +643,19 @@ class ImportAssets:
         打乱顺序会改变「折进哪个事件」的结果，而它**不报错**。
         """
         now = self._clock()
-        placed = self._index_place(asset)
-        indexed = self._index_visual(asset, prepared)
+
+        # 错误留痕：每个步骤单独 try-except，记录失败的具体步骤
+        try:
+            placed = self._index_place(asset)
+        except Exception as error:
+            log.warning("commit_image: _index_place failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            indexed = self._index_visual(asset, prepared)
+        except Exception as error:
+            log.warning("commit_image: _index_visual (CLIP) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
 
         # **重放必须复用观察 ID。** 观察一旦插入，后段任一步失败重跑时若再生成
         # ``obs_*``，文本向量、词项、实体关联都会跟着多一套；事件归属也会再建一个。
@@ -645,17 +678,51 @@ class ImportAssets:
             )
             self._observations.add(observation)
 
-        observation = self._observe(asset, observation, prepared) or observation
-        faces = self._enroll_faces(asset, observation, prepared)
-        event_id = self._assign_event(observation, forced_event_id)
+        try:
+            observation = self._observe(asset, observation, prepared) or observation
+        except Exception as error:
+            log.warning("commit_image: _observe (VLM) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            faces = self._enroll_faces(asset, observation, prepared)
+        except Exception as error:
+            log.warning("commit_image: _enroll_faces failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            event_id = self._assign_event(observation, forced_event_id)
+        except Exception as error:
+            log.warning("commit_image: _assign_event failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
         # 写在前面则 event_id 恒为空，而那条 metadata 只在召回时用得到——
         # 错了不报错，只是事件维度的扩展永远失效。
-        text_rows = self._index_text(observation, event_id)
-        entity_ids = self._extract_entities(observation, event_id)
-        fact_ids = self._maintain_facts(observation)
-        lexical_terms = self._project_lexical(observation)
+        try:
+            text_rows = self._index_text(observation, event_id)
+        except Exception as error:
+            log.warning("commit_image: _index_text (BGE) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            entity_ids = self._extract_entities(observation, event_id)
+        except Exception as error:
+            log.warning("commit_image: _extract_entities (VLM) failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            fact_ids = self._maintain_facts(observation)
+        except Exception as error:
+            log.warning("commit_image: _maintain_facts failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
+
+        try:
+            lexical_terms = self._project_lexical(observation)
+        except Exception as error:
+            log.warning("commit_image: _project_lexical failed for %s: %s: %s", asset.id, type(error).__name__, error)
+            raise
 
         return ProcessedAsset(
             observation_id=observation.id,

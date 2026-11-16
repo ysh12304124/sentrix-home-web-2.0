@@ -186,6 +186,18 @@ def _load_onnx() -> None:
 
             sess_opts = ort.SessionOptions()
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            # 内存优化：禁用持久化内存池，避免长期运行后内存累积
+            sess_opts.enable_cpu_mem_arena = False  # 禁用 CPU 内存池（减少累积）
+            sess_opts.enable_mem_pattern = False    # 禁用内存复用模式（减少累积）
+            # 优化执行
+            sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            sess_opts.inter_op_num_threads = 1
+            sess_opts.intra_op_num_threads = 1
+            # 限制 GPU 显存增长（仅 CUDA provider 有效）
+            if "CUDAExecutionProvider" in providers:
+                sess_opts.add_session_config_entry("providers:CUDA", "gpu_mem_limit=1073741824")  # 1GB 限制（降低）
+                sess_opts.add_session_config_entry("providers:CUDA", "arena_extend_strategy=1")  # kSameAsRequested
+                sess_opts.add_session_config_entry("providers:CUDA", "do_copy_in_default_stream=1")
 
             if attempt > 0:
                 print(f"[CLIP] 第 {attempt + 1} 次尝试加载 ONNX 模型...")

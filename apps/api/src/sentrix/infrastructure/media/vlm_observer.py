@@ -243,6 +243,7 @@ def chat_json(
     image: str | Sequence[str] | None,
     timeout_s: float,
     observations: list[dict[str, Any]] | None = None,
+    caller: str = "unknown",
 ) -> dict[str, Any] | None:
     """一次「提示词（+ 一张或多张图）→ JSON 对象」的往返。任何失败都返回 ``None``。
 
@@ -257,6 +258,13 @@ def chat_json(
     次序发，不排序、不去重。单张仍然照旧传字符串——``OpenAIVlmObserver`` 与
     ``OpenAIPersonVision`` 的调用点一个字都不用改。
     """
+    # 记录请求来源，用于调试
+    call_id = uuid.uuid4().hex[:8]
+    has_image = image is not None
+    log.info(
+        "VLM request [%s] from=%s, has_image=%s, timeout=%ss",
+        call_id, caller, has_image, timeout_s
+    )
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     for url in [image] if isinstance(image, str) else list(image or ()):
         content.append({"type": "image_url", "image_url": {"url": url}})
@@ -373,7 +381,7 @@ class OpenAIVlmObserver:
         return semantics_from_payload(parsed)
 
     def _chat(self, prompt: str, image: str | None) -> dict[str, Any] | None:
-        return chat_json(self._endpoint, self._model, prompt, image, self._timeout)
+        return chat_json(self._endpoint, self._model, prompt, image, self._timeout, caller="vlm_observer")
 
 
 def _first_content(payload: object) -> str:

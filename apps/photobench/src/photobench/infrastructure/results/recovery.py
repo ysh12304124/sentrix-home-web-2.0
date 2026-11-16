@@ -16,6 +16,38 @@ from photobench.infrastructure.results.store import committed_path, read_entry, 
 log = logging.getLogger(__name__)
 
 
+def _cleanup_orphan_turns(state: dict) -> int:
+    """清理 orphan run 创建的 turn，避免 TurnExecutor 反复认领。
+
+    Run 崩溃后，QA 评测产生的 turn 可能还卡在 Sentrix 数据库中。
+    TurnExecutor 会反复尝试认领这些 turn（因为租约过期），导致 VLM 队列满。
+    在恢复 orphan run 时，同时清理这些 turn。
+    """
+    import httpx
+
+    # 从 state 中获取 Sentrix URL
+    sentrix_url = state.get("sentrix_url") or "http://127.0.0.1:8191"
+    items = state.get("items") or []
+    cleaned = 0
+
+    for item in items:
+        # 清理 runtime_turns 中的 turn
+        runtime_turns = item.get("runtime_turns") or []
+        for turn in runtime_turns:
+            turn_id = turn.get("turn_id") if isinstance(turn, dict) else None
+            if turn_id:
+                try:
+                    response = httpx.post(
+                        f"{sentrix_url}/api/v1/assistant/turns/{turn_id}/cancel",
+                        timeout=2,
+                    )
+                    if response.status_code == 202:
+                        cleaned += 1
+                except Exception:  # noqa: BLE001 - 清理失败不影响恢复
+                    pass
+    return cleaned
+
+
 class FileRunStartupRecovery:
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -79,6 +111,11 @@ class FileRunStartupRecovery:
                 }
                 if active:
                     state.update(status="interrupted", finished_at=timestamp)
+                    # 清理 orphan run 创建的 turn，避免 TurnExecutor 反复认领
+                    cleaned_turns = _cleanup_orphan_turns(state)
+                    if cleaned_turns > 0:
+                        state.setdefault("recovery", {})["cleaned_turns"] = cleaned_turns
+                        log.info("清理了 %d 个 orphan turn: %s", cleaned_turns, run_dir.name)
                 if orphan_judge and isinstance(rejudge, dict):
                     state["rejudge"] = {
                         **rejudge,

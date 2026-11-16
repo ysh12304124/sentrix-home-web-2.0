@@ -395,8 +395,22 @@ class FaceAdapter:
             return
         with self._load_lock:
             if self._app is None:
-                self._recognition_session = self._load_buffalo_recognition()
-                self._app = self._build_analysis()
+                try:
+                    self._recognition_session = self._load_buffalo_recognition()
+                    self._app = self._build_analysis()
+                    log.info("FaceAdapter sessions loaded: SCRFD + ArcFace + recognition")
+                except Exception as error:
+                    # 错误留痕：记录 insightface session 加载失败的详细信息
+                    # 需要区分是 RetinaFace 还是 SCRFD/ArcFace 的初始化失败
+                    log.warning(
+                        "FaceAdapter session load failed: %s: %s (model_root=%s, model_name=%s, providers=%s)",
+                        type(error).__name__,
+                        error,
+                        self._model_root,
+                        self._model_name,
+                        self._providers,
+                    )
+                    raise
 
     def _build_analysis(self) -> Any:
         """建 buffalo_l 的 ``FaceAnalysis``：SCRFD 检测 + ArcFace 识别两个模块。

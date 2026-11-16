@@ -23,7 +23,7 @@ from sentrix.infrastructure.persistence.database import Database
 _ASSET_COLUMNS = (
     "id, scope_id, file_name, media_type, path, mime_type, size_bytes, status,"
     " content_sha256, captured_at, gps_latitude, gps_longitude, created_at, updated_at,"
-    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json"
+    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json, error"
 )
 
 
@@ -56,6 +56,7 @@ def _row_to_asset(row: sqlite3.Row) -> Asset:
         derived_kind=row["derived_kind"],
         parent_asset_id=row["parent_asset_id"],
         source_timestamp_sec=row["source_timestamp_sec"],
+        error=row["error"],
     )
 
 
@@ -191,11 +192,16 @@ class SqliteAssetRepository:
             ).fetchone()
         return _row_to_asset(row) if row else None
 
-    def update_status(self, asset_id: str, status: AssetStatus) -> None:
+    def update_status(self, asset_id: str, status: AssetStatus, error: str | None = None) -> None:
+        """更新资产状态，可选地记录失败原因。
+
+        背景：2026-11-10 的 24h 压力测试中 35 个资产标记为 FAILED，但无法查询失败原因。
+        添加 error 参数后，调用方可以在标记失败时同时记录错误信息。
+        """
         with self._database.connect() as connection, connection:
             connection.execute(
-                "UPDATE assets SET status = ?, updated_at = datetime('now') WHERE id = ?",
-                (status.value, asset_id),
+                "UPDATE assets SET status = ?, error = ?, updated_at = datetime('now') WHERE id = ?",
+                (status.value, error, asset_id),
             )
 
 

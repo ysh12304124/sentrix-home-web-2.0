@@ -92,7 +92,7 @@ class ImportBatchRequest(BaseModel):
 
     directory: str = Field(..., min_length=1, max_length=4096)
     scope_id: str = "home-default"
-    limit: int = Field(200, ge=1, le=1000)
+    limit: int = Field(200, ge=1, le=5000)
     operation_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,96}$")
 
 
@@ -194,7 +194,7 @@ class PipelineProcessRequest(BaseModel):
 
     scope_id: str = Field(..., min_length=1, max_length=255)
     # 流水线按 workers 有界预取，源资产清单不决定推理并发。
-    asset_ids: list[str] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list, max_length=5000)
     operation_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 

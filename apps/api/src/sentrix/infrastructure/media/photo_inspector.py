@@ -99,5 +99,6 @@ class OpenAIPhotoInspector:
         而不必起 HTTP 服务。
         """
         return chat_json(
-            self._endpoint, self._model, prompt, images, self._timeout, observations=_INSPECTION_FACTS.get()
+            self._endpoint, self._model, prompt, images, self._timeout,
+            observations=_INSPECTION_FACTS.get(), caller="photo_inspector"
         )

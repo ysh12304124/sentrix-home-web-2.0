@@ -174,4 +174,4 @@ class OpenAIPersonVision:
         }
 
     def _chat(self, prompt: str, image: str | None) -> dict[str, Any] | None:
-        return chat_json(self._endpoint, self._model, prompt, image, self._timeout)
+        return chat_json(self._endpoint, self._model, prompt, image, self._timeout, caller="person_vision_model")

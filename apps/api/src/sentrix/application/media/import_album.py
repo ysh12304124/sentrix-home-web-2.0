@@ -527,8 +527,11 @@ class ProcessAlbumPipeline:
                     inference = future.result()
                     result = self._importer.finish(self._importer.resume(asset), inference)
                 except Exception as error:  # 一张失败不中断后续资产
-                    self._assets.update_status(asset.id, AssetStatus.FAILED)
-                    failures[index] = AlbumFailure(asset.file_name, f"{type(error).__name__}: {error}")
+                    # 错误留痕：把失败原因持久化到数据库
+                    # API 响应丢失，无法查询失败原因。现在把错误信息保存到 assets.error 字段。
+                    error_message = f"{type(error).__name__}: {error}"
+                    self._assets.update_status(asset.id, AssetStatus.FAILED, error=error_message)
+                    failures[index] = AlbumFailure(asset.file_name, error_message)
                     continue
                 self._assets.update_status(asset.id, AssetStatus.PROCESSED)
                 result = replace(result, status=AssetStatus.PROCESSED)

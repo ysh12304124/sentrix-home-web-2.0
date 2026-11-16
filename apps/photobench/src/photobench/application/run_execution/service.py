@@ -652,9 +652,34 @@ class RunExecution:
                     summary = effective_summary(state.data)
                     state.set("summary", summary)
                     state.set("run_valid", summary["run_valid"])
+                    # 清理本 run 创建的所有 turn，避免 TurnExecutor 反复认领
+                    self._cleanup_run_turns(state)
             finally:
                 state.stop_persist_writer()
         return state.data
+
+    def _cleanup_run_turns(self, state: RunState) -> None:
+        """清理本 run 创建的所有 turn，避免 TurnExecutor 反复认领卡住的 turn。
+
+        Run 结束（完成、取消、失败）后，QA 评测产生的 turn 已经没有用处。
+        如果不清理，TurnExecutor 会反复尝试认领这些 turn（因为租约过期），
+        导致 VLM 队列满、延迟高。
+        """
+        items = state.data.get("items") or []
+        cleaned = 0
+        for item in items:
+            # 清理 runtime_turns 中的 turn
+            runtime_turns = item.get("runtime_turns") or []
+            for turn in runtime_turns:
+                turn_id = turn.get("turn_id") if isinstance(turn, dict) else None
+                if turn_id:
+                    try:
+                        self.client.cancel_operation(kind="turn", operation_id=turn_id, timeout=2)
+                        cleaned += 1
+                    except Exception:  # noqa: BLE001 - 清理失败不影响主流程
+                        pass
+        if cleaned > 0:
+            log.info("清理了 %d 个 turn", cleaned)
 
     # ---- 状态与落盘 ---------------------------------------------------------
 
@@ -1906,6 +1931,33 @@ class RunExecution:
             if assets
             else observed_image_count
         )
+
+        # 从资产列表中提取失败原因
+        # 背景：ReadTimeout 导致 API 响应丢失，response_failures 为空。
+        # 但现在 sentrix 会把错误信息保存到 assets.error 字段，
+        # 所以可以从 assets 列表中提取失败资产的错误信息。
+        failed_assets = [item for item in assets if item.get("status") == "failed"]
+        for failed_asset in failed_assets:
+            asset_error = failed_asset.get("error")
+            if asset_error:
+                # 检查是否已在 error_details 中
+                asset_id = failed_asset.get("id", "")
+                file_name = failed_asset.get("file_name", "unknown")
+                already_recorded = any(
+                    d.get("sample_id") == file_name or d.get("asset_id") == asset_id
+                    for d in error_details
+                )
+                if not already_recorded:
+                    error_details.append(
+                        {
+                            "sample_id": file_name,
+                            "asset_id": asset_id,
+                            "status": "failed",
+                            "error_type": "pipeline_error",
+                            "reason": asset_error,
+                        }
+                    )
+
         phase_result = {
             "total_seconds": round(float(timings.get("total") or time.perf_counter() - started), 3),
             "poll_iterations": poll_count,

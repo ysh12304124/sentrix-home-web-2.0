@@ -324,6 +324,7 @@ class Monitor:
             "stream": False,
         }
         try:
+            log.info("VLM request from=control_monitor, has_image=False, timeout=10.0s")
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(
                     f"{settings.model_upstream_url.rstrip('/')}/chat/completions",
