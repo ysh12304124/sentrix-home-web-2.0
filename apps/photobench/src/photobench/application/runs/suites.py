@@ -353,7 +353,7 @@ class RunSuites:
                     continue
                 if build.get("status") != "ready":
                     raise InvalidRequestError("selected scope has an incomplete build")
-                if build.get("embedding") is not None and build["embedding"] != connection.get("embedding"):
+                if build.get("embedding") and build["embedding"] != connection.get("embedding"):
                     raise InvalidRequestError(
                         "embedding configuration changed; build a new scope before reuse"
                     )

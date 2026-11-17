@@ -333,6 +333,7 @@ class AssistantToolbox:
                 "latency_ms": trace.latency_ms,
                 "backend": trace.backend,
                 "reason": trace.reason,
+                **({"all_scores": list(trace.all_scores)} if trace.channel == "utility" else {}),
             }
             for trace in result.channel_trace
         ]

@@ -57,7 +57,7 @@ from sentrix.application.retrieval.retrieve_visual import (
     VisualSearchRequest,
     VisualSearchResult,
 )
-from sentrix.domain.media.models import MediaType
+from sentrix.domain.media.models import Asset, MediaType
 from sentrix.domain.media.ports import AssetRepository, MediaStorage, ObservationRepository
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.fusion import DEFAULT_CHANNEL_WEIGHTS, fuse
@@ -396,40 +396,59 @@ class RetrieveEvidence:
             return None
         pool = self._unique_candidates(candidates)
         started = time.monotonic()
-        prepared: list[tuple[int, FusedCandidate, bytes]] = []
+        prepared: list[tuple[int, FusedCandidate, Asset]] = []
         fallback: list[tuple[int, FusedCandidate]] = []
         failures: list[str] = []
+        details: dict[str, dict[str, object]] = {
+            candidate.asset_id: {
+                "asset_id": candidate.asset_id,
+                "input_rank": position + 1,
+                "score": None,
+                "score_kind": "true_token_logprob",
+                "selected": False,
+                "channels": dict(candidate.channels),
+                "status": "unscored",
+                "reason": "",
+            }
+            for position, candidate in enumerate(pool)
+        }
         for position, candidate in enumerate(pool):
             asset = assets.get(candidate.asset_id)
             if asset is None:
+                details[candidate.asset_id]["reason"] = "missing_asset"
                 fallback.append((position, candidate))
                 failures.append(f"missing:{candidate.asset_id}")
                 continue
             if asset.media_type != MediaType.IMAGE:
+                details[candidate.asset_id]["reason"] = "non_image_fallback"
                 # Utility-MRAG's surrogate is an image scorer.  Video assets in this
                 # project are represented by image keyframes, so the video row itself
                 # remains a deterministic fallback rather than being silently dropped.
                 fallback.append((position, candidate))
                 continue
-            try:
-                prepared.append((position, candidate, storage.read_asset(asset)))
-            except OSError as error:
-                fallback.append((position, candidate))
-                failures.append(f"unreadable:{candidate.asset_id}:{error}")
+            prepared.append((position, candidate, asset))
 
-        def score_one(image: bytes) -> float | None:
+        def score_one(asset: Asset) -> tuple[float | None, dict[str, object]]:
             try:
-                return utility.score(question, image)
+                image = storage.read_asset(asset)
+                with_trace = getattr(utility, "score_with_trace", None)
+                if callable(with_trace):
+                    result = with_trace(question, image)
+                    return result.get("score"), dict(result)
+                return utility.score(question, image), {}
             except Exception as error:  # noqa: BLE001 - one bad image must not abort selection
                 log.warning("效用评分候选失败: %s", error)
-                return None
+                return None, {"reason": type(error).__name__}
 
         scored: list[tuple[float, int, FusedCandidate]] = []
         unscored_images: list[tuple[int, FusedCandidate]] = []
         if prepared:
             with ThreadPoolExecutor(max_workers=self._utility_concurrency) as executor:
                 scores = list(executor.map(score_one, (image for _, _, image in prepared)))
-            for (position, candidate, _), score in zip(prepared, scores, strict=True):
+            for (position, candidate, _), (score, trace) in zip(prepared, scores, strict=True):
+                details[candidate.asset_id].update(trace)
+                details[candidate.asset_id]["score"] = score
+                details[candidate.asset_id]["status"] = "scored" if score is not None else "failed"
                 if score is None:
                     unscored_images.append((position, candidate))
                     failures.append(f"score_unavailable:{candidate.asset_id}")
@@ -451,6 +470,7 @@ class RetrieveEvidence:
                     candidate_count=len(pool),
                     latency_ms=latency_ms,
                     reason=("no_scoreable_candidates" if not prepared else ";".join(failures[:3])),
+                    all_scores=tuple(details.values()),
                 )
             )
             return None
@@ -464,6 +484,9 @@ class RetrieveEvidence:
             )
         ]
         ranked = self._unique_candidates([*ranked_images, *fallback_with_order])
+        for index, candidate in enumerate(ranked):
+            details[candidate.asset_id]["final_rank"] = index + 1
+            details[candidate.asset_id]["selected"] = index < limit
         backend = "utility"
         with suppress(Exception):
             backend = utility.model_id
@@ -475,6 +498,7 @@ class RetrieveEvidence:
                 latency_ms=latency_ms,
                 backend=backend,
                 reason=(";".join(failures[:3]) if failures else ""),
+                all_scores=tuple(details.values()),
             )
         )
         return ranked[:limit]
@@ -697,6 +721,23 @@ class RetrieveEvidence:
                 traces=traces,
             )
             fused = utility_selected if utility_selected is not None else fallback
+            selected_ids = {candidate.asset_id for candidate in fused[:limit]}
+            traces = [
+                replace(
+                    trace,
+                    all_scores=tuple(
+                        {
+                            **row,
+                            "selected": row["asset_id"] in selected_ids,
+                            "selection_policy": "utility" if utility_selected is not None else "fallback",
+                        }
+                        for row in trace.all_scores
+                    ),
+                )
+                if trace.channel == "utility"
+                else trace
+                for trace in traces
+            ]
         elif graph_candidates:
             fused = fallback
         else:

@@ -67,6 +67,8 @@ class Settings(BaseSettings):
                 "deployment_profile",
                 "vlm_base_url",
                 "utility_vlm_base_url",
+                "utility_vlm_model",
+                "utility_vlm_cache_revision",
                 "utility_vlm_timeout_s",
                 "utility_vlm_concurrency",
                 "embedding_scheme",
@@ -112,8 +114,11 @@ class Settings(BaseSettings):
     # endpoint: the production VLM must not be used for one extra image request per
     # candidate.  Empty means the graph-enabled retriever keeps its normal ordering.
     utility_vlm_base_url: str = ""
+    utility_vlm_model: str = ""
+    # Bump when replacing weights behind an unchanged served model ID.
+    utility_vlm_cache_revision: str = "v1"
     utility_vlm_timeout_s: float = 45.0
-    utility_vlm_concurrency: int = Field(default=2, ge=1, le=4)
+    utility_vlm_concurrency: int = Field(default=2, ge=1, le=2)
     # Optional OpenAI-compatible Qwen-ASR endpoint. Empty keeps speech transcription disabled.
     qwen_asr_base_url: str = ""
     qwen_asr_model: str = "Qwen3-ASR"

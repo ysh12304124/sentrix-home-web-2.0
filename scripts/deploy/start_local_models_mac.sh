@@ -24,9 +24,15 @@ CLIP_PORT="${SENTRIX_LEGACY_CLIP_PORT:-8103}"
 RERANK_PORT="${SENTRIX_BGE_RERANK_PORT:-8104}"
 UTILITY_VLM_PORT="${SENTRIX_UTILITY_VLM_PORT:-8106}"
 RERANK_MODEL_DIR="${SENTRIX_BGE_RERANKER_MODEL_PATH:-$PROJ/data/models/bge-reranker-v2-m3}"
-UTILITY_VLM_MODEL="${SENTRIX_UTILITY_VLM_MODEL:-$PROJ/data/models/qwen3-vl-2b-surrogate/Qwen3VL-2B-Instruct-Q4_K_M.gguf}"
+UTILITY_VLM_MODEL="${SENTRIX_UTILITY_VLM_MODEL_PATH:-$PROJ/data/models/qwen3-vl-2b-surrogate/Qwen3VL-2B-Instruct-Q4_K_M.gguf}"
+UTILITY_VLM_MODEL_ID="${SENTRIX_UTILITY_VLM_MODEL:-}"
+# The old launcher used MODEL for a GGUF path; retain that command-line compatibility.
+if [[ "$UTILITY_VLM_MODEL_ID" == *.gguf ]]; then
+  UTILITY_VLM_MODEL="$UTILITY_VLM_MODEL_ID"
+  UTILITY_VLM_MODEL_ID=""
+fi
 UTILITY_VLM_MMPROJ="${SENTRIX_UTILITY_VLM_MMPROJ:-$PROJ/data/models/qwen3-vl-2b-surrogate/mmproj-Qwen3VL-2B-Instruct-F16.gguf}"
-ENABLE_UTILITY_VLM="${SENTRIX_ENABLE_UTILITY_VLM:-1}"
+ENABLE_UTILITY_VLM="${SENTRIX_ENABLE_UTILITY_VLM:-0}"
 API_PORT="${SENTRIX_API_PORT:-8191}"
 ASR_PORT="${SENTRIX_QWEN_ASR_PORT:-8105}"
 VLM_MODEL="${SENTRIX_VLM_MODEL:-$PROJ/data/models/qwen35-q4km/qwen35-q4km.gguf}"
@@ -162,7 +168,7 @@ if [ "$ENABLE_UTILITY_VLM" = "1" ] && [ -f "$UTILITY_VLM_MODEL" ] && [ -f "$UTIL
     nohup llama-server \
       --model "$UTILITY_VLM_MODEL" \
       --mmproj "$UTILITY_VLM_MMPROJ" \
-      --alias qwen3-vl-2b-surrogate \
+      --alias "${UTILITY_VLM_MODEL_ID:-qwen3-vl-2b-surrogate}" \
       --host 127.0.0.1 \
       --port "$UTILITY_VLM_PORT" \
       --ctx-size "${SENTRIX_UTILITY_VLM_CTX_SIZE:-8192}" \
@@ -191,6 +197,7 @@ if ! port_in_use "$API_PORT"; then
     SENTRIX_TEXT_EMBEDDER_URL="http://127.0.0.1:$BGE_PORT" \
     SENTRIX_RERANKER_URL="$RERANK_URL" \
     SENTRIX_UTILITY_VLM_BASE_URL="$UTILITY_URL" \
+    SENTRIX_UTILITY_VLM_MODEL="$UTILITY_VLM_MODEL_ID" \
     SENTRIX_VLM_BASE_URL="http://127.0.0.1:$VLM_PORT/v1" \
     SENTRIX_DATA_DIR="$DATA_DIR" \
     nohup .venv/bin/python -m uvicorn --factory sentrix.main:create_app \

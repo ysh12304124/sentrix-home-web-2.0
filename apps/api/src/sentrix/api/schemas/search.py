@@ -31,6 +31,7 @@ class ChannelTrace(BaseModel):
     latency_ms: float
     backend: str = ""
     reason: str = ""
+    all_scores: list[dict[str, object]] = []
 
 
 class SearchResponse(BaseModel):

@@ -120,6 +120,7 @@ def search_assets(
                 latency_ms=trace.latency_ms,
                 backend=trace.backend,
                 reason=trace.reason,
+                all_scores=[dict(row) for row in trace.all_scores],
             )
             for trace in result.channel_trace
         ],

@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -62,7 +63,12 @@ def build_atm(source: Path, output: Path, media_mode: str = "reference") -> dict
             if original.suffix.lower() not in {".jpg", ".mp4"}:
                 continue
             target = root / dest / original.name
-            if media_mode == "copy":
+            if media_mode == "clone":
+                result = subprocess.run(["cp", "-c", str(original), str(target)], capture_output=True)
+                if result.returncode:
+                    target.unlink(missing_ok=True)
+                    shutil.copy2(original, target)
+            elif media_mode == "copy":
                 shutil.copy2(original, target)
             else:
                 target.symlink_to(original.resolve())

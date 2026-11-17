@@ -77,3 +77,4 @@ class ChannelTrace:
     # ``getattr(retriever, "backend_used", None)``，取不到就是 None）。
     backend: str = ""
     reason: str = ""
+    all_scores: tuple[Mapping[str, object], ...] = ()

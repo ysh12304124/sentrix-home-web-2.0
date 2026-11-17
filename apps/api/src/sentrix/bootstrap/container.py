@@ -483,7 +483,13 @@ class Container:
             ServedModel(utility_url, timeout_s=settings.utility_vlm_timeout_s) if utility_url else None
         )
         utility = (
-            OpenAIVisualEvidenceUtility(utility_url, utility_model, timeout_s=settings.utility_vlm_timeout_s)
+            OpenAIVisualEvidenceUtility(
+                utility_url, utility_model, timeout_s=settings.utility_vlm_timeout_s,
+                concurrency=settings.utility_vlm_concurrency,
+                cache_path=settings.data_dir / "utility-cache" / "scores.sqlite",
+                model_name=settings.utility_vlm_model,
+                cache_revision=settings.utility_vlm_cache_revision,
+            )
             if utility_model is not None
             else None
         )

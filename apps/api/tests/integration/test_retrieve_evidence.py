@@ -377,6 +377,27 @@ def test_graph_off_skips_graph_expansion_and_returns_primary_only(library):
 # ---- 名次与权重对得上基线 --------------------------------------------------------
 
 
+def test_utility_trace_keeps_every_candidate_without_expanding_model_preview(library):
+    class Utility:
+        model_id = "utility-test"
+
+        def score_with_trace(self, question, image):
+            return {"score": 1.0 if b"asset_c" in image else 0.1, "cache": "hit"}
+
+        def score(self, question, image):
+            return self.score_with_trace(question, image)["score"]
+
+    result = build(library, utility=Utility()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=1)
+    )
+    trace = next(t for t in result.channel_trace if t.channel == "utility")
+    assert len(trace.all_scores) == trace.candidate_count
+    assert len(trace.all_scores) > len(result.hits)
+    assert sum(bool(row["selected"]) for row in trace.all_scores) == 1
+    assert all(row.get("cache") == "hit" for row in trace.all_scores)
+    assert result.hits[0].asset_id == "asset_c"
+
+
 def test_a_single_channel_hit_keeps_the_visual_weight_from_the_baseline(library):
     """三条通道各自安静时，融合结果与单通道时代逐值相同——``2.5/(60+名次)``。
 

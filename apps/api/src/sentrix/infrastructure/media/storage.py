@@ -82,6 +82,10 @@ class FileSystemMediaStorage:
     def path_for(self, asset: Asset) -> Path:
         return Path(asset.path)
 
+    def read_asset(self, asset: Asset) -> bytes:
+        """Read the authoritative asset path, including derived video frames."""
+        return self.path_for(asset).read_bytes()
+
     def read(self, asset_id: str) -> bytes:
         matches = sorted(self._media_dir.glob(f"{asset_id}_*"))
         if not matches:
