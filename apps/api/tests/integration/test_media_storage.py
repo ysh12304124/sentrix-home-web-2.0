@@ -1,4 +1,19 @@
-from sentrix.infrastructure.media.storage import FileSystemMediaStorage
+import pytest
+
+from sentrix.infrastructure.media.storage import FileSystemMediaStorage, fsync_directory
+
+
+def test_durable_copy_and_move_preserve_bytes(tmp_path):
+    storage = FileSystemMediaStorage(tmp_path / "media")
+    source = tmp_path / "source.jpg"
+    source.write_bytes(b"original upload bytes")
+    copied = storage.copy_from_path("copy", "photo.jpg", source)
+    assert source.read_bytes() == copied.read_bytes() == b"original upload bytes"
+    moved = storage.move_from_path("move", "photo.jpg", source)
+    assert moved.read_bytes() == copied.read_bytes()
+    assert not source.exists()
+    with pytest.raises(OSError):
+        fsync_directory(tmp_path / "missing")
 
 
 def test_store_writes_under_media_dir_with_asset_prefix(tmp_path):

@@ -25,6 +25,34 @@ def sanitise(file_name: str) -> str:
 
 
 def fsync_directory(directory: Path) -> None:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        # GENERIC_READ|WRITE, shared read/write/delete, OPEN_EXISTING,
+        # FILE_FLAG_BACKUP_SEMANTICS: obtain a real directory handle.
+        handle = kernel.CreateFileW(str(directory.resolve()), 0xC0000000, 7, None, 3, 0x02000000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel.FlushFileBuffers(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(handle)
+        return
     handle = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(handle)

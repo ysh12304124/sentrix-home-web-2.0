@@ -244,6 +244,14 @@ def fake_embedding_startup(monkeypatch):
     monkeypatch.setattr(
         "sentrix.infrastructure.models.legacy.LegacyEmbeddingHealthProbe.smoke_test", lambda self: (True, "")
     )
+    monkeypatch.setattr(
+        "sentrix.infrastructure.models.generation_health.ModelGenerationHealth.check",
+        lambda self: (True, ""),
+    )
+    monkeypatch.setattr(
+        "sentrix.infrastructure.models.generation_health.ModelGenerationHealth.describe",
+        lambda self: {"models_ok": True},
+    )
 
 
 @pytest.fixture(autouse=True)

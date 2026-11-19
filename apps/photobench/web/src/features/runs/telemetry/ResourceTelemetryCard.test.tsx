@@ -25,6 +25,19 @@ function run(): Run {
     source: "host_nvml", status: "running", samples_count: 3, history, latest: history[2],
     peak: { system_memory_used_mib: 2048 } } } as Run;
 }
+
+it("shows persisted collection failures without fabricating historical measurements", () => {
+  const value = run();
+  Object.assign(value.telemetry_live!.latest!, {
+    system_memory_used_mib: null, device_gpu_memory_mib: null,
+    source_diagnostics: { device: {error:"No module named 'pynvml'"}, system: {reason:"meminfo missing"} },
+  });
+  const view = render(<TelemetryCard run={value} />);
+  expect(view.getByText("部分资源指标未采集")).not.toBeNull();
+  expect(view.getByText("GPU：No module named 'pynvml'")).not.toBeNull();
+  expect(view.getByText("整机内存：meminfo missing")).not.toBeNull();
+  expect(value.telemetry_live!.latest!.system_memory_used_mib).toBeNull();
+});
 describe("resource telemetry v1", () => {
   it("shows resource summaries before expanding charts and keeps missing current values separate from peaks", () => {
     const value = run();

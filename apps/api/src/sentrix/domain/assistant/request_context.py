@@ -17,6 +17,7 @@ from contextvars import ContextVar
 from threading import Lock
 
 _request_slot: ContextVar[int | None] = ContextVar("sentrix_request_slot", default=None)
+_output_budget_override: ContextVar[int | None] = ContextVar("sentrix_output_budget_override", default=None)
 
 _MAX_AFFINITY = 1024
 
@@ -63,3 +64,16 @@ def release_slot(conversation_id: str) -> None:
         if slot is not None:
             _busy.discard(slot)
     _request_slot.set(None)
+
+
+def output_budget_override() -> int | None:
+    """当前调用可用的输出 token 上限覆盖；``None`` 表示用模型角色的预算。"""
+    return _output_budget_override.get()
+
+
+def set_output_budget_override(value: int) -> object:
+    return _output_budget_override.set(max(1, int(value)))
+
+
+def reset_output_budget_override(token: object) -> None:
+    _output_budget_override.reset(token)  # type: ignore[arg-type]

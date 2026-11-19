@@ -2025,7 +2025,9 @@ class RunExecution:
         scope_id = str(state.get("scope_id"))
         total = len(items)
         imported = skipped = indexed = 0
-        batches = (total + 499) // 500
+        # Publish completed work frequently without changing the import endpoint's limit.
+        batch_size = 50
+        batches = (total + batch_size - 1) // batch_size
         state.record_phase(
             "text_memory_import",
             "progress",
@@ -2042,10 +2044,10 @@ class RunExecution:
             },
         )
         self._persist(str(state.get("run_id")), state)
-        for start in range(0, total, 500):
+        for start in range(0, total, batch_size):
             if state.cancelled:
                 raise RunCancelledError("cancelled during text_memory_import")
-            batch = items[start : start + 500]
+            batch = items[start : start + batch_size]
             is_last_batch = start + len(batch) >= total
             state.record_phase(
                 "text_memory_import",
@@ -2059,7 +2061,7 @@ class RunExecution:
                     "total": total,
                     "processed": start,
                     "batches": batches,
-                    "current_batch": start // 500 + 1,
+                    "current_batch": start // batch_size + 1,
                     "imported": imported,
                     "skipped": skipped,
                     "indexed": indexed,
@@ -2093,7 +2095,7 @@ class RunExecution:
                 "total": total,
                 "processed": min(total, start + len(batch)),
                 "batches": batches,
-                "current_batch": start // 500 + 1,
+                "current_batch": start // batch_size + 1,
                 "imported": imported,
                 "skipped": skipped,
                 "indexed": indexed,

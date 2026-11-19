@@ -1,14 +1,15 @@
-"""Single-instance result-root lease and auditable orphan recovery (Unix deployments)."""
+"""Cross-platform single-instance result-root lease and auditable orphan recovery."""
 
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
 import uuid
 from pathlib import Path
 from typing import IO
+
+import portalocker
 
 from photobench.domain.runs.analysis import now_iso
 from photobench.infrastructure.results.store import committed_path, read_entry, write_committed_snapshot
@@ -25,8 +26,8 @@ class FileRunStartupRecovery:
         self._root.mkdir(parents=True, exist_ok=True)
         lease = (self._root / ".photobench-instance.lock").open("a+", encoding="utf-8")
         try:
-            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as error:
+            portalocker.lock(lease, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        except (OSError, portalocker.LockException) as error:
             lease.close()
             raise RuntimeError("PhotoBench results root already has a live owner") from error
         self._lease = lease
@@ -97,6 +98,8 @@ class FileRunStartupRecovery:
 
     def close(self) -> None:
         if self._lease is not None:
-            fcntl.flock(self._lease, fcntl.LOCK_UN)
-            self._lease.close()
-            self._lease = None
+            try:
+                portalocker.unlock(self._lease)
+            finally:
+                self._lease.close()
+                self._lease = None

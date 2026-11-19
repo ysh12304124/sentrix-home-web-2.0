@@ -303,7 +303,7 @@ export function LibraryPage() {
                   [removed.media_type]: Math.max(0, (current[removed.media_type] ?? 0) - 1),
                 }));
               }
-              setNotice(warnings.length ? `媒体已删除，但有外部清理待完成：${warnings.join("；")}` : "媒体及独占记忆已删除。");
+              setNotice(warnings.length ? `媒体已删除，部分关联更新待完成：${warnings.join("；")}` : "媒体及独占记忆已删除，关联记忆已更新。");
               setReloadKey((value) => value + 1);
               setDeletionsRevision((value) => value + 1);
             }}

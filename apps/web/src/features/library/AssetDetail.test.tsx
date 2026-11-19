@@ -35,7 +35,8 @@ describe("资产详情", () => {
   it("图片走展示 URL，时间与地点都显示", () => {
     render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} />);
     const image = screen.getByRole("img") as HTMLImageElement;
-    expect(image.src).toContain("/api/v1/assets/a1/file");
+    expect(image.src).toContain("/api/v1/assets/a1/preview");
+    expect(screen.getByRole("link", { name: "打开原文件" }).getAttribute("href")).toBe("/api/v1/assets/a1/file");
     expect(screen.getByText(/2026.*01.*02/)).toBeTruthy();
     expect(screen.getByText("31.230000, 121.470000")).toBeTruthy();
   });
@@ -92,24 +93,44 @@ describe("资产详情", () => {
 
   it("确认删除后调用 API 并把结果交给资料库列表", async () => {
     const onDeleted = vi.fn();
-    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ asset_id: "a1", deleted: true, warnings: [] }),
     });
-    vi.stubGlobal("confirm", confirm);
     vi.stubGlobal("fetch", fetch);
     render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} onDeleted={onDeleted} />);
 
     fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
     expect(fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
 
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", []));
     expect(fetch).toHaveBeenCalledWith("/api/v1/assets/a1", {
       method: "DELETE",
       credentials: "same-origin",
-      headers: { "x-csrf-token": "" },
+      headers: expect.any(Headers),
     });
+  });
+
+  it("删除错误显示后端原因，保留详情和重试按钮", async () => {
+    const onDeleted = vi.fn();
+    const onClose = vi.fn();
+    const fetch = vi.fn().mockResolvedValueOnce({
+      ok: false, status: 409,
+      text: async () => JSON.stringify({ code: "conflict", message: "视频仍在处理，请先停止处理任务", detail: {} }),
+    }).mockResolvedValueOnce({ ok: true, json: async () => ({ deleted: true, warnings: ["关联记忆重建待重试"] }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<AssetDetail asset={asset({ id: "a1" })} onClose={onClose} onDeleted={onDeleted} />);
+    fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("视频仍在处理"));
+    expect(onDeleted).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", ["关联记忆重建待重试"]));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

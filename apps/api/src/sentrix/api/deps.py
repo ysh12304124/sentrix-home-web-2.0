@@ -36,7 +36,7 @@ def get_container(request: Request) -> Container:
     return cast(Container, request.app.state.container)
 
 
-def internal_call_guard(request: Request) -> None:
+async def internal_call_guard(request: Request) -> None:
     """体验实例只接受控制面转发的请求。
 
     旧 8191/PhotoBench 不设这两个开关，行为保持不变。

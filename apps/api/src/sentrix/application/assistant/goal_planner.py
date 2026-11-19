@@ -99,12 +99,13 @@ class GoalPlanner:
         *,
         scope_id: str,
         history: str = "",
+        has_source_text: bool = False,
         cancel_check: Callable[[], None] | None = None,
         include_debug: bool = False,
     ) -> PlannerResult:
         # 历史折进 system 文本，不再插一条 system 消息——严格 chat template 要求 system
         # 必须在开头（1.0 ``goal_planner.py:115-117``，实测 24 题因此失败）。
-        system = build_prompt() + history_prompt_suffix(history)
+        system = build_prompt(has_source_text=has_source_text) + history_prompt_suffix(history)
         base = [ChatMessage(ChatRole.SYSTEM, system), ChatMessage(ChatRole.USER, question)]
 
         messages = list(base)
@@ -143,7 +144,7 @@ class GoalPlanner:
                     reply = self._model.complete_structured(
                         messages,
                         (),
-                        response_format=planner_response_format(),
+                        response_format=planner_response_format(has_source_text=has_source_text),
                         chat_template_kwargs=planner_chat_template_kwargs(),
                     )
                 else:

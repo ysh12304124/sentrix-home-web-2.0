@@ -182,3 +182,32 @@ def test_count_filters_by_model_name(repository):
     assert repository.count(space=space) == 2
     assert repository.count(space=space, model_name=MODEL) == 1
     assert repository.count(space=space, model_name="不存在") == 0
+
+
+def test_upsert_many_is_idempotent_and_preserves_records(repository):
+    space = space_for(repository)
+    rows = [record("batch-a", (1.0, 0.0), space=space), record("batch-b", (0.0, 1.0), space=space)]
+    repository.upsert_many(rows)
+    repository.upsert_many(rows)
+    assert repository.count(space=space, model_name=MODEL) == 2
+    assert repository.get(space=space, source_type="asset", source_id="batch-b", model_name=MODEL).vector == (
+        0.0,
+        1.0,
+    )
+
+
+def test_upsert_many_rolls_back_earlier_writes_on_late_failure(repository):
+    space = space_for(repository)
+    repository.upsert(record("batch-a", (1.0, 0.0), space=space))
+    with pytest.raises(TypeError):
+        repository.upsert_many(
+            [
+                record("batch-a", (0.0, 1.0), space=space),
+                record("batch-b", (0.0, 1.0), space=space, metadata={"invalid": object()}),
+            ]
+        )
+    assert repository.count(space=space, model_name=MODEL) == 1
+    assert repository.get(space=space, source_type="asset", source_id="batch-a", model_name=MODEL).vector == (
+        1.0,
+        0.0,
+    )

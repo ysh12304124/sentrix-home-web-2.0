@@ -25,6 +25,8 @@ def test_health_returns_ok(client: TestClient):
         "build_revision": "development",
         "database": "ok",
         "embeddings": "ok",
+        "model_generation": "ok",
+        "models_endpoint": "ok",
     }
 
 

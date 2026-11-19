@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -247,6 +248,36 @@ def test_event_without_observations_is_returned_untouched(repos):
     assert model.calls == 0
 
 
+def test_metadata_only_observation_is_not_sent_to_generate_a_fictional_event(repos):
+    seed(repos, with_observation=False)
+    events, observations, _ = repos
+    observations.add(
+        observation(caption="", activity="", objects=(), clothing=(), place="其他或不确定", event_type="视频")
+    )
+    events.attach("evt_1", "obs_1")
+    model = FakeChatModel('{"title":"时间戳记录","summary":"不应生成"}')
+    original = events.get("evt_1")
+    result = use_case(repos, model).execute("evt_1")
+    assert model.calls == 0 and result == original
+    with pytest.raises(RuntimeError, match="尚无可用观察"):
+        use_case(repos, model).execute("evt_1", correction=True)
+
+
+def test_missing_event_place_uses_consistent_observation_place_without_guessing_admin(repos):
+    seed(repos)
+    events, observations, _ = repos
+    from sentrix.domain.media.ports import ObservationSemantics
+
+    observations.enrich(
+        "obs_1", semantics=ObservationSemantics(caption="有人在客厅看书", place="客厅", activity="看书")
+    )
+    events.apply_summary("evt_1", title="待总结事件", summary="", activity="", event_type="待判断", place="")
+    model = FakeChatModel('{"title":"客厅看书","summary":"有人在客厅看书","activity":"看书"}')
+    result = use_case(repos, model).execute("evt_1")
+    assert result.place == events.get("evt_1").place == "客厅"
+    assert "客厅" in model.messages[1].content
+
+
 def test_model_reply_is_persisted_and_revision_advances(repos):
     seed(repos)
     model = FakeChatModel(
@@ -300,3 +331,99 @@ def test_the_model_call_carries_a_system_message_that_holds_the_prompt(repos):
     assert "事件总结器" in model.messages[0].content
     assert "obs_1" in model.messages[1].content  # 证据在 user 那条里
     assert "事件总结器" not in model.messages[1].content
+
+
+def identity_update(name="小禾", previous_name="旧称", observation_id="obs_1"):
+    return {
+        "entity_id": "person_1",
+        "name": name,
+        "previous_name": previous_name,
+        "status": "confirmed",
+        "observation_ids": [observation_id],
+    }
+
+
+@pytest.mark.parametrize(
+    "title,summary",
+    [
+        ("男孩在公园拍照", "小禾在公园拍照"),
+        ("小禾在公园拍照", "旧称在公园拍照"),
+        ("小禾在公园拍照", "小禾：一个孩子在公园拍照"),
+    ],
+)
+def test_correction_rejects_inconsistent_title_or_summary_without_publishing(repos, title, summary):
+    seed(repos)
+    before = repos[0].get("evt_1")
+    model = FakeChatModel(json.dumps({"title": title, "summary": summary}, ensure_ascii=False))
+    with pytest.raises(RuntimeError, match="身份一致性"):
+        use_case(repos, model).execute("evt_1", correction=True, identity_updates=[identity_update()])
+    assert model.calls == 2
+    assert repos[0].get("evt_1") == before
+
+
+def test_correction_retries_then_publishes_title_and_summary_together(repos):
+    seed(repos)
+
+    class RepairModel(FakeChatModel):
+        def complete(self, messages, tools):
+            self.reply = json.dumps(
+                {
+                    "title": "男孩在公园拍照" if not self.calls else "小禾在公园拍照",
+                    "summary": "小禾与一名未命名女孩在公园拍照",
+                },
+                ensure_ascii=False,
+            )
+            return super().complete(messages, tools)
+
+    model = RepairModel()
+    result = use_case(repos, model).execute("evt_1", correction=True, identity_updates=[identity_update()])
+    assert result.title == "小禾在公园拍照"
+    assert result.summary == "小禾与一名未命名女孩在公园拍照"
+    assert result.revision == 2
+    assert model.calls == 2
+
+
+def test_correction_does_not_supply_names_from_other_events(repos):
+    seed(repos)
+    model = FakeChatModel('{"title":"在公园拍照","summary":"一家人在公园拍照"}')
+    result = use_case(repos, model).execute(
+        "evt_1", correction=True, identity_updates=[identity_update(observation_id="unrelated_obs")]
+    )
+    assert result.title == "在公园拍照"
+    evidence = json.loads(model.messages[1].content)
+    assert evidence["identity_updates"] == []
+    assert "小禾" not in model.messages[1].content
+
+
+def test_correction_requires_all_bound_names_in_summary_but_not_all_in_title(repos):
+    seed(repos)
+    model = FakeChatModel('{"title":"小禾与朋友拍照","summary":"小禾和小川与一名未命名女孩在公园拍照"}')
+    result = use_case(repos, model).execute(
+        "evt_1",
+        correction=True,
+        identity_updates=[identity_update(), identity_update(name="小川", previous_name="")],
+    )
+    assert result.title == "小禾与朋友拍照"
+    assert "小川" in result.summary
+
+
+def test_correction_model_failure_is_not_reported_as_synchronized(repos):
+    seed(repos)
+    model = FakeChatModel(error=RuntimeError("model offline"))
+    with pytest.raises(RuntimeError, match="模型调用失败"):
+        use_case(repos, model).execute("evt_1", correction=True, identity_updates=[identity_update()])
+    assert repos[0].get("evt_1").revision == 1
+
+
+def test_pending_user_event_edit_stays_out_of_automatic_identity_rebuild(repos, migrations_ready_db):
+    from sentrix.infrastructure.persistence.repositories.corrections import SqliteMemoryCorrections
+
+    seed(repos)
+    corrections = SqliteMemoryCorrections(migrations_ready_db)
+    corrections.correct("event", "evt_1", 1, {"title": "用户保留的标题"}, "用户编辑")
+    with corrections.track("album1", "observation", "obs_1"):
+        pass
+    assert "evt_1" in corrections.affected_events("album1")
+    assert "evt_1" not in corrections.summary_events("album1")
+    corrections.refresh_dependencies("album1")
+    assert repos[0].get("evt_1").title == "用户保留的标题"

@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import psutil
+
 from photobench.domain.deploy.ports import RestartOutcome
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.runtime.ports import RunRuntimeSnapshot
@@ -60,17 +62,20 @@ def _snapshot_config_root(snapshot: RunRuntimeSnapshot, endpoint: str, directory
     path = root / "runtime_connection.json"
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, delete=False) as handle:
         temporary = Path(handle.name)
-        try:
-            handle.write(payload)
-            handle.flush()
-            temporary.chmod(0o400)
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                if path.read_text(encoding="utf-8") != payload:
-                    raise OSError("Frozen startup configuration was modified") from None
-        finally:
-            temporary.unlink(missing_ok=True)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    published = False
+    try:
+        os.link(temporary, path)
+        published = True
+    except FileExistsError:
+        if path.read_text(encoding="utf-8") != payload:
+            raise OSError("Frozen startup configuration was modified") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    if published:
+        path.chmod(0o400)
     return root
 
 
@@ -116,13 +121,9 @@ def _terminate(pid: int) -> None:
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # 存在但不是我们能碰的——**存在**
-        return True
-    return True
+    # Windows interprets signals other than CTRL_* as TerminateProcess codes;
+    # a liveness probe must never send a signal to the observed process.
+    return psutil.pid_exists(pid)
 
 
 def _discover_by_port(port: int) -> list[int]:

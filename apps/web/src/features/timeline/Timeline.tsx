@@ -95,6 +95,11 @@ export function Timeline({ scopeId, focusEventId, onOpenEvent }: Props) {
   const [focusIssue, setFocusIssue] = useState("");
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
   const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    const refresh = () => setNonce((value) => value + 1);
+    window.addEventListener("sentrix:memory-changed", refresh);
+    return () => window.removeEventListener("sentrix:memory-changed", refresh);
+  }, []);
   const pendingFocus = useRef<string | null>(null);
   const previewOpened = useRef<string | null>(null);
   const loadingKeys = useRef<Set<string>>(new Set());

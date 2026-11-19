@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sentrix.domain.media.ports import MediaDeletionRecord, MediaDeletionRepository, MediaStorage
@@ -20,11 +21,16 @@ class DeleteAssetResult:
 
 class DeleteAsset:
     def __init__(
-        self, repository: MediaDeletionRepository, storage: MediaStorage, vectors: VectorIndex
+        self,
+        repository: MediaDeletionRepository,
+        storage: MediaStorage,
+        vectors: VectorIndex,
+        synchronize: Callable[[], str] | None = None,
     ) -> None:
         self._repository = repository
         self._storage = storage
         self._vectors = vectors
+        self._synchronize = synchronize
 
     def execute(self, asset_id: str) -> DeleteAssetResult | None:
         deleted = self._repository.delete_asset(asset_id)
@@ -59,6 +65,14 @@ class DeleteAsset:
             if errors:
                 log.warning("media cleanup pending asset_id=%s errors=%s", root_id, errors)
                 warnings.append(f"{root_id}: 外部清理待重试（{'、'.join(errors)}）")
+        if self._synchronize is not None:
+            try:
+                error = self._synchronize()
+            except Exception as exc:  # noqa: BLE001 - deletion already committed; durable task remains
+                error = f"{type(exc).__name__}: {exc}"
+            if error:
+                warnings.append(f"关联记忆重建待重试：{error}")
+                log.warning("media dependency rebuild pending: %s", error)
         return tuple(warnings)
 
     def list_records(self, *, scope_id: str | None, limit: int) -> tuple[MediaDeletionRecord, ...]:

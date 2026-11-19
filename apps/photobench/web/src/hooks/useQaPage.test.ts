@@ -39,6 +39,69 @@ beforeEach(() => {
   mockApi.mockReset();
 });
 
+describe("useQaPage · 交互与后台刷新的请求顺序", () => {
+  function deferredPage() {
+    let resolve!: (page: ItemPage) => void;
+    const promise = new Promise<ItemPage>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it("翻到第2页时，轮询共用新页请求，迟到的第1页不能覆盖它", async () => {
+    mockApi.mockResolvedValueOnce(pageOf([{ index: 0 }], { pages: 5 }));
+    const { result } = renderHook(() => useQaPage({ activeRunId: "run1" }));
+    await act(async () => { await result.current.loadQaPage(1); });
+    const old = deferredPage(), next = deferredPage();
+    mockApi.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    let oldPoll!: Promise<void>, navigation!: Promise<void>, newPoll!: Promise<void>;
+    act(() => { oldPoll = result.current.loadQaPage(); });
+    act(() => {
+      navigation = result.current.changeQaPage(2);
+      newPoll = result.current.loadQaPage();
+    });
+    expect(mockApi).toHaveBeenCalledTimes(3);
+    expect(mockApi.mock.calls[2][0]).toContain("page=2");
+    expect(result.current.qaPageLoading).toBe(true);
+    await act(async () => {
+      next.resolve(pageOf([{ index: 20 }], { page: 2, pages: 5 }));
+      await Promise.all([navigation, newPoll]);
+    });
+    await act(async () => { old.resolve(pageOf([{ index: 0 }], { pages: 5 })); await oldPoll; });
+    expect(result.current.qaPage.page).toBe(2);
+    expect(result.current.visibleQaItems[0].index).toBe(20);
+    expect(result.current.qaPageLoading).toBe(false);
+  });
+
+  it("快速切换100/50条时只提交最后选择的第1页", async () => {
+    const old = deferredPage(), next = deferredPage();
+    mockApi.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const { result } = renderHook(() => useQaPage({ activeRunId: "run1" }));
+    let first!: Promise<void>, second!: Promise<void>;
+    act(() => { first = result.current.changeQaPageSize(100); });
+    act(() => { second = result.current.changeQaPageSize(50); });
+    await act(async () => { next.resolve(pageOf([{ index: 0 }], { page_size: 50 })); await second; });
+    await act(async () => { old.resolve(pageOf([{ index: 0 }], { page_size: 100 })); await first; });
+    expect(result.current.qaPageSize).toBe(50);
+    expect(result.current.qaPage.page_size).toBe(50);
+    expect(result.current.qaPage.page).toBe(1);
+    expect(result.current.qaPageError).toBe("");
+  });
+
+  it("分页失败保留原结果并显示错误，重试成功后清除错误", async () => {
+    mockApi.mockResolvedValueOnce(pageOf([{ index: 0 }], { pages: 5 }));
+    const { result } = renderHook(() => useQaPage({ activeRunId: "run1" }));
+    await act(async () => { await result.current.loadQaPage(); });
+    mockApi.mockRejectedValueOnce(new Error("HTTP 500"));
+    await act(async () => { await result.current.changeQaPage(2); });
+    expect(result.current.qaPageError).toContain("HTTP 500");
+    expect(result.current.visibleQaItems[0].index).toBe(0);
+    mockApi.mockResolvedValueOnce(pageOf([{ index: 20 }], { page: 2, pages: 5 }));
+    await act(async () => { await result.current.loadQaPage(); });
+    expect(mockApi.mock.calls.at(-1)![0]).toContain("page=2");
+    expect(result.current.qaPageError).toBe("");
+    expect(result.current.visibleQaItems[0].index).toBe(20);
+  });
+});
+
 describe("useQaPage · judge 增量刷新（1.0 App.vue:2269-2283）", () => {
   // 判据：`newJudge.rejudge_id && (rejudge_id 变了 || (新 status==="completed" 且旧 !== "completed"))`
   // → 重拉；否则就地合并。下面两组的**唯一差别**就是 judge，答案必须不同。

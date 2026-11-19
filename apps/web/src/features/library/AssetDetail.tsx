@@ -14,13 +14,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetMemoryCorrection } from "../../shared/components/MemoryCorrection";
-import { csrfToken } from "../../shared/csrf";
 
 import {
   assetFileUrl,
   assetInlineUrl,
   assetPosterUrl,
   getVideo,
+  request,
   type AssetDetailResponse,
   type ObservationPayload,
   type VideoScenePayload,
@@ -43,7 +43,7 @@ const ASSET_STATUS_LABEL: Readonly<Record<string, string>> = {
 
 /** 只把整理时间与描述带出来；没有内容时整段省略，不向用户解释内部端点缺口。 */
 function ObservationList({ observations }: { observations: readonly ObservationPayload[] }) {
-  if (observations.length === 0) return null;
+  if (observations.length === 0) return <p className="asset-detail-note">当前详情没有可展示的观察记录。</p>;
   return (
     <ul className="asset-observations">
       {observations.map((observation) => (
@@ -90,21 +90,18 @@ export function AssetDetail({
   const [textError, setTextError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [videoScenes, setVideoScenes] = useState<{ id: string; scenes: VideoScenePayload[]; error: string | null } | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   async function deleteMedia() {
-    if (!window.confirm("删除这份媒体及其独占记忆、图结构和索引？此操作不可撤销。")) return;
+    if (deleting) return;
     setDeleting(true);
     setDeleteError(null);
     try {
-      const response = await fetch(`/api/v1/assets/${encodeURIComponent(asset.id)}`, {
-        method: "DELETE",
-        credentials: "same-origin",
-        headers: { "x-csrf-token": csrfToken() },
-      });
-      const result = await response.json() as { asset_id?: string; deleted?: boolean; warnings?: string[]; detail?: string };
-      if (!response.ok) throw new Error(result.detail ?? `HTTP ${response.status}`);
+      const result = await request<{ deleted: boolean; warnings: string[] }>(
+        `/assets/${encodeURIComponent(asset.id)}`, { method: "DELETE" },
+      );
       if (!result.deleted) throw new Error("媒体未删除，请刷新后重试。");
       onDeleted?.(asset.id, result.warnings ?? []);
       onClose();
@@ -157,7 +154,7 @@ export function AssetDetail({
           playsInline
           poster={assetPosterUrl(asset.id)}
           src={assetInlineUrl(asset)}
-          aria-label="视频"
+          aria-label={asset.file_name}
           onLoadedMetadata={(event) => {
             if (initialTimeSec !== null && Number.isFinite(initialTimeSec)) {
               // 命中视频帧时直接停在那一秒，用户不必自己拖动。
@@ -168,7 +165,7 @@ export function AssetDetail({
       );
     }
     if (asset.media_type === "audio") {
-      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label="音频" />;
+      return <audio controls preload="metadata" src={assetInlineUrl(asset)} aria-label={asset.file_name} />;
     }
     if (asset.media_type === "text") {
       return textError !== null ? (
@@ -203,19 +200,15 @@ export function AssetDetail({
           <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? "资料"}</dd>
           <dt>拍摄时间</dt><dd>{asset.captured_at ?? "未标注"}</dd>
           <dt>地点</dt>
-          <dd>{asset.place !== undefined && asset.place !== "" ? asset.place : asset.gps ? `${asset.gps.latitude.toFixed(4)}, ${asset.gps.longitude.toFixed(4)}` : "地点未记录"}</dd>
+            <dd>{asset.place !== undefined && asset.place !== "" ? asset.place : asset.gps ? `${asset.gps.latitude.toFixed(6)}, ${asset.gps.longitude.toFixed(6)}` : "地点未记录"}</dd>
           {initialTimeSec !== null ? (
             <>
               <dt>命中时间</dt><dd>{initialTimeSec.toFixed(2)} 秒</dd>
             </>
           ) : null}
           <dt>整理状态</dt><dd>{ASSET_STATUS_LABEL[asset.status] ?? "状态更新中"}</dd>
-          {observations.length > 0 ? (
-            <>
-              <dt>整理记录</dt>
-              <dd className="asset-detail-observations"><ObservationList observations={observations} /></dd>
-            </>
-          ) : null}
+          <dt>整理记录</dt>
+          <dd className="asset-detail-observations"><ObservationList observations={observations} /></dd>
           <dt>原始文件</dt>
           <dd><a href={assetFileUrl(asset.id)} target="_blank" rel="noreferrer">打开原文件</a></dd>
         </dl>
@@ -227,9 +220,19 @@ export function AssetDetail({
               <p>同时清理该媒体独占的记忆、图结构与索引。此操作不可撤销。</p>
             </div>
             {deleteError ? <p className="error" role="alert">删除失败：{deleteError}</p> : null}
-            <button type="button" className="button button-danger" disabled={deleting} onClick={() => void deleteMedia()}>
-              {deleting ? "正在删除…" : "删除媒体及关联记忆"}
-            </button>
+            {confirmingDelete ? (
+              <div className="asset-delete-confirmation" role="group" aria-label="确认删除资料">
+                <p>确认删除「{asset.file_name}」及其独占记忆？共享记忆会根据保留的资料重新构建，此操作不可撤销。</p>
+                <button type="button" className="button button-danger" disabled={deleting} onClick={() => void deleteMedia()}>
+                  {deleting ? "正在删除并更新关联记忆…" : "确认删除"}
+                </button>
+                <button type="button" className="button" disabled={deleting} onClick={() => { setConfirmingDelete(false); setDeleteError(null); }}>取消</button>
+              </div>
+            ) : (
+              <button type="button" className="button button-danger" onClick={() => setConfirmingDelete(true)}>
+                删除媒体及关联记忆
+              </button>
+            )}
           </div>
         </section>
       </div>

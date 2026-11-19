@@ -298,6 +298,37 @@ def test_email_event_correction_synchronises_timestamp_and_summary(setup):
     assert state["indexed_revision"] == obs.revision
 
 
+def test_body_only_correction_rebuilds_text_summary_and_observation_together(setup):
+    from sentrix.domain.assistant.models import ModelReply
+
+    c, client, aid = imported(setup)
+    record = c.email_repository.find(SCOPE, MAIL["id"])
+
+    class Model:
+        def complete(self, messages, tools):
+            assert "No reservation remains" in messages[1].content
+            return ModelReply(
+                content='{"title":"Cancelled", "summary":"No reservation remains", '
+                '"activity":"update", "event_type":"text_record"}'
+            )
+
+    c.chat_model = Model()
+    response = client.patch(
+        "/api/v1/memories/observation/" + record["observation_id"],
+        json={
+            "revision": 1,
+            "changes": {"text_content": "No reservation remains"},
+        },
+    )
+    assert response.status_code == 200 and response.json()["sync_status"] == "synced", response.text
+    observation = c.observation_repository.get(record["observation_id"])
+    assert (
+        observation.caption == c.event_repository.get(record["event_id"]).summary == "No reservation remains"
+    )
+    assert c.email_repository.find(SCOPE, MAIL["id"])["indexed_revision"] == observation.revision
+    assert c.asset_repository.get(aid) is not None
+
+
 def test_email_id_rejects_path_traversal_before_any_write(setup):
     c, client = setup
     response = client.post(

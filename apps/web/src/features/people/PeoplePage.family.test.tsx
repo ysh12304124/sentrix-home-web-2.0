@@ -6,7 +6,7 @@
  * 所以这里的断言不是「能渲染」，而是**「8 个人必须出现 8 张卡，而不是空状态」**。
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -120,6 +120,48 @@ afterEach(() => {
 });
 
 describe("/people 名人录（F7 §0 真实形状）", () => {
+  it("保存完成后移除姓名预览，较晚返回的旧轮询不会覆盖新姓名", async () => {
+    let finish!: (value: Awaited<ReturnType<typeof client.renamePerson>>) => void;
+    let oldRead!: (value: FamilyGraph) => void;
+    vi.mocked(client.renamePerson).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const graph = realShapeGraph();
+    const updated = { ...graph, people: graph.people.map((person) => person.id === "person_0"
+      ? { ...person, display_name: "服务端新姓名" } : person) };
+    const { container } = mount(graph, "/?scope=album1&person=person_0");
+    await screen.findByRole("complementary");
+    vi.mocked(client.getFamilyGraph).mockImplementationOnce(() => new Promise((resolve) => { oldRead = resolve; }));
+    vi.mocked(client.getFamilyGraph).mockResolvedValue(updated);
+    fireEvent.change(screen.getByLabelText("姓名"), { target: { value: "输入预览姓名" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存姓名" }));
+    expect(container.querySelector('[data-person-id="person_0"]')?.textContent).toContain("输入预览姓名");
+    await waitFor(() => expect(oldRead).toBeDefined(), { timeout: 3000 });
+    await act(async () => finish({
+      entity: { id: "person_0", scope_id: "album1", canonical_name: "服务端新姓名", status: "confirmed",
+        family_role: null, summary: "", confidence: 1, confirmed: true, aliases: [] },
+      aliases: [], sync_status: "synced", sync_error: "",
+    }));
+    await waitFor(() => expect(container.querySelector('[data-person-id="person_0"]')?.textContent).toContain("服务端新姓名"));
+    expect(screen.queryByText(/正在保存并重建关联记忆/)).toBeNull();
+    await act(async () => oldRead(graph));
+    expect(container.querySelector('[data-person-id="person_0"]')?.textContent).toContain("服务端新姓名");
+    expect(screen.getByRole("complementary", { name: "服务端新姓名 的详情" })).toBeTruthy();
+  });
+
+  it("保存姓名时卡片和详情立即显示新姓名，重建失败则恢复服务端姓名", async () => {
+    let fail!: (error: Error) => void;
+    vi.mocked(client.renamePerson).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    const graph = realShapeGraph();
+    const { container } = mount(graph, "/?scope=album1&person=person_0");
+    await screen.findByRole("complementary");
+    fireEvent.change(screen.getByLabelText("姓名"), { target: { value: "新姓名" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存姓名" }));
+    expect(container.querySelector('[data-person-id="person_0"]')?.textContent).toContain("新姓名");
+    expect(screen.getByRole("complementary", { name: "新姓名 的详情" })).toBeTruthy();
+    expect(screen.getByText(/正在保存并重建关联记忆/)).toBeTruthy();
+    fail(new Error("保存失败"));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    await waitFor(() => expect(container.querySelector('[data-person-id="person_0"]')?.textContent).toContain("人物0"));
+  });
   it("8 个人 0 条关系时渲染 8 张人物卡，不是空状态", async () => {
     const { container } = mount();
 

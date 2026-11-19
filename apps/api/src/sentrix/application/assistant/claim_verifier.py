@@ -30,8 +30,10 @@ log = logging.getLogger("sentrix.assistant.claim_verifier")
 
 
 class ClaimVerifier:
-    def __init__(self, model: ChatModel) -> None:
+    def __init__(self, model: ChatModel, *, max_facts: int = 12, value_limit: int = 20) -> None:
         self._model = model
+        self._max_facts = max_facts
+        self._value_limit = value_limit
 
     def review(
         self,
@@ -43,7 +45,14 @@ class ClaimVerifier:
         include_debug: bool = False,
         step_id: str = "claim_verifier",
     ) -> ClaimReview:
-        raw_messages = build_claim_messages(query=query, claim=claim, facts=facts, requirement=requirement)
+        raw_messages = build_claim_messages(
+            query=query,
+            claim=claim,
+            facts=facts,
+            requirement=requirement,
+            max_facts=self._max_facts,
+            value_limit=self._value_limit,
+        )
         messages = [ChatMessage(ChatRole(str(item["role"])), str(item["content"])) for item in raw_messages]
         started = time.perf_counter()
         model_call: dict[str, Any] = {

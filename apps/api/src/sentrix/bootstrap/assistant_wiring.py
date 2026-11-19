@@ -5,13 +5,13 @@ HTTP 路由与进程内回合执行器共用同一份接线；执行器不能反
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.run_turn import RunTurn
-from sentrix.application.assistant.tools import AssistantToolbox
+from sentrix.application.assistant.tools import AssistantToolbox, ToolLimits
 from sentrix.application.retrieval.evaluate_conditions import EvaluateConditions
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
 from sentrix.application.retrieval.retrieve_evidence import RetrieveEvidence
@@ -20,7 +20,7 @@ from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
 from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
-from sentrix.domain.assistant.profile import DEFAULT_PROFILE
+from sentrix.domain.assistant.profile import CLOUD_PROFILE, DEFAULT_PROFILE, TurnProfile
 
 if TYPE_CHECKING:
     from sentrix.bootstrap.container import Container
@@ -61,6 +61,73 @@ def build_retrieve_evidence(container: Container) -> RetrieveEvidence:
     )
 
 
+def _limit(agent: Mapping[str, Any], key: str, default: int | None) -> int | None:
+    if key not in agent:
+        return default
+    value = agent[key]
+    return None if value is None else int(value)
+
+
+def _turn_profile(container: Container) -> TurnProfile:
+    if container.model_profile is None:
+        return replace(
+            DEFAULT_PROFILE,
+            wall_time_s=container.settings.agent_wall_time_s,
+            max_steps=container.settings.agent_max_steps,
+            max_tool_calls=container.settings.agent_max_tool_calls,
+            strict_model_step_budget=container.settings.vlm_exact_output_budget,
+        )
+    agent = dict(container.model_profile.agent)
+    return replace(
+        CLOUD_PROFILE,
+        max_steps=_limit(agent, "max_steps", CLOUD_PROFILE.max_steps),
+        max_tool_calls=_limit(agent, "max_tool_calls", CLOUD_PROFILE.max_tool_calls),
+        max_search_calls=_limit(agent, "max_search_calls", CLOUD_PROFILE.max_search_calls),
+        max_page_calls=_limit(agent, "max_page_calls", CLOUD_PROFILE.max_page_calls),
+        max_inspections=_limit(agent, "max_inspections", CLOUD_PROFILE.max_inspections),
+        wall_time_s=float(agent.get("wall_time_s", CLOUD_PROFILE.wall_time_s)),
+        history_candidate_messages=int(
+            agent.get("history_candidate_messages", CLOUD_PROFILE.history_candidate_messages)
+        ),
+        history_char_budget=int(agent.get("history_char_budget", CLOUD_PROFILE.history_char_budget)),
+        judge_transcript_messages=int(
+            agent.get("judge_transcript_messages", CLOUD_PROFILE.judge_transcript_messages)
+        ),
+        judge_message_chars=int(agent.get("judge_message_chars", CLOUD_PROFILE.judge_message_chars)),
+        claim_max_facts=int(agent.get("claim_max_facts", CLOUD_PROFILE.claim_max_facts)),
+        claim_value_limit=int(agent.get("claim_value_limit", CLOUD_PROFILE.claim_value_limit)),
+        compaction_mode=str(agent.get("compaction_mode", CLOUD_PROFILE.compaction_mode)),
+        compaction_preview_rewrite=bool(
+            agent.get("compaction_preview_rewrite", CLOUD_PROFILE.compaction_preview_rewrite)
+        ),
+        compaction_protect_latest_preview=bool(
+            agent.get(
+                "compaction_protect_latest_preview",
+                CLOUD_PROFILE.compaction_protect_latest_preview,
+            )
+        ),
+        compaction_max_preview_level=int(
+            agent.get("compaction_max_preview_level", CLOUD_PROFILE.compaction_max_preview_level)
+        ),
+    )
+
+
+def _tool_limits(container: Container) -> ToolLimits:
+    if container.model_profile is None:
+        return ToolLimits()
+    agent = container.model_profile.agent
+    return ToolLimits(
+        summary_text_chars=int(agent.get("preview_summary_chars", 300)),
+        summary_ocr_chars=int(agent.get("preview_ocr_chars", 120)),
+        summary_list_items=int(agent.get("preview_list_items", 8)),
+        speech_segments=int(agent.get("speech_segments", 12)),
+        speech_chars=int(agent.get("speech_chars", 1000)),
+        read_text_chars=int(agent.get("read_text_chars", 1600)),
+        read_text_lines=int(agent.get("read_text_lines", 8)),
+        read_text_line_chars=int(agent.get("read_text_line_chars", 150)),
+    )
+
+
 def build_run_turn(container: Container) -> RunTurn:
     return RunTurn(
         model=container.chat_model,
@@ -82,14 +149,10 @@ def build_run_turn(container: Container) -> RunTurn:
             person_crops=container.person_crop_renderer,
             events=container.event_repository,
             asset_places=container.asset_place_repository,
+            limits=_tool_limits(container),
         ),
-        profile=replace(
-            DEFAULT_PROFILE,
-            wall_time_s=container.settings.agent_wall_time_s,
-            max_steps=container.settings.agent_max_steps,
-            max_tool_calls=container.settings.agent_max_tool_calls,
-            strict_model_step_budget=container.settings.vlm_exact_output_budget,
-        ),
+        observations=container.observation_repository,
+        profile=_turn_profile(container),
     )
 
 

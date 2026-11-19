@@ -331,9 +331,7 @@ class RunReports:
         scope_id = str(state.get("scope_id") or "").strip()
         items = [item for item in (state.get("items") or []) if isinstance(item, dict)]
         baseline_id, pairing_source, baseline, pairing_error = self._graph_baseline(state)
-        baseline_items = [
-            item for item in (baseline or {}).get("items", []) if isinstance(item, dict)
-        ]
+        baseline_items = [item for item in (baseline or {}).get("items", []) if isinstance(item, dict)]
         summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
         baseline_summary = (baseline or {}).get("summary")
         baseline_summary = baseline_summary if isinstance(baseline_summary, dict) else None

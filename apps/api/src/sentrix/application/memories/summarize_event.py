@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply
 from sentrix.domain.assistant.ports import ChatModel
@@ -131,7 +131,7 @@ def projection_from_reply(reply: str, *, event: EventRecord) -> EventProjection 
     1.0 那两处「不是 dict 就退回」与「title 还是占位符就退回」在这里合并成一个判据：
     **要么给出一个可用的投影，要么什么都不给**，中间的半成品没有第三种处理。
     """
-    parsed = _parse_json_object(reply)
+    parsed = parse_projection_object(reply)
     if parsed is None:
         return None
     title = str(parsed.get("title") or "").strip()
@@ -155,7 +155,7 @@ def _confidence(raw: object) -> float:
     return min(1.0, max(0.0, value))
 
 
-def _parse_json_object(text: str) -> dict[str, object] | None:
+def parse_projection_object(text: str) -> dict[str, object] | None:
     stripped = text.strip()
     candidates = [stripped]
     start, end = stripped.find("{"), stripped.rfind("}")
@@ -181,13 +181,27 @@ def build_system_prompt() -> str:
     照搬 1.0 的单条 user 消息会让**每一次模型调用都在本地就抛**
     （``ChatModelError``），于是模型那条路永远走不到、只剩确定性摘要。
     """
-    return _SUMMARY_PROMPT
+    return (
+        _SUMMARY_PROMPT
+        + """
+每条观察的 confirmed_people 给出身份提及绑定的当前姓名。
+identity_updates 给出同一实体曾用的名称和关联 observation_ids。
+重建摘要时以当前姓名为准，不沿用旧摘要或已被用户修正的身份。
+有明确身份绑定时，用当前姓名称呼该人物，不继续用未命名的泛称代替。
+name_state=confirmed 是用户命名；status=pending 时可称为用户标记的该姓名，但不能声称人脸身份已确认。
+一条观察里可能有多个人：不得仅因出现一个已命名人物，就把所有“小男孩”等泛称都当作他。
+只在证据能区分人物时将动作归给具体姓名；无法区分时保留其他人物的描述，明确共同出现即可。
+只根据当前 observations 重建；已经删除的观察不能作为摘要依据。
+文本记录须根据 text_content 重写摘要；正文与旧 caption 冲突时以正文为准，不延续旧摘要。
+"""
+    )
 
 
 def build_evidence(
     event: EventRecord,
     observations: Sequence[Observation],
     participants: Sequence[EventParticipantRecord] = (),
+    identity_updates: Sequence[Mapping[str, object]] = (),
 ) -> str:
     """user 消息：这次要总结的事件的可验证证据（JSON，不含任何提示词）。
 
@@ -204,8 +218,22 @@ def build_evidence(
             "objects": list(item.objects),
             "clothing": list(item.clothing),
             "ocr_text": item.ocr_text,
+            "source_type": item.source_type,
+            "text_content": item.text_content,
+            "confirmed_people": [
+                {"entity_id": person.person_id, "name": person.person_name}
+                for person in participants
+                if item.id in person.evidence_ids and person.person_status == "confirmed"
+            ],
         }
         for item in observations
+    ]
+    observation_ids = {item.id for item in observations}
+    updates = [
+        {**item, "observation_ids": [ref for ref in refs if ref in observation_ids]}
+        for item in identity_updates
+        if isinstance((refs := item.get("observation_ids")), (list, tuple))
+        and observation_ids.intersection(refs)
     ]
     return json.dumps(
         {
@@ -213,8 +241,16 @@ def build_evidence(
             "time_end": event.time_end.isoformat() if event.time_end else None,
             "place": event.place,
             "participants": [
-                {"name": item.person_name, "role": item.role} for item in participants if item.person_name
+                {
+                    "entity_id": item.person_id,
+                    "name": item.person_name,
+                    "role": item.role,
+                    "evidence_ids": list(item.evidence_ids),
+                }
+                for item in participants
+                if item.person_name
             ],
+            "identity_updates": updates,
             "observations": evidence,
             "speech_transcript": str(event.source_metadata.get("speech_transcript") or ""),
         },
@@ -240,7 +276,13 @@ class SummarizeEvent:
         self._participants = participants
         self._model = model
 
-    def execute(self, event_id: str) -> EventRecord:
+    def execute(
+        self,
+        event_id: str,
+        *,
+        correction: bool = False,
+        identity_updates: Sequence[Mapping[str, object]] = (),
+    ) -> EventRecord:
         """总结一个事件并落库。事件不存在时抛 ``KeyError``。
 
         返回的是**落库之后**的那一行：调用方拿到的是 title/summary 已更新的记录，
@@ -258,19 +300,45 @@ class SummarizeEvent:
             )
             if item is not None
         ]
+        usable = [item for item in observations if item.has_content]
+        if observations and not usable:
+            log.warning("事件无可用观察语义，保留待处理状态 event=%s", event_id)
+            if correction:
+                raise RuntimeError("事件尚无可用观察内容，请先完成媒体处理")
+            return event
         if not observations or self._model is None:
+            if correction:
+                raise RuntimeError("事件摘要重建缺少观察或模型，请恢复后重试")
             return event
 
+        known_places = {
+            item.place.strip()
+            for item in usable
+            if item.place.strip() and item.place.strip() not in NOISE_VALUES | {OTHER_PLACE}
+        }
+        place = event.place
+        if (not place or place in NOISE_VALUES | {OTHER_PLACE}) and len(known_places) == 1:
+            place = next(iter(known_places))
+            event = replace(event, place=place)
+
         people = self._participants.list_participants(event_id) if self._participants is not None else ()
-        projection = self._from_model(event, observations, people) or fallback_projection(
-            event, observations, people
+        observation_ids = {item.id for item in observations}
+        identity_updates = tuple(
+            item
+            for item in identity_updates
+            if isinstance((refs := item.get("observation_ids")), (list, tuple))
+            and observation_ids.intersection(refs)
         )
+        projection = self._from_model(
+            event, observations, people, correction=correction, identity_updates=identity_updates
+        ) or fallback_projection(event, observations, people)
         return self._events.apply_summary(
             event_id,
             title=projection.title,
             event_type=projection.event_type,
             activity=projection.activity,
             summary=projection.summary,
+            place=place,
         )
 
     def _from_model(
@@ -278,17 +346,22 @@ class SummarizeEvent:
         event: EventRecord,
         observations: Sequence[Observation],
         participants: Sequence[EventParticipantRecord] = (),
+        *,
+        correction: bool = False,
+        identity_updates: Sequence[Mapping[str, object]] = (),
     ) -> EventProjection | None:
         model = self._model
         if model is None:
             return None
+        if correction:
+            return self._from_correction_model(event, observations, participants, identity_updates)
         try:
             reply: ModelReply = model.complete(
                 (
                     ChatMessage(role=ChatRole.SYSTEM, content=build_system_prompt()),
                     ChatMessage(
                         role=ChatRole.USER,
-                        content=build_evidence(event, observations, participants),
+                        content=build_evidence(event, observations, participants, identity_updates),
                     ),
                 ),
                 (),
@@ -300,3 +373,80 @@ class SummarizeEvent:
         if projection is None:
             log.info("事件总结的模型回复不可用，改用确定性摘要: %s", event.id)
         return projection
+
+    def _from_correction_model(
+        self,
+        event: EventRecord,
+        observations: Sequence[Observation],
+        participants: Sequence[EventParticipantRecord],
+        identity_updates: Sequence[Mapping[str, object]],
+    ) -> EventProjection:
+        """Validate identity consistency before publishing the whole automatic projection."""
+        assert self._model is not None
+        observation_ids = {item.id for item in observations}
+        names = list(
+            dict.fromkeys(
+                [
+                    person.person_name
+                    for person in participants
+                    if person.person_name
+                    and person.person_status == "confirmed"
+                    and observation_ids.intersection(person.evidence_ids)
+                ]
+                + [str(item["name"]) for item in identity_updates if item.get("name")]
+            )
+        )
+        previous = {
+            str(item["previous_name"])
+            for item in identity_updates
+            if item.get("previous_name")
+            and item["previous_name"] != item.get("name")
+            and not any(str(item["previous_name"]) in name for name in names)
+        }
+        messages: tuple[ChatMessage, ...] = (
+            ChatMessage(
+                role=ChatRole.SYSTEM,
+                content=build_system_prompt() + "\n本次是记忆修正：标题、摘要和活动须一致使用当前身份。"
+                "有绑定姓名时，标题至少包含一个当前姓名，摘要包含绑定的当前姓名。"
+                "不能仅给旧摘要加姓名冒号前缀；不要提及曾用名或改名过程。"
+                "多人场景保留未命名人物，不能把他们的动作归给已命名人物。",
+            ),
+            ChatMessage(
+                role=ChatRole.USER,
+                content=build_evidence(event, observations, participants, identity_updates),
+            ),
+        )
+        for attempt in range(2):
+            try:
+                reply = self._model.complete(messages, ())
+            except Exception as error:
+                raise RuntimeError("事件摘要重建模型调用失败") from error
+            projection = projection_from_reply(reply.content, event=event)
+            if projection is None or not projection.summary.strip():
+                projection = fallback_projection(event, observations, participants)
+            summary_body = projection.summary
+            prefix, separator, body = summary_body.partition("：")
+            if separator and prefix and all(name in names for name in prefix.split("、")):
+                summary_body = body
+            missing = bool(names) and (
+                not any(name in projection.title for name in names)
+                or not all(name in summary_body for name in names)
+            )
+            stale = any(
+                old in value
+                for old in previous
+                for value in (projection.title, projection.summary, projection.activity)
+            )
+            if not missing and not stale:
+                return projection
+            if attempt == 0:
+                messages = (
+                    *messages,
+                    ChatMessage(role=ChatRole.ASSISTANT, content=reply.content),
+                    ChatMessage(
+                        role=ChatRole.USER,
+                        content="标题或摘要没有同步当前姓名，或还包含旧姓名。请依据同一份证据重新生成完整JSON，"
+                        "标题至少含一个当前姓名，摘要使用所有绑定姓名；不输出曾用名。",
+                    ),
+                )
+        raise RuntimeError("事件标题与摘要未满足当前身份一致性约束，请重试")

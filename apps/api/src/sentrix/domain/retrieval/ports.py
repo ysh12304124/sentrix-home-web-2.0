@@ -122,6 +122,13 @@ class LexicalSearch(Protocol):
         ...
 
 
+@runtime_checkable
+class AtomicVectorWriter(Protocol):
+    """Optional atomic write of an ordered record group; errors roll back the group."""
+
+    def upsert_many(self, records: Sequence[VectorRecord]) -> None: ...
+
+
 class VectorRepository(Protocol):
     """权威向量存储。SQLite 是唯一实现，也是索引重建的数据来源。
 

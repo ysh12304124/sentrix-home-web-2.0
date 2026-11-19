@@ -47,7 +47,7 @@ from dataclasses import dataclass
 
 from sentrix.domain.media.models import Observation
 from sentrix.domain.retrieval import scheme
-from sentrix.domain.retrieval.ports import TextEmbedder, VectorRecord, VectorRepository
+from sentrix.domain.retrieval.ports import AtomicVectorWriter, TextEmbedder, VectorRecord, VectorRepository
 
 log = logging.getLogger("sentrix.retrieval.index_observation_text")
 
@@ -125,8 +125,11 @@ class IndexObservationText:
 
         values = tuple(float(value) for value in vector)
         records = self._records(observation, event_id, values)
-        for record in records:
-            self._vectors.upsert(record)
+        if isinstance(self._vectors, AtomicVectorWriter):
+            self._vectors.upsert_many(records)
+        else:
+            for record in records:
+                self._vectors.upsert(record)
         # ``event_id`` 为 ``None`` 时少写一行。**1.0 里这条路走不到**——它总是先把观察
         # 归并进一个事件再写向量（``pipeline.py:324``）。2.0 的事件归并是可选的协作者，
         # 所以这里留一条退路：没有事件就只写观察那两行，语义空间照样可检索。

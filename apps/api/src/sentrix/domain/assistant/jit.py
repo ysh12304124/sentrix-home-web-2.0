@@ -25,19 +25,14 @@ from dataclasses import replace
 from sentrix.domain.assistant.evidence_ledger import EvidenceLedger, EvidenceType, RequirementStatus
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS, ToolSpec
 
-#: 三个照片级工具都要一个**来自当前结果集**的 handle（``result_set_id`` 是它们的必填
-#: 参数）。没有结果集时给出它们，等于发一个注定以 ``unknown_result_set`` 失败的调用。
-#: 1.0 用同一条判据（``jit_prompt.py:113`` 的 ``asset_handle_in_current_preview``）。
-_PHOTO_LEVEL_TOOLS = frozenset({"inspect_photo", "read_photo_text", "query_photo_people"})
+#: 读取单条候选时，后端用当前回合的结果集解析 handle。
+_RESULT_SET_TOOLS = frozenset({"inspect_photo", "read_photo_text", "query_photo_people", "read_source_text"})
 
 #: 需求类型 -> 能满足它的工具。与 ``ToolSpec.satisfies`` 是同一条映射的两个方向，
 #: 但**不能反过来从 ``satisfies`` 现算**：``final_answer`` 也声明了 ``delivered_photo``，
 #: 而它是终止动作、永远在表里，让它出现在「满足这个需求的工具」里只会把规则绕回去。
 _TOOLS_BY_REQUIREMENT: dict[EvidenceType, frozenset[str]] = {
-    EvidenceType.PHOTO_SET: frozenset({"search_memories"}),
-    EvidenceType.SPOKEN_CONTENT: frozenset({"search_memories"}),
-    EvidenceType.TEXT_CONTENT: frozenset({"search_text_memories"}),
-    EvidenceType.EMAIL_TEXT: frozenset({"search_text_memories"}),
+    EvidenceType.SOURCE_TEXT: frozenset({"read_source_text"}),
     EvidenceType.VISIBLE_TEXT: frozenset({"read_photo_text"}),
     EvidenceType.VISUAL_OBSERVATION: frozenset({"inspect_photo"}),
     EvidenceType.PHOTO_IDENTITY: frozenset({"query_photo_people"}),
@@ -74,7 +69,7 @@ def select_tools(
     )
 
 
-def select_turn_tools(ledger: EvidenceLedger) -> tuple[ToolSpec, ...]:
+def select_turn_tools(ledger: EvidenceLedger, *, has_source_text: bool = False) -> tuple[ToolSpec, ...]:
     """planner 结束后冻结的本回合工具集，**描述已换成 brief**。
 
     与 ``select_tools`` 的区别是**不看当前结果集/需求状态**：同一回合的工具表
@@ -83,14 +78,25 @@ def select_turn_tools(ledger: EvidenceLedger) -> tuple[ToolSpec, ...]:
     检索额度用完后仍然可见；收敛交给失败移除与预算耗尽后的 final-only（见
     ``run_turn._converse``）。
     """
-    offered = {FINAL_ANSWER_TOOL}
+    offered = {FINAL_ANSWER_TOOL, "search_memories"}
     for item in ledger.requirements:
         offered.update(_TOOLS_BY_REQUIREMENT.get(item.evidence_type, frozenset()))
-    if len(offered) == 1:
-        # Older planner declarations may omit an evidence type; retain the safe
-        # historical media-search fallback only for those untyped turns.
-        offered.add("search_memories")
-    return tuple(replace(spec, description=spec.brief) for spec in TOOL_SPECS if spec.name in offered)
+    if has_source_text:
+        # 同一结果集中可能同时命中图片和文本，后续读取不改变本轮工具集。
+        offered.add("read_source_text")
+    return tuple(
+        _turn_spec(spec, has_source_text=has_source_text) for spec in TOOL_SPECS if spec.name in offered
+    )
+
+
+def _turn_spec(spec: ToolSpec, *, has_source_text: bool) -> ToolSpec:
+    if has_source_text and spec.name == "search_memories":
+        return replace(spec, description="按人名、日期或内容词检索照片、视频和文本资料。")
+    if has_source_text and spec.name == FINAL_ANSWER_TOOL:
+        properties = dict(spec.parameters["properties"])
+        properties["answer"] = {"type": "string", "description": "使用用户语言给出最终回答。"}
+        return replace(spec, description=spec.brief, parameters={**spec.parameters, "properties": properties})
+    return replace(spec, description=spec.brief)
 
 
 def _select_offered(
@@ -104,7 +110,7 @@ def _select_offered(
         return ()
 
     open_types = {item.evidence_type for item in ledger.open_requirements()}
-    # 视觉细节与图内文字是可选需求：检索前被 _PHOTO_LEVEL_TOOLS 挡住，检索后
+    # 视觉细节与图内文字是可选需求：检索前被 _RESULT_SET_TOOLS 挡住，检索后
     # 由执行阶段根据预览决定是否调用。不做这一步，模型在预览不足时也没有工具可用。
     open_types.update(
         item.evidence_type
@@ -120,17 +126,13 @@ def _select_offered(
     # 明知会被拒的工具。但它也不能更早剪掉：**还没有结果集时它是唯一能打开局面的东西**
     # （1.0 ``jit_prompt.py:196`` 在没有未决需求时也专门把 ``search_memories`` 留着，
     # 理由是「避免模型在事实看似足够时凭空编数字」）。
-    text_types = {EvidenceType.TEXT_CONTENT, EvidenceType.EMAIL_TEXT}
-    media_types = {EvidenceType.PHOTO_SET, EvidenceType.SPOKEN_CONTENT}
-    if open_types & media_types or (not has_result_set and not open_types & text_types):
+    if not has_result_set or EvidenceType.PHOTO_SET in open_types:
         offered.add("search_memories")
-    if open_types & text_types:
-        offered.add("search_text_memories")
 
     for evidence_type, tools in _TOOLS_BY_REQUIREMENT.items():
         if evidence_type not in open_types:
             continue
-        offered.update(tools if has_result_set else tools - _PHOTO_LEVEL_TOOLS)
+        offered.update(tools if has_result_set else tools - _RESULT_SET_TOOLS)
 
     # ``get_result_page`` 不再 advertise：检索固定返回 6 张、页宽也是 6，一次就取完，
     # 这个工具在真实流量里从来没有被成功使用过；发出去只会让弱模型在被拒的翻页上

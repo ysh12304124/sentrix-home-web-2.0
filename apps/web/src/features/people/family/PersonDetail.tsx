@@ -1,9 +1,9 @@
 /**
  * 人物详情侧栏：身份 / 关系 / 证据三段（计划书 §4）。
  *
- * **写操作全部走 client，成功后调 `onChanged()` 重拉**——不做本地乐观更新：改名的
- * 别名历史、成员身份的 `locked`/`revision`、关系的正反两行都是服务端算的，本地先改
- * 一份就是又抄一遍规则，抄错时用户看到的和库里的是两回事。
+ * 写操作走 client；保存姓名时只预览输入的名字，卡片和详情立即一致显示。
+ * 别名历史、成员身份和关系仍取服务端结果；同步期间轮询已保存状态，结束后重新读取，
+ * 失败时移除姓名预览，不把关联记忆仍待同步的状态报告为完成。
  *
  * 详情要显示「对方是谁」，所以除契约里的四个 prop 外多收一个 `people`（同一份名录，
  * 由页面传进来，避免在这里再拉一遍接口）。
@@ -52,6 +52,7 @@ interface Props {
   readonly relationships: FamilyRelationship[];
   readonly onClose: () => void;
   readonly onChanged: () => Promise<void>;
+  readonly onNamePreview?: (personId: string, name: string | null) => void;
   /** 图上拖拽落到人身上时预选的对方；普通点开是 null。 */
   readonly relateTarget?: string | null;
   /**
@@ -66,6 +67,7 @@ export function PersonDetail({
   relationships,
   onClose,
   onChanged,
+  onNamePreview,
   relateTarget = null,
   onRedirect,
 }: Props) {
@@ -90,6 +92,20 @@ export function PersonDetail({
   const [aliasesOpen, setAliasesOpen] = useState(false);
   const [aliasesLoading, setAliasesLoading] = useState(false);
   const [aliasText, setAliasText] = useState("");
+
+  useEffect(() => {
+    if (!busy && !syncRetrying) return;
+    let cancelled = false;
+    let reading = false;
+    const refreshSaved = async () => {
+      if (cancelled || reading) return;
+      reading = true;
+      try { await onChanged(); } catch { /* The mutation response retains its own error reporting. */ }
+      finally { reading = false; }
+    };
+    const timer = window.setInterval(() => { void refreshSaved(); }, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [busy, syncRetrying, onChanged]);
 
   const others = people.filter((item) => item.id !== person.id && item.scope_id === person.scope_id);
   const relationTarget = others.find((item) => item.id === targetId);
@@ -117,7 +133,7 @@ export function PersonDetail({
     return () => {
       cancelled = true;
     };
-  }, [person.id]);
+  }, [person.id, person.display_name, busy, syncRetrying]);
 
   // 一对人只留一条边（与服务端给的正反两行、多种关系归并成同一形状），再只挑碰这个人的。
   // 只保留用户确认过的边；模型推断的关系不在详情里冒充已确认事实。
@@ -135,7 +151,8 @@ export function PersonDetail({
       };
     });
 
-  async function run(action: () => Promise<unknown>): Promise<boolean> {
+  async function run(action: () => Promise<unknown>, refreshOnError = false): Promise<boolean> {
+    if (busy || syncRetrying) return false;
     setBusy(true);
     setError(null);
     setSyncNotice(null);
@@ -156,6 +173,7 @@ export function PersonDetail({
       return true;
     } catch (cause) {
       setError(describeReviewError(cause));
+      if (refreshOnError) await onChanged();
       return false;
     } finally {
       setBusy(false);
@@ -181,7 +199,7 @@ export function PersonDetail({
     setSyncRetrying(true);
     setError(null);
     try {
-      const result = await retryMemoryCorrections(person.scope_id);
+      const result = await retryMemoryCorrections(person.scope_id, person.id);
       setSyncNotice(result.error
         ? { status: "pending", text: `关联记忆同步失败：${result.error}` }
         : { status: "synced", text: "已按当前人物与关系信息同步关联记忆、图谱和检索索引。" });
@@ -195,12 +213,14 @@ export function PersonDetail({
 
   function submitRename(event: FormEvent) {
     event.preventDefault();
+    if (busy || syncRetrying) return;
+    onNamePreview?.(person.id, name.trim());
     void run(async () => {
       const result = await renamePerson(person.id, name);
       setName(result.entity.canonical_name);
       setAliases(result.aliases);
       return result;
-    });
+    }, true).finally(() => onNamePreview?.(person.id, null));
   }
 
   /**
@@ -324,6 +344,12 @@ export function PersonDetail({
         </button>
       </header>
 
+      {busy || syncRetrying ? (
+        <p className="memory-sync-feedback" role="status" aria-live="polite">
+          正在保存并重建关联记忆…姓名和关系保存后会先刷新显示，请勿重复提交。
+        </p>
+      ) : null}
+
       {error === null ? null : (
         <p className="error" role="alert">
           {error}
@@ -381,7 +407,7 @@ export function PersonDetail({
               <input value={name} onChange={(event) => setName(event.target.value)} />
             </label>
             <button type="submit" className="button ghost small" disabled={busy}>
-              保存姓名
+              {busy ? "正在保存并同步…" : "保存姓名"}
             </button>
           </form>
         )}
@@ -591,8 +617,9 @@ export function PersonDetail({
               </select>
             </div>
             <button type="submit" className="button primary small" disabled={busy || relationTarget === undefined}>
-              建立关系
+              {busy ? "正在保存并同步…" : "建立关系"}
             </button>
+            {relationTarget === undefined ? <p className="detail-empty">请先选择对方，再建立关系。</p> : null}
           </form>
         )}
       </section>

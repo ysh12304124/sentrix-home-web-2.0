@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fakes import CompletedProcess, FakeHttpx, FakeResponse, FakeSubprocess, path_reader
@@ -320,6 +321,36 @@ def test_linux_system_memory_reports_unavailable_without_meminfo(
     result = providers._read_linux_system_memory()
     assert result["status"] == "unavailable"
     assert result["source"] == "proc_meminfo"
+
+
+def test_windows_system_memory_and_cpu_use_native_observations(monkeypatch):
+    monkeypatch.setattr(providers, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        providers.psutil, "virtual_memory", lambda: SimpleNamespace(total=16 * 1048576, available=6 * 1048576)
+    )
+    monkeypatch.setattr(providers.psutil, "cpu_percent", lambda interval: 25)
+    monkeypatch.setattr(providers, "_read_linux_system_memory", lambda: pytest.fail("Windows has no /proc"))
+    provider = HostNvidiaTelemetryProvider()
+    first = provider.system_memory()
+    assert first["status"] == "available"
+    assert first["data"]["cpu_utilization_pct"] is None
+    data = provider.system_memory()["data"]
+    assert data["system_memory_used_mib"] == 10
+    assert data["system_memory_total_mib"] == 16
+    assert data["system_memory_available_mib"] == 6
+    assert data["cpu_utilization_pct"] == 25
+    assert data["system_memory_scope"] == "windows_physical_total_minus_available_v1"
+    assert data["system_observation"]["status"] == "available"
+
+
+def test_windows_memory_probe_failure_is_visible(monkeypatch):
+    def denied():
+        raise PermissionError("memory probe denied")
+
+    monkeypatch.setattr(providers.psutil, "virtual_memory", denied)
+    result = providers._read_windows_system_memory()
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "memory probe denied"
 
 
 def test_unavailable_telemetry_reports_not_applicable() -> None:

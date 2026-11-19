@@ -182,3 +182,49 @@ def test_sidecar_health_shape_is_what_the_adapter_expects():
     embedder, seen = clip_with(lambda request: httpx.Response(200, json={"status": "ok"}))
     assert embedder.available is True
     assert seen[-1].url.path == "/health"
+
+
+def test_bge_cuda_request_does_not_fall_back_to_cpu(monkeypatch):
+    import torch
+
+    from scripts.maintenance import bge_text_sidecar as sidecar
+
+    for name in ("_model", "_tokenizer", "_identity", "_identity_runtime", "_device", "_error"):
+        monkeypatch.setattr(sidecar, name, getattr(sidecar, name))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    sidecar._load("cuda")
+    assert sidecar._model is None and sidecar._tokenizer is None
+    assert sidecar._device == "cuda"
+    assert "CUDA requested" in sidecar._error
+
+
+def test_bge_model_is_placed_on_requested_cuda_device(monkeypatch):
+    import torch
+    import transformers
+
+    from scripts.maintenance import bge_text_sidecar as sidecar
+
+    placements = []
+
+    class Model:
+        def to(self, device):
+            placements.append(device)
+            return self
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return []
+
+    for name in ("_model", "_tokenizer", "_identity", "_identity_runtime", "_device", "_error"):
+        monkeypatch.setattr(sidecar, name, getattr(sidecar, name))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch, "set_num_threads", lambda _: None)
+    monkeypatch.setattr(sidecar, "_current_identity", lambda: {"semantic_sha256": "test"})
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: object())
+    monkeypatch.setattr(transformers.AutoModel, "from_pretrained", lambda *a, **kw: Model())
+    sidecar._load("cuda")
+    assert placements == ["cuda"]
+    assert sidecar._identity_runtime["device"] == "cuda"
+    assert sidecar._error == ""

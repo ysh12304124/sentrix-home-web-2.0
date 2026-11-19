@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Sequence
 
 from sentrix.domain.media.ports import MediaDeletionRecord
@@ -84,6 +85,18 @@ class SqliteMediaDeletionRepository:
                 )
                 if faces
                 else ()
+            )
+            source_entities = set(
+                _ids(
+                    db,
+                    "SELECT DISTINCT entity_id FROM entity_mentions "
+                    "WHERE observation_id IN (SELECT value FROM json_each(?)) "
+                    "UNION SELECT entity_id FROM entity_observations "
+                    "WHERE observation_id IN (SELECT value FROM json_each(?)) "
+                    "UNION SELECT entity_id FROM face_clusters WHERE id IN (SELECT value FROM json_each(?)) "
+                    "AND entity_id IS NOT NULL",
+                    (json.dumps(observations), json.dumps(observations), json.dumps(clusters)),
+                )
             )
             vector_sources = tuple(
                 (kind, source)
@@ -273,6 +286,37 @@ class SqliteMediaDeletionRepository:
             if observations:
                 db.execute(f"DELETE FROM observations WHERE id IN ({o})", observations)
             db.execute(f"DELETE FROM assets WHERE id IN ({a})", assets)
+            # Deletion and invalidation are one transaction. Keep the surviving
+            # dependency IDs even after provenance rows have been removed.
+            surviving_observations = _ids(
+                db,
+                "SELECT DISTINCT observation_id FROM event_observations "
+                "WHERE event_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(surviving_events),),
+            )
+            db.execute(
+                "INSERT INTO memory_corrections(id,scope_id,target_kind,target_id,"
+                "before_json,reason,created_at,updated_at) "
+                "VALUES(?,?,'deletion',?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'),strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+                (
+                    uuid.uuid4().hex,
+                    scope,
+                    asset_id,
+                    json.dumps(
+                        {
+                            "_affected_events": surviving_events,
+                            "_affected_observations": surviving_observations,
+                            "_affected_entities": sorted(source_entities),
+                        }
+                    ),
+                    "删除媒体后重建关联记忆",
+                ),
+            )
+            for event_id in surviving_events:
+                db.execute(
+                    "UPDATE events SET title='',summary='',revision=revision+1 WHERE id=?", (event_id,)
+                )
+                db.execute("DELETE FROM text_vectors WHERE source_type='event' AND source_id=?", (event_id,))
             node_ids = tuple(
                 f"{kind}:{source}"
                 for kind, group in (

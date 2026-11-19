@@ -43,6 +43,11 @@ export function TimelineEventDetail({
 }) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  useEffect(() => {
+    const refresh = () => setReloadToken((value) => value + 1);
+    window.addEventListener("sentrix:memory-changed", refresh);
+    return () => window.removeEventListener("sentrix:memory-changed", refresh);
+  }, []);
 
   // 「这个 id 的详情还没回来」是推导出来的，效果里只写回调，不额外 setState。
   const loading = loaded === null || loaded.id !== eventId;

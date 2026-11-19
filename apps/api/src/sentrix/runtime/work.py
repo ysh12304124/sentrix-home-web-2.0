@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TypeVar
@@ -24,7 +24,7 @@ def current_work() -> str:
 
 
 @contextmanager
-def import_work():
+def import_work() -> Iterator[None]:
     token = _work.set(WORK_IMPORT)
     try:
         yield

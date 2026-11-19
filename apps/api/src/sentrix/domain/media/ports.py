@@ -143,6 +143,8 @@ class ObservationRepository(Protocol):
 
     def list_scope(self, scope_id: str, *, limit: int) -> Sequence[Observation]: ...
 
+    def has_source_text(self, scope_id: str) -> bool: ...
+
     def enrich(self, observation_id: str, *, semantics: ObservationSemantics) -> Observation: ...
 
     def latest_ocr_text(self, asset_id: str) -> str:
@@ -483,6 +485,19 @@ class VideoRepository(Protocol):
 
     def save_probe(self, asset_id: str, probe: VideoProbe) -> None:
         """把探测结果并进 ``assets.metadata_json``。**必须在资产行落库之后调**（外键）。"""
+        ...
+
+    def update_capture_metadata(
+        self,
+        asset_id: str,
+        captured_at: datetime | None,
+        gps: GpsPoint | None,
+        evidence: CaptureTime,
+    ) -> None:
+        """Atomically refresh source/derived video times and scene wall-clock projections.
+
+        Explicit user-corrected capture times remain authoritative. Missing times stay unknown.
+        """
         ...
 
     def save_processing_seconds(self, asset_id: str, seconds: float) -> None:

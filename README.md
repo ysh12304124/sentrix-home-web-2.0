@@ -27,6 +27,12 @@
 
 ## 快速开始
 
+### Windows / Conda 本地开发
+
+使用 [`environment.windows.yml`](environment.windows.yml) 创建独立的 Python 3.11、
+Node.js 22 和 NVIDIA 开发环境。安装顺序、PowerShell 激活、平台限制与验证命令见
+[`Windows Conda 环境`](docs/runbooks/windows-conda.md)。
+
 ### 153（默认，WeMM）
 
 ```bash

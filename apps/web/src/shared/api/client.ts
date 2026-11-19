@@ -148,7 +148,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const raw = await response.text();
     throw new ApiError(response.status, parseApiError(raw), raw);
   }
-  return (await response.json()) as T;
+  const result = (await response.json()) as T;
+  if (!SAFE_METHODS.has(method) && /^\/(memories|people|face-clusters|entities|relationships|family|assets)(\/|\?)/.test(path)) {
+    window.dispatchEvent(new Event("sentrix:memory-changed"));
+  }
+  return result;
 }
 
 export async function listAssets(scopeId: string): Promise<AssetSummary[]> {
@@ -688,9 +692,10 @@ export interface MemorySyncResult {
   sync_error: string;
 }
 
-export async function retryMemoryCorrections(scopeId: string): Promise<{ error: string }> {
+export async function retryMemoryCorrections(scopeId: string, personId?: string): Promise<{ error: string }> {
+  const personQuery = personId ? `&person_id=${encodeURIComponent(personId)}` : "";
   return request<{ error: string }>(
-    `/memories/corrections/retry?scope_id=${encodeURIComponent(scopeId)}`,
+    `/memories/corrections/retry?scope_id=${encodeURIComponent(scopeId)}${personQuery}`,
     { method: "POST" },
   );
 }

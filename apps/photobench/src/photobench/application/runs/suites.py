@@ -1256,9 +1256,12 @@ class RunSuites:
                         and turn_index >= (len(definition.get("conversation") or []) or 1)
                     ):
                         raise InvalidRequestError("原测评QA快照缺少对应题目或对话轮定义")
-                elif turn_index is not None and len(item["runtime_turns"]) > 1:
-                    if not str(item["runtime_turns"][turn_index].get("reference_answer") or "").strip():
-                        raise InvalidRequestError("原测评未记录逐轮参考答案，不能重评分")
+                elif (
+                    turn_index is not None
+                    and len(item["runtime_turns"]) > 1
+                    and not str(item["runtime_turns"][turn_index].get("reference_answer") or "").strip()
+                ):
+                    raise InvalidRequestError("原测评未记录逐轮参考答案，不能重评分")
             rejudge_id = f"rejudge-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
             previous = state.get("rejudge")
             if previous:

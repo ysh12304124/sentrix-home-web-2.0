@@ -33,6 +33,11 @@ from sentrix.application.memories.assign_events import (
 from sentrix.application.memories.build_graph import BuildMemoryGraph
 from sentrix.application.memories.maintain_facts import MaintainFacts
 from sentrix.application.memories.summarize_event import SummarizeEvent
+from sentrix.application.memories.sync_corrections import (
+    RebuildDependentText,
+    ReindexCorrectedMemories,
+    SyncCorrections,
+)
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.domain.media.import_jobs import ImportJob
@@ -390,7 +395,9 @@ def _build_video_scenes(
         scene_planner=container.video_scene_planner,
         transcriber=container.audio_transcriber,
         cross_modal_embedder=container.cross_modal_embedder,
-        has_memory=lambda asset: bool(container.observation_repository.list_by_asset(asset.id)),
+        has_memory=lambda asset: any(
+            item.has_content for item in container.observation_repository.list_by_asset(asset.id)
+        ),
         checkpoint=checkpoint,
         resume_event_completed=resume_event_completed,
     )
@@ -421,6 +428,7 @@ def _build_importer(
         observations=container.observation_repository,
         storage=container.media_storage,
         metadata=container.metadata_reader,
+        resolve_capture_time=container.capture_time_resolver,
         visual_indexer=IndexAssetVisual(
             embedder=container.visual_embedder,
             vectors=container.vector_repository,
@@ -510,5 +518,71 @@ def _event_id(assigner: AssignEvents, observation: Observation) -> str:
 def _observation_event(container: Container, observation_id: str) -> str | None:
     """该观察已经挂到的事件（取第一个）。重放时直接复用，不再跑候选打分。"""
     mapping = container.event_repository.events_for_observations([observation_id])
-    event_ids = mapping.get(observation_id, ())
-    return event_ids[0] if event_ids else None
+    return next((event_id for event_id, ids in mapping.items() if observation_id in ids), None)
+
+
+def build_memory_sync(container: Container, *, strict_summary: bool = True) -> SyncCorrections:
+    reindex = ReindexCorrectedMemories(
+        container.observation_repository,
+        container.event_repository,
+        container.lexical_index,
+        container.text_embedder,
+        container.text_vector_repository,
+        container.memory_corrections,
+    ).reindex
+
+    def graph(scope: str) -> None:
+        stats = build_memory_graph(container).execute(scope)
+        if stats.causal_status == "degraded":
+            raise RuntimeError("因果边同步降级，请重试")
+
+    def summaries(scope: str) -> None:
+        event_ids = container.memory_corrections.summary_events(scope)
+        if not event_ids:
+            return
+        summarizer = SummarizeEvent(
+            events=container.event_repository,
+            observations=container.observation_repository,
+            assets=container.asset_repository,
+            participants=container.event_participant_repository,
+            model=container.chat_model,
+        )
+        errors = []
+        updates = container.memory_corrections.identity_updates(scope)
+
+        def summarize(event_id: str) -> None:
+            try:
+                observations = container.observation_repository.get_many(
+                    container.event_repository.observation_ids(event_id)
+                )
+                if not any(item.has_content for item in observations.values()):
+                    raise RuntimeError("事件尚无可用观察内容，请先完成媒体处理")
+                summarizer.execute(event_id, correction=strict_summary, identity_updates=updates)
+            except Exception as error:  # noqa: BLE001 - one event must not block independent events
+                raise RuntimeError(f"{event_id}: {type(error).__name__}: {error}") from error
+
+        # Independent correction targets share no event writes. Submit at most
+        # four tasks at a time; do not build an unbounded executor queue.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory-correction") as pool:
+            for start in range(0, len(event_ids), 4):
+                futures = [pool.submit(summarize, event_id) for event_id in event_ids[start : start + 4]]
+                for future in futures:
+                    try:
+                        future.result()
+                    except Exception as error:  # noqa: BLE001 - independent targets retain retry state
+                        errors.append(str(error))
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def dependent(scope: str) -> None:
+        if not container.memory_corrections.dependent_text(scope):
+            return
+        RebuildDependentText(
+            container.memory_corrections,
+            container.observation_repository,
+            container.event_repository,
+            container.entity_repository,
+            container.chat_model,
+        ).execute(scope)
+
+    return SyncCorrections(container.memory_corrections, reindex, graph, summaries, dependent)

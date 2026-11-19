@@ -75,6 +75,37 @@ beforeEach(() => {
   });
 });
 
+it("翻页错误显示在结果区，点击重试进入请求页并可切换每页数量", async () => {
+  const scroll = vi.fn();
+  const originalScroll = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = scroll;
+  let failNext = true;
+  mockApi.mockImplementation((path: string) => {
+    const params = new URL(path, "http://localhost").searchParams;
+    const page = Number(params.get("page")), size = Number(params.get("page_size"));
+    if (page === 2 && failNext) {
+      failNext = false;
+      return Promise.reject(new Error("请求超时"));
+    }
+    const pages = Math.ceil(100 / size);
+    return Promise.resolve({ items: [], page, page_size: size, pages, total: 100, has_previous: page > 1, has_next: page < pages });
+  });
+  try {
+    render(<Harness activeRun={RUN} />);
+    await screen.findByText("1 / 5");
+    fireEvent.click(screen.getAllByRole("button", {name:"下一页"})[0]!);
+    expect((await screen.findByRole("alert")).textContent).toContain("请求超时");
+    fireEvent.click(screen.getByRole("button", {name:"重试"}));
+    await screen.findByText("2 / 5");
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", {name:"每页"}), {target:{value:"50"}});
+    await screen.findByText("1 / 2");
+    expect(mockApi.mock.calls.at(-1)![0]).toContain("page_size=50");
+  } finally {
+    HTMLElement.prototype.scrollIntoView = originalScroll;
+  }
+});
+
 function setSelect(placeholderOption: string, value: string): void {
   const select = screen.getByText(placeholderOption).closest("select");
   expect(select).not.toBeNull();

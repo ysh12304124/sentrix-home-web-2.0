@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ def current_turn() -> TurnContext | None:
 
 
 @contextmanager
-def turn_attempt(turn_id: str, attempt_no: int):
+def turn_attempt(turn_id: str, attempt_no: int) -> Iterator[None]:
     token = _context.set(TurnContext(turn_id=turn_id, attempt_no=attempt_no))
     try:
         yield

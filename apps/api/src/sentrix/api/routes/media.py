@@ -17,6 +17,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import psutil
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -469,13 +470,8 @@ def recover_video_jobs(container: Container) -> None:
 def _process_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    # Windows treats kill(pid, 0) as TerminateProcess. Recovery must only observe.
+    return psutil.pid_exists(pid)
 
 
 def _video_config_hash(container: Container) -> str:
@@ -547,9 +543,18 @@ def _run_video_job(container: Container, job_id: str) -> None:
             if upload_stage.get("status") != "SUCCEEDED":
                 mark("UPLOAD", artifact=asset.path)
             probe_stage = container.video_repository.stage(job_id, "VIDEO_PROBE") or {}
+            probe = container.video_repository.probe(asset_id)
+            if (
+                probe is None
+                or probe.metadata is None
+                or probe.probe_error
+                or asset.capture_time.status == "unknown"
+            ):
+                container.video_repository.update_job(job_id, current_stage="VIDEO_PROBE")
+                asset = build_import_assets(container, observe=False).refresh_video_metadata(asset)
+                probe = container.video_repository.probe(asset_id)
             if probe_stage.get("status") != "SUCCEEDED":
                 container.video_repository.update_job(job_id, current_stage="VIDEO_PROBE")
-                probe = container.video_repository.probe(asset_id)
                 if probe is None or probe.metadata is None:
                     raise RuntimeError("video probe artifact missing")
                 mark("VIDEO_PROBE", artifact="assets.metadata_json.video_metadata")
@@ -689,7 +694,10 @@ def _run_video_job(container: Container, job_id: str) -> None:
             scene_artifacts_valid = (
                 frame_artifacts_valid
                 and len(container.event_repository.list_video_scenes(asset_id)) == len(derived_frames)
-                and all(container.observation_repository.list_by_asset(frame.id) for frame in derived_frames)
+                and all(
+                    any(item.has_content for item in container.observation_repository.list_by_asset(frame.id))
+                    for frame in derived_frames
+                )
             )
             stage_artifacts_complete = scene_artifacts_valid and all(
                 (container.video_repository.stage(job_id, stage_name) or {}).get("status") == "SUCCEEDED"
@@ -823,8 +831,12 @@ def _run_video_job(container: Container, job_id: str) -> None:
                     started_at=datetime.now(UTC).isoformat(),
                     attempt=int(str(graph_stage.get("attempt", 0))) + 1,
                 )
-                graph_stats = refresh_memory_graph(container, asset.scope_id)
-                if graph_stats is None:
+                from sentrix.bootstrap.import_wiring import build_memory_sync
+
+                with container.memory_corrections.track(asset.scope_id, "video", asset_id):
+                    container.event_repository.retire_video_placeholders(asset_id)
+                sync_error = build_memory_sync(container, strict_summary=False).execute(asset.scope_id)
+                if sync_error:
                     degraded = True
                     container.video_repository.update_stage(
                         job_id,
@@ -832,7 +844,7 @@ def _run_video_job(container: Container, job_id: str) -> None:
                         status="SKIPPED",
                         progress=1.0,
                         error_code="VIDEO-MEMORY-GRAPH-001",
-                        error_message="记忆图更新暂不可用，基础视频记忆已保留",
+                        error_message=f"关联记忆更新待重试，基础视频记忆已保留：{sync_error}",
                         finished_at=datetime.now(UTC).isoformat(),
                     )
                 else:
@@ -1002,6 +1014,8 @@ def asset_poster(asset_id: str, container: Container = Depends(get_container)) -
     if asset is None:
         raise HTTPException(status_code=404, detail="asset not found")
     if asset.media_type is not MediaType.VIDEO:
+        if asset.media_type is not MediaType.IMAGE:
+            raise HTTPException(status_code=404, detail="video poster unavailable")
         return deliver_asset(asset_id, original=False, container=container)
 
     cache = {"Cache-Control": "private, max-age=86400"}
@@ -1153,9 +1167,22 @@ def get_asset_preview(asset_id: str, container: Container = Depends(get_containe
 
 @router.delete("/assets/{asset_id}", response_model=DeleteAssetResponse)
 def delete_asset(asset_id: str, container: Container = Depends(get_container)) -> DeleteAssetResponse:
-    use_case = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index)
+    from sentrix.api.routes.corrections import synchronizer
+    from sentrix.application.memories.sync_corrections import SYNC_LOCK
+
+    asset = container.asset_repository.get(asset_id)
+    scopes = [asset.scope_id] if asset else container.memory_corrections.pending_scopes()
+    use_case = DeleteAsset(
+        container.media_deletion,
+        container.media_storage,
+        container.vector_index,
+        synchronize=lambda: "; ".join(
+            error for scope in scopes if (error := synchronizer(container).execute(scope))
+        ),
+    )
     try:
-        result = use_case.execute(asset_id)
+        with SYNC_LOCK:
+            result = use_case.execute(asset_id)
     except ValueError as error:
         raise ConflictError(str(error)) from error
     if result is None:
@@ -1167,5 +1194,16 @@ def delete_asset(asset_id: str, container: Container = Depends(get_container)) -
 
 @router.post("/assets/deletion-cleanup/retry", response_model=MediaCleanupRetryResponse)
 def retry_media_cleanup(container: Container = Depends(get_container)) -> MediaCleanupRetryResponse:
-    warnings = DeleteAsset(container.media_deletion, container.media_storage, container.vector_index).retry()
+    from sentrix.api.routes.corrections import synchronizer
+
+    def sync() -> str:
+        return "; ".join(
+            error
+            for scope in container.memory_corrections.pending_scopes()
+            if (error := synchronizer(container).execute(scope))
+        )
+
+    warnings = DeleteAsset(
+        container.media_deletion, container.media_storage, container.vector_index, sync
+    ).retry()
     return MediaCleanupRetryResponse(warnings=list(warnings))

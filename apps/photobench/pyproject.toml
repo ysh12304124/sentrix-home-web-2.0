@@ -8,10 +8,11 @@ requires-python = ">=3.11"
 # 用的同一个包、同一个大版本。测试工具（pytest / ruff / mypy / import-linter）由
 # ``apps/api[dev]`` 提供，这里不再声明一遍——两个 extras 各写一份迟早会漂。
 dependencies = [
+    "portalocker>=2.8,<5",
     "httpx>=0.28,<1",
     # Verified telemetry versions; native tools are locked in telemetry-tools.lock.json.
     "psutil==7.2.2",
-    "nvidia-ml-py==13.615.71; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "nvidia-ml-py==13.615.71; (platform_system == 'Linux' and platform_machine == 'x86_64') or (platform_system == 'Windows' and platform_machine == 'AMD64')",
 ]
 
 [build-system]

@@ -184,6 +184,16 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 不掩盖已提交的权威修改。兼容旧身份/关系入口的事务边界及验证见
 [记忆修正传播](../refactor/memory-correction-deviations.md)。
 
+2026-11-19：同一端口增加依赖快照、自动摘要失效、关联文本重建及检查点写入。
+`DependentTextMemory` 仅描述自动派生目标；锁定/用户覆盖画像保留。修正专用模型路径失败
+保留 pending，原导入摘要降级不变。删除事务登记关联重建任务；既有 warnings/重试契约不变。
+
+人物页面提交改名后立即预览姓名，卡片与详情共用该预览；结束后读取权威数据并撤销预览，
+错误不冒称保存成功。同步期间每1.5秒读取已保存状态，旧读取不覆盖新结果。重试API新增
+可选person_id查询参数，验证人物和scope后登记当前依赖，即使无pending也能主动同步。
+修正专用的独立事件和派生文本目标分别按最多4项有界并行，不新增队列；同步HTTP响应、
+检查点事务、失败pending及图和索引后置顺序保留，不影响基线导入、检索与Agent工具。
+
 ### 3.1 可替换性分级
 
 | 级别 | 含义 | 典型端口 | 替换难度 |
@@ -1164,6 +1174,11 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 
 ## 10. 附录
 
+2026-11-19 文本向量写入优化：新增可选 `AtomicVectorWriter.upsert_many(records)` 端口，
+由既有 SQLite 向量仓储实现。文本索引器将同一观察产生的有序向量组一次提交；
+不具备此端口的仓储仍走原逐条 upsert。批内异常回滚整组，单条 upsert 语义保持，
+不改变同步强度、嵌入身份、向量内容、API 或结果 schema。新增空输入不产生写入。
+
 ### 10.1 关键文件地图
 
 ```
@@ -1404,3 +1419,25 @@ AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=
 持久执行尝试（attempt_no>0）的取消检查以 TurnRepository 的 cancel_requested 为准；
 不依赖已在重启时丢失、或在上次尝试收尾时移除的进程内操作登记。
 旧的未采用持久尝试编号的调用路径继续使用 OperationControl。
+
+
+### 2026-11-17 Windows 环境兼容
+
+主 API 规范化静态路径分隔符以保留未知 API 的 404；内存鉴权使用异步依赖，存活探针不等待工作线程池。PhotoBench 结果目录租约使用 portalocker 的非阻塞独占锁，Windows 使用可写文件 fsync 与真实目录句柄 FlushFileBuffers；错误仍抛出，原恢复与原子提交语义保持。端口和公开 schema 不作修改。验证与平台阻碍见 [Windows 修复记录](../refactor/windows-environment-deviations.md)。
+
+2026-11-18：主产品媒体上传采用同一真实目录刷新方式；PhotoBench 冻结启动快照关闭
+临时句柄后发布，存活探针使用不发送信号的 psutil.pid_exists，避免 Windows 终止副作用。
+不变更端口、公开 schema、失败语义和模型装配边界。专项证据与完整 CI 未完成项见上述记录。
+主 API 视频任务恢复的 PID 探针采用相同的无信号查询，避免误终止仍在运行的 worker。
+
+2026-11-18 QA 分页与 Windows 遥测：分页客户端按最新请求发布结果，相同在途读取合并，
+过期读取取消；失败保留已显示结果并提供重试。读取端不对活动快照作无用的缓存体积遍历，
+终态缓存仍受既有容量约束。Windows 物理内存来自 psutil 的 total-available，来源标识
+`windows_physical_total_minus_available_v1`；NVML 依赖支持 Windows x86_64。
+PSS、WSL 进程 GPU 归属未解析时保持 null 并披露原因，不替换为其他口径；历史缺失样本
+不回填。容器装配、原有 API/schema、Linux 资源口径不变，验证见 Windows 修复记录。
+
+2026-11-19 视频时间线恢复：视频源重新探测后，捕获时间和 GPS 投影由视频仓储原子保存；
+空源观察不进入事件总结，关键帧内容和可用原文件才进入场景事件。可用原文件的历史视频
+通过持久重处理任务恢复，空的自动占位事件只在无共享证据、无用户修正和无确认身份时归档，
+缺失原文件保持延期。具体平台限制与真实源视频验收见 Windows 修复记录。

@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import math
-import re
 import sqlite3
 import uuid
 from collections.abc import Iterable, Sequence
@@ -286,13 +284,11 @@ class SqliteLexicalIndex:
     # ---- 读取 ----------------------------------------------------------------
 
     def search_fts(self, query: str, *, scope_id: str | None, limit: int) -> Sequence[tuple[str, int]]:
-        """每个 query token 独立查一次，按 asset 累计词法命中分。
+        """每个 query token 独立查一次，按 asset 累计命中数。
 
         返回 ``(asset_id, 命中 token 数)``。**不同 token 命中同一个 asset 才累加**——
         同一个 token 命中多条 observation（同一 asset 有多条观察）只算一次，
         与 1.0 ``retrieval_indexes.py:316-322`` 的 ``token_hits`` 语义一致。
-        统一文本记忆例外：英文按原文整词校验，按文档频率加权，避免拉丁二字片段
-        和通用词淹没主题词。图像/视频资产的原始命中数计分保持不变。
         """
         from sentrix.domain.retrieval.lexical import query_tokens
 
@@ -301,24 +297,6 @@ class SqliteLexicalIndex:
             return []
         hits: dict[str, int] = {}
         with self._database.connect() as connection:
-            # Long text documents need rare-subject terms to outweigh generic
-            # words such as payment/salary. Preserve image/video token scoring.
-            text_query = (
-                "SELECT asset_id,caption,text_content,external_id,captured_at "
-                "FROM observations WHERE source_type='text'"
-            )
-            text_params = ()
-            if scope_id:
-                text_query += " AND scope_id=?"
-                text_params = (scope_id,)
-            text_documents = {
-                r["asset_id"]: " ".join(
-                    str(r[k] or "") for k in ("caption", "text_content", "external_id", "captured_at")
-                ).casefold()
-                for r in connection.execute(text_query, text_params)
-            }
-            text_assets = set(text_documents)
-            latin_words = set(re.findall(r"[a-z0-9]+", query.casefold())) | {normalize_text(query)}
             for token in tokens:
                 clause = "WHERE observation_search_fts MATCH ?"
                 params: list[object] = [f'"{token}"']
@@ -333,19 +311,8 @@ class SqliteLexicalIndex:
                     # FTS5 的 MATCH 语法对含引号/运算符的 token 会抛。1.0 同样吞掉这一条
                     # （``retrieval_indexes.py:311-315``），跳过该 token 继续。
                     continue
-                matched_text = {r["asset_id"] for r in rows} & text_assets
-                if token.isascii():
-                    if token not in latin_words:
-                        matched_text = set()
-                    else:
-                        boundary = re.compile(r"(?<![a-z0-9])" + re.escape(token) + r"(?![a-z0-9])")
-                        matched_text = {aid for aid in matched_text if boundary.search(text_documents[aid])}
-                weight = 1 + round(math.log((len(text_assets) + 1) / (len(matched_text) + 1)))
                 for row in rows:
-                    aid = row["asset_id"]
-                    if aid in text_assets and aid not in matched_text:
-                        continue
-                    hits[aid] = hits.get(aid, 0) + (weight if aid in text_assets else 1)
+                    hits[row["asset_id"]] = hits.get(row["asset_id"], 0) + 1
         return sorted(hits.items(), key=lambda item: (-item[1], item[0]))[:limit]
 
     def assets_for_person(self, name: str, *, scope_id: str | None) -> frozenset[str]:

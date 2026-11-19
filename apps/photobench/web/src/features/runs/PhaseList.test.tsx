@@ -14,6 +14,17 @@ function activeRun(phases: Run["phases"]): Run {
 }
 
 describe("阶段卡（1.0 :3099-3129）", () => {
+  it("首批未返回时显示服务端当前批次，不虚构完成数量", () => {
+    const { container } = render(<PhaseList activeRun={{run_id: "pending-email-batch", status: "running", email_only_qa: true,
+      phases: {text_memory_import: {status: "running", progress: {
+        total: 200, processed: 0, current_batch: 1, batches: 4, imported: 0, indexed: 0,
+      }}},
+    }} />);
+    expect(container.textContent).toContain("批次 1/4");
+    expect(container.textContent).toContain("0/200 条（0%）");
+    expect(container.textContent).toContain("当前批次处理中，数量在本批返回后更新");
+  });
+
   it("邮件专属测评把文本记忆导入进度显示在导入和流水线阶段", () => {
     const { container, getByLabelText, getByTestId } = render(<PhaseList activeRun={{
       run_id: "email-run", status: "running", email_only_qa: true,

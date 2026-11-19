@@ -79,6 +79,8 @@ export function QaResults({
   const scoreOptions = scoreChoices({evaluation_summary: readProfile ? {max_score: readProfile === OPEN_PROFILE ? 2 : 1} : activeRun?.summary?.evaluation_summary});
   const {
     qaPage,
+    qaPageLoading,
+    qaPageError,
     qaDetails,
     openQaItems,
     loadingQaItems,
@@ -92,6 +94,7 @@ export function QaResults({
     applyQaFilters,
     resetQaFilters,
     setQaFilter,
+    loadQaPage,
   } = qa;
 
   const [judgeItem, setJudgeItem] = useState<RunItemDetail | null>(null);
@@ -114,7 +117,7 @@ export function QaResults({
   };
 
   return (
-    <section id="qa-results" className="qa-results-section" ref={setResultsNode}>
+    <section id="qa-results" className="qa-results-section" ref={setResultsNode} aria-busy={qaPageLoading}>
       <div className="qa-results-heading">
         <div>
           <h3>QA 逐题结果</h3>
@@ -152,6 +155,8 @@ export function QaResults({
           </select>
         </label>
       </div>
+      {qaPageLoading && <p role="status">正在加载逐题结果…</p>}
+      {qaPageError && <div role="alert">{qaPageError} <button className="btn compact" type="button" onClick={() => void loadQaPage()}>重试</button></div>}
       <details className="qa-results-body">
         <summary>展开逐题结果（{page.total} 条）</summary>
         <form

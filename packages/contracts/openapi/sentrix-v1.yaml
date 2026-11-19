@@ -126,6 +126,13 @@ paths:
           type: string
           default: ''
           title: Scope Id
+      - name: person_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Person Id
       responses:
         '200':
           description: Successful Response

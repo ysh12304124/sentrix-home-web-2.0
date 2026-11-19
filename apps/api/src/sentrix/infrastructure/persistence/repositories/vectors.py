@@ -64,32 +64,38 @@ class VectorTableRepository:
         self._database = database
 
     def upsert(self, record: VectorRecord) -> None:
-        if not record.vector:
-            raise ValueError("拒绝写入空向量：1.0 的空向量会被静默 upsert，事后无人发现")
+        self.upsert_many((record,))
+
+    def upsert_many(self, records: Sequence[VectorRecord]) -> None:
+        if not records:
+            return
+        if any(not record.vector for record in records):
+            raise ValueError("拒绝写入空向量：整组写入取消")
         timestamp = _now()
         with self._database.connect() as connection, connection:
-            connection.execute(
-                f"INSERT INTO {self._TABLE} ("
-                f" {_COLUMNS}"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(space, source_type, source_id, model_name) DO UPDATE SET"
-                " scope_id = excluded.scope_id, dimension = excluded.dimension,"
-                " vector_json = excluded.vector_json, metadata_json = excluded.metadata_json,"
-                " updated_at = excluded.updated_at",
-                (
-                    f"vec_{uuid.uuid4().hex[:12]}",
-                    record.scope_id,
-                    record.space,
-                    record.source_type,
-                    record.source_id,
-                    record.model_name,
-                    record.dimension,
-                    json.dumps([float(value) for value in record.vector]),
-                    json.dumps(dict(record.metadata), ensure_ascii=False, sort_keys=True),
-                    timestamp,
-                    timestamp,
-                ),
-            )
+            for record in records:
+                connection.execute(
+                    f"INSERT INTO {self._TABLE} ("
+                    f" {_COLUMNS}"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(space, source_type, source_id, model_name) DO UPDATE SET"
+                    " scope_id = excluded.scope_id, dimension = excluded.dimension,"
+                    " vector_json = excluded.vector_json, metadata_json = excluded.metadata_json,"
+                    " updated_at = excluded.updated_at",
+                    (
+                        f"vec_{uuid.uuid4().hex[:12]}",
+                        record.scope_id,
+                        record.space,
+                        record.source_type,
+                        record.source_id,
+                        record.model_name,
+                        record.dimension,
+                        json.dumps([float(value) for value in record.vector]),
+                        json.dumps(dict(record.metadata), ensure_ascii=False, sort_keys=True),
+                        timestamp,
+                        timestamp,
+                    ),
+                )
 
     def update_metadata(
         self, *, space: str, source_type: str, source_id: str, metadata: dict[str, object]

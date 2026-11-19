@@ -40,6 +40,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import psutil
 
 from photobench.domain.deploy.ports import (
     BENCHMARK_GATEWAY_TOKEN_ENV,
@@ -208,6 +209,31 @@ def _read_linux_system_memory() -> dict[str, Any]:
         }
     except (OSError, ValueError, IndexError) as exc:
         return {"status": "unavailable", "source": "proc_meminfo", "reason": str(exc)}
+
+
+def _read_windows_system_memory() -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        memory = psutil.virtual_memory()
+        return {
+            "status": "available",
+            "source": "windows_virtual_memory",
+            "data": {
+                "system_memory_used_mib": (memory.total - memory.available) / 1048576,
+                "system_memory_total_mib": memory.total / 1048576,
+                "system_memory_available_mib": memory.available / 1048576,
+                "system_memory_scope": "windows_physical_total_minus_available_v1",
+                "system_observation": {
+                    "source": "windows_virtual_memory",
+                    "status": "available",
+                    "observed_at_monotonic": started,
+                    "finished_at_monotonic": time.monotonic(),
+                    "ttl_seconds": 3.0,
+                },
+            },
+        }
+    except (OSError, RuntimeError) as exc:
+        return {"status": "unavailable", "source": "windows_virtual_memory", "reason": str(exc)}
 
 
 def _listening_ports_by_pid(target_ports: set[str] | None = None) -> dict[int, set[str]]:
@@ -970,7 +996,7 @@ class HostNvidiaTelemetryProvider:
 
     @staticmethod
     def _read_system_memory() -> dict[str, Any]:
-        return _read_linux_system_memory()
+        return _read_windows_system_memory() if os.name == "nt" else _read_linux_system_memory()
 
     def system_memory(self) -> dict[str, Any]:
         result = self._read_system_memory()
@@ -1054,8 +1080,9 @@ class HostNvidiaTelemetryProvider:
         data["memory_observation_version"] = 1
         data["memory_observations"] = {
             "process": {
-                "status": "available",
+                "status": "available" if model_pids else "unavailable",
                 "source": "proc_group_pss",
+                **({"reason": "model_process_scope_unresolved"} if not model_pids else {}),
                 "observed_at_monotonic": started,
                 "finished_at_monotonic": finished,
                 "ttl_seconds": 3.0,

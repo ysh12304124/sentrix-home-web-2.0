@@ -371,6 +371,9 @@ class Container:
     # 两半合起来才构成完整的 SSE 语义（见 domain/assistant/ports.py 的 TurnEventBroker）。
     turn_event_broker: TurnEventBroker
     build_revision: str = "development"
+    # Mainline assistant wiring supports an optional cloud role profile. The
+    # local/text-memory deployment has no profile file, so it remains ``None``.
+    model_profile: object | None = None
 
     @property
     def email_repository(self) -> TextMemoryRepository:

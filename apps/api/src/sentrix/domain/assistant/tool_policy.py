@@ -72,10 +72,10 @@ class ToolPolicy:
                 action=ToolAction.DENY, code="bad_arguments", reason=f"参数不是合法 JSON：{error}"
             )
 
-        # 照片级工具的 result_set_id 由后端从本轮状态注入，模型不再填写。
+        # 读取候选的工具由后端注入本轮结果集 ID。
         # 即使非严格模式下模型额外写了一个 ID，也以当前回合状态覆盖。
         arguments = dict(arguments)
-        if call.name in {"inspect_photo", "read_photo_text", "query_photo_people"}:
+        if call.name in {"inspect_photo", "read_photo_text", "query_photo_people", "read_source_text"}:
             arguments["result_set_id"] = state.current_result_set_id or ""
 
         # **「缺」的判据是「键不在 / 是 null / 是空串」，不是「falsy」。**
@@ -134,7 +134,8 @@ class ToolPolicy:
             )
 
         if (
-            call.name in {"search_memories", "search_text_memories"}
+            call.name == "search_memories"
+            and state.profile.max_search_calls is not None
             and state.search_calls >= state.profile.max_search_calls
         ):
             return ToolDecision(
@@ -146,7 +147,11 @@ class ToolPolicy:
         # 翻页额度。**排在工具总预算之前**，与 ``search_memories`` 那条同一个位置与理由：
         # 命中总预算时回的是「别再调工具了」，而这里要说的是「这一份候选你已经看完了」——
         # 两句话让模型做的下一件事不一样。
-        if call.name == "get_result_page" and state.page_calls >= state.profile.max_page_calls:
+        if (
+            call.name == "get_result_page"
+            and state.profile.max_page_calls is not None
+            and state.page_calls >= state.profile.max_page_calls
+        ):
             return ToolDecision(
                 action=ToolAction.DENY,
                 code="page_call_limit",

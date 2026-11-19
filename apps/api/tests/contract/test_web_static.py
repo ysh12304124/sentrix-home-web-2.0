@@ -14,7 +14,14 @@ from fastapi.testclient import TestClient
 from starlette.routing import Mount
 
 from sentrix.config import Settings
-from sentrix.main import create_app
+from sentrix.main import SpaStaticFiles, create_app
+
+
+def test_windows_api_paths_never_fall_back_to_the_spa(dist: Path):
+    files = SpaStaticFiles(directory=dist, api_root="/api")
+    assert not files._is_client_route(r"api\v1\unknown")
+    assert not files._is_client_route(r"api\health")
+    assert files._is_client_route(r"timeline\day")
 
 
 @pytest.fixture

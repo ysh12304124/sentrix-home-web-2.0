@@ -57,7 +57,7 @@ from sentrix.application.retrieval.retrieve_visual import (
     VisualSearchRequest,
     VisualSearchResult,
 )
-from sentrix.domain.media.models import Asset, MediaType
+from sentrix.domain.media.models import MediaType
 from sentrix.domain.media.ports import AssetRepository, MediaStorage, ObservationRepository
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.fusion import DEFAULT_CHANNEL_WEIGHTS, fuse
@@ -103,10 +103,6 @@ class EvidenceRequest:
     # 那是一个**具体的空间**——不传 scope 时去查它，而它在 2.0 的空库里不存在。
     scope_id: str | None = None
     limit: int = 20
-    source_type: str = ""
-    # Dedicated text-memory path: lexical/text embeddings + text-node graph expansion,
-    # never visual ANN, image metadata, or face/entity channels.
-    text_only: bool = False
     graph_enabled: bool = True
     media_types: tuple[MediaType, ...] = ()
     negated_media: tuple[MediaType, ...] = ()
@@ -164,7 +160,6 @@ class EvidenceResult:
     primary_asset_ids: Sequence[str] = field(default_factory=tuple)
     graph_asset_ids: Sequence[str] = field(default_factory=tuple)
     fused_asset_ids: Sequence[str] = field(default_factory=tuple)
-    graph_paths: Sequence[Mapping[str, object]] = field(default_factory=tuple)
 
 
 def _visual_candidates_health(
@@ -401,59 +396,40 @@ class RetrieveEvidence:
             return None
         pool = self._unique_candidates(candidates)
         started = time.monotonic()
-        prepared: list[tuple[int, FusedCandidate, Asset]] = []
+        prepared: list[tuple[int, FusedCandidate, bytes]] = []
         fallback: list[tuple[int, FusedCandidate]] = []
         failures: list[str] = []
-        details: dict[str, dict[str, object]] = {
-            candidate.asset_id: {
-                "asset_id": candidate.asset_id,
-                "input_rank": position + 1,
-                "score": None,
-                "score_kind": "true_token_logprob",
-                "selected": False,
-                "channels": dict(candidate.channels),
-                "status": "unscored",
-                "reason": "",
-            }
-            for position, candidate in enumerate(pool)
-        }
         for position, candidate in enumerate(pool):
             asset = assets.get(candidate.asset_id)
             if asset is None:
-                details[candidate.asset_id]["reason"] = "missing_asset"
                 fallback.append((position, candidate))
                 failures.append(f"missing:{candidate.asset_id}")
                 continue
             if asset.media_type != MediaType.IMAGE:
-                details[candidate.asset_id]["reason"] = "non_image_fallback"
                 # Utility-MRAG's surrogate is an image scorer.  Video assets in this
                 # project are represented by image keyframes, so the video row itself
                 # remains a deterministic fallback rather than being silently dropped.
                 fallback.append((position, candidate))
                 continue
-            prepared.append((position, candidate, asset))
-
-        def score_one(asset: Asset) -> tuple[float | None, dict[str, object]]:
             try:
-                image = storage.read_asset(asset)
-                with_trace = getattr(utility, "score_with_trace", None)
-                if callable(with_trace):
-                    result = with_trace(question, image)
-                    return result.get("score"), dict(result)
-                return utility.score(question, image), {}
+                prepared.append((position, candidate, storage.read_asset(asset)))
+            except OSError as error:
+                fallback.append((position, candidate))
+                failures.append(f"unreadable:{candidate.asset_id}:{error}")
+
+        def score_one(image: bytes) -> float | None:
+            try:
+                return utility.score(question, image)
             except Exception as error:  # noqa: BLE001 - one bad image must not abort selection
                 log.warning("效用评分候选失败: %s", error)
-                return None, {"reason": type(error).__name__}
+                return None
 
         scored: list[tuple[float, int, FusedCandidate]] = []
         unscored_images: list[tuple[int, FusedCandidate]] = []
         if prepared:
             with ThreadPoolExecutor(max_workers=self._utility_concurrency) as executor:
                 scores = list(executor.map(score_one, (image for _, _, image in prepared)))
-            for (position, candidate, _), (score, trace) in zip(prepared, scores, strict=True):
-                details[candidate.asset_id].update(trace)
-                details[candidate.asset_id]["score"] = score
-                details[candidate.asset_id]["status"] = "scored" if score is not None else "failed"
+            for (position, candidate, _), score in zip(prepared, scores, strict=True):
                 if score is None:
                     unscored_images.append((position, candidate))
                     failures.append(f"score_unavailable:{candidate.asset_id}")
@@ -475,7 +451,6 @@ class RetrieveEvidence:
                     candidate_count=len(pool),
                     latency_ms=latency_ms,
                     reason=("no_scoreable_candidates" if not prepared else ";".join(failures[:3])),
-                    all_scores=tuple(details.values()),
                 )
             )
             return None
@@ -489,9 +464,6 @@ class RetrieveEvidence:
             )
         ]
         ranked = self._unique_candidates([*ranked_images, *fallback_with_order])
-        for index, candidate in enumerate(ranked):
-            details[candidate.asset_id]["final_rank"] = index + 1
-            details[candidate.asset_id]["selected"] = index < limit
         backend = "utility"
         with suppress(Exception):
             backend = utility.model_id
@@ -503,7 +475,6 @@ class RetrieveEvidence:
                 latency_ms=latency_ms,
                 backend=backend,
                 reason=(";".join(failures[:3]) if failures else ""),
-                all_scores=tuple(details.values()),
             )
         )
         return ranked[:limit]
@@ -512,8 +483,6 @@ class RetrieveEvidence:
         text = request.text.strip()
         if not text:
             return EvidenceResult()
-        if request.text_only:
-            return self._execute_text_only(request, text)
         limit = max(1, request.limit)
         recall_limit = limit * RECALL_OVERSAMPLE_FACTOR
         channel_weights = {**DEFAULT_CHANNEL_WEIGHTS, GRAPH_CHANNEL: GRAPH_CHANNEL_WEIGHT}
@@ -639,8 +608,6 @@ class RetrieveEvidence:
         # 图是由 primary 结果提供种子的 expander，不参与前面的并行召回。
         # 这样即使图尚未构建，原有五路检索仍然完整返回；图本身的降级会单独出现在
         # channel_trace，而不是伪装成「没有相关结果」。
-        graph_paths: tuple[Mapping[str, object], ...] = ()
-        graph_anchored = False
         if request.graph_enabled and self._graph is not None:
             graph_started = time.monotonic()
             try:
@@ -651,18 +618,6 @@ class RetrieveEvidence:
                     question=text,
                 )
                 channel_hits[GRAPH_CHANNEL] = graph_result.hits
-                graph_anchored = getattr(graph_result, "anchored", False)
-                graph_paths = tuple(
-                    {
-                        "asset_id": item.asset_id,
-                        "nodes": list(item.path),
-                        "relations": list(item.relations),
-                        "labels": list(item.labels),
-                        "edge_statements": list(item.edge_statements),
-                        "hops": item.hops,
-                    }
-                    for item in getattr(graph_result, "paths", ())
-                )
                 traces.append(
                     ChannelTrace(
                         channel=GRAPH_CHANNEL,
@@ -670,7 +625,7 @@ class RetrieveEvidence:
                         candidate_count=len(graph_result.hits),
                         latency_ms=round((time.monotonic() - graph_started) * 1000, 1),
                         backend=graph_result.backend,
-                        reason=graph_result.reason,
+                        reason=graph_result.reason if graph_result.degraded else "",
                     )
                 )
             except Exception as error:  # noqa: BLE001 - 图是可降级的派生通道
@@ -693,31 +648,6 @@ class RetrieveEvidence:
         # 「每条通道各自过滤」，而条件判定要的是「对整个候选集一次」，
         # 否则被 A 通道排除的候选还会从 B 通道进来。
         excluded_count = 0
-        if request.media_types:
-            if self._assets is None:
-                raise ValueError("媒体类型筛选需要资产仓储，不能静默忽略")
-            allowed_types = set(request.media_types)
-
-            def allowed_media(candidate: FusedCandidate) -> bool:
-                asset = self._assets.get(candidate.asset_id)
-                return asset is not None and asset.media_type in allowed_types
-
-            before_filter = len(fused)
-            fused = [candidate for candidate in fused if allowed_media(candidate)]
-            primary_fused = [candidate for candidate in primary_fused if allowed_media(candidate)]
-            excluded_count += before_filter - len(fused)
-        if request.source_type:
-            if self._observations is None:
-                raise ValueError("来源筛选需要观察仓储，不能静默忽略")
-            allowed = set()
-            for candidate in fused:
-                observations = self._observations.list_by_asset(candidate.asset_id)
-                latest = max(observations, key=lambda o: (o.revision, o.updated_at), default=None)
-                if latest and latest.source_metadata.get("source_type") == request.source_type:
-                    allowed.add(candidate.asset_id)
-            excluded_count += len(fused) - len(allowed)
-            fused = [candidate for candidate in fused if candidate.asset_id in allowed]
-            primary_fused = [candidate for candidate in primary_fused if candidate.asset_id in allowed]
         if self._conditions is not None and request.conditions:
             outcome = self._conditions.filter(
                 [candidate.asset_id for candidate in fused],
@@ -727,7 +657,7 @@ class RetrieveEvidence:
             kept = set(outcome.kept)
             fused = [candidate for candidate in fused if candidate.asset_id in kept]
             primary_fused = [candidate for candidate in primary_fused if candidate.asset_id in kept]
-            excluded_count += outcome.excluded_count
+            excluded_count = outcome.excluded_count
 
         # **重排排在条件过滤之后、交付之前。** 条件判定是硬筛，先后顺序不影响筛的
         # 结果；而交付截断与图槽位选择都应该看到重排后的头部。图种子在上面已经按
@@ -757,16 +687,6 @@ class RetrieveEvidence:
                 )
             )
         fallback = self._graph_fallback(primary=primary_fused, graph=graph_candidates, limit=limit)
-        if graph_anchored:
-            # Explicit identity/event paths are query answers, not one reserved
-            # tail slot. They still obey the same hard-condition filtering above.
-            by_id = {candidate.asset_id: candidate for candidate in fused}
-            ordered_ids = [item.asset_id for item in channel_hits.get(GRAPH_CHANNEL, ())]
-            anchored = [by_id[item] for item in ordered_ids if item in by_id]
-            anchored_ids = {item.asset_id for item in anchored}
-            fallback = [*anchored, *(item for item in primary_fused if item.asset_id not in anchored_ids)][
-                :limit
-            ]
         if request.graph_enabled and self._utility is not None:
             # Score the complete ordinary+graph recall pool, not only the six
             # delivery slots and not only three graph candidates.
@@ -777,24 +697,7 @@ class RetrieveEvidence:
                 traces=traces,
             )
             fused = utility_selected if utility_selected is not None else fallback
-            selected_ids = {candidate.asset_id for candidate in fused[:limit]}
-            traces = [
-                replace(
-                    trace,
-                    all_scores=tuple(
-                        {
-                            **row,
-                            "selected": row["asset_id"] in selected_ids,
-                            "selection_policy": "utility" if utility_selected is not None else "fallback",
-                        }
-                        for row in trace.all_scores
-                    ),
-                )
-                if trace.channel == "utility"
-                else trace
-                for trace in traces
-            ]
-        elif graph_candidates or graph_anchored:
+        elif graph_candidates:
             fused = fallback
         else:
             fused = primary_fused[:limit]
@@ -823,154 +726,4 @@ class RetrieveEvidence:
             primary_asset_ids=primary_asset_ids,
             graph_asset_ids=graph_asset_ids,
             fused_asset_ids=fused_asset_ids,
-            graph_paths=tuple(item for item in graph_paths if item["asset_id"] in fused_asset_ids),
-        )
-
-    def _execute_text_only(self, request: EvidenceRequest, text: str) -> EvidenceResult:
-        """Retrieve text memories without entering any photo/video recall channels."""
-        limit = max(1, request.limit)
-        recall_limit = limit * RECALL_OVERSAMPLE_FACTOR
-        traces: list[ChannelTrace] = []
-
-        def keep_text(hits: Sequence[CandidateHit]) -> tuple[CandidateHit, ...]:
-            if self._assets is None:
-                return ()
-            kept: list[CandidateHit] = []
-            for hit in hits:
-                asset = self._assets.get(hit.asset_id)
-                if asset is None or asset.media_type is not MediaType.TEXT:
-                    continue
-                if request.source_type:
-                    if self._observations is None:
-                        raise ValueError("来源筛选需要观察仓储，不能静默忽略")
-                    observations = self._observations.list_by_asset(hit.asset_id)
-                    latest = max(
-                        observations,
-                        key=lambda item: (item.revision, item.updated_at),
-                        default=None,
-                    )
-                    if latest is None or latest.source_metadata.get("source_type") != request.source_type:
-                        continue
-                kept.append(hit)
-            return tuple(kept)
-
-        channel_hits: dict[str, Sequence[CandidateHit]] = {}
-        for channel, retrieve in (
-            (
-                LEXICAL_CHANNEL,
-                lambda: self._lexical.execute(
-                    whole_query=text, scope_id=request.scope_id, limit=recall_limit
-                ),
-            ),
-            (
-                TEXT_CHANNEL,
-                lambda: _text_candidates_health(
-                    self._text.execute(
-                        TextSearchRequest(text=text, scope_id=request.scope_id, limit=recall_limit)
-                    )
-                ),
-            ),
-        ):
-            started = time.monotonic()
-            try:
-                outcome = retrieve()
-                if channel == TEXT_CHANNEL:
-                    raw_hits, backend, degraded, reason = outcome
-                else:
-                    raw_hits, backend, degraded, reason = outcome, "", False, ""
-                hits = keep_text(raw_hits)
-                channel_hits[channel] = hits
-                traces.append(
-                    ChannelTrace(
-                        channel=channel,
-                        status="degraded" if degraded else "ok",
-                        candidate_count=len(hits),
-                        latency_ms=round((time.monotonic() - started) * 1000, 1),
-                        backend=backend,
-                        reason=reason if degraded else "",
-                    )
-                )
-            except Exception as error:  # noqa: BLE001 - one recall path must not break the other
-                log.warning("文本记忆召回通道 %s 失败: %s", channel, error)
-                channel_hits[channel] = ()
-                traces.append(
-                    ChannelTrace(
-                        channel=channel,
-                        status="error",
-                        candidate_count=0,
-                        latency_ms=round((time.monotonic() - started) * 1000, 1),
-                        reason=str(error),
-                    )
-                )
-
-        weights = {name: DEFAULT_CHANNEL_WEIGHTS[name] for name in (LEXICAL_CHANNEL, TEXT_CHANNEL)}
-        primary = fuse(channel_hits, channel_weights=weights)
-        graph_paths: tuple[Mapping[str, object], ...] = ()
-        graph_asset_ids: tuple[str, ...] = ()
-        if request.graph_enabled and self._graph is not None:
-            started = time.monotonic()
-            try:
-                graph_result = self._graph.execute(
-                    seed_asset_ids=[candidate.asset_id for candidate in primary[:limit]],
-                    scope_id=request.scope_id,
-                    limit=max(recall_limit, limit * 2),
-                    question=text,
-                )
-                graph_hits = keep_text(graph_result.hits)
-                graph_asset_ids = tuple(hit.asset_id for hit in graph_hits)
-                channel_hits[GRAPH_CHANNEL] = graph_hits
-                graph_paths = tuple(
-                    {
-                        "asset_id": item.asset_id,
-                        "nodes": list(item.path),
-                        "relations": list(item.relations),
-                        "labels": list(item.labels),
-                        "edge_statements": list(item.edge_statements),
-                        "hops": item.hops,
-                    }
-                    for item in getattr(graph_result, "paths", ())
-                    if item.asset_id in set(graph_asset_ids)
-                )
-                traces.append(
-                    ChannelTrace(
-                        channel=GRAPH_CHANNEL,
-                        status="degraded" if graph_result.degraded else "ok",
-                        candidate_count=len(graph_hits),
-                        latency_ms=round((time.monotonic() - started) * 1000, 1),
-                        backend=graph_result.backend,
-                        reason=graph_result.reason,
-                    )
-                )
-            except Exception as error:  # noqa: BLE001 - graph remains an optional expander
-                log.warning("文本记忆图扩展失败: %s", error)
-                channel_hits[GRAPH_CHANNEL] = ()
-                traces.append(
-                    ChannelTrace(
-                        channel=GRAPH_CHANNEL,
-                        status="error",
-                        candidate_count=0,
-                        latency_ms=round((time.monotonic() - started) * 1000, 1),
-                        reason=str(error),
-                    )
-                )
-
-        fused = fuse(channel_hits, channel_weights={**weights, GRAPH_CHANNEL: GRAPH_CHANNEL_WEIGHT})
-        selected = fused[:limit]
-        selected_ids = {candidate.asset_id for candidate in selected}
-        return EvidenceResult(
-            hits=tuple(
-                EvidenceHit(
-                    asset_id=candidate.asset_id,
-                    score=candidate.score,
-                    channels=dict(candidate.channels),
-                    raw_scores=dict(candidate.raw_scores),
-                    evidence_class=candidate.evidence_class,
-                )
-                for candidate in selected
-            ),
-            channel_trace=tuple(traces),
-            primary_asset_ids=tuple(candidate.asset_id for candidate in primary[:limit]),
-            graph_asset_ids=graph_asset_ids,
-            fused_asset_ids=tuple(candidate.asset_id for candidate in selected),
-            graph_paths=tuple(path for path in graph_paths if path["asset_id"] in selected_ids),
         )

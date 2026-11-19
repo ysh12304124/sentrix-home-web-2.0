@@ -94,6 +94,23 @@ afterEach(() => {
 });
 
 describe("PersonDetail 人物记忆修正", () => {
+  it("重建尚未返回时显示处理中，并主动刷新已保存的人物", async () => {
+    let finish!: (value: Awaited<ReturnType<typeof client.renamePerson>>) => void;
+    vi.mocked(client.renamePerson).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+    render(<PersonDetail person={person()} people={[person()]} relationships={[]}
+      onClose={() => undefined} onChanged={onChanged} />);
+    fireEvent.change(screen.getByLabelText("姓名"), { target: { value: "妈妈2" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存姓名" }));
+    expect(await screen.findByText(/正在保存并重建关联记忆/)).toBeTruthy();
+    expect((screen.getAllByRole("button", { name: "正在保存并同步…" })[0] as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(onChanged).toHaveBeenCalled(), { timeout: 3000 });
+    finish({ entity: { id:"person_1", scope_id:"album1", canonical_name:"妈妈2", status:"confirmed",
+      family_role:null, summary:"", confidence:1, confirmed:true, aliases:[] },
+      aliases:[], sync_status:"synced", sync_error:"" });
+    expect(await screen.findByText("修改已保存，关联记忆、图谱与检索索引已同步。")).toBeTruthy();
+    expect(screen.queryByText(/正在保存并重建关联记忆/)).toBeNull();
+  });
   it("复用人物姓名编辑接口，并在保存后显示服务端姓名与同步结果", async () => {
     vi.mocked(client.renamePerson).mockResolvedValue({
       entity: {
@@ -129,7 +146,7 @@ describe("PersonDetail 人物记忆修正", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "修正并同步关联记忆" }));
 
-    await waitFor(() => expect(client.retryMemoryCorrections).toHaveBeenCalledWith("album1"));
+    await waitFor(() => expect(client.retryMemoryCorrections).toHaveBeenCalledWith("album1", "person_1"));
     expect(await screen.findByText("已按当前人物与关系信息同步关联记忆、图谱和检索索引。")).toBeTruthy();
     expect(onChanged).toHaveBeenCalledOnce();
   });
@@ -199,7 +216,7 @@ describe("PersonDetail 别名编辑", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "编辑别名" }));
     fireEvent.click(await screen.findByRole("button", { name: "保存别名" }));
-    const notice = await screen.findByRole("status");
+    const notice = await screen.findByText(/图谱暂不可用/);
     expect(notice.textContent).toContain("图谱暂不可用");
     expect(notice.textContent).toContain("待同步");
     expect(screen.getByRole("button", { name: "重试同步" })).toBeTruthy();

@@ -143,10 +143,12 @@ class Database:
                 has_attempt_no = table_exists and Database._column_exists(
                     connection, "agent_result_sets", "attempt_no"
                 )
-                index_exists = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='index' "
-                    "AND name='idx_agent_result_sets_turn'"
-                ).fetchone() is not None
+                index_exists = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_agent_result_sets_turn'"
+                    ).fetchone()
+                    is not None
+                )
                 if not has_turn_id:
                     connection.execute(
                         "ALTER TABLE agent_result_sets ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''"
@@ -157,13 +159,10 @@ class Database:
                     )
                 if not index_exists:
                     connection.execute(
-                        "CREATE INDEX idx_agent_result_sets_turn "
-                        "ON agent_result_sets(turn_id, attempt_no)"
+                        "CREATE INDEX idx_agent_result_sets_turn ON agent_result_sets(turn_id, attempt_no)"
                     )
                 if done is None:
-                    connection.execute(
-                        "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
-                    )
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                 elif not (has_turn_id and has_attempt_no and index_exists):
                     connection.execute(
                         "INSERT INTO schema_migrations (version) VALUES (?)",

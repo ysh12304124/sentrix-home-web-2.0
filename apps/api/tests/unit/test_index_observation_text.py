@@ -213,3 +213,25 @@ def test_row_count_matches_what_was_written():
     outcome = index.index(make_observation(), "evt_1")
 
     assert outcome.rows == len(vectors.records)
+
+
+def test_related_vectors_are_written_in_one_atomic_group_when_supported():
+    class AtomicVectors(FakeVectors):
+        def __init__(self):
+            super().__init__()
+            self.groups = []
+
+        def upsert_many(self, records):
+            self.groups.append(tuple(records))
+            self.records.extend(records)
+
+        def upsert(self, record):
+            raise AssertionError("atomic writer must not write separate records")
+
+    vectors = AtomicVectors()
+    embedder = FakeTextEmbedder()
+    outcome = IndexObservationText(embedder=embedder, vectors=vectors).index(make_observation(), "event-1")
+    assert outcome.indexed and outcome.rows == 3
+    assert len(embedder.calls) == len(vectors.groups) == 1
+    assert len(vectors.groups[0]) == 3
+    assert len({record.vector for record in vectors.groups[0]}) == 1

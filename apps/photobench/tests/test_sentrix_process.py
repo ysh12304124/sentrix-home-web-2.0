@@ -38,6 +38,17 @@ ENDPOINT = "http://127.0.0.1:8100/v1"
 OTHER_ENDPOINT = "http://127.0.0.1:8199/v1"
 
 
+def test_liveness_probe_never_signals_a_process(monkeypatch):
+    from photobench.infrastructure.deploy.sentrix_process import _alive
+
+    def unexpected_signal(*args):
+        pytest.fail("liveness probes must not signal processes")
+
+    monkeypatch.setattr(os, "kill", unexpected_signal)
+    assert _alive(os.getpid())
+    assert not _alive(2**30)
+
+
 class _StepClock:
     """每次读都前进固定步长的假钟：健康轮询与停机等待都要靠它收敛。
 
@@ -262,7 +273,11 @@ def test_startup_snapshot_is_published_atomically_and_refuses_modified_content(t
     assert len(set(roots)) == 1
     path = roots[0] / "runtime_connection.json"
     assert json.loads(path.read_text()) == connection
-    assert path.stat().st_mode & 0o777 == 0o400
+    # Windows exposes the read-only attribute as 0444, not POSIX owner bits.
+    assert path.stat().st_mode & 0o777 == (0o444 if os.name == "nt" else 0o400)
+    if os.name == "nt":
+        with pytest.raises(PermissionError):
+            path.write_text("unexpected overwrite")
     assert list(roots[0].iterdir()) == [path]
     path.chmod(0o600)
     path.write_text("{}")

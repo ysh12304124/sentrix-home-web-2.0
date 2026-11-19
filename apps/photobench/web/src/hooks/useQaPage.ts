@@ -24,9 +24,8 @@
  *   3. 1.0 用 `activeRunId.value !== runId`（`:2267` / `:2353`）防串台；React 侧
  *      `activeRunId` 是入参，用 `activeRunIdRef` 存最新值供异步回来时比对。
  *
- * 卸载清理：`aliveRef` 在 unmount 置 false，迟到的响应直接丢弃。**注意**现有
- * `api/client.ts` 在 `fetch` 前无条件覆盖 `signal`，外部无法把 AbortController 传进去，
- * 且本切片不得改 client——所以这里用「丢弃迟到响应 + 不 setState」达成等价的清理效果。
+ * 分页以最新请求的页码为准；相同在途读取共用请求，过期响应不得覆盖用户的新选择。
+ * 卸载、切 run 或筛分标准时取消在途分页，失败在面板显示并允许重试。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -90,6 +89,11 @@ export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = ''
   const queryEpoch = useRef(0);
   const [qaPage, setQaPageState] = useState<ItemPage>(INITIAL_QA_PAGE);
   const qaPageRef = useRef(qaPage);
+  const requestedPageRef = useRef(1);
+  const pageRequestSequence = useRef(0);
+  const pageRequest = useRef<{ key: string; controller: AbortController; promise: Promise<void> } | null>(null);
+  const [qaPageLoading, setQaPageLoading] = useState(false);
+  const [qaPageError, setQaPageError] = useState("");
   const [qaDetails, setQaDetailsState] = useState<Record<number, RunItemDetail>>({});
   const qaDetailsRef = useRef(qaDetails);
   const [openQaItems, setOpenQaItemsState] = useState<Set<number>>(new Set());
@@ -114,6 +118,7 @@ export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = ''
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      pageRequest.current?.controller.abort();
     };
   }, []);
 
@@ -164,50 +169,77 @@ export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = ''
    * 两个边界都照搬：新 summary 没有 `rejudge_id` 时**永不重拉**（只合并）；`detail.judge`
    * 原本为空时 `oldJudge` 是 `{}` 这个临时对象，`Object.assign` 的结果被丢弃——即**空转**。
    */
-  async function loadQaPage(page = qaPageRef.current.page || 1): Promise<void> {
+  function loadQaPage(page = requestedPageRef.current): Promise<void> {
     const runId = activeRunIdRef.current;
     const epoch = queryEpoch.current;
-    if (!runId) return;
+    if (!runId) return Promise.resolve();
     const params = new URLSearchParams({ page: String(page), page_size: String(qaPageSizeRef.current) });
     new URLSearchParams(queryRef.current).forEach((value,key) => params.set(key,value));
     for (const [key, value] of Object.entries(qaFiltersRef.current)) {
       if (value) params.set(key, value);
     }
-    const payload = await api<ItemPage>(`/runs/${encodeURIComponent(runId)}/items?${params}`);
-    if (!aliveRef.current || activeRunIdRef.current !== runId || epoch !== queryEpoch.current) return;
-    setQaPage(payload);
+    const key = `/runs/${encodeURIComponent(runId)}/items?${params}`;
+    if (pageRequest.current?.key === key) return pageRequest.current.promise;
+    requestedPageRef.current = page;
+    const sequence = ++pageRequestSequence.current;
+    pageRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const current = () => aliveRef.current && activeRunIdRef.current === runId &&
+      epoch === queryEpoch.current && sequence === pageRequestSequence.current;
+    setQaPageLoading(true);
+    setQaPageError("");
+    async function readPage(): Promise<void> {
+      try {
+        const payload = await api<ItemPage>(key, { signal: controller.signal, timeoutMs: 60000, retries: 0 });
+        if (!current()) return;
+        requestedPageRef.current = payload.page;
+        setQaPage(payload);
 
-    const refreshDetails: number[] = [];
-    const merges: Array<{ index: number; judge: Judge }> = [];
-    for (const summary of payload.items || []) {
-      const detail = qaDetailsRef.current[summary.index];
-      if (!detail) continue;
-      const oldJudge: Judge = detail.judge || {};
-      const newJudge: Judge = summary.judge || {};
-      if (
-        (summary.profile_scores && JSON.stringify(summary.profile_scores) !== JSON.stringify(detail.profile_scores)) ||
-        (queryRef.current && (newJudge.status !== oldJudge.status || newJudge.finished_at !== oldJudge.finished_at)) ||
-        newJudge.rejudge_id &&
-        (newJudge.rejudge_id !== oldJudge.rejudge_id ||
-          (newJudge.status === "completed" && oldJudge.status !== "completed"))
-      ) {
-        refreshDetails.push(summary.index);
-      } else if (detail.judge) {
-        // 1.0 `Object.assign(oldJudge, newJudge)`：只改 detail 上已存在的 judge。
-        merges.push({ index: summary.index, judge: { ...detail.judge, ...newJudge } });
+        const refreshDetails: number[] = [];
+        const merges: Array<{ index: number; judge: Judge }> = [];
+        for (const summary of payload.items || []) {
+          const detail = qaDetailsRef.current[summary.index];
+          if (!detail) continue;
+          const oldJudge: Judge = detail.judge || {};
+          const newJudge: Judge = summary.judge || {};
+          if (
+            (summary.profile_scores && JSON.stringify(summary.profile_scores) !== JSON.stringify(detail.profile_scores)) ||
+            (queryRef.current && (newJudge.status !== oldJudge.status || newJudge.finished_at !== oldJudge.finished_at)) ||
+            newJudge.rejudge_id &&
+            (newJudge.rejudge_id !== oldJudge.rejudge_id ||
+              (newJudge.status === "completed" && oldJudge.status !== "completed"))
+          ) {
+            refreshDetails.push(summary.index);
+          } else if (detail.judge) {
+            // 1.0 `Object.assign(oldJudge, newJudge)`：只改 detail 上已存在的 judge。
+            merges.push({ index: summary.index, judge: { ...detail.judge, ...newJudge } });
+          }
+        }
+        if (merges.length) {
+          setQaDetails((prev) => {
+            const next = { ...prev };
+            for (const { index, judge } of merges) {
+              const detail = next[index];
+              if (detail) next[index] = { ...detail, judge };
+            }
+            return next;
+          });
+        }
+        await Promise.all(refreshDetails.map((index) => loadQaDetail(index, { force: true })));
+      } catch (error) {
+        if (current() && !controller.signal.aborted) {
+          setQaPageError(`逐题结果加载失败：${(error as Error).message || "请重试"}`);
+        }
+      } finally {
+        if (current()) {
+          pageRequest.current = null;
+          setQaPageLoading(false);
+        }
       }
     }
-    if (merges.length) {
-      setQaDetails((prev) => {
-        const next = { ...prev };
-        for (const { index, judge } of merges) {
-          const detail = next[index];
-          if (detail) next[index] = { ...detail, judge };
-        }
-        return next;
-      });
-    }
-    await Promise.all(refreshDetails.map((index) => loadQaDetail(index, { force: true })));
+    const promise = readPage();
+    pageRequest.current = { key, controller, promise };
+    return promise;
   }
 
   /** 1.0 `toggleQa`（`:2356-2361`）。 */
@@ -265,6 +297,12 @@ export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = ''
    */
   function resetQaState(): void {
     queryEpoch.current += 1;
+    pageRequestSequence.current += 1;
+    pageRequest.current?.controller.abort();
+    pageRequest.current = null;
+    requestedPageRef.current = 1;
+    setQaPageLoading(false);
+    setQaPageError("");
     setLoadingQaItems(new Set());
     setQaPage({ items: [], page: 1, page_size: qaPageSizeRef.current, total: 0, pages: 1 });
     setQaDetails({});
@@ -312,6 +350,8 @@ export function useQaPage({ activeRunId, activeRejudge = null, scoringQuery = ''
 
   return {
     qaPage,
+    qaPageLoading,
+    qaPageError,
     qaDetails,
     openQaItems,
     loadingQaItems,

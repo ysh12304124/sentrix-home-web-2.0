@@ -40,14 +40,16 @@ function textMemoryProgress(phase: Phase | undefined, emailOnly = false): string
   }
   if (total > 0) {
     const batches = Number(progress?.batches ?? Math.ceil(total / 500));
-    const currentBatch = processed > 0 ? Math.ceil(processed / 500) : 0;
+    const currentBatch = Number(progress?.current_batch ?? (processed > 0 ? Math.ceil(processed / 500) : 0));
     const percent = Math.min(100, Math.round((processed / total) * 100));
     const indexed = progress?.indexed;
     const imported = progress?.imported;
     const counts = typeof imported === "number" || typeof indexed === "number"
       ? ` · 已入库 ${Number(imported ?? 0).toLocaleString()} · 已索引 ${Number(indexed ?? 0).toLocaleString()}`
       : "";
-    return `${source}导入与构建：${processed.toLocaleString()}/${total.toLocaleString()} 条（${percent}%） · 批次 ${currentBatch}/${batches}${counts}`;
+    const pendingBatch = phase?.status === "running" && processed < total
+      ? " · 当前批次处理中，数量在本批返回后更新" : "";
+    return `${source}导入与构建：${processed.toLocaleString()}/${total.toLocaleString()} 条（${percent}%） · 批次 ${currentBatch}/${batches}${counts}${pendingBatch}`;
   }
   return phase?.status === "running" ? `正在准备${source}导入与构建…` : `${source}导入与构建等待开始。`;
 }
@@ -151,7 +153,8 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
           // 复用模式不生成这三个阶段；保留历史中确实执行过的阶段及其错误。
           const skipped = !showingText && (phase?.status === "skipped" || (reuse && !!reuseSkippedPhases[phaseDef.key] && (!phase || phase.status === "pending")));
           const label = reuse && phaseDef.key === "scope_setup" ? "连接已有相册"
-            : reuse && phaseDef.key === "model_deploy" ? "模型连接" : phaseDef.label;
+            : reuse && phaseDef.key === "model_deploy" ? "模型连接"
+            : showingTextImport ? "视频/图片/文本导入" : phaseDef.label;
           const start = typeof phase?.started_at === "string" ? Date.parse(phase.started_at) : NaN;
           const displayPhase = !terminal && phase?.status === "running" && Number.isFinite(start)
             ? { ...phase, total_seconds: Math.max(0, (now - start) / 1000) } : phase;

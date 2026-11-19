@@ -18,7 +18,8 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
-from sentrix.domain.media.models import Asset, DerivedAsset, VideoMetadata
+from sentrix.domain.media.capture_time import CaptureTime, offset_capture
+from sentrix.domain.media.models import Asset, DerivedAsset, GpsPoint, VideoMetadata
 from sentrix.domain.media.ports import VideoProbe
 from sentrix.infrastructure.persistence.database import Database
 
@@ -266,6 +267,70 @@ class SqliteVideoRepository:
                 "UPDATE assets SET metadata_json = ?, updated_at = datetime('now') WHERE id = ?",
                 (json.dumps(payload, ensure_ascii=False), asset_id),
             )
+
+    def update_capture_metadata(
+        self,
+        asset_id: str,
+        captured_at: datetime | None,
+        gps: GpsPoint | None,
+        evidence: CaptureTime,
+    ) -> None:
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
+            if source is None:
+                raise KeyError(asset_id)
+            current = CaptureTime(**json.loads(source["capture_time_json"] or "{}"))
+            if current.source == "user_correction":
+                captured_at = datetime.fromisoformat(source["captured_at"]) if source["captured_at"] else None
+                evidence = current
+            now = datetime.now(UTC).isoformat()
+            rows = connection.execute(
+                "SELECT id,source_timestamp_sec,capture_time_json FROM assets "
+                "WHERE id=? OR parent_asset_id=?",
+                (asset_id, asset_id),
+            ).fetchall()
+            for row in rows:
+                previous = CaptureTime(**json.loads(row["capture_time_json"] or "{}"))
+                if row["id"] != asset_id and previous.source == "user_correction":
+                    continue
+                stamp = offset_capture(captured_at, float(row["source_timestamp_sec"] or 0))
+                value = stamp.isoformat() if stamp else None
+                connection.execute(
+                    "UPDATE assets SET captured_at=?,capture_time_json=?,gps_latitude=?,"
+                    "gps_longitude=?,updated_at=? WHERE id=?",
+                    (
+                        value,
+                        json.dumps(dataclasses.asdict(evidence)),
+                        gps.latitude if gps else None,
+                        gps.longitude if gps else None,
+                        now,
+                        row["id"],
+                    ),
+                )
+                connection.execute(
+                    "UPDATE observations SET captured_at=?,revision=revision+1,updated_at=? "
+                    "WHERE asset_id=? AND captured_at IS NOT ?",
+                    (value, now, row["id"], value),
+                )
+            for event in connection.execute(
+                "SELECT id,source_start_sec,source_end_sec FROM events "
+                "WHERE source_asset_id=? AND source_type='video_scene'",
+                (asset_id,),
+            ).fetchall():
+                if connection.execute(
+                    "SELECT 1 FROM memory_corrections WHERE target_kind='event' AND target_id=? LIMIT 1",
+                    (event["id"],),
+                ).fetchone():
+                    continue
+                start = offset_capture(captured_at, float(event["source_start_sec"] or 0))
+                end = offset_capture(captured_at, float(event["source_end_sec"] or 0))
+                first, last = start.isoformat() if start else None, end.isoformat() if end else None
+                connection.execute(
+                    "UPDATE events SET time_start=?,time_end=?,revision=revision+1,updated_at=? "
+                    "WHERE id=? AND (time_start IS NOT ? OR time_end IS NOT ?)",
+                    (first, last, now, event["id"], first, last),
+                )
 
     def save_processing_seconds(self, asset_id: str, seconds: float) -> None:
         """**合并写**，只动 ``video_processing_seconds`` 这一个键（与 ``save_probe`` 同一条

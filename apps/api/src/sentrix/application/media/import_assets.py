@@ -582,6 +582,35 @@ class ImportAssets:
             video_started=self._clock() if video_probe is not None else None,
         )
 
+    def refresh_video_metadata(self, asset: Asset) -> Asset:
+        """Explicit retry probes the source again and refreshes capture projections."""
+        if asset.media_type is not MediaType.VIDEO or self._video_repository is None:
+            raise ValueError("video metadata refresh requires a source video")
+        probe = self._probe_video(asset.id, Path(asset.path))
+        self._video_repository.save_probe(asset.id, probe)
+        if probe.metadata is None:
+            raise RuntimeError(probe.probe_error or "video probe returned no metadata")
+        captured = probe.metadata.captured_datetime()
+        gps = probe.metadata.gps() or asset.captured_location
+        source = probe.metadata.creation_source or "video_metadata"
+        provenance = CaptureTime(
+            captured.isoformat() if captured else "",
+            source if captured else "unknown",
+            status="offset_only"
+            if captured and captured.utcoffset() is not None
+            else "timezone_unknown"
+            if captured
+            else "unknown",
+        )
+        if self._resolve_capture_time is not None:
+            captured, provenance = self._resolve_capture_time(captured, gps, source)
+        self._video_repository.update_capture_metadata(asset.id, captured, gps, provenance)
+        refreshed = self._assets.get(asset.id)
+        if refreshed is None:
+            raise KeyError(asset.id)
+        self._index_place(refreshed)
+        return refreshed
+
     @import_task
     def prepare_image(self, asset: Asset) -> PreparedImage:
         """跑完这张图需要的**全部模型推理**，**不碰任何仓储**。
@@ -643,7 +672,17 @@ class ImportAssets:
 
         observation = self._observe(asset, observation, prepared) or observation
         faces = self._enroll_faces(asset, observation, prepared)
-        event_id = self._assign_event(observation, forced_event_id)
+        # Source videos/audio have no visual observation of their own. Their
+        # keyframes/scene events carry semantics; an empty source is not an event.
+        event_id = (
+            self._assign_event(observation, forced_event_id)
+            if (
+                asset.media_type is MediaType.IMAGE
+                or observation.has_semantics
+                or forced_event_id is not None
+            )
+            else None
+        )
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
         # 写在前面则 event_id 恒为空，而那条 metadata 只在召回时用得到——
@@ -730,7 +769,7 @@ class ImportAssets:
         if metadata is not None and self._video_transcoder is not None:
             try:
                 target = self._video_transcoder.browser_preview(asset_id, path, metadata.codec)
-                preview_path = str(target) if target is not None else ""
+                preview_path = target.as_posix() if target is not None else ""
             except Exception as error:  # noqa: BLE001 —— 预览是增强，回落原片（1.0 亦然）
                 preview_error = f"{type(error).__name__}: {error}"
                 log.warning("浏览器预览转码失败 asset=%s: %s", asset_id, preview_error)

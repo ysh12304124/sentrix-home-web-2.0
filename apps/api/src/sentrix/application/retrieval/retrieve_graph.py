@@ -6,8 +6,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sentrix.domain.identity.family_graph import RELATION_INVERSES
-from sentrix.domain.memories.graph import GraphExpansionHit
 from sentrix.domain.memories.ports import MemoryGraphRepository
 from sentrix.domain.retrieval.models import CandidateHit
 
@@ -72,15 +70,13 @@ def graph_direction(question: str) -> str:
 @dataclass(frozen=True, slots=True)
 class GraphSearchResult:
     hits: Sequence[CandidateHit] = ()
-    paths: Sequence[GraphExpansionHit] = ()
-    anchored: bool = False
     backend: str = "sqlite_graph"
     degraded: bool = False
     reason: str = ""
 
 
 class RetrieveGraph:
-    """先解析显式人物/事件路径，未命中时再从普通检索头部有界拓展。"""
+    """从已有 primary 召回结果出发，遍历图并补充未命中的 asset。"""
 
     def __init__(self, *, graph: MemoryGraphRepository) -> None:
         self._graph = graph
@@ -100,48 +96,15 @@ class RetrieveGraph:
         status = self._graph.status(scope_id)
         if not status.available:
             return GraphSearchResult(degraded=True, reason=status.reason or "graph_not_built")
-        anchored_paths = self._graph.query_paths(question, scope_id=scope_id, limit=max(1, limit)) or ()
-        requires_path = any(predicate in question for predicate in RELATION_INVERSES) or any(
-            token in question for token in ("一起", "同时", "合影", "合照", "共同出现", "together")
-        )
-        if requires_path and not anchored_paths:
-            return GraphSearchResult(reason="no_matching_relation_or_cooccurrence_path")
-        intent = graph_intent(question)
-        if intent in {"causal", "temporal", "multi_hop"} and anchored_paths:
-            # Finding the named person's pictures is only an anchor, not a
-            # causal/temporal answer. Continue along the requested edge family.
-            seed_asset_ids = tuple(
-                dict.fromkeys(
-                    (
-                        *(item.asset_id for item in anchored_paths),
-                        *seed_asset_ids,
-                    )
-                )
-            )
-            anchored_paths = ()
-        expanded = anchored_paths or self._graph.expand_assets(
+        expanded = self._graph.expand_assets(
             seed_asset_ids,
             scope_id=scope_id,
             max_hops=GRAPH_MAX_HOPS,
             limit=max(1, limit),
-            intent=intent,
+            intent=graph_intent(question),
             direction=graph_direction(question),
         )
-        context = tuple(
-            hit
-            for hit in expanded
-            if any(
-                relation in {"text_refers_to_event", "text_time_candidate"} for relation in hit.relations
-            )
-        )
-        context_query = any(
-            token in question.casefold() for token in ("photo", "picture", "video", "照片", "视频")
-        )
-        if context and context_query:
-            expanded = context
         return GraphSearchResult(
-            paths=tuple(expanded),
-            anchored=bool(anchored_paths) or bool(context and context_query),
             hits=tuple(
                 CandidateHit(
                     asset_id=item.asset_id,
@@ -152,5 +115,5 @@ class RetrieveGraph:
                     higher_is_better=True,
                 )
                 for rank, item in enumerate(expanded, 1)
-            ),
+            )
         )

@@ -39,6 +39,48 @@ def wait_for_video_job(client: TestClient, job_id: str) -> dict:
     pytest.fail(f"video job did not finish: {job_id}")
 
 
+def test_reprocess_reprobes_failed_legacy_video_and_restores_timeline(client):
+    import json
+
+    c = client.app.state.container
+    c.spaces.ensure("album1", "album1")
+    path = c.media_storage.store("legacy-video", "clip.mov", b"fake-video")
+    stamp = NOW.isoformat()
+    with c.database.connect() as db, db:
+        db.execute(
+            "INSERT INTO assets(id,scope_id,file_name,media_type,path,mime_type,status,captured_at,"
+            "metadata_json,created_at,updated_at) "
+            "VALUES('legacy-video','album1','clip.mov','video',?,'video/quicktime','processed',?,?,?,?)",
+            (str(path), stamp, json.dumps({"video_probe_error": "ffprobe failed"}), stamp, stamp),
+        )
+        db.execute(
+            "INSERT INTO observations(id,scope_id,asset_id,source_type,captured_at,created_at,updated_at) "
+            "VALUES('legacy-obs','album1','legacy-video','import',?,?,?)",
+            (stamp, stamp, stamp),
+        )
+        db.execute(
+            "INSERT INTO events(id,scope_id,title,summary,time_start,time_end,created_at,updated_at) "
+            "VALUES('legacy-placeholder','album1','时间戳记录','观察为空',?,?,?,?)",
+            (stamp, stamp, stamp, stamp),
+        )
+        db.execute(
+            "INSERT INTO event_observations(event_id,observation_id,created_at) "
+            "VALUES('legacy-placeholder','legacy-obs',?)",
+            (stamp,),
+        )
+    response = client.post("/api/v1/videos/legacy-video/reprocess")
+    assert response.status_code == 202, response.text
+    wait_for_video_job(client, response.json()["job_id"])
+    source = c.asset_repository.get("legacy-video")
+    assert source.captured_at.isoformat() == "2026-08-02T14:55:56+08:00"
+    assert c.video_repository.probe(source.id).probe_error == ""
+    assert c.event_repository.get("legacy-placeholder").status == "superseded"
+    scenes = c.event_repository.list_video_scenes(source.id)
+    assert len(scenes) == 1 and scenes[0].summary == "测试摘要"
+    assert scenes[0].place
+    assert scenes[0].time_start == source.captured_at
+
+
 def test_importing_a_video_reports_that_it_was_probed(client: TestClient):
     """T505：视频不再静默空转——响应里必须看得出「真的探过」。
 

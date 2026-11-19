@@ -43,9 +43,26 @@ const EVENT: TimelineEvent = {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("事件详情", () => {
+  it("记忆修改完成后自动读取最新标题摘要及剩余证据", async () => {
+    vi.mocked(client.fetchEvent).mockResolvedValueOnce(EVENT).mockResolvedValue({
+      ...EVENT, title: "小禾湖边散步", summary: "小禾在湖边散步。", photos: [EVENT.photos[1]],
+    });
+    render(<TimelineEventDetail eventId="event1" onClose={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "湖边散步" })).not.toBeNull();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", {
+      status: 200, headers: { "Content-Type": "application/json" },
+    })));
+    await client.request("/memories/event/event1", { method: "PATCH", body: "{}" });
+    expect(await screen.findByRole("heading", { name: "小禾湖边散步" })).not.toBeNull();
+    expect(screen.getByText("小禾在湖边散步。")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "全部资料（1 份）" })).not.toBeNull();
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(screen.getByRole("img").getAttribute("src")).toContain("asset2");
+  });
   it("用 GET /events/{id} 的数据展示摘要、时间地点、封面与原始照片", async () => {
     vi.mocked(client.fetchEvent).mockResolvedValue(EVENT);
     render(<TimelineEventDetail eventId="event1" onClose={vi.fn()} />);

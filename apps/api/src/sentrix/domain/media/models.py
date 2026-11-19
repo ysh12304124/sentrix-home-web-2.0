@@ -226,6 +226,15 @@ class Asset:
     source_timestamp_sec: float | None = None
     capture_time: CaptureTime = CaptureTime()
 
+    @property
+    def external_source_id(self) -> str | None:
+        """Compatibility projection for the mainline text-source tool.
+
+        Text provenance is authoritative on ``Observation.external_id`` in the
+        unified text-memory schema; ordinary assets have no asset-level source ID.
+        """
+        return None
+
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):
             raise ValueError(f"未知 media_type: {self.media_type!r}")
@@ -307,6 +316,23 @@ class Observation:
             raise ValueError(f"revision 从 1 开始，收到 {self.revision}")
 
     @property
+    def source_text(self) -> str:
+        """Mainline name for the unified text-memory body."""
+        return self.text_content
+
+    @property
     def has_semantics(self) -> bool:
         """VLM 语义是否已经落上。1.0 用「caption 非空」当这个判据。"""
         return bool(self.caption or self.place or self.activity or self.event_type)
+
+    @property
+    def has_content(self) -> bool:
+        """Actual observed content; a date, place or category alone is not an event."""
+        return bool(
+            self.caption
+            or self.activity
+            or self.ocr_text
+            or self.text_content
+            or self.objects
+            or self.clothing
+        )

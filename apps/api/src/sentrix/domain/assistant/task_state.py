@@ -119,11 +119,7 @@ class TaskState:
 
     @property
     def search_calls(self) -> int:
-        return sum(
-            1
-            for record in self.records
-            if record.tool in {"search_memories", "search_text_memories"}
-        )
+        return sum(1 for record in self.records if record.tool == "search_memories")
 
     @property
     def page_calls(self) -> int:
@@ -209,7 +205,7 @@ class TaskState:
         拒绝时说得出是哪一条满了（1.0 把它们合在一次检查里，只会回一句
         ``budget exhausted``）。
         """
-        return self.inspection_calls < self.profile.max_inspections
+        return self.profile.max_inspections is None or self.inspection_calls < self.profile.max_inspections
 
     def can_step(self) -> bool:
         """还能不能再问一次模型。
@@ -218,10 +214,14 @@ class TaskState:
         （``budget_manager.py:38-44``）。把最后 10 秒留给工具调用而不是写答案，正是
         1.0 实测出的「预算耗尽后空答案」的成因。
         """
-        return self.model_steps < self.profile.max_steps and self.wall_remaining() > 0
+        within_steps = self.profile.max_steps is None or self.model_steps < self.profile.max_steps
+        return within_steps and self.wall_remaining() > 0
 
     def can_call_tool(self) -> bool:
-        return self.tool_round_trips < self.profile.max_tool_calls and self.has_final_reserve()
+        within_calls = (
+            self.profile.max_tool_calls is None or self.tool_round_trips < self.profile.max_tool_calls
+        )
+        return within_calls and self.has_final_reserve()
 
     def wall_remaining(self) -> float:
         return self.profile.wall_time_s - (time.monotonic() - self.started_at)

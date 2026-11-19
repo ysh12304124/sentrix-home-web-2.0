@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
@@ -7,6 +8,19 @@ from sentrix.domain.media.models import Asset, AssetStatus, MediaType, VideoMeta
 from sentrix.domain.media.ports import VideoProbe
 from sentrix.infrastructure.persistence.repositories.assets import SqliteAssetRepository
 from sentrix.infrastructure.persistence.repositories.video import SqliteVideoRepository
+
+
+def test_video_recovery_liveness_never_signals_processes(monkeypatch):
+    from sentrix.api.routes.media import _process_is_alive
+
+    def unexpected_signal(*args):
+        pytest.fail("video recovery must not signal the observed process")
+
+    monkeypatch.setattr(os, "kill", unexpected_signal)
+    assert _process_is_alive(os.getpid())
+    assert not _process_is_alive(0)
+    assert not _process_is_alive(-1)
+    assert not _process_is_alive(2**30)
 
 
 @pytest.fixture

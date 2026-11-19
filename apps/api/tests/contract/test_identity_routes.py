@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from sentrix.application.identity.person_directory import EntityPersonDirectory
-from sentrix.domain.identity.models import PENDING_CLUSTER_NAME
 from sentrix.api.routes import corrections as correction_routes
+from sentrix.application.identity.person_directory import EntityPersonDirectory
+from sentrix.domain.assistant.models import ModelReply
+from sentrix.domain.identity.models import PENDING_CLUSTER_NAME
 
 NOW = "2026-09-23T10:00:00+00:00"
 
@@ -144,6 +146,316 @@ def identity_client(client: TestClient) -> TestClient:
 def _error(response) -> tuple[str, str]:
     body = response.json()
     return body["code"], body["message"]
+
+
+def _correction_event(client, event_id="correct-event", observation_id="obs_1", summary="旧摘要"):
+    with _db(client).connect() as db, db:
+        db.execute(
+            "INSERT INTO events(id,scope_id,title,summary,activity,created_at,updated_at) "
+            "VALUES(?,?,'活动',?,'散步',?,?)",
+            (event_id, HOME, summary, NOW, NOW),
+        )
+        db.execute(
+            "INSERT INTO event_observations(event_id,observation_id,created_at) VALUES(?,?,?)",
+            (event_id, observation_id, NOW),
+        )
+        db.execute(
+            "UPDATE observations SET caption='一个小男孩在散步',activity='散步' WHERE id=?", (observation_id,)
+        )
+
+
+class CorrectionModel:
+    def __init__(self, summary="小禾在散步"):
+        self.summary = summary
+        self.failed = False
+        self.inputs = []
+
+    def complete(self, messages, tools):
+        if self.failed:
+            raise RuntimeError("model unavailable")
+        payload = json.loads(messages[1].content)
+        self.inputs.append(payload)
+        if "fields" in payload:
+            content = {key: self.summary for key in payload["fields"]}
+        else:
+            content = {
+                "title": self.summary,
+                "summary": self.summary,
+                "activity": "散步",
+                "event_type": "活动",
+            }
+        return ModelReply(content=json.dumps(content, ensure_ascii=False))
+
+
+def _correction_model(client, model):
+    client.app.state.container = replace(client.app.state.container, chat_model=model)
+
+
+def test_explicit_person_sync_rebuilds_current_memories_without_existing_pending(identity_client):
+    client = identity_client
+    add_entity(client, "named", name="小禾", status="confirmed")
+    _correction_event(client)
+    c = client.app.state.container
+    c.entity_repository.link_confirmed_mention("named", "obs_1")
+    model = CorrectionModel()
+    _correction_model(client, model)
+    assert HOME not in c.memory_corrections.pending_scopes()
+    response = client.post(
+        "/api/v1/memories/corrections/retry", params={"scope_id": HOME, "person_id": "named"}
+    )
+    assert response.status_code == 200 and response.json()["error"] == "", response.text
+    assert model.inputs
+    event = c.event_repository.get("correct-event")
+    assert event.title == "小禾在散步" and event.summary == "小禾在散步"
+    assert HOME not in c.memory_corrections.pending_scopes()
+
+
+def test_explicit_person_sync_rejects_wrong_scope_before_tracking(identity_client):
+    add_entity(identity_client, "named", name="小禾", status="confirmed")
+    response = identity_client.post(
+        "/api/v1/memories/corrections/retry", params={"scope_id": HIDDEN, "person_id": "named"}
+    )
+    assert response.status_code == 400
+    assert not identity_client.app.state.container.memory_corrections.records(HOME, 10)
+
+
+def test_name_is_readable_while_linked_memory_rebuild_is_still_running(identity_client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    _correction_event(client)
+    client.app.state.container.entity_repository.link_confirmed_mention("named", "obs_1")
+    entered, release = Event(), Event()
+
+    class WaitingModel(CorrectionModel):
+        def complete(self, messages, tools):
+            entered.set()
+            assert release.wait(10)
+            return super().complete(messages, tools)
+
+    _correction_model(client, WaitingModel())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.patch, "/api/v1/people/named/name", json={"name": "小禾"})
+        try:
+            assert entered.wait(10)
+            assert not future.done()
+            response = client.get("/api/v1/people/named")
+            assert response.status_code == 200
+            assert response.json()["entity"]["canonical_name"] == "小禾"
+        finally:
+            release.set()
+        response = future.result(timeout=10)
+        assert response.status_code == 200 and response.json()["sync_status"] == "synced", response.text
+
+
+def test_independent_event_corrections_rebuild_in_a_bounded_parallel_batch(identity_client):
+    from threading import Barrier
+
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    client.app.state.container.entity_repository.link_confirmed_mention("named", "obs_1")
+    for index in range(4):
+        _correction_event(client, event_id=f"parallel-{index}")
+    barrier = Barrier(4, timeout=10)
+
+    class ConcurrentModel(CorrectionModel):
+        def complete(self, messages, tools):
+            if "observations" in json.loads(messages[1].content):
+                barrier.wait()
+            return super().complete(messages, tools)
+
+    _correction_model(client, ConcurrentModel())
+    response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
+    assert response.status_code == 200 and response.json()["sync_status"] == "synced", response.text
+    for index in range(4):
+        event = client.app.state.container.event_repository.get(f"parallel-{index}")
+        assert event.title == "小禾在散步" and event.summary == "小禾在散步"
+
+
+def test_rename_rebuilds_only_linked_summary_graph_and_event_vector(identity_client):
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    container = client.app.state.container
+    container.entity_repository.link_confirmed_mention("named", "obs_1")
+    _correction_event(client)
+    _correction_event(client, "unrelated", "obs_2", "其他人的摘要")
+    container.event_repository.attach("correct-event", "obs_2")
+    model = CorrectionModel()
+    _correction_model(client, model)
+    response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
+    assert response.status_code == 200, response.text
+    assert response.json()["sync_status"] == "synced", response.text
+    assert container.event_repository.get("correct-event").summary == "小禾在散步"
+    assert container.event_repository.get("unrelated").summary == "其他人的摘要"
+    evidence = next(p for p in model.inputs if "observations" in p)
+    assert evidence["observations"][0]["confirmed_people"] == [{"entity_id": "named", "name": "小禾"}]
+    assert evidence["identity_updates"][0]["previous_name"] == "旧名字"
+    assert evidence["identity_updates"][0]["observation_ids"] == ["obs_1"]
+    assert evidence["observations"][1]["confirmed_people"] == []
+    with _db(client).connect() as db:
+        row = db.execute(
+            "SELECT metadata_json FROM text_vectors WHERE source_type='observation' AND source_id='obs_1'"
+        ).fetchone()
+        assert json.loads(row[0])["event_id"] == "correct-event"
+        assert db.execute(
+            "SELECT 1 FROM text_vectors WHERE source_type='event' AND source_id='correct-event'"
+        ).fetchone()
+        graph = json.loads(
+            db.execute(
+                "SELECT attributes_json FROM memory_graph_nodes WHERE id='event:correct-event'"
+            ).fetchone()[0]
+        )
+        assert graph["summary"] == "小禾在散步"
+    assert container.lexical_index.search_fts("小禾", scope_id=HOME, limit=10)
+
+
+def test_naming_candidate_rebuilds_description_without_confirming_face_identity(identity_client):
+    client = identity_client
+    add_entity(client, "candidate", name="待确认人物簇 · pending")
+    add_cluster(client, "pending", entity_id="candidate")
+    add_instance(client, "face", cluster_id="pending")
+    _correction_event(client)
+    model = CorrectionModel("用户标记为小禾的人物在散步")
+    _correction_model(client, model)
+    response = client.patch("/api/v1/people/candidate/name", json={"name": "小禾"})
+    assert response.json()["sync_status"] == "synced", response.text
+    assert response.json()["entity"]["confirmed"] is False
+    evidence = model.inputs[0]
+    update = evidence["identity_updates"][0]
+    assert update["name"] == "小禾" and update["status"] == "pending"
+    assert update["observation_ids"] == ["obs_1"]
+    assert evidence["observations"][0]["confirmed_people"] == []
+    assert client.app.state.container.event_repository.get("correct-event").summary == model.summary
+    assert client.app.state.container.lexical_index.search_fts("小禾", scope_id=HOME, limit=10)
+
+
+def test_summary_failure_invalidates_old_projection_and_retry_uses_latest_name(identity_client):
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    client.app.state.container.entity_repository.link_confirmed_mention("named", "obs_1")
+    _correction_event(client, summary="旧名字在散步")
+    model = CorrectionModel()
+    model.failed = True
+    _correction_model(client, model)
+    response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
+    assert response.json()["sync_status"] == "pending", response.text
+    assert response.json()["entity"]["canonical_name"] == "小禾"
+    assert client.app.state.container.event_repository.get("correct-event").summary == ""
+    assert HOME in client.app.state.container.memory_corrections.pending_scopes()
+    model.failed = False
+    retry = client.post("/api/v1/memories/corrections/retry", params={"scope_id": HOME})
+    assert retry.json()["error"] == "", retry.text
+    assert client.app.state.container.event_repository.get("correct-event").summary == model.summary
+    assert HOME not in client.app.state.container.memory_corrections.pending_scopes()
+
+
+def test_deletion_rebuilds_shared_event_from_remaining_sources_and_is_repeatable(identity_client):
+    client = identity_client
+    with _db(client).connect() as db, db:
+        db.execute(
+            "INSERT INTO assets(id,scope_id,file_name,media_type,path,created_at,updated_at) "
+            "VALUES('keep',?,'keep.jpg','image','/tmp/keep.jpg',?,?)",
+            (HOME, NOW, NOW),
+        )
+        db.execute(
+            "INSERT INTO observations(id,scope_id,asset_id,source_type,caption,created_at,updated_at) "
+            "VALUES('keep-obs',?,'keep','vlm','花园里的花',?,?)",
+            (HOME, NOW, NOW),
+        )
+    _correction_event(client, summary="被删除的独有内容")
+    with _db(client).connect() as db, db:
+        db.execute(
+            "INSERT INTO event_observations(event_id,observation_id,created_at) "
+            "VALUES('correct-event','keep-obs',?)",
+            (NOW,),
+        )
+    model = CorrectionModel("花园里的花")
+    _correction_model(client, model)
+    response = client.delete("/api/v1/assets/asset_1")
+    assert response.status_code == 200 and response.json()["deleted"], response.text
+    assert client.app.state.container.asset_repository.get("asset_1") is None
+    assert client.app.state.container.asset_repository.get("keep") is not None
+    assert client.app.state.container.event_repository.get("correct-event").summary == model.summary
+    assert [o["observation_id"] for o in model.inputs[0]["observations"]] == ["keep-obs"]
+    repeated = client.delete("/api/v1/assets/asset_1")
+    assert repeated.status_code == 200 and repeated.json()["deleted"]
+    with _db(client).connect() as db:
+        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+
+
+def test_automatic_profiles_rebuild_with_checkpoint_and_locked_portrait_is_preserved(
+    identity_client, monkeypatch
+):
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    container = client.app.state.container
+    container.entity_repository.link_confirmed_mention("named", "obs_1")
+    _correction_event(client)
+    portrait = container.portrait_repository.create(
+        "named", portrait_text="旧名字的画像", prompt_version="v1", trigger_type="pipeline"
+    )
+    container.family_graph_repository.write_portrait(
+        HOME, "named", "锁定的用户画像", source="user_override", evidence_refs=["obs_1"]
+    )
+    with _db(client).connect() as db, db:
+        db.execute(
+            "INSERT INTO semantic_profiles(id,scope_id,person_id,summary_zh,created_at,updated_at) "
+            "VALUES('profile',?,'named','旧名字',?,?)",
+            (HOME, NOW, NOW),
+        )
+    model = CorrectionModel()
+    _correction_model(client, model)
+    repo_type = type(container.memory_corrections)
+    original = repo_type.write_dependent_text
+    original_identities = repo_type.identity_updates
+
+    def identities(repo, scope):
+        return [
+            *[
+                {**item, "observation_ids": [*item["observation_ids"], "unrelated-observation"]}
+                for item in original_identities(repo, scope)
+            ],
+            {
+                "entity_id": "unrelated-person",
+                "name": "其他人物",
+                "previous_name": "",
+                "status": "confirmed",
+                "name_state": "confirmed",
+                "observation_ids": ["unrelated-observation"],
+            },
+        ]
+
+    monkeypatch.setattr(repo_type, "identity_updates", identities)
+    failed = [True]
+
+    def write(repo, target, fields):
+        if target.kind == "semantic_profile" and failed[0]:
+            raise RuntimeError("temporary profile failure")
+        return original(repo, target, fields)
+
+    monkeypatch.setattr(repo_type, "write_dependent_text", write)
+    response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
+    assert response.json()["sync_status"] == "pending", response.text
+    rebuilt = container.portrait_repository.get_active("named")
+    assert rebuilt.revision == portrait.revision + 1 and rebuilt.portrait_text == model.summary
+    projections = [payload for payload in model.inputs if "fields" in payload]
+    assert projections
+    for payload in projections:
+        assert [item["entity_id"] for item in payload["identity_updates"]] == ["named"]
+        assert payload["identity_updates"][0]["observation_ids"] == ["obs_1"]
+    assert (
+        container.family_graph_repository.get_active_portrait(HOME, "named").portrait_text == "锁定的用户画像"
+    )
+    failed[0] = False
+    assert client.post("/api/v1/memories/corrections/retry", params={"scope_id": HOME}).json()["error"] == ""
+    assert container.portrait_repository.get_active("named").id == rebuilt.id
+    with _db(client).connect() as db:
+        assert (
+            db.execute("SELECT summary_zh FROM semantic_profiles WHERE id='profile'").fetchone()[0]
+            == model.summary
+        )
 
 
 # ---- 簇列表 ----------------------------------------------------------------------

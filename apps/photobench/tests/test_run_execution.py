@@ -467,10 +467,7 @@ def test_resumed_run_skips_verified_completed_text_memory_import():
         state, _request(text_import_already_completed=True, graph_enabled=True)
     )
     assert state.data["phases"]["text_memory_import"]["status"] == "skipped"
-    assert (
-        state.data["phases"]["text_memory_import"]["reason"]
-        == "reusing_verified_import_from_source_run"
-    )
+    assert state.data["phases"]["text_memory_import"]["reason"] == "reusing_verified_import_from_source_run"
     assert "import_text_memories" not in client.call_names()
 
 
@@ -2300,3 +2297,23 @@ def test_completed_judging_does_not_make_partial_import_valid(monkeypatch):
     assert state["items"][0]["judge_status"] == "completed"
     assert state["status"] == "completed_with_errors"
     assert state["run_valid"] is state["summary"]["run_valid"] is False
+
+
+def test_text_import_batches_publish_completed_counts_and_build_graph_only_last():
+    import json
+
+    rows = [{"id": f"source-{i}", "detail": f"Synthetic record {i}"} for i in range(101)]
+    albums = FakeAlbums(
+        manifest={**_manifest(), "text_memories": "text/source.json"},
+        files={"text/source.json": json.dumps(rows).encode()},
+    )
+    execution, client, *_ = _execution(albums=albums)
+    state = RunState({"run_id": "batch-progress", "album_id": ALBUM, "scope_id": "scope-batch"})
+    execution._phase_text_memory_import(state, _request(graph_enabled=True))
+    calls = [kwargs for name, kwargs in client.calls if name == "import_text_memories"]
+    assert [len(call["items"]) for call in calls] == [50, 50, 1]
+    assert [call["rebuild_graph"] for call in calls] == [False, False, True]
+    assert [item["external_id"] for call in calls for item in call["items"]] == [row["id"] for row in rows]
+    progress = state.data["phases"]["text_memory_import"]["progress"]
+    assert progress["processed"] == progress["imported"] == progress["indexed"] == 101
+    assert progress["current_batch"] == progress["batches"] == 3

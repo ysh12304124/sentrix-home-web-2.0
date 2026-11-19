@@ -1,4 +1,4 @@
-"""BGE-M3 text embedding sidecar for the legacy Mac deployment.
+"""BGE-M3 text embedding sidecar for legacy deployments on CPU or CUDA.
 
 The API process deliberately does not import torch.  This small process owns the
 model and exposes the historical contract used by ``BgeSidecarEmbedder``:
@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
@@ -33,6 +34,7 @@ _error = ""
 _identity: dict[str, object] | None = None
 _identity_error = ""
 _identity_runtime: dict[str, object] = {}
+_inference_lock = threading.Lock()
 
 
 def _model_path() -> Path:
@@ -47,12 +49,20 @@ def _current_identity() -> dict[str, object]:
     )
 
 
-def _load() -> None:
-    global _model, _tokenizer, _error, _identity, _identity_error, _identity_runtime
+def _load(device: str = "cpu") -> None:
+    global _model, _tokenizer, _device, _error, _identity, _identity_error, _identity_runtime
+    _model = _tokenizer = None
+    _identity = None
+    _identity_runtime = {}
+    _device = device
     try:
         import torch
         from transformers import AutoModel, AutoTokenizer
 
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("device must be cpu or cuda")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested for BGE but CUDA is unavailable")
         threads = int(os.getenv("SENTRIX_BGE_THREADS", "6"))
         if threads > 0:
             torch.set_num_threads(threads)
@@ -70,6 +80,7 @@ def _load() -> None:
             local_files_only=True,
             torch_dtype=torch.float32,
         )
+        _model = _model.to(_device)
         _model.eval()
         _error = ""
         _identity_runtime = {
@@ -87,6 +98,8 @@ def _load() -> None:
             _identity = None
             _identity_error = f"{type(error).__name__}: {error}"
     except Exception as error:  # noqa: BLE001 - health endpoint reports startup failure
+        _model = _tokenizer = None
+        _identity = None
         _error = f"{type(error).__name__}: {error}"
 
 
@@ -103,7 +116,8 @@ def _embed(text: str) -> list[float]:
         max_length=max_length,
         return_tensors="pt",
     )
-    with torch.inference_mode():
+    inputs = {key: value.to(_device) for key, value in inputs.items()}
+    with _inference_lock, torch.inference_mode():
         outputs = _model(**inputs)
         hidden = outputs.last_hidden_state
         mask = inputs["attention_mask"].unsqueeze(-1).to(hidden.dtype)
@@ -184,8 +198,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default=os.getenv("SENTRIX_BGE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("SENTRIX_BGE_PORT", "8101")))
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args()
-    _load()
+    _load(args.device)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(
         f"BGE-M3 sidecar ready on {args.host}:{args.port} dim={DIMENSION} error={_error!r}",

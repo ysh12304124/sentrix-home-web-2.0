@@ -8,6 +8,7 @@ type Memory = { id: string; scope_id: string; revision: number; [key: string]: u
 const fields: Record<Kind, Record<string, string>> = {
   observation: {
     caption: '观察描述',
+    text_content: '文本正文',
     place: '地点',
     activity: '活动',
     event_type: '事件类型',
@@ -27,7 +28,7 @@ const fields: Record<Kind, Record<string, string>> = {
   entity: { canonical_name: '实体名称', summary: '实体说明' },
 };
 
-const longFields = new Set(['caption', 'summary', 'ocr_text', 'objects', 'clothing']);
+const longFields = new Set(['caption', 'text_content', 'summary', 'ocr_text', 'objects', 'clothing']);
 
 export function CorrectionHistory({ scopeId }: { scopeId: string }) {
   const [items, setItems] = useState<Record<string, unknown>[] | null>(null);
@@ -228,12 +229,12 @@ function CorrectionForm({
           <div className="memory-form-heading">
             <div>
               <h3>编辑{kind === 'event' ? '事件' : kind === 'entity' ? '实体' : '观察'}记忆</h3>
-              <p>保存后会同步更新关联图谱和检索索引。</p>
+              <p>保存后会重建相关事件摘要，并同步更新关联图谱和检索索引。</p>
             </div>
             <span className="memory-revision">版本 {memory.revision}</span>
           </div>
           <div className="memory-fields">
-            {Object.entries(fields[kind]).map(([key, label]) => (
+            {Object.entries(fields[kind]).filter(([key]) => key !== 'text_content' || ['text', 'email'].includes(String(memory.source_type))).map(([key, label]) => (
               <label className={longFields.has(key) ? 'is-long' : ''} key={key}>
                 <span>{label}</span>
                 {longFields.has(key) ? (
@@ -323,7 +324,9 @@ export function AssetMemoryCorrection({ assetId, compact = false }: { assetId: s
                 <small>{String(item.captured_at || item.id)}</small>
               </div>
               <p>{String(item.caption || '暂无描述')}</p>
-              <MemoryCorrection kind="observation" targetId={item.id} />
+              <MemoryCorrection kind="observation" targetId={item.id} onSaved={async () => {
+                setItems((await request<{ items: Memory[] }>(`/assets/${encodeURIComponent(assetId)}/memories`)).items);
+              }} />
             </article>
           ))}
         </div>
@@ -337,6 +340,8 @@ function kindLabel(kind: string): string {
   if (kind === 'entity' || kind === 'face') return '实体';
   if (kind === 'observation') return '观察';
   if (kind === 'family') return '家庭关系';
+  if (kind === 'deletion') return '删除关联';
+  if (kind === 'derived_rebuild') return '关联记忆重建';
   return kind;
 }
 

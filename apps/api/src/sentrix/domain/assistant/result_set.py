@@ -63,15 +63,6 @@ class ResultSet:
     evidence_classes: Mapping[str, str] = field(default_factory=dict)
     graph_provenance: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
-    @property
-    def handle_prefix(self) -> str:
-        """Keep text handles distinct from deliverable photo handles across reloads.
-
-        The result-set ID is persisted, so the kind remains stable without adding a
-        migration solely for a presentation-level handle prefix.
-        """
-        return "memory_" if self.id.startswith("trs_") else "photo_"
-
     def page(self, page_no: int, page_size: int = PAGE_SIZE) -> ResultSetPage:
         """第 ``page_no`` 页（1-based）。页码越界返回空页，不抛异常。
 
@@ -88,7 +79,7 @@ class ResultSet:
         end = min(total, start + size)
         entries = tuple(
             ResultSetEntry(
-                handle=f"{self.handle_prefix}{start + index + 1}",
+                handle=f"photo_{start + index + 1}",
                 asset_id=asset_id,
                 evidence_class=self.evidence_classes.get(asset_id, ""),
                 graph_provenance=self.graph_provenance.get(asset_id, {}),
@@ -113,9 +104,9 @@ class ResultSet:
         1.0 的授权端点正是靠这一步把「模型给的 handle」与「真实资产」隔开
         （``app.py:2484``，handle 必须属于该结果集且 scope 匹配）。
         """
-        if not handle.startswith(self.handle_prefix):
+        if not handle.startswith("photo_"):
             return None
-        suffix = handle[len(self.handle_prefix) :]
+        suffix = handle[len("photo_") :]
         if not suffix.isdigit():
             return None
         index = int(suffix) - 1
@@ -126,5 +117,5 @@ class ResultSet:
     def handle_for(self, asset_id: str) -> str | None:
         for index, candidate in enumerate(self.asset_ids):
             if candidate == asset_id:
-                return f"{self.handle_prefix}{index + 1}"
+                return f"photo_{index + 1}"
         return None

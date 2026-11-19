@@ -41,6 +41,9 @@ const TABS: readonly { value: View; label: string }[] = [
 export function PeoplePage() {
   const { scopeId } = useScope();
   const { state, people, relationships, error, refresh } = useFamilyGraph(scopeId);
+  const [namePreviews, setNamePreviews] = useState<Record<string, string>>({});
+  const visiblePeople = people.map((person) => namePreviews[person.id] === undefined
+    ? person : { ...person, display_name: namePreviews[person.id] });
   const [view, setView] = useState<View>("roster");
   const [searchParams, setSearchParams] = useSearchParams();
   const [relateTo, setRelateTo] = useState<string | null>(null);
@@ -52,7 +55,7 @@ export function PeoplePage() {
    */
   const edgeCount = confirmedRelationships(relationships).length;
   const selectedId = searchParams.get("person");
-  const selected = people.find((person) => person.id === selectedId) ?? null;
+  const selected = visiblePeople.find((person) => person.id === selectedId) ?? null;
 
   /**
    * 改 `?person=`。
@@ -129,7 +132,7 @@ export function PeoplePage() {
             <p className="empty">正在读取人物…</p>
           ) : (
             <FamilyRoster
-              people={people}
+              people={visiblePeople}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
               onMerged={async (targetId) => {
@@ -148,7 +151,7 @@ export function PeoplePage() {
             <p className="empty">正在读取关系…</p>
           ) : (
             <FamilyGraphView
-              people={people}
+              people={visiblePeople}
               relationships={relationships}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
@@ -169,11 +172,17 @@ export function PeoplePage() {
         <PersonDetail
           key={selected.id}
           person={selected}
-          people={people}
+          people={visiblePeople}
           relationships={relationships}
           relateTarget={relateTo}
           onClose={() => selectPerson(null)}
           onChanged={refresh}
+          onNamePreview={(personId, name) => setNamePreviews((current) => {
+            const next = { ...current };
+            if (name === null) delete next[personId];
+            else next[personId] = name;
+            return next;
+          })}
           onRedirect={(id) => selectPerson(id)}
         />
       )}

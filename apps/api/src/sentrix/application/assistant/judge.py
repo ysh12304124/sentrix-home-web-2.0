@@ -34,8 +34,16 @@ log = logging.getLogger("sentrix.assistant.judge")
 
 
 class FaithfulnessJudge:
-    def __init__(self, model: ChatModel) -> None:
+    def __init__(
+        self,
+        model: ChatModel,
+        *,
+        transcript_messages: int = 8,
+        message_chars: int = 900,
+    ) -> None:
         self._model = model
+        self._transcript_messages = transcript_messages
+        self._message_chars = message_chars
 
     def review(
         self,
@@ -56,6 +64,8 @@ class FaithfulnessJudge:
             query=query,
             answer=answer,
             transcript=[{"role": message.role.value, "content": message.content} for message in transcript],
+            transcript_limit=self._transcript_messages,
+            message_chars=self._message_chars,
         )
         messages = [ChatMessage(ChatRole(str(item["role"])), str(item["content"])) for item in call.messages]
         started = time.perf_counter()

@@ -1,0 +1,29 @@
+# Windows x86_64 / NVIDIA development environment. Run from the repository root.
+# After creation, reinstall onnxruntime-gpu last; see docs/runbooks/windows-conda.md.
+name: sentrix-home-web-2.0
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - pip
+  - nodejs=22
+  # cn-clip requires lmdb==1.3.0; Conda supplies a Python 3.11 Windows binary.
+  - python-lmdb=1.3.0
+  # This build avoids the gdk-pixbuf post-link dependency of newer builds.
+  - ffmpeg=6.1.2=gpl_h63b3451_706
+  - pip:
+      - --no-binary=mypy
+      # Official Windows wheels with verified hashes; other packages use PyPI.
+      - torch @ https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp311-cp311-win_amd64.whl#sha256=e98711737150b5a6451cbbfdb425abd5d1bea77f4a1a5d29c48d5ec41cd54949
+      - torchvision @ https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp311-cp311-win_amd64.whl#sha256=08f02295d26ccb2054cafc8c21feacf9022384d5a0cd006fbbf1d59623af7522
+      # insightface requires the CPU distribution. Both distributions must match;
+      # the GPU distribution must own the shared onnxruntime namespace last.
+      - onnxruntime==1.30.0
+      - onnxruntime-gpu==1.30.0
+      # 1.17 does not require the ml_dtypes extension blocked by local App Control.
+      - onnx==1.17.0
+      - -e ./apps/api[dev]
+      - -e ./apps/photobench
+variables:
+  PYTHONNOUSERSITE: "1"

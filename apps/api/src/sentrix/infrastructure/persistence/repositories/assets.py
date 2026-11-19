@@ -414,6 +414,15 @@ class SqliteObservationRepository:
             ).fetchall()
         return [row_to_observation(row) for row in rows]
 
+    def has_source_text(self, scope_id: str) -> bool:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM observations WHERE scope_id = ? AND source_type = 'text' "
+                "AND COALESCE(text_content, '') <> '' LIMIT 1",
+                (scope_id,),
+            ).fetchone()
+        return row is not None
+
     def enrich(self, observation_id: str, *, semantics: ObservationSemantics) -> Observation:
         """写入 VLM 语义并把 ``revision`` 加一。
 

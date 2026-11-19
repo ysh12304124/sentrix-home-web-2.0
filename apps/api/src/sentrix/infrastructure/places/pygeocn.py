@@ -79,8 +79,8 @@ class PyGeoCNAdminResolver:
         if self._available is None:
             try:
                 import PyGeoCN.regeo  # noqa: F401
-            except ImportError:
-                log.warning("PyGeoCN 未安装，国内行政区解析不可用")
+            except ImportError as error:
+                log.warning("PyGeoCN 不可用，国内行政区解析降级: %s", error)
                 self._available = False
             else:
                 self._available = True

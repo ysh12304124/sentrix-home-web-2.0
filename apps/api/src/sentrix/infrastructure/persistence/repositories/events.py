@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -245,6 +246,7 @@ class SqliteEventRepository:
         event_type: str,
         activity: str,
         summary: str,
+        place: str | None = None,
     ) -> EventRecord:
         """写入事件投影（标题 / 类型 / 活动 / 摘要）并把 ``revision`` 加一。
 
@@ -268,9 +270,100 @@ class SqliteEventRepository:
                     event_id,
                 ),
             )
+            if place is not None:
+                connection.execute("UPDATE events SET place=? WHERE id=?", (place, event_id))
+            # A text record's observation caption is the same summary projection.
+            # Publish both in one transaction and invalidate its embedding version.
+            if current.source_type in {"text", "email"}:
+                connection.execute(
+                    "UPDATE observations SET caption=?,revision=revision+1,updated_at=? "
+                    "WHERE id IN (SELECT observation_id FROM text_import_state WHERE event_id=?) "
+                    "AND caption<>?",
+                    (summary, datetime.now(UTC).isoformat(), event_id, summary),
+                )
+                connection.execute(
+                    "UPDATE text_import_state SET indexed_revision=0 WHERE event_id=?",
+                    (event_id,),
+                )
+                connection.execute(
+                    "DELETE FROM text_vectors WHERE source_type='observation' AND source_id IN "
+                    "(SELECT observation_id FROM text_import_state WHERE event_id=?)",
+                    (event_id,),
+                )
         updated = self.get(event_id)
         assert updated is not None
         return updated
+
+    def retire_video_placeholders(self, asset_id: str) -> Sequence[str]:
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            ready = connection.execute(
+                "SELECT 1 FROM events e JOIN event_observations eo ON eo.event_id=e.id "
+                "JOIN observations o ON o.id=eo.observation_id WHERE e.source_asset_id=? "
+                "AND e.source_type='video_scene' AND e.status='active' "
+                "AND (o.caption<>'' OR o.activity<>'') LIMIT 1",
+                (asset_id,),
+            ).fetchone()
+            if not ready:
+                return ()
+            retired = []
+            for row in connection.execute(
+                "SELECT DISTINCT e.id FROM events e JOIN event_observations eo ON eo.event_id=e.id "
+                "JOIN observations o ON o.id=eo.observation_id WHERE o.asset_id=? AND e.status='active' "
+                "AND coalesce(e.source_type,'')='' AND NOT EXISTS (SELECT 1 FROM event_observations x "
+                "JOIN observations v ON v.id=x.observation_id WHERE x.event_id=e.id AND "
+                "(v.asset_id<>? OR v.caption<>'' OR v.activity<>'' OR v.ocr_text<>'' OR v.text_content<>'')) "
+                "AND NOT EXISTS (SELECT 1 FROM memory_corrections c "
+                "WHERE c.target_kind='event' AND c.target_id=e.id) "
+                "AND NOT EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id=e.id) "
+                "AND NOT EXISTS (SELECT 1 FROM event_entities p JOIN entities t ON t.id=p.entity_id "
+                "WHERE p.event_id=e.id AND (t.status='confirmed' OR t.name_state='confirmed' OR EXISTS ("
+                "SELECT 1 FROM entity_properties u WHERE u.entity_id=t.id AND u.source='user' "
+                "AND u.status IN ('active','pending'))))",
+                (asset_id, asset_id),
+            ).fetchall():
+                event_id = str(row[0])
+                before = dict(connection.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone())
+                now = datetime.now(UTC).isoformat()
+                connection.execute(
+                    "UPDATE events SET status='superseded',revision=revision+1,updated_at=? WHERE id=?",
+                    (now, event_id),
+                )
+                for table in ("text_vectors", "memory_vectors"):
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE source_type='event' AND source_id=?", (event_id,)
+                    )
+                graph_id = f"event:{event_id}"
+                connection.execute(
+                    "DELETE FROM memory_graph_edges WHERE source_id=? OR target_id=?",
+                    (graph_id, graph_id),
+                )
+                connection.execute("DELETE FROM memory_graph_nodes WHERE id=?", (graph_id,))
+                after = dict(connection.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone())
+                connection.execute(
+                    "INSERT INTO memory_corrections(id,scope_id,target_kind,target_id,before_json,after_json,"
+                    "reason,status,created_at,updated_at) "
+                    "VALUES(?,?,'video_repair',?,?,?,'视频场景替代空源事件','synced',?,?)",
+                    (
+                        uuid.uuid4().hex,
+                        before["scope_id"],
+                        event_id,
+                        json.dumps(before),
+                        json.dumps(after),
+                        now,
+                        now,
+                    ),
+                )
+                retired.append(event_id)
+            if retired:
+                scope = str(before["scope_id"])
+                connection.execute(
+                    "UPDATE memory_graph_builds SET "
+                    "node_count=(SELECT count(*) FROM memory_graph_nodes WHERE scope_id=?),"
+                    "edge_count=(SELECT count(*) FROM memory_graph_edges WHERE scope_id=?) WHERE scope_id=?",
+                    (scope, scope, scope),
+                )
+            return tuple(retired)
 
     def observation_ids(self, event_id: str) -> Sequence[str]:
         with self._database.connect() as connection:

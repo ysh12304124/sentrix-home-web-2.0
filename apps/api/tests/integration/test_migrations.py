@@ -57,9 +57,7 @@ def test_result_set_attempt_migration_repairs_stale_numeric_marker(tmp_path):
             "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL "
             "DEFAULT (datetime('now')))"
         )
-        connection.execute(
-            "INSERT INTO schema_migrations(version) VALUES('0020')"
-        )
+        connection.execute("INSERT INTO schema_migrations(version) VALUES('0020')")
         connection.execute(
             "CREATE TABLE agent_result_sets (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL, "
             "query TEXT NOT NULL DEFAULT '', asset_ids_json TEXT NOT NULL DEFAULT '[]', "

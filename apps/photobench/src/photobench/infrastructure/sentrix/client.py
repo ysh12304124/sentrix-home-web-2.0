@@ -193,7 +193,9 @@ class HttpxSentrixClient:
                     "scope_id": scope_id,
                     "asset_ids": list(asset_ids),
                     "graph_enabled": graph_enabled,
-                    "finalize": finalize,
+                    # The 2.0 pipeline endpoint finalizes synchronously. Keep the
+                    # explicit flag for the existing client contract and tests.
+                    "finalize": True,
                 },
                 "POST",
                 timeout,
@@ -298,7 +300,11 @@ class HttpxSentrixClient:
             except Exception:
                 turn = None
             if isinstance(turn, Mapping) and str(turn.get("status") or "").lower() in {
-                "completed", "partial", "failed", "cancelled", "interrupted",
+                "completed",
+                "partial",
+                "failed",
+                "cancelled",
+                "interrupted",
             }:
                 return {
                     "kind": kind,

@@ -14,29 +14,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sentrix.api.deps import get_container
 from sentrix.api.errors import InvalidRequestError, NotFoundError
-from sentrix.application.memories.sync_corrections import SYNC_LOCK, ReindexCorrectedMemories, SyncCorrections
+from sentrix.application.memories.sync_corrections import (
+    SYNC_LOCK,
+    SyncCorrections,
+)
 from sentrix.bootstrap.container import Container
-from sentrix.bootstrap.import_wiring import build_memory_graph
+from sentrix.bootstrap.import_wiring import build_memory_sync
 
 router = APIRouter(tags=["memory-corrections"])
 
 
 def synchronizer(container: Container) -> SyncCorrections:
-    reindex = ReindexCorrectedMemories(
-        container.observation_repository,
-        container.event_repository,
-        container.lexical_index,
-        container.text_embedder,
-        container.text_vector_repository,
-        container.memory_corrections,
-    ).reindex
-
-    def graph(scope: str) -> None:
-        stats = build_memory_graph(container).execute(scope)
-        if stats.causal_status == "degraded":
-            raise RuntimeError("因果边同步降级，请重试")
-
-    return SyncCorrections(container.memory_corrections, reindex, graph)
+    return build_memory_sync(container)
 
 
 def memory_write(kind: str, key: str) -> Callable[..., Any]:
@@ -111,7 +100,18 @@ def history(
 
 
 @router.post("/memories/corrections/retry", response_model=dict[str, str])
-def retry(scope_id: str = "", container: Container = Depends(get_container)) -> dict[str, str]:
+def retry(
+    scope_id: str = "", person_id: str = "", container: Container = Depends(get_container)
+) -> dict[str, str]:
+    if person_id:
+        person = container.entity_repository.get(person_id)
+        if person is None or person.entity_type != "person":
+            raise NotFoundError("person not found")
+        if scope_id and scope_id != person.scope_id:
+            raise InvalidRequestError("人物不属于当前记忆空间")
+        scope_id = person.scope_id
+        with SYNC_LOCK, container.memory_corrections.track(scope_id, "entity", person_id):
+            pass
     scopes = [scope_id] if scope_id else container.memory_corrections.pending_scopes()
     return {
         "error": "; ".join(error for scope in scopes if (error := synchronizer(container).execute(scope)))

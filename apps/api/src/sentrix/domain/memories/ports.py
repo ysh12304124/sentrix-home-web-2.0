@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -17,6 +18,18 @@ from sentrix.domain.memories.graph import (
     GraphNode,
     GraphStatus,
 )
+
+
+@dataclass(frozen=True)
+class DependentTextMemory:
+    kind: str
+    id: str
+    entity_id: str
+    version: str
+    fields: Mapping[str, str]
+    observation_ids: tuple[str, ...]
+    evidence_refs: tuple[dict[str, object], ...] = ()
+    generation: str = ""
 
 
 class MemoryCorrectionRepository(Protocol):
@@ -37,6 +50,35 @@ class MemoryCorrectionRepository(Protocol):
     def pending_scopes(self) -> Sequence[str]: ...
 
     def refresh_people(self, scope_id: str) -> None: ...
+
+    def refresh_dependencies(self, scope_id: str) -> None:
+        """Reconcile participants and invalidate affected automatic summaries/vectors.
+
+        Explicit event edits remain authoritative. Repeated calls use current sources.
+        """
+        ...
+
+    def summary_events(self, scope_id: str) -> Sequence[str]:
+        """Affected summaries, including body-only text edits; explicit projections are preserved."""
+        ...
+
+    def identity_updates(self, scope_id: str) -> Sequence[dict[str, object]]:
+        """User-named entity IDs, status, evidence IDs and superseded names."""
+        ...
+
+    def dependent_text(self, scope_id: str) -> Sequence[DependentTextMemory]:
+        """Current automatic moments/profiles/portraits linked to pending corrections.
+
+        User-owned family portraits and locked portraits are excluded; sources are retained.
+        """
+        ...
+
+    def write_dependent_text(self, target: DependentTextMemory, fields: Mapping[str, str]) -> None:
+        """Optimistically update automatic prose, with an atomic checkpoint/audit row.
+
+        Version conflict raises; portraits append a revision and preserve locked rows.
+        """
+        ...
 
     def affected_observations(self, scope_id: str) -> Sequence[str]: ...
 
@@ -86,7 +128,15 @@ class EventRepository(Protocol):
         event_type: str,
         activity: str,
         summary: str,
+        place: str | None = None,
     ) -> EventRecord: ...
+
+    def retire_video_placeholders(self, asset_id: str) -> Sequence[str]:
+        """Archive automatic, source-only empty events after usable video scenes exist.
+
+        Keep audit/history, explicit corrections, shared events and their evidence.
+        """
+        ...
 
     def observation_ids(self, event_id: str) -> Sequence[str]: ...
 

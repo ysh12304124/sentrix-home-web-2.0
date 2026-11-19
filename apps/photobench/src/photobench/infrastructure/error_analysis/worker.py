@@ -159,7 +159,7 @@ def lines(path: Path) -> Iterator[dict[str, Any]]:
 def atomic(path: Path, value: Any) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-    with temporary.open("rb") as handle:
+    with temporary.open("rb+") as handle:
         os.fsync(handle.fileno())
     temporary.replace(path)
 

@@ -194,12 +194,23 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
   const [extra, setExtra] = useState(false);
   const sampleCount = telemetrySampleCount(run);
   const diagnostics = telemetryObservationRows(run);
+  const sourceFailures = Object.entries(latest.source_diagnostics ?? {}).flatMap(([source, detail]) => {
+    if (!detail || typeof detail !== "object") return [];
+    const failure = detail as { error?: string; reason?: string };
+    const reason = failure.error || failure.reason;
+    return reason ? [`${({device:"GPU", process:"进程归属", system:"整机内存", memory:"内存分量"} as Record<string,string>)[source] ?? source}：${reason}`] : [];
+  });
   if (!sampleCount && !diagnostics.length) return null;
   return <details open className="phase-card result-phase-card gpu-result-card live-telemetry-card">
     <summary className="phase-title"><b>实时资源遥测</b><span className={`phase-status ${live.status === "running" ? "running" : "completed"}`}>
       {live.status === "running" ? "实时更新中" : live.status === "stop_pending" ? "停止未确认" : "已停止"}
     </span></summary>
     <p className="metric-calc-time">内存与显存统一用 GiB 展示，每项颜色不同，背景色区分阶段。悬浮图例可单独查看一项。产品包含主模型及其他产品进程，各项不相加。</p>
+    {sourceFailures.length > 0 && <div role="status" className="muted">
+      <strong>部分资源指标未采集</strong>
+      <ul>{sourceFailures.map(reason => <li key={reason}>{reason}</li>)}</ul>
+      <span>此处展示本轮已保存的采样；修复采集器后，后续测评会记录新数据。</span>
+    </div>}
     <div className="phase-metrics live-telemetry-metrics">{fields.map(([label, key]) =>
       <div className="phase-metric" key={key}><span>{label}</span>
         <strong>{telemetryNumber(latest[key]) === null ? "未采集" : fmtMemory(latest[key])}</strong>
@@ -232,6 +243,9 @@ export function ResourceTelemetryCard({ run }: { run: Run | null | undefined }) 
             <tr><th scope="row">3090（独立显卡）</th>
               <td>读取 /proc 的 smaps_rollup。<br /><code>内存 = Σ 进程 PSS</code><br />PSS 按比例分摊共享内存页。</td>
               <td>读取 NVIDIA NVML 的进程显存。<br /><code>显存 = Σ 当前显卡上模型进程的 usedGpuMemory</code><br />同一 PID 的计算与图形记录取较大值，避免重复。</td></tr>
+            <tr><th scope="row">Windows / WSL</th>
+              <td>整机内存由 Windows 物理总内存减可用内存取得。当前进程 PSS 与 WSL 模型归属不可用时保留缺失，不以工作集冒充 PSS。</td>
+              <td>整机显存、利用率、温度及功率由 NVML 采集。驱动未提供进程显存时保留缺失，不把整机显存记为主模型显存。</td></tr>
             <tr><th scope="row">NX / AGX（统一内存）</th>
               <td>读取 /proc 的 smaps_rollup。<br /><code>内存 = Σ 进程 PSS</code></td>
               <td>读取 nvmap iovmm/clients 的分配记录。<br /><code>显存 = Σ 模型进程的 nvmap 分配量</code><br />表示 GPU 分配的共享内存。</td></tr>

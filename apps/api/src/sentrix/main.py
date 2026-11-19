@@ -113,6 +113,7 @@ class SpaStaticFiles(StaticFiles):
         return await super().get_response("index.html", scope)
 
     def _is_client_route(self, path: str) -> bool:
+        path = path.replace("\\", "/")
         if path == self._api_root or path.startswith(f"{self._api_root}/"):
             return False
         # 带扩展名的按「要一个文件」处理；react-router 的路由（``timeline`` /

@@ -313,3 +313,104 @@ def test_list_video_scenes_orders_and_filters_by_source(migrations_ready_db: Dat
     assert scenes[0].source_asset_id == "asset_a"
     assert scenes[0].source_scene_index == 0
     assert scenes[0].source_end_sec == pytest.approx(5.0)
+
+
+def test_metadata_refresh_updates_source_frames_observations_and_scene_times(migrations_ready_db):
+    from sentrix.domain.media.capture_time import CaptureTime, offset_capture
+    from sentrix.domain.media.models import GpsPoint
+
+    db = migrations_ready_db
+    assets = SqliteAssetRepository(db)
+    assets.add(_asset("source"))
+    _insert_derived(db, "frame", parent="source", scene=0, timestamp=30, frame=0)
+    _insert_scene_event(db, "scene", source_asset_id="source", scene=0)
+    with db.connect() as conn, conn:
+        for oid, aid in [("source-obs", "source"), ("frame-obs", "frame")]:
+            conn.execute(
+                "INSERT INTO observations(id,scope_id,asset_id,source_type,"
+                "captured_at,created_at,updated_at) "
+                "VALUES(?,'album1',?,'import',?,?,?)",
+                (oid, aid, NOW.isoformat(), NOW.isoformat(), NOW.isoformat()),
+            )
+    captured = datetime(2019, 1, 10, 5, 4, 21, tzinfo=UTC)
+    repo = SqliteVideoRepository(db)
+    repo.update_capture_metadata(
+        "source",
+        captured,
+        GpsPoint(30, 120),
+        CaptureTime(captured.isoformat(), "format.creation_time", status="offset_only"),
+    )
+    assert assets.get("source").captured_at == captured
+    assert assets.get("frame").captured_at == offset_capture(captured, 30)
+    scene = SqliteEventRepository(db).get("scene")
+    assert scene.time_start == captured and scene.time_end == offset_capture(captured, 5)
+    with db.connect() as conn:
+        assert (
+            conn.execute("SELECT captured_at FROM observations WHERE id='frame-obs'").fetchone()[0]
+            == offset_capture(captured, 30).isoformat()
+        )
+        assert not conn.execute("PRAGMA foreign_key_check").fetchall()
+    corrected = datetime(2020, 2, 3, tzinfo=UTC)
+    with db.connect() as conn, conn:
+        conn.execute(
+            "UPDATE assets SET captured_at=?,capture_time_json=? WHERE id='source'",
+            (
+                corrected.isoformat(),
+                json.dumps({"raw": corrected.isoformat(), "source": "user_correction", "status": "known"}),
+            ),
+        )
+    repo.update_capture_metadata("source", captured, None, CaptureTime())
+    assert assets.get("source").captured_at == corrected
+
+
+def test_only_empty_automatic_video_source_events_are_archived_after_scene_recovery(migrations_ready_db):
+    db = migrations_ready_db
+    assets = SqliteAssetRepository(db)
+    assets.add(_asset("source"))
+    _insert_derived(db, "frame", parent="source", scene=0, timestamp=2, frame=0)
+    _insert_scene_event(db, "scene", source_asset_id="source", scene=0)
+    with db.connect() as conn, conn:
+        for oid, aid, caption in [("empty", "source", ""), ("visible", "frame", "客厅里有人看书")]:
+            conn.execute(
+                "INSERT INTO observations(id,scope_id,asset_id,source_type,caption,created_at,updated_at) "
+                "VALUES(?,'album1',?,'import',?,?,?)",
+                (oid, aid, caption, NOW.isoformat(), NOW.isoformat()),
+            )
+        for eid in ["placeholder", "manual", "shared"]:
+            conn.execute(
+                "INSERT INTO events(id,scope_id,title,created_at,updated_at) "
+                "VALUES(?,'album1','时间戳记录',?,?)",
+                (eid, NOW.isoformat(), NOW.isoformat()),
+            )
+            conn.execute(
+                "INSERT INTO event_observations(event_id,observation_id,created_at) VALUES(?,?,?)",
+                (eid, "empty", NOW.isoformat()),
+            )
+        for eid in ["scene", "shared"]:
+            conn.execute(
+                "INSERT INTO event_observations(event_id,observation_id,created_at) VALUES(?,'visible',?)",
+                (eid, NOW.isoformat()),
+            )
+        conn.execute(
+            "INSERT INTO memory_corrections(id,scope_id,target_kind,target_id,created_at,updated_at,status) "
+            "VALUES('user-edit','album1','event','manual',?,?,'synced')",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO entities(id,scope_id,entity_type,canonical_name,status,created_at,updated_at) "
+            "VALUES('unknown-place','album1','place','其他或不确定','pending',?,?)",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO event_entities(event_id,entity_id,relation,created_at,updated_at) "
+            "VALUES('placeholder','unknown-place','地点',?,?)", (NOW.isoformat(), NOW.isoformat()),
+        )
+    events = SqliteEventRepository(db)
+    assert events.retire_video_placeholders("source") == ("placeholder",)
+    assert events.get("placeholder").status == "superseded"
+    assert events.get("manual").status == events.get("shared").status == "active"
+    assert events.retire_video_placeholders("source") == ()
+    assert assets.get("source") is not None
+    with db.connect() as conn:
+        assert conn.execute("SELECT 1 FROM observations WHERE id='empty'").fetchone()
+        assert not conn.execute("PRAGMA foreign_key_check").fetchall()

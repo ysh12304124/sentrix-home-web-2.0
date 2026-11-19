@@ -54,6 +54,35 @@ def test_terminal_cache_detects_rejudge_updates_and_deletion(tmp_path):
         reader.get_run("r")
 
 
+def test_active_item_pages_skip_cache_sizing_and_stay_fresh(tmp_path, monkeypatch):
+    def unexpected_sizing(*args, **kwargs):
+        pytest.fail("active runs never enter the cache; traversing their traces is unnecessary")
+
+    monkeypatch.setattr("photobench.application.runs.read_runs._object_bytes", unexpected_sizing)
+    state = _state("r")
+    state["status"] = "running"
+    writer = FileResultWriter(tmp_path)
+    writer.write_snapshot("r", state)
+    reader = ReadRuns(
+        FileRunStore(tmp_path), RunIndex(), _NoQaMetadata(), SimpleNamespace(), lambda: "unused"
+    )
+    assert reader.get_run_items("r")["items"][0]["judge"]["score"] == 2
+    state["items"][0]["judge"]["score"] = 0
+    writer.write_snapshot("r", state)
+    assert reader.get_run_items("r")["items"][0]["judge"]["score"] == 0
+    assert not reader._states
+
+
+def test_cache_sizing_stops_once_the_budget_is_exceeded():
+    from photobench.application.runs.read_runs import _object_bytes
+
+    class Oversized(dict):
+        def keys(self):
+            pytest.fail("an oversized object must not be traversed")
+
+    assert _object_bytes(Oversized(), limit=1) > 1
+
+
 def test_snapshot_uses_state_lock_and_writer_error_still_stops():
     entered, release = threading.Event(), threading.Event()
     state = RunState({}, run_id="r", debounce=0)
@@ -86,6 +115,16 @@ def test_snapshot_uses_state_lock_and_writer_error_still_stops():
             state._persist_stopping = True
             state._persist_condition.notify_all()
         state._persist_thread.join(2)
+
+
+def test_directory_flush_preserves_errors(tmp_path):
+    from photobench.infrastructure.results.store import _durable_text, _sync_directory
+
+    _durable_text(tmp_path / "durable.txt", "持久内容")
+    _sync_directory(tmp_path)
+    assert (tmp_path / "durable.txt").read_text(encoding="utf-8") == "持久内容"
+    with pytest.raises(OSError):
+        _sync_directory(tmp_path / "missing")
 
 
 def test_result_pair_failure_leaves_previous_committed_state(tmp_path, monkeypatch):
