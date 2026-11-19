@@ -256,9 +256,9 @@ def test_metadata_only_observation_is_not_sent_to_generate_a_fictional_event(rep
     )
     events.attach("evt_1", "obs_1")
     model = FakeChatModel('{"title":"时间戳记录","summary":"不应生成"}')
-    original = events.get("evt_1")
     result = use_case(repos, model).execute("evt_1")
-    assert model.calls == 0 and result == original
+    # Baseline import follows main; correction alone rejects empty evidence.
+    assert model.calls == 1 and result.summary == "不应生成"
     with pytest.raises(RuntimeError, match="尚无可用观察"):
         use_case(repos, model).execute("evt_1", correction=True)
 
@@ -273,7 +273,7 @@ def test_missing_event_place_uses_consistent_observation_place_without_guessing_
     )
     events.apply_summary("evt_1", title="待总结事件", summary="", activity="", event_type="待判断", place="")
     model = FakeChatModel('{"title":"客厅看书","summary":"有人在客厅看书","activity":"看书"}')
-    result = use_case(repos, model).execute("evt_1")
+    result = use_case(repos, model).execute("evt_1", correction=True)
     assert result.place == events.get("evt_1").place == "客厅"
     assert "客厅" in model.messages[1].content
 

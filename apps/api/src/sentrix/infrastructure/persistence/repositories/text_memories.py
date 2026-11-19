@@ -69,8 +69,9 @@ class SqliteTextMemoryRepository:
             )
             c.execute(
                 "INSERT INTO observations(id,scope_id,asset_id,source_type,captured_at,caption,"
-                "text_content,external_id,event_type,confidence,created_at,updated_at,source_metadata_json) "
-                "VALUES(?,?,?,'text',?,?,?,?,'text_record',1,?,?,?) ON CONFLICT(id) DO NOTHING",
+                "text_content,external_id,event_type,confidence,created_at,updated_at,source_metadata_json,"
+                "source_text) "
+                "VALUES(?,?,?,'text',?,?,?,?,'text_record',1,?,?,?,?) ON CONFLICT(id) DO NOTHING",
                 (
                     oid,
                     scope_id,
@@ -82,6 +83,7 @@ class SqliteTextMemoryRepository:
                     now,
                     now,
                     json.dumps(item.metadata, ensure_ascii=False),
+                    item.body,
                 ),
             )
             c.execute(

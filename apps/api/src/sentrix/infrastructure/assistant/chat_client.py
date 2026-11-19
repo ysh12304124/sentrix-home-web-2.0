@@ -35,8 +35,10 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import random
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -48,9 +50,9 @@ from sentrix.domain.assistant.ports import (
     OutputTruncatedError,
     PromptTooLongError,
 )
-from sentrix.domain.assistant.request_context import request_slot
+from sentrix.domain.assistant.request_context import output_budget_override, request_slot
 from sentrix.domain.assistant.tools import ToolSpec, openai_tools
-from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
 from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger("sentrix.assistant.chat_client")
@@ -117,6 +119,25 @@ TOOLS_TOKENS_PER_CHAR = 0.48
 # 不传 ``context_tokens`` 时用的窗口。**只是为了测试与本地起得来**，生产必须由
 # ``Settings.vlm_context_tokens`` 给——窗口是部署事实（见该字段的注释）。
 DEFAULT_CONTEXT_TOKENS = 6144
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBudget:
+    """一个模型角色的上下文/输出预算。
+
+    `local` 的默认值就是上面那组常量；`cloud` 从角色配置读。把它做成对象而不是
+    继续加模块常量，是因为同一次部署里 chat 与 vision 的窗口/输出上限可以不同。
+    """
+
+    context_tokens: int = DEFAULT_CONTEXT_TOKENS
+    max_output_tokens: int = MAX_ANSWER_TOKENS
+    safety_tokens: int = CONTEXT_SAFETY_TOKENS
+    min_usable_output_tokens: int = MIN_USABLE_OUTPUT_TOKENS
+    compaction_ratio: float = PROMPT_COMPACTION_RATIO
+    tokens_per_char: float = TOKENS_PER_CHAR
+    tools_tokens_per_char: float = TOOLS_TOKENS_PER_CHAR
+    #: 软上限触发时是否真的拒发。local=True 保持旧行为；cloud=False 只记诊断。
+    enforce_soft_limit: bool = True
 
 
 class ChatModelError(RuntimeError):
@@ -200,26 +221,81 @@ _TRUNCATED_TOOL_CALL = "Failed to parse tool call arguments"
 _CONTEXT_OVERFLOW = "exceeds the available context size"
 
 
+def _provider_error_text(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text
+    if not isinstance(body, Mapping):
+        return response.text
+    error = body.get("error")
+    if not isinstance(error, Mapping):
+        return response.text
+    return " ".join(str(error.get(key) or "") for key in ("type", "code", "message"))
+
+
 def _is_context_overflow(response: httpx.Response) -> bool:
     """这次失败是不是「提示词超出窗口」。
 
-    措辞变了会静默退化回 ``ModelServiceError``（也就是没有这道兜底的行为），不会更糟——
-    只是失去了一次「自动压缩重试」的机会。
+    先认 llama.cpp 的原话，再认 OpenAI 兼容错误体的 ``context_length_exceeded`` /
+    ``maximum context length``。措辞变了会静默退化回 ``ModelServiceError``，不会更糟。
     """
-    return _CONTEXT_OVERFLOW in response.text
+    text = response.text
+    if _CONTEXT_OVERFLOW in text:
+        return True
+    joined = _provider_error_text(response).lower()
+    return any(
+        marker in joined
+        for marker in (
+            "context_length_exceeded",
+            "maximum context length",
+            "context window",
+            "too many tokens",
+            "prompt is too long",
+        )
+    )
 
 
 def _is_truncated_tool_call(response: httpx.Response) -> bool:
     """这次失败是不是「工具调用的 JSON 被切断」。
 
     **按端点的原话认，不按状态码。** 500 还可能是别的东西；而这个说法只在
-    ``max_tokens`` 把生成切在半句上时出现。认错方向的代价不对称：判成截断 → 压缩重试
-    一次（最多白花一个模型步）；判成服务故障 → 用户看到「模型服务不可用」而端点好好的，
-    而且**下一轮还会一模一样地失败**。
-
-    措辞变了会静默退化成 ``ModelServiceError``（也就是现在的行为），不会更糟。
+    ``max_tokens`` 把生成切在半句上时出现。云端错误体常见 ``invalid_function_arguments``
+    或 ``Unterminated string``，一并认。
     """
-    return _TRUNCATED_TOOL_CALL in response.text
+    text = response.text
+    if _TRUNCATED_TOOL_CALL in text:
+        return True
+    joined = _provider_error_text(response).lower()
+    return any(
+        marker in joined
+        for marker in (
+            "invalid_function_arguments",
+            "unterminated string",
+            "unexpected end of json",
+            "failed to parse tool call arguments",
+        )
+    )
+
+
+def _message_content(message: Mapping[str, Any]) -> str:
+    """把 OpenAI 兼容响应的 ``message.content`` 归一成字符串。
+
+    多数服务返回字符串；部分云端服务在多段/多模态时返回块数组。直接 ``str()`` 会把
+    数组变成 Python repr 塞进回答，所以这里只抽取文本块。
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, Mapping) and item.get("type") in {"text", "output_text"}:
+                parts.append(str(item.get("text") or ""))
+        return "".join(parts)
+    return "" if content is None else str(content)
 
 
 def _read_tool_calls(raw: object) -> tuple[ToolCall, ...]:
@@ -280,17 +356,30 @@ class OpenAIChatModel:
     def __init__(
         self,
         base_url: str,
-        model: ServedModel,
+        model: ServedModel | FixedModelName,
         *,
         timeout_s: float = 120.0,
         context_tokens: int = DEFAULT_CONTEXT_TOKENS,
+        api_key: str = "",
+        budget: ModelBudget | None = None,
+        payload_config: Mapping[str, Any] | None = None,
+        retry: Mapping[str, Any] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout_s = timeout_s
+        self._api_key = str(api_key or "").strip()
+        default_budget = ModelBudget(context_tokens=context_tokens)
+        self._budget = budget or default_budget
+        if budget is not None and context_tokens != DEFAULT_CONTEXT_TOKENS:
+            # 显式 context_tokens 仍然优先：现有测试按这个参数构造客户端。
+            self._budget = replace(budget, context_tokens=context_tokens)
         # 单个并发槽的窗口。**必须由部署方给**（``Settings.vlm_context_tokens``），
         # 默认值只是让测试与本地起得来，不代表生产。
-        self._context_tokens = context_tokens
+        self._context_tokens = self._budget.context_tokens
+        # 云端 payload 能力与重试策略；local 留空 = 现有行为。
+        self._payload_config = dict(payload_config or {})
+        self._retry = dict(retry or {})
 
     def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply:
         if (
@@ -466,18 +555,23 @@ class OpenAIChatModel:
                         **response.extensions.get("diagnostics", {}),
                     },
                 )
+            error_type, error_code, error_message = self._error_info(response)
+            provider_text = f"{error_type} {error_code} {error_message}".lower()
             raise ModelServiceError(
                 f"模型端点 {self._base_url} 上的 {model_name} 返回 {response.status_code}："
-                f"{response.text[:200]}",
+                f"{error_message or response.text[:200]}",
                 diagnostics={
                     "error_category": "service_error",
                     "http_status": response.status_code,
                     "request_sent": True,
+                    "provider_error_type": error_type,
+                    "provider_error_code": error_code,
+                    **response.extensions.get("diagnostics", {}),
                     "structured_output_rejected": bool(
                         response_format is not None
                         and response.status_code in {400, 422}
                         and any(
-                            t in response.text.lower()
+                            t in provider_text
                             for t in ("response_format", "json_schema", "structured output")
                         )
                     ),
@@ -498,41 +592,104 @@ class OpenAIChatModel:
                 },
             ) from error
 
-        if choice.get("finish_reason") == "length":
+        finish_reason = str(choice.get("finish_reason") or "")
+        usage = body.get("usage") or {}
+        diagnostics = {
+            "request_sent": True,
+            "http_status": response.status_code,
+            "context_window_tokens": self._context_tokens,
+            "streamed": False,
+            # llama.cpp 的服务端计时；云端没有这两个字段，留空即可。
+            "timings": body.get("timings") or {},
+            "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+            **response.extensions.get("diagnostics", {}),
+        }
+        if finish_reason == "length":
             raise OutputTruncatedError(
-                "模型输出达到上下文上限。",
+                "模型输出达到 max_tokens 上限。",
                 diagnostics={
+                    **diagnostics,
                     "error_category": "output_truncated",
-                    "request_sent": True,
-                    **response.extensions.get("diagnostics", {}),
+                    # 云端窗口装得下，压缩历史没有意义；先提高输出预算重试。
+                    "recovery": "compact_history"
+                    if getattr(self._model, "generation_profile", "") != "cloud"
+                    else "increase_output",
                 },
             )
-        usage = body.get("usage") or {}
-        content, thought = split_thought_channel(str(message.get("content") or ""))
+        if finish_reason in {"content_filter", "safety"}:
+            raise ModelServiceError(
+                f"模型端点 {self._base_url} 因内容过滤结束生成（{finish_reason}）。",
+                diagnostics={
+                    **diagnostics,
+                    "error_category": "content_filter",
+                    "provider_finish_reason": finish_reason,
+                },
+            )
+        content, thought = split_thought_channel(_message_content(message))
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if not thought and isinstance(reasoning, str) and reasoning.strip():
+            thought = reasoning.strip()
         if thought:
             # 不静默：内容留在 ``ModelReply.thought`` 上，这里再留一行痕，便于回答看起来
             # 「莫名其妙」时倒查模型当时在想什么。
-            log.debug("模型给出了 %d 字的思考通道内容（不展示给用户）", len(thought))
+            log.debug("模型给出了 %d 字的思考内容（不展示给用户）", len(thought))
+        completion_details = usage.get("completion_tokens_details") or {}
         return ModelReply(
             content=content,
             diagnostics={
-                "request_sent": True,
-                "http_status": response.status_code,
-                "context_window_tokens": self._context_tokens,
-                "streamed": False,
-                # llama.cpp 的服务端计时：prompt_n 是本次真正预填的 token，cache_n 是
-                # 从前缀缓存复用的 token。没有这两个值，就无法回答“缓存到底有没有生效”。
-                "timings": body.get("timings") or {},
-                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
-                **response.extensions.get("diagnostics", {}),
+                **diagnostics,
+                "reasoning_tokens": int(completion_details.get("reasoning_tokens") or 0),
             },
             thought=thought,
             tool_calls=_read_tool_calls(message.get("tool_calls")),
-            finish_reason=str(choice.get("finish_reason") or ""),
+            finish_reason=finish_reason,
             tool_argument_parse_facts=_tool_parse_facts(message.get("tool_calls")),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
         )
+
+    def _retry_delay(self, attempt: int, retry_after: float | None = None) -> float:
+        base = float(self._retry.get("base_delay_s", 1.0))
+        cap = float(self._retry.get("max_delay_s", 8.0))
+        jitter = float(self._retry.get("jitter_s", 0.5))
+        if retry_after is not None:
+            return min(cap, max(0.0, retry_after))
+        delay = min(cap, base * (2 ** max(0, attempt - 1)))
+        return min(cap, delay + random.uniform(0.0, max(0.0, jitter)))
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        raw = str(response.headers.get("Retry-After") or "").strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _error_info(response: httpx.Response) -> tuple[str, str, str]:
+        """``(type, code, message)``；非 JSON 错误体时全空。"""
+        try:
+            body = response.json()
+        except ValueError:
+            return "", "", response.text[:200]
+        if not isinstance(body, Mapping):
+            return "", "", response.text[:200]
+        error = body.get("error")
+        if not isinstance(error, Mapping):
+            return "", "", response.text[:200]
+        return (
+            str(error.get("type") or ""),
+            str(error.get("code") or ""),
+            str(error.get("message") or "")[:300],
+        )
+
+    @classmethod
+    def _is_insufficient_quota(cls, response: httpx.Response) -> bool:
+        error_type, error_code, message = cls._error_info(response)
+        joined = f"{error_type} {error_code} {message}".lower()
+        return "insufficient_quota" in joined or "quota" in joined or "billing" in joined
 
     def _post(
         self,
@@ -543,16 +700,13 @@ class OpenAIChatModel:
         response_format: Mapping[str, Any] | None = None,
         chat_template_kwargs: Mapping[str, Any] | None = None,
     ) -> httpx.Response:
-        prompt_tokens = self.estimate_prompt_tokens(messages, tools)
+        prompt_tokens = self._estimate_prompt_tokens(messages, tools)
         budget = self._max_tokens(messages, tools)
-        if not self._model.exact_output_budget and budget < MIN_USABLE_OUTPUT_TOKENS:
-            # **不发这个请求。** 发出去的结果只有两种，两种都会说错原因：端点回 500
-            # （生成被截断、JSON 解析不了）或 400（超窗），而 ``complete`` 把它们统一
-            # 报成 ``ModelServiceError`` ——用户看到「模型服务当前不可用」，运维去看端点
-            # 却什么毛病都没有。真因是**提示词太大**，那是调用方可以处理的（压缩历史）。
+        if not self._model.exact_output_budget and budget < self._budget.min_usable_output_tokens:
             raise PromptTooLongError(
-                f"提示词约 {prompt_tokens} token，单个并发槽的上下文上限 {self._context_tokens}，"
-                f"只剩 {budget} 不足以写完一次工具调用（至少需要 {MIN_USABLE_OUTPUT_TOKENS}）。",
+                f"提示词约 {prompt_tokens} token，上下文上限 {self._context_tokens}，"
+                f"只剩 {budget} 不足以写完一次工具调用"
+                f"（至少需要 {self._budget.min_usable_output_tokens}）。",
                 diagnostics={
                     "error_category": "context_output_insufficient",
                     "request_sent": False,
@@ -561,12 +715,13 @@ class OpenAIChatModel:
                     "output_budget_tokens": budget,
                 },
             )
-        if not self._model.exact_output_budget and self.prompt_over_soft_limit(prompt_tokens):
+        soft_limit = self.prompt_over_soft_limit(prompt_tokens)
+        if not self._model.exact_output_budget and soft_limit and self._budget.enforce_soft_limit:
             raise PromptTooLongError(
                 f"提示词约 {prompt_tokens} token，超过软上限 "
-                f"{int(self._context_tokens * PROMPT_COMPACTION_RATIO)}"
-                f"（窗口 {self._context_tokens} 的 {int(PROMPT_COMPACTION_RATIO * 100)}%）；"
-                "先压缩历史再试。",
+                f"{int(self._context_tokens * self._budget.compaction_ratio)}"
+                f"（窗口 {self._context_tokens} 的 "
+                f"{int(self._budget.compaction_ratio * 100)}%）；先压缩历史再试。",
                 diagnostics={
                     "error_category": "context_soft_limit",
                     "request_sent": False,
@@ -576,74 +731,119 @@ class OpenAIChatModel:
                 },
             )
 
+        generation: dict[str, Any] = {}
+        if hasattr(self._model, "generation_parameters"):
+            generation.update(self._model.generation_parameters())
+        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+            if key in self._payload_config:
+                generation[key] = self._payload_config[key]
+        max_tokens_field = str(self._payload_config.get("max_tokens_field", "max_tokens"))
         payload: dict[str, Any] = {
             "model": model_name,
             "messages": [_dump_message(message) for message in messages],
-            **self._model.generation_parameters(),
+            **generation,
             "stream": False,
-            "max_tokens": budget,
+            max_tokens_field: budget,
         }
         slot = request_slot()
-        if slot is not None:
+        if slot is not None and self._payload_config.get("allow_id_slot", True):
             payload["id_slot"] = slot
-        if tools:
+        if tools and self._payload_config.get("supports_tools", True):
             payload["tools"] = list(openai_tools(tools))
             payload["tool_choice"] = "auto"
+            if "parallel_tool_calls" in self._payload_config:
+                payload["parallel_tool_calls"] = bool(self._payload_config["parallel_tool_calls"])
+        effective_format = response_format
         if response_format is not None:
-            payload["response_format"] = dict(response_format)
-        if chat_template_kwargs is not None:
+            kind = str(response_format.get("type") or "")
+            if kind == "json_schema" and not self._payload_config.get("supports_json_schema", True):
+                effective_format = (
+                    {"type": "json_object"}
+                    if self._payload_config.get("supports_json_object", True)
+                    else None
+                )
+            elif kind == "json_object" and not self._payload_config.get("supports_json_object", True):
+                effective_format = None
+        if effective_format is not None:
+            payload["response_format"] = dict(effective_format)
+        if chat_template_kwargs is not None and self._payload_config.get("allow_chat_template_kwargs", True):
             payload["chat_template_kwargs"] = dict(chat_template_kwargs)
+        extra_body = self._payload_config.get("extra_body")
+        if isinstance(extra_body, Mapping):
+            payload.update(extra_body)
 
         exact_budget = self._model.apply_output_budget(payload, timeout_s=self._timeout_s)
-        try:
-            with httpx.Client(timeout=self._timeout_s) as client:
-                response = client.post(
-                    f"{self._base_url}/chat/completions",
-                    json=payload,
-                    headers=model_auth_headers(),
+        diagnostics = {
+            "prompt_tokens_estimated": prompt_tokens,
+            "context_window_tokens": self._context_tokens,
+            "output_budget_tokens": budget,
+            **exact_budget,
+        }
+        if soft_limit and not self._budget.enforce_soft_limit:
+            diagnostics["soft_limit_ignored"] = True
+        max_attempts = max(1, int(self._retry.get("max_attempts", 1)))
+        retry_status = set(self._retry.get("retry_on_status") or (429, 500, 502, 503, 504, 529))
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                with httpx.Client(timeout=self._timeout_s) as client:
+                    response = client.post(
+                        f"{self._base_url}/chat/completions",
+                        json=payload,
+                        headers=model_auth_headers(self._api_key),
+                    )
+            except httpx.HTTPError as error:
+                retryable = isinstance(error, (httpx.TimeoutException, httpx.TransportError))
+                if retryable and attempts < max_attempts:
+                    time.sleep(self._retry_delay(attempts))
+                    continue
+                raise ModelServiceError(
+                    f"模型端点 {self._base_url} 不可达：{error}",
+                    diagnostics={
+                        **diagnostics,
+                        "error_category": "request_timeout"
+                        if isinstance(error, httpx.TimeoutException)
+                        else "service_error",
+                        "request_sent": None,
+                        "attempts": attempts,
+                    },
+                ) from error
+            response.extensions["diagnostics"] = {**diagnostics, "attempts": attempts}
+            if response.status_code in retry_status and attempts < max_attempts:
+                if self._is_insufficient_quota(response):
+                    return response
+                delay = self._retry_delay(attempts, self._retry_after(response))
+                log.warning(
+                    "模型返回 %s，第 %d/%d 次重试，等待 %.1fs",
+                    response.status_code,
+                    attempts,
+                    max_attempts,
+                    delay,
                 )
-                response.extensions["diagnostics"] = {
-                    "prompt_tokens_estimated": prompt_tokens,
-                    "context_window_tokens": self._context_tokens,
-                    "output_budget_tokens": budget,
-                    **exact_budget,
-                }
-                return response
-        except httpx.HTTPError as error:
-            raise ModelServiceError(
-                f"模型端点 {self._base_url} 不可达：{error}",
-                diagnostics={
-                    "error_category": "request_timeout"
-                    if isinstance(error, httpx.TimeoutException)
-                    else "service_error",
-                    "request_sent": None,
-                    "prompt_tokens_estimated": prompt_tokens,
-                    "context_window_tokens": self._context_tokens,
-                    "output_budget_tokens": budget,
-                },
-            ) from error
+                time.sleep(delay)
+                continue
+            return response
 
     def prompt_over_soft_limit(self, prompt_tokens: int) -> bool:
-        """估算值超过窗口的 ``PROMPT_COMPACTION_RATIO`` 就要求调用方先压历史。
+        """估算值超过窗口的 ``compaction_ratio`` 就要求调用方先压历史。
 
-        与「只剩不到 256 token」的硬判据分开：那条是**发出去必然失败**的底线，
+        与「只剩不到最小输出量」的硬判据分开：那条是**发出去必然失败**的底线，
         这条是**再带上下一轮工具结果就会顶到窗口**的预警，触发得更早。
         """
-        return prompt_tokens > int(self._context_tokens * PROMPT_COMPACTION_RATIO)
+        return prompt_tokens > int(self._context_tokens * self._budget.compaction_ratio)
+
+    def _estimate_prompt_tokens(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] = ()) -> int:
+        text = sum(len(message.content) for message in messages)
+        estimate = text * self._budget.tokens_per_char
+        if tools:
+            schema = len(json.dumps(list(openai_tools(tools)), ensure_ascii=False))
+            estimate += schema * self._budget.tools_tokens_per_char
+        return int(estimate)
 
     @staticmethod
     def estimate_prompt_tokens(messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] = ()) -> int:
-        """提示词 token 的粗估。
-
-        **``tools`` 必须一起算进来。** 它走的是同一个上下文窗口，而原先这一项**根本
-        没有被计入**——JIT 之后每转仍要带 900–1800 字符的工具 JSON（工具名 + ≤40 字的
-        brief + 参数 schema），那几百 token 是实打实占着窗口的。漏掉它就是漏掉一整块：
-        估算说「还装得下」，端点回
-        ``request (6591 tokens) exceeds the available context size``。
-
-        估得准不准只影响**生成长度上限与那条拒绝判据**，不影响正确性；
-        真要精确就得再打一次 tokenize 端点。
-        """
+        """提示词 token 的粗估（local 默认比例；测试保留的静态入口）。"""
         text = sum(len(message.content) for message in messages)
         estimate = text * TOKENS_PER_CHAR
         if tools:
@@ -657,10 +857,11 @@ class OpenAIChatModel:
 
         旧公式是 ``max(64, min(1501, 4400 - prompt))``——那个 64 的下限把「提示词已经
         大到写不完了」这件事盖住了：它照样发请求，然后拿到一次截断（500）或超窗（400）。
-        现在剩余量不足 ``MIN_USABLE_OUTPUT_TOKENS`` 时**不发**，由 ``_post`` 抛
+        现在剩余量不足 ``min_usable_output_tokens`` 时**不发**，由 ``_post`` 抛
         ``PromptTooLongError``，调用方压缩历史再试。见 ``ports.PromptTooLongError``。
         """
         available = (
-            self._context_tokens - self.estimate_prompt_tokens(messages, tools) - CONTEXT_SAFETY_TOKENS
+            self._context_tokens - self._estimate_prompt_tokens(messages, tools) - self._budget.safety_tokens
         )
-        return min(MAX_ANSWER_TOKENS, available)
+        cap = output_budget_override() or self._budget.max_output_tokens
+        return min(cap, available)

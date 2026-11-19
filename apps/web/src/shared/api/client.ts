@@ -18,6 +18,7 @@ export interface AssetSummary {
   parent_asset_id?: string | null;
   /** 派生关键帧在源视频里的秒数；用它把 `<video>` 定位到命中帧。 */
   source_timestamp_sec?: number | null;
+  external_source_id?: string | null;
   /**
    * 后端**目前不返回**。若将来 `/assets` 带上它，资料库就能按相册聚合；
    * 现在消费方必须按「可能为空」处理，不能把它当成一册一个值。
@@ -2067,4 +2068,23 @@ export async function listClientEvents(
     throw new ApiError(response.status, parseApiError(raw), raw);
   }
   return (await response.json()) as ClientEventPage;
+}
+
+
+export interface SpeechStatus {
+  available: boolean;
+  message: string;
+}
+
+export function getSpeechStatus(signal: AbortSignal): Promise<SpeechStatus> {
+  return request<SpeechStatus>("/assistant/speech/status", { signal });
+}
+
+export function transcribeSpeech(pcm: ArrayBuffer, sampleRate: number, signal: AbortSignal): Promise<{ text: string }> {
+  return request<{ text: string }>(`/assistant/speech/transcribe?sample_rate=${sampleRate}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: pcm,
+    signal,
+  });
 }

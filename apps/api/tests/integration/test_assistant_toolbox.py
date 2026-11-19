@@ -213,128 +213,32 @@ def run(toolbox, name: str, **arguments: object):
     return build.execute(name, arguments, scope_id=SCOPE, now=NOW)
 
 
-@pytest.mark.parametrize("origin", ["email", "note", "unknown"])
-def test_all_text_sources_expose_body_and_deliver_text(toolbox, migrations_ready_db, tmp_path, origin):
-    build, sets = toolbox
-    aid = "text-" + origin
-    path = tmp_path / (aid + ".txt")
-    path.write_text("Original text evidence body")
-    SqliteAssetRepository(migrations_ready_db).add(
-        Asset(
-            id=aid,
-            scope_id=SCOPE,
-            file_name=path.name,
-            media_type=MediaType.TEXT,
-            path=str(path),
-            mime_type="text/plain",
-            size_bytes=32,
-            content_sha256="text-preview-" + origin,
-            captured_at=None,
-            captured_location=None,
-            status=AssetStatus.PROCESSED,
-            created_at=NOW,
-            updated_at=NOW,
-        )
-    )
-    SqliteObservationRepository(migrations_ready_db).add(
-        Observation(
-            id="obs-" + aid,
-            scope_id=SCOPE,
-            asset_id=aid,
-            source_type="text",
-            source_metadata={"source_type": origin},
-            captured_at=None,
-            confidence=1,
-            created_at=NOW,
-            updated_at=NOW,
-            caption="Summary",
-            text_content=path.read_text(),
-            external_id=aid,
-        )
-    )
-    preview = build._preview(ResultSetEntry(handle="photo_1", asset_id=aid))
-    assert preview["source_kind"] == "text" and preview["media_kind"] == "text"
-    assert preview["source_type"] == origin and preview["text_content"] == path.read_text()
-    sets.add(ResultSet(id="trs_" + aid, scope_id=SCOPE, query="text", asset_ids=(aid,), created_at=NOW))
-    outcome = build.deliver("trs_" + aid, ["memory_1"], scope_id=SCOPE)
-    assert outcome.attachments == ()
-    assert outcome.observation["rejected"] == ["memory_1"]
-    assert outcome.ok
+def test_read_source_text_requires_a_text_handle_in_the_current_scope(toolbox):
+    build, result_sets = toolbox
+    result_sets.add(ResultSet("rs_source", SCOPE, "查询", ("asset_0",), NOW))
+    result_sets.add(ResultSet("rs_other", "other-scope", "查询", ("asset_0",), NOW))
 
-
-def test_text_search_uses_a_text_only_result_set_and_email_source_filter(
-    toolbox, migrations_ready_db, tmp_path
-):
-    build, _sets = toolbox
-    assets = SqliteAssetRepository(migrations_ready_db)
-    observations = SqliteObservationRepository(migrations_ready_db)
-    index = SqliteLexicalIndex(
-        migrations_ready_db,
-        observations,
-        assets=assets,
-        places=SqliteAssetPlaceRepository(migrations_ready_db),
+    assert (
+        run(toolbox, "read_source_text", result_set_id="rs_source", asset_handle="photo_1").failure_reason
+        == "unsupported_media_type"
     )
-    text_path = tmp_path / "booking.txt"
-    text_path.write_text("BMVC 2024 hotel booking total was GBP 1750 pounds.")
-    email = Asset(
-        id="email-booking",
-        scope_id=SCOPE,
-        file_name="booking.txt",
-        media_type=MediaType.TEXT,
-        path=str(text_path),
-        mime_type="text/plain",
-        size_bytes=text_path.stat().st_size,
-        content_sha256="email-booking-sha",
-        captured_at=None,
-        captured_location=None,
-        status=AssetStatus.PROCESSED,
-        created_at=NOW,
-        updated_at=NOW,
+    assert (
+        run(toolbox, "read_source_text", result_set_id="rs_source", asset_handle="photo_2").failure_reason
+        == "bad_handle"
     )
-    assets.add(email)
-    observation = Observation(
-        id="obs-email-booking",
-        scope_id=SCOPE,
-        asset_id=email.id,
-        source_type="text",
-        source_metadata={"source_type": "email"},
-        captured_at=None,
-        confidence=1,
-        created_at=NOW,
-        updated_at=NOW,
-        caption="BMVC 2024 hotel booking",
-        text_content=text_path.read_text(),
-        external_id="email-001",
+    assert (
+        run(toolbox, "read_source_text", result_set_id="rs_other", asset_handle="photo_1").failure_reason
+        == "scope_mismatch"
     )
-    observations.add(observation)
-    index.refresh_from_observation(observation)
-
-    outcome = build.execute(
-        "search_text_memories",
-        {"query": "BMVC hotel booking", "source_type": "email"},
-        scope_id=SCOPE,
-        now=NOW,
+    assert (
+        build.execute(
+            "read_source_text",
+            {"result_set_id": "rs_other", "asset_handle": "photo_1"},
+            scope_id="other-scope",
+            now=NOW,
+        ).failure_reason
+        == "asset_unavailable"
     )
-
-    assert outcome.ok
-    assert outcome.observation["result_set_id"].startswith("trs_")
-    assert outcome.observation["retrieval_channels"]
-    assert {row["channel"] for row in outcome.observation["retrieval_channels"]} <= {
-        "lexical",
-        "text_ann",
-        "graph",
-    }
-    preview = outcome.model_visible["preview"]
-    assert preview and preview[0]["handle"] == "memory_1"
-    assert preview[0]["source_type"] == "email"
-    assert preview[0]["evidence_id"] == "email-001"
-    assert "GBP 1750" in preview[0]["text_content"]
-
-    media_outcome = build.execute(
-        "search_memories", {"query": "BMVC hotel booking"}, scope_id=SCOPE, now=NOW
-    )
-    assert all(row["media_kind"] in {"image", "video"} for row in media_outcome.model_visible["preview"])
-    assert all(row.get("evidence_id") != "email-001" for row in media_outcome.model_visible["preview"])
 
 
 def _seed_plain_assets(db, tmp_path, count: int) -> list[str]:

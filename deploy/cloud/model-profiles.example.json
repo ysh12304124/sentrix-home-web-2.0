@@ -1,0 +1,95 @@
+{
+  "profile": "cloud",
+  "roles": {
+    "chat": {
+      "provider": "openai_compatible",
+      "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "model": "doubao-seed-2.1-pro",
+      "api_key_env": "SENTRIX_CLOUD_API_KEY",
+      "context_tokens": 262144,
+      "max_output_tokens": 16384,
+      "timeout_s": 300,
+      "payload": {
+        "max_tokens_field": "max_tokens",
+        "supports_tools": true,
+        "supports_json_schema": true,
+        "supports_json_object": true,
+        "temperature": 0.2,
+        "allow_id_slot": false,
+        "allow_chat_template_kwargs": false
+      },
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_s": 1,
+        "max_delay_s": 8,
+        "jitter_s": 0.5
+      }
+    },
+    "vision": {
+      "provider": "openai_compatible",
+      "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "model": "doubao-seed-2.1-pro",
+      "api_key_env": "SENTRIX_CLOUD_API_KEY",
+      "context_tokens": 262144,
+      "max_output_tokens": 4096,
+      "timeout_s": 300,
+      "supports_vision": true,
+      "payload": {
+        "max_tokens_field": "max_tokens",
+        "supports_tools": true,
+        "supports_json_schema": true,
+        "supports_json_object": true,
+        "temperature": 0.0,
+        "allow_id_slot": false,
+        "allow_chat_template_kwargs": false
+      },
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_s": 1,
+        "max_delay_s": 8,
+        "jitter_s": 0.5
+      }
+    }
+  },
+  "agent": {
+    "history_candidate_messages": 200,
+    "history_char_budget": 48000,
+    "judge_transcript_messages": 32,
+    "judge_message_chars": 2000,
+    "claim_max_facts": 32,
+    "claim_value_limit": 50,
+    "preview_summary_chars": 2000,
+    "preview_ocr_chars": 4000,
+    "preview_list_items": 64,
+    "speech_segments": 64,
+    "speech_chars": 4000,
+    "read_text_chars": 20000,
+    "read_text_lines": 64,
+    "read_text_line_chars": 1000,
+    "max_steps": null,
+    "max_tool_calls": null,
+    "max_search_calls": null,
+    "max_page_calls": null,
+    "max_inspections": null,
+    "wall_time_s": 3600,
+    "turn_workers": 4,
+    "compaction_mode": "drop_only",
+    "compaction_preview_rewrite": false,
+    "compaction_protect_latest_preview": true,
+    "compaction_max_preview_level": 0
+  },
+  "vision": {
+    "image_max_side": 2048
+  },
+  "memory": {
+    "family_people_limit": 64,
+    "family_observations_per_person": 24,
+    "family_descriptions_per_person": 8,
+    "family_description_chars": 2000,
+    "family_cooccurrences_limit": 200,
+    "family_evidence_descriptions": 64,
+    "family_evidence_cooccurrences": 32,
+    "causal_batch_size": 64,
+    "causal_max_tokens": 4096
+  }
+}

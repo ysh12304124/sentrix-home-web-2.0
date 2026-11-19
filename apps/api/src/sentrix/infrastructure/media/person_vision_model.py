@@ -50,7 +50,8 @@ from typing import Any
 
 from sentrix.domain.identity.moments import PERSON_MOMENT_PROMPT, normalize_person_moments
 from sentrix.domain.identity.portrait import PERSON_PORTRAIT_PROMPT, normalize_writer_output
-from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
+from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
 from sentrix.infrastructure.media.vlm_observer import IMAGE_MAX_SIDE, _encode_image, chat_json
 
 # 1.0 ``model_clients.py:1350`` 的 ``normalize_confidence(..., 0.55)`` 里的那个默认值。
@@ -110,10 +111,30 @@ def _confidence(value: object) -> float:
 class OpenAIPersonVision:
     """实现 ``PersonVision`` 端口。模型进程的生命周期不归 2.0 管。"""
 
-    def __init__(self, base_url: str, model: ServedModel, *, timeout_s: float = 180.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: ServedModel | FixedModelName,
+        *,
+        timeout_s: float = 180.0,
+        api_key: str = "",
+        max_side: int | None = IMAGE_MAX_SIDE,
+        max_tokens: int = MAX_ANSWER_TOKENS,
+        json_mode: bool = False,
+        allow_id_slot: bool = True,
+        generation_parameters: Mapping[str, Any] | None = None,
+    ) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
         self._model = model
         self._timeout = timeout_s
+        self._api_key = api_key
+        self._max_side = max_side
+        self._max_tokens = max_tokens
+        self._json_mode = json_mode
+        self._allow_id_slot = allow_id_slot
+        self._generation_parameters = (
+            dict(generation_parameters) if generation_parameters is not None else None
+        )
 
     @property
     def model_id(self) -> str:
@@ -136,7 +157,7 @@ class OpenAIPersonVision:
         ``labels`` 是这张预览图上真实画出的 P 编号。``normalize_person_moments`` 只认这个
         集合里的标签，模型认领一个不存在的编号时整条被丢掉——那一步在 domain 里，不在这里。
         """
-        image = _encode_image(Path(path), max_side=IMAGE_MAX_SIDE)
+        image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
             return None
         prompt = PERSON_MOMENT_PROMPT
@@ -156,7 +177,7 @@ class OpenAIPersonVision:
         （不描述背景与他人、不猜姓名性别关系）与那个裁剪框是一对：框放宽一点，背景里
         别人的衣服就会被算到这个头上。
         """
-        image = _encode_image(Path(path), max_side=IMAGE_MAX_SIDE)
+        image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
             return None
         prompt = _APPEARANCE_PROMPT + json.dumps(dict(metadata or {}), ensure_ascii=False)
@@ -174,4 +195,15 @@ class OpenAIPersonVision:
         }
 
     def _chat(self, prompt: str, image: str | None) -> dict[str, Any] | None:
-        return chat_json(self._endpoint, self._model, prompt, image, self._timeout)
+        return chat_json(
+            self._endpoint,
+            self._model,
+            prompt,
+            image,
+            self._timeout,
+            api_key=self._api_key,
+            max_tokens=self._max_tokens,
+            json_mode=self._json_mode,
+            allow_id_slot=self._allow_id_slot,
+            generation_parameters=self._generation_parameters,
+        )

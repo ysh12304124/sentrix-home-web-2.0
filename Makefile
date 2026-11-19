@@ -136,7 +136,7 @@ photobench-web-check: ## PhotoBench 前端门禁：同 web-check 四步
 # 本地两个服务必须使用一致的部署预设；只影响开发入口，显式环境/命令行值优先。
 dev photobench-dev: export SENTRIX_DEPLOYMENT_PROFILE ?= $(if $(filter Darwin,$(shell uname -s)),mac,server)
 
-dev: ## 起 2.0 API（8191）
+dev: ## 起 2.0 API（8191），连接共享语音服务
 	$(PY) -m uvicorn --factory sentrix.main:create_app --host 0.0.0.0 --port 8191 --app-dir apps/api/src
 
 # PhotoBench 的入口也是工厂（`photobench.main` 没有模块级 app：那会让任何 import 带上

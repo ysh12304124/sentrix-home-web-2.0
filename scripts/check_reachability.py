@@ -36,7 +36,14 @@ DEFAULT_SRC = REPO_ROOT / "apps" / "api" / "src"
 # 为空，于是每个 photobench 模块都「没有调用者」，PENDING_WIRING 那张表会因为
 # 「根找不到」而永远合法——那正是 S9a 施工记录第 10 条点名要守的不变量。
 # 对 sentrix 那一轮没有影响：它的 by_module 里没有 photobench.main，frontier 直接跳过。
-ROOTS = ("sentrix.main", "sentrix.bootstrap", "sentrix.control.main", "photobench.main")
+# The host ASR service is launched by scripts.maintenance.sensevoice_sidecar.
+ROOTS = (
+    "sentrix.main",
+    "sentrix.bootstrap",
+    "sentrix.bootstrap.speech_service",
+    "sentrix.control.main",
+    "photobench.main",
+)
 
 # 模块 -> 会把它接上生产的任务。**每个条目都必须写明任务，否则它就是一个说不出
 # 理由的例外**——而说不出理由的例外名单会把这条不变量重新变成摆设。

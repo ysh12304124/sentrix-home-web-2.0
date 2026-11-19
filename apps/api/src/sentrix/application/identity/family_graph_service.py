@@ -150,9 +150,23 @@ class FamilyGraphService:
         events: EventRepository,
         entities: EntityRepository | None = None,
         model: ChatModel | None = None,
+        people_limit: int | None = MODEL_PEOPLE_LIMIT,
+        observations_per_person: int | None = MODEL_OBSERVATIONS_PER_PERSON,
+        descriptions_per_person: int | None = MODEL_DESCRIPTIONS_PER_PERSON,
+        description_chars: int | None = MODEL_DESCRIPTION_CHARS,
+        cooccurrences_limit: int | None = MODEL_COOCCURRENCES_LIMIT,
+        evidence_descriptions_per_person: int | None = EVIDENCE_DESCRIPTIONS_PER_PERSON,
+        evidence_cooccurrence_observations: int | None = EVIDENCE_COOCCURRENCE_OBSERVATIONS,
     ) -> None:
         self._family = family
         self._events = events
+        self._people_limit = people_limit
+        self._observations_per_person = observations_per_person
+        self._descriptions_per_person = descriptions_per_person
+        self._description_chars = description_chars
+        self._cooccurrences_limit = cooccurrences_limit
+        self._evidence_descriptions_per_person = evidence_descriptions_per_person
+        self._evidence_cooccurrence_observations = evidence_cooccurrence_observations
         # **角色播种**：已确认人物的 `family_role` 是身份确认时写入的 ground truth
         # （「父亲」「母亲」「妻子」…），不是模型猜的。模型那条推断被证据闸挡住了
         # ——VLM 描述里只会写「一名男子」，不会写「父亲」——于是关系图谱一条边都没有。
@@ -239,7 +253,7 @@ class FamilyGraphService:
                 # 1.0 ``:214``：去重之后**截到 20 条**。模型只看前 2 条，
                 # 但两道证据闸看的是这 20 条。
                 descriptions=tuple(
-                    list(dict.fromkeys(descriptions[person_id]))[:EVIDENCE_DESCRIPTIONS_PER_PERSON]
+                    list(dict.fromkeys(descriptions[person_id]))[: self._evidence_descriptions_per_person]
                 ),
                 confidence=confidence[person_id],
             )
@@ -259,7 +273,7 @@ class FamilyGraphService:
                 person_a=left,
                 person_b=right,
                 count=len(seen),
-                observation_ids=tuple(seen[:EVIDENCE_COOCCURRENCE_OBSERVATIONS]),
+                observation_ids=tuple(seen[: self._evidence_cooccurrence_observations]),
             )
             for (left, right), seen in pairs.items()
         ]
@@ -346,7 +360,7 @@ class FamilyGraphService:
         model_people = sorted(
             evidence.people,
             key=lambda item: (-len(item.observation_ids), item.person_id),
-        )[:MODEL_PEOPLE_LIMIT]
+        )[: self._people_limit]
         core_ids = {item.person_id for item in model_people}
         model_evidence = {
             "scope_id": evidence.scope_id,
@@ -354,10 +368,10 @@ class FamilyGraphService:
             "people": [
                 {
                     "person_id": item.person_id,
-                    "observation_ids": list(item.observation_ids[:MODEL_OBSERVATIONS_PER_PERSON]),
+                    "observation_ids": list(item.observation_ids[: self._observations_per_person]),
                     "descriptions": [
-                        str(text)[:MODEL_DESCRIPTION_CHARS]
-                        for text in item.descriptions[:MODEL_DESCRIPTIONS_PER_PERSON]
+                        str(text)[: self._description_chars]
+                        for text in item.descriptions[: self._descriptions_per_person]
                     ],
                 }
                 for item in model_people
@@ -371,7 +385,7 @@ class FamilyGraphService:
                 }
                 for item in evidence.cooccurrences
                 if item.person_a in core_ids and item.person_b in core_ids
-            ][:MODEL_COOCCURRENCES_LIMIT],
+            ][: self._cooccurrences_limit],
         }
         reply = self._model.complete(
             (

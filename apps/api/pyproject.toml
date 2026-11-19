@@ -11,6 +11,7 @@ dependencies = [
     "pillow>=11,<12",
     "pillow-heif>=0.18,<1",
     "numpy>=1.26,<3",
+    "sherpa-onnx==1.12.40",
     # 视觉记忆是**进程内**推理（设计 §2.2：模型适配属于 apps/api，进程生命周期
     # 不归 2.0 管的是 8100/8101 那些服务）。chinese-clip 的权重是
     # ~/.cache/clip/clip_cn_vit-l-14.pt，约 1.6GB，随 cn-clip 之外单独下载。

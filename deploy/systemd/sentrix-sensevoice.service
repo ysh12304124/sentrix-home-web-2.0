@@ -1,0 +1,21 @@
+[Unit]
+Description=Sentrix host-wide SenseVoice-Small ASR (8107)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentrix-models
+Group=sentrix-models
+WorkingDirectory=/opt/sentrix/current
+Environment=SENTRIX_DATA_DIR=/srv/sentrix/shared
+ExecStart=/opt/sentrix/current/scripts/deploy/start_sensevoice.sh --port 8107
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

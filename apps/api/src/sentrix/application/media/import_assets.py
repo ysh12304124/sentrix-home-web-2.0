@@ -89,9 +89,10 @@ from pathlib import Path
 
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
 from sentrix.application.media.stage_timing import stage_span
+from sentrix.domain.errors import DomainError
 from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
 from sentrix.domain.media.capture_time import CaptureTime
-from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
+from sentrix.domain.media.models import TEXT_IMPORT_SOURCE, Asset, AssetStatus, MediaType, Observation
 from sentrix.domain.media.ports import (
     AssetObserver,
     AssetRepository,
@@ -117,6 +118,16 @@ from sentrix.runtime.work import import_task
 log = logging.getLogger("sentrix.media.import_assets")
 
 
+class InvalidTextSource(DomainError):
+    code = "invalid_text_source"
+    status_code = 400
+
+
+class TextSourceConflict(DomainError):
+    code = "text_source_conflict"
+    status_code = 409
+
+
 @dataclass(frozen=True, slots=True)
 class ImportRequest:
     scope_id: str
@@ -134,6 +145,9 @@ class ImportRequest:
     # 接收阶段已确定的稳定 ID 与哈希；缺失时才在 stage() 里计算。
     asset_id: str | None = None
     content_sha256: str | None = None
+    # 可选资料来源身份与原始 ISO 8601 时间。普通媒体仍按内容哈希去重。
+    external_source_id: str | None = None
+    source_timestamp: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +229,7 @@ class StagedImport:
     video_probe: VideoProbe | None = None
     audio_probe: AudioProbe | None = None
     video_started: datetime | None = None
+    deduplicated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,7 +361,10 @@ class ImportAssets:
         这一步留在主线程的理由与提交一样：它写库，而且「先到先落库」决定了
         ``find_by_hash`` 的去重结果。
         """
-        # 空间行排在最前：簇列表内连它，没有它这次导入在审阅页上等于没发生。
+        media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
+        source_time = self._text_source_time(request, media_type)
+
+        # 空间行在落盘之前：簇列表内连它，没有它这次导入在审阅页上等于没发生。
         # 放在去重判断**之前**——去重命中同样是一条「这个 scope 被用到了」的证据。
         self._ensure_space(request.scope_id)
         media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
@@ -361,23 +379,17 @@ class ImportAssets:
             if request.source_path is not None
             else hashlib.sha256(request.content).hexdigest()
         )
-        media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
-
-        existing = self._assets.find_by_hash(request.scope_id, content_sha256)
-        if existing is not None:
-            # 上传件已在接收阶段落盘；去重命中后不再需要那份原件。
-            if request.source_move and request.source_path is not None:
-                request.source_path.unlink(missing_ok=True)
-            return ImportResult(
-                asset_id=existing.id,
-                observation_id=None,
-                media_type=existing.media_type,
-                status=existing.status,
-                deduplicated=True,
-                # 资产导入阶段不应偷偷执行向量/地点流水线。旧入口仍保留原有的幂等补建。
-                indexed=False if request.defer_processing else self._reindex_visual(existing),
-                placed=False if request.defer_processing else self._index_place(existing),
-            )
+        if request.external_source_id is None:
+            existing = self._assets.find_by_hash(request.scope_id, content_sha256)
+            if existing is not None:
+                # 上传件已在接收阶段落盘；去重命中后不再需要那份副本。
+                if (
+                    request.source_move
+                    and request.source_path is not None
+                    and request.source_path != Path(existing.path)
+                ):
+                    request.source_path.unlink(missing_ok=True)
+                return self._deduplicate(existing, request, content_sha256)
 
         asset_id = request.asset_id or _new_id("asset")
         if request.source_path is None:
@@ -387,7 +399,7 @@ class ImportAssets:
         else:
             stored_path = self._storage.copy_from_path(asset_id, request.file_name, request.source_path)
 
-        captured_at, gps, device = (None, None, None)
+        captured_at, gps, device = (source_time, None, None)
         if media_type is MediaType.IMAGE:
             captured_at, gps, device = self._metadata.read(stored_path)
 
@@ -440,18 +452,20 @@ class ImportAssets:
         )
 
         source = "exif" if media_type is MediaType.IMAGE else "unknown"
+        if source_time is not None:
+            source = "text_source"
         if video_probe is not None and video_probe.metadata is not None:
             source = video_probe.metadata.creation_source or "video_metadata"
         if audio_probe is not None and audio_probe.metadata is not None:
             source = audio_probe.metadata.creation_source or "audio_metadata"
         provenance = CaptureTime(
-            captured_at.isoformat() if captured_at else "",
+            request.source_timestamp or (captured_at.isoformat() if captured_at else ""),
             source if captured_at else "unknown",
             status=("offset_only" if captured_at.utcoffset() is not None else "timezone_unknown")
             if captured_at
             else "unknown",
         )
-        if self._resolve_capture_time is not None:
+        if self._resolve_capture_time is not None and source_time is None:
             captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
         now = self._clock()
         # 拍摄时间读不出来就保持 None，不能拿导入时刻冒充。main 的
@@ -471,8 +485,20 @@ class ImportAssets:
             captured_location=gps,
             created_at=now,
             updated_at=now,
+            external_source_id=request.external_source_id,
         )
-        self._assets.add(asset)
+        if media_type is MediaType.TEXT:
+            try:
+                registered, created = self._assets.get_or_add_text_source(asset)
+            except Exception:
+                self._storage.delete_assets((), (asset.path,))
+                raise
+            if not created:
+                if registered.path != asset.path:
+                    self._storage.delete_assets((), (asset.path,))
+                return self._deduplicate(registered, request, content_sha256)
+        else:
+            self._assets.add(asset)
 
         # 探测结果落库**必须在资产行之后**：它写的是 ``assets.metadata_json``。
         if video_probe is not None and self._video_repository is not None:
@@ -486,6 +512,45 @@ class ImportAssets:
             video_probe=video_probe,
             audio_probe=audio_probe,
             video_started=video_started,
+        )
+
+    @staticmethod
+    def _text_source_time(request: ImportRequest, media_type: MediaType) -> datetime | None:
+        source_id, timestamp = request.external_source_id, request.source_timestamp
+        if media_type is not MediaType.TEXT and (source_id is not None or timestamp is not None):
+            raise InvalidTextSource("来源身份和时间仅用于文本资料")
+        if source_id is not None and (not source_id.strip() or len(source_id) > 200 or "\x00" in source_id):
+            raise InvalidTextSource("external_source_id 必须是 1–200 个字符的非空来源 ID")
+        if timestamp is None:
+            return None
+        try:
+            if len(timestamp) <= 10:
+                raise ValueError
+            return datetime.fromisoformat(timestamp)
+        except ValueError as error:
+            raise InvalidTextSource("source_timestamp 必须是 ISO 8601 日期时间") from error
+
+    def _deduplicate(
+        self, asset: Asset, request: ImportRequest, content_sha256: str
+    ) -> StagedImport | ImportResult:
+        if request.external_source_id is not None and asset.content_sha256 != content_sha256:
+            raise TextSourceConflict("同一范围内的 external_source_id 已对应不同的正文")
+        if (
+            request.external_source_id is not None or request.source_timestamp is not None
+        ) and asset.capture_time.raw != (request.source_timestamp or ""):
+            raise TextSourceConflict("重复导入的文本资料与已有来源时间不一致")
+        if asset.media_type is MediaType.TEXT and not request.defer_processing:
+            # 原件登记后若曾中断，重放用同一资产和观察补齐索引。
+            return StagedImport(asset=asset, media_type=asset.media_type, deduplicated=True)
+        return ImportResult(
+            asset_id=asset.id,
+            observation_id=None,
+            media_type=asset.media_type,
+            status=asset.status,
+            deduplicated=True,
+            # 资产导入阶段不应偷偷执行向量/地点流水线。旧入口仍保留原有的幂等补建。
+            indexed=False if request.defer_processing else self._reindex_visual(asset),
+            placed=False if request.defer_processing else self._index_place(asset),
         )
 
     @import_task
@@ -534,7 +599,7 @@ class ImportAssets:
             observation_id=processed.observation_id,
             media_type=staged.media_type,
             status=asset.status,
-            deduplicated=False,
+            deduplicated=staged.deduplicated,
             indexed=processed.indexed,
             placed=processed.placed,
             event_id=processed.event_id,
@@ -620,6 +685,9 @@ class ImportAssets:
         （``IndexAssetVisual`` / ``ObserveAsset`` / ``EnrollFaces``），这里只把没接线
         的协作者留成 ``None``——「协作者没接」与「算出来是空」必须分得开。
         """
+        if asset.media_type is MediaType.TEXT:
+            semantics = self._observer.prepare(asset) if self._observer is not None else None
+            return PreparedImage(semantics=semantics)
         started = time.perf_counter()
         prepared = PreparedImage(
             visual=self._visual_indexer.prepare(asset) if self._visual_indexer is not None else None,
@@ -645,44 +713,15 @@ class ImportAssets:
         的全部活动事件与它们的向量 / 提及，其中包含同批前几张照片刚写进去的那些；
         打乱顺序会改变「折进哪个事件」的结果，而它**不报错**。
         """
-        now = self._clock()
+        if asset.media_type is MediaType.TEXT:
+            return self._commit_text(asset, prepared)
+
         placed = self._index_place(asset)
         indexed = self._index_visual(asset, prepared)
-
-        # **重放必须复用观察 ID。** 观察一旦插入，后段任一步失败重跑时若再生成
-        # ``obs_*``，文本向量、词项、实体关联都会跟着多一套；事件归属也会再建一个。
-        reused = sorted(
-            self._observations.list_by_asset(asset.id),
-            key=lambda item: (item.created_at, item.id),
-        )
-        if reused:
-            observation = reused[0]
-        else:
-            observation = Observation(
-                id=_new_id("obs"),
-                scope_id=asset.scope_id,
-                asset_id=asset.id,
-                source_type="import",
-                captured_at=asset.captured_at,
-                confidence=0.0,
-                created_at=now,
-                updated_at=now,
-            )
-            self._observations.add(observation)
-
+        observation = self._import_observation(asset)
         observation = self._observe(asset, observation, prepared) or observation
         faces = self._enroll_faces(asset, observation, prepared)
-        # Source videos/audio have no visual observation of their own. Their
-        # keyframes/scene events carry semantics; an empty source is not an event.
-        event_id = (
-            self._assign_event(observation, forced_event_id)
-            if (
-                asset.media_type is MediaType.IMAGE
-                or observation.has_semantics
-                or forced_event_id is not None
-            )
-            else None
-        )
+        event_id = self._assign_event(observation, forced_event_id)
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
         # 写在前面则 event_id 恒为空，而那条 metadata 只在召回时用得到——
@@ -701,6 +740,45 @@ class ImportAssets:
             entity_ids=entity_ids,
             fact_ids=fact_ids,
             faces=faces,
+            text_rows=text_rows,
+        )
+
+    def _import_observation(self, asset: Asset, *, source_text: str = "") -> Observation:
+        # 重放复用最早的观察，避免重复创建向量、词项和事件归属。
+        observations = self._observations.list_by_asset(asset.id)
+        if observations:
+            return min(observations, key=lambda item: (item.created_at, item.id))
+        now = self._clock()
+        is_text = asset.media_type is MediaType.TEXT
+        observation = Observation(
+            id=f"obs_text_{asset.id}" if is_text else _new_id("obs"),
+            scope_id=asset.scope_id,
+            asset_id=asset.id,
+            source_type=TEXT_IMPORT_SOURCE if is_text else "import",
+            captured_at=asset.captured_at,
+            confidence=1.0 if source_text else 0.0,
+            created_at=now,
+            updated_at=now,
+            source_text=source_text,
+        )
+        self._observations.add(observation)
+        return observation
+
+    def _commit_text(self, asset: Asset, prepared: PreparedImage) -> ProcessedAsset:
+        source_text = prepared.semantics.source_text if prepared.semantics is not None else ""
+        observation = self._import_observation(asset, source_text=source_text)
+        if source_text and not observation.source_text:
+            # 上游曾接收过文本文件但没有索引正文，重传时补上原文。
+            observation = self._observe(asset, observation, prepared) or observation
+        if not observation.source_text:
+            return ProcessedAsset(observation_id=observation.id)
+
+        lexical_terms = self._project_lexical(observation)
+        text_rows = self._index_text(observation, None)
+        return ProcessedAsset(
+            observation_id=observation.id,
+            indexed=bool(lexical_terms or text_rows),
+            lexical_terms=lexical_terms,
             text_rows=text_rows,
         )
 

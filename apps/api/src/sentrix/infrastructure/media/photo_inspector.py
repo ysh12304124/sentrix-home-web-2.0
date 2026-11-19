@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Any
 
 from sentrix.domain.media.inspection import build_inspect_prompt
-from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
+from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
 from sentrix.infrastructure.media.vlm_observer import IMAGE_MAX_SIDE, _encode_image, chat_json
 
 _INSPECTION_FACTS: ContextVar[list[dict[str, Any]] | None] = ContextVar("inspection_facts", default=None)
@@ -44,10 +45,30 @@ _INSPECTION_FACTS: ContextVar[list[dict[str, Any]] | None] = ContextVar("inspect
 class OpenAIPhotoInspector:
     """实现 ``PhotoInspector`` 端口。模型进程的生命周期不归 2.0 管。"""
 
-    def __init__(self, base_url: str, model: ServedModel, *, timeout_s: float = 180.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: ServedModel | FixedModelName,
+        *,
+        timeout_s: float = 180.0,
+        api_key: str = "",
+        max_side: int | None = IMAGE_MAX_SIDE,
+        max_tokens: int = MAX_ANSWER_TOKENS,
+        json_mode: bool = False,
+        allow_id_slot: bool = True,
+        generation_parameters: Mapping[str, Any] | None = None,
+    ) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
         self._model = model
         self._timeout = timeout_s
+        self._api_key = api_key
+        self._max_side = max_side
+        self._max_tokens = max_tokens
+        self._json_mode = json_mode
+        self._allow_id_slot = allow_id_slot
+        self._generation_parameters = (
+            dict(generation_parameters) if generation_parameters is not None else None
+        )
 
     @property
     def model_id(self) -> str:
@@ -63,13 +84,13 @@ class OpenAIPhotoInspector:
         target_person: str = "",
         crop: str | Path | None = None,
     ) -> dict[str, object] | None:
-        image = _encode_image(Path(path), max_side=IMAGE_MAX_SIDE)
+        image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
             return None
 
         images = [image]
         if crop is not None:
-            located = _encode_image(Path(crop), max_side=IMAGE_MAX_SIDE)
+            located = _encode_image(Path(crop), max_side=self._max_side)
             if located is not None:
                 images.insert(0, located)
 
@@ -99,5 +120,15 @@ class OpenAIPhotoInspector:
         而不必起 HTTP 服务。
         """
         return chat_json(
-            self._endpoint, self._model, prompt, images, self._timeout, observations=_INSPECTION_FACTS.get()
+            self._endpoint,
+            self._model,
+            prompt,
+            images,
+            self._timeout,
+            observations=_INSPECTION_FACTS.get(),
+            api_key=self._api_key,
+            max_tokens=self._max_tokens,
+            json_mode=self._json_mode,
+            allow_id_slot=self._allow_id_slot,
+            generation_parameters=self._generation_parameters,
         )

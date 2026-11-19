@@ -14,6 +14,8 @@ import { Lightbox } from "../../shared/ui/Lightbox";
 import { ResultSetWall } from "./ResultSetWall";
 import { TurnTimeline, isTerminalStatus } from "./TurnTimeline";
 import { useTurnStream } from "./useTurnStream";
+import { useSpeechInput } from "./speech/useSpeechInput";
+import "./speech/speechInput.css";
 
 interface Exchange {
   key: string;
@@ -291,7 +293,7 @@ export function AssistantPanel({
         },
         ...previous,
       ]);
-      void ask(conversationId, question);
+      return ask(conversationId, question);
     },
     [ask, conversationId],
   );
@@ -360,14 +362,44 @@ export function AssistantPanel({
     );
   }, []);
 
+  const submitting = useRef(false);
+  const draftVersion = useRef(0);
+  const contextRef = useRef(conversationId);
+  useEffect(() => { contextRef.current = conversationId; draftVersion.current++; }, [conversationId, scopeId]);
+
+  async function submitQuestion(question: string): Promise<string> {
+    if (!question.trim() || conversationId === null || busy || historyLoading || submitting.current) {
+      return "当前暂不能发送，已保留文字，请稍后发送。";
+    }
+    submitting.current = true;
+    const context = conversationId;
+    const version = draftVersion.current;
+    try {
+      const accepted = await runQuestion(question.trim());
+      if (contextRef.current !== context || draftVersion.current !== version) return "";
+      if (accepted) {
+        setText("");
+        return "已发送，正在等待回答。";
+      }
+      return "发送失败或状态未确认，已保留文字，请检查会话后再试。";
+    } finally { submitting.current = false; }
+  }
+
+  const speech = useSpeechInput({
+    contextKey: JSON.stringify([scopeId, conversationId]),
+    enabled: conversationId !== null && !historyLoading && !busy,
+    onTranscript: async (recognized, autoSend) => {
+      const question = text.trim() ? `${text.trimEnd()} ${recognized}` : recognized;
+      setText(question);
+      if (!autoSend) return "已达到录音时限，请确认文字后发送。";
+      return submitQuestion(question);
+    },
+  });
+
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const question = text.trim();
-    if (question === "" || conversationId === null || busy) {
-      return;
-    }
-    setText("");
-    runQuestion(question);
+    if (speech.active) return;
+    await submitQuestion(text);
   }
 
   // 最新一轮在最上面；“下一页”只挂在它上面，不能挂到列表末尾的旧问题上。
@@ -379,14 +411,32 @@ export function AssistantPanel({
       <form className="assistant-ask" onSubmit={submit}>
         <input
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => { draftVersion.current++; setText(event.target.value); }}
           placeholder="例如：给我看看在海边的照片"
           aria-label="向助手提问"
-          disabled={conversationId === null || historyLoading}
+          disabled={conversationId === null || historyLoading || speech.active}
         />
         <button
+          type="button"
+          className="assistant-voice-button"
+          aria-label={speech.phase === "recording" ? "停止并识别" : "语音输入"}
+          aria-pressed={speech.phase === "recording"}
+          aria-describedby="assistant-speech-status"
+          title={speech.unavailable ?? "将录音发送到本机后端识别，不使用云端 ASR"}
+          disabled={busy || historyLoading || conversationId === null || speech.unavailable !== null
+            || (speech.active && speech.phase !== "recording")}
+          onClick={() => void (speech.phase === "recording" ? speech.stop() : speech.start())}
+        >
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+          </svg>
+          {speech.phase === "recording" ? "停止并识别" : speech.phase === "transcribing" ? "识别中…" : speech.active ? "准备中…" : "语音输入"}
+        </button>
+        {speech.active ? <button type="button" onClick={speech.cancel}>取消语音</button> : null}
+        <button
           type="submit"
-          disabled={busy || historyLoading || conversationId === null || text.trim() === ""}
+          disabled={busy || historyLoading || conversationId === null || text.trim() === "" || speech.active}
         >
           {busy ? "处理中…" : "发送"}
         </button>
@@ -396,6 +446,10 @@ export function AssistantPanel({
           </button>
         ) : null}
       </form>
+      <p id="assistant-speech-status" className="assistant-speech-status" role="status" aria-live="polite">
+        {speech.unavailable ?? (speech.message || "录音发送至本机后端识别，点击“停止并识别”后自动发送。")}
+      </p>
+      {speech.error ? <p className="error" role="alert">{speech.error}</p> : null}
 
       {error !== null ? <p className="error">{error}</p> : null}
       {historyError !== null ? (

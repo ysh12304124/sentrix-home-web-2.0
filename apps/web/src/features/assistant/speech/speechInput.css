@@ -1,0 +1,16 @@
+.assistant .assistant-ask { flex-wrap: wrap; }
+.app-shell .assistant .assistant-ask input { min-width: 0; flex: 1 1 220px; }
+.assistant .assistant-voice-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.assistant .assistant-voice-button[aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
+.assistant .assistant-ask button:disabled { opacity: 0.5; cursor: not-allowed; }
+.assistant .assistant-speech-status { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+@media (max-width: 600px) {
+  .app-shell .assistant .assistant-ask input { flex-basis: 100%; width: 100%; }
+  .app-shell .assistant .assistant-ask button { flex: 1 1 auto; padding-inline: 10px; }
+}

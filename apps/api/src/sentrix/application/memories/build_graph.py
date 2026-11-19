@@ -81,6 +81,7 @@ class BuildMemoryGraph:
         causal_judge: CausalJudge | None = None,
         vectors: VectorRepository | None = None,
         family: FamilyGraphRepository | None = None,
+        causal_batch_size: int | None = 12,
     ) -> None:
         self._assets = assets
         self._observations = observations
@@ -93,6 +94,7 @@ class BuildMemoryGraph:
         self._causal_judge = causal_judge
         self._vectors = vectors
         self._family = family
+        self._causal_batch_size = causal_batch_size
 
     def execute(self, scope_id: str) -> GraphBuildStats:
         scope = str(scope_id or "").strip()
@@ -535,14 +537,20 @@ class BuildMemoryGraph:
         causal_edges = 0
         if pairs and self._causal_judge is not None:
             causal_status = "ok"
-            for offset in range(0, len(pairs), 12):
-                batch = pairs[offset : offset + 12]
+            batch_size = self._causal_batch_size or len(pairs) or 1
+            for offset in range(0, len(pairs), batch_size):
+                batch = pairs[offset : offset + batch_size]
                 try:
                     verdicts = self._causal_judge.judge(signals_prompt(batch), expected_count=len(batch))
                 except CausalParseError as error:
                     # hpq 对截断/不完整批次按更小的批次重试；只对解析错误做一次
                     # 单对重试。端点故障不重试，避免 Mac 16 GB 上把超时放大 12 倍。
-                    log.warning("因果批次响应不完整 scope=%s batch=%d: %s", scope, offset // 12, error)
+                    log.warning(
+                        "因果批次响应不完整 scope=%s batch=%d: %s",
+                        scope,
+                        offset // batch_size,
+                        error,
+                    )
                     recovered = []
                     for local_index, pair in enumerate(batch):
                         try:
@@ -560,7 +568,7 @@ class BuildMemoryGraph:
                     verdicts = recovered
                 except Exception as error:  # 图是派生投影；故障必须可观测，不能冒充无因果边
                     causal_status = "degraded"
-                    log.warning("因果边判定失败 scope=%s batch=%d: %s", scope, offset // 12, error)
+                    log.warning("因果边判定失败 scope=%s batch=%d: %s", scope, offset // batch_size, error)
                     continue
                 for verdict in verdicts:
                     if not verdict.has_causal or verdict.edge_type not in {"LEADS_TO", "ENABLES"}:

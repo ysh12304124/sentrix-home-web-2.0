@@ -30,10 +30,14 @@ class ModelGenerationHealth:
         success_ttl_s: float = SUCCESS_TTL_S,
         failure_ttl_s: float = FAILURE_TTL_S,
         clock: Callable[[], float] = time.monotonic,
+        api_key: str = "",
+        max_tokens: int = 1,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._timeout_s = timeout_s
+        self._api_key = str(api_key or "").strip()
+        self._max_tokens = int(max_tokens)
         self._success_ttl_s = success_ttl_s
         self._failure_ttl_s = failure_ttl_s
         self._clock = clock
@@ -54,11 +58,11 @@ class ModelGenerationHealth:
                 models_ok = True
                 response = httpx.post(
                     f"{self._base_url}/chat/completions",
-                    headers={**model_auth_headers(), "Content-Type": "application/json"},
+                    headers={**model_auth_headers(self._api_key), "Content-Type": "application/json"},
                     json={
                         "model": model,
                         "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
+                        "max_tokens": self._max_tokens,
                         "stream": False,
                     },
                     timeout=self._timeout_s,

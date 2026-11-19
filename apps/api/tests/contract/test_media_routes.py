@@ -1,12 +1,15 @@
+import hashlib
 import io
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from sentrix.application.memories.maintain_facts import MaintainFacts
-from sentrix.domain.media.models import Observation
-from sentrix.domain.retrieval.scheme import IMAGE_MODEL
+from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
+from sentrix.domain.retrieval.scheme import EPISODIC_SPACE, IMAGE_MODEL, SEMANTIC_SPACE
 
 
 def jpeg_bytes(size=(64, 48), color="green") -> bytes:
@@ -58,6 +61,114 @@ def test_list_assets_for_scope(client: TestClient):
 
     assert response.status_code == 200
     assert len(response.json()["items"]) == 1
+
+
+def test_text_import_keeps_original_bytes_and_builds_both_indexes(client: TestClient):
+    text = "项目来信\r\n" + "补充说明" * 120 + "\r\n订单号 ZEPHYR84019  \r\n"
+    payload = text.encode()
+    response = client.post(
+        "/api/v1/media/import",
+        files={"file": ("mail.txt", payload, "text/plain")},
+        data={
+            "scope_id": "text-scope",
+            "external_source_id": "mail-001",
+            "source_timestamp": "2024-06-23T18:20:00+08:00",
+        },
+    )
+    assert response.status_code == 201, response.text
+    document = response.json()
+    assert document["media_type"] == "text"
+    assert document["indexed"]
+    assert document["event_id"] is None
+    asset_id = document["asset_id"]
+    container = client.app.state.container
+    observation = container.observation_repository.get(document["observation_id"])
+    assert observation.source_text == text
+    assert observation.ocr_text == ""
+    original = client.get(f"/api/v1/assets/{asset_id}/file")
+    assert original.content == payload
+    metadata = client.get(f"/api/v1/assets/{asset_id}").json()
+    assert metadata["external_source_id"] == "mail-001"
+    assert metadata["captured_at"] == "2024-06-23T18:20:00+08:00"
+    assert container.lexical_index.search_fts("ZEPHYR84019", scope_id="text-scope", limit=1)[0][0] == asset_id
+    assert not container.lexical_index.search_fts("ZEPHYR84019", scope_id="other-scope", limit=1)
+    for space in (EPISODIC_SPACE, SEMANTIC_SPACE):
+        assert container.vector_repository.has_vector(
+            space=space,
+            source_type="observation",
+            source_id=observation.id,
+            model_name=container.text_embedder.model_id,
+        )
+
+
+def test_text_source_identity_survives_parallel_imports(client: TestClient):
+    text = "Same receipt in separate messages"
+    timestamp = "2024-06-23T18:20:00"
+
+    def upload(source_id: str, *, body=text, time=timestamp, scope="text-scope"):
+        return client.post(
+            "/api/v1/media/import",
+            files={"file": ("mail.txt", body.encode(), "text/plain")},
+            data={"scope_id": scope, "external_source_id": source_id, "source_timestamp": time},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replies = list(pool.map(upload, ("mail-001", "mail-001")))
+    assert all(reply.status_code == 201 for reply in replies)
+    first, second = (reply.json() for reply in replies)
+    assert first["asset_id"] == second["asset_id"]
+    assert first["observation_id"] == second["observation_id"]
+    assert sorted([first["deduplicated"], second["deduplicated"]]) == [False, True]
+    container = client.app.state.container
+    assert len(container.observation_repository.list_by_asset(first["asset_id"])) == 1
+    assert len(list(container.media_storage.media_dir.glob("*mail.txt"))) == 1
+
+    different_id = upload("mail-002")
+    other_scope = upload("mail-001", scope="other-scope")
+    assert different_id.status_code == other_scope.status_code == 201
+    assert len({first["asset_id"], different_id.json()["asset_id"], other_scope.json()["asset_id"]}) == 3
+    assert upload("mail-001", body="Changed body").status_code == 409
+    assert upload("mail-001", time="2024-06-24T18:20:00").status_code == 409
+
+
+def test_reimport_indexes_an_archived_text_asset(client: TestClient):
+    container = client.app.state.container
+    now = datetime.now(UTC)
+    content = b"Legacy note, reference MAPLE84019"
+    asset_id = "asset_legacy_text"
+    path = container.media_storage.store(asset_id, "old.txt", content)
+    container.asset_repository.add(
+        Asset(
+            id=asset_id,
+            scope_id="text-scope",
+            file_name="old.txt",
+            media_type=MediaType.TEXT,
+            path=str(path),
+            mime_type="text/plain",
+            size_bytes=len(content),
+            status=AssetStatus.PROCESSED,
+            content_sha256=hashlib.sha256(content).hexdigest(),
+            captured_at=None,
+            captured_location=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    container.observation_repository.add(
+        Observation("obs_legacy_text", "text-scope", asset_id, "import", None, 0.0, now, now)
+    )
+
+    retry = client.post(
+        "/api/v1/media/import",
+        files={"file": ("old.txt", content, "text/plain")},
+        data={"scope_id": "text-scope"},
+    )
+    assert retry.status_code == 201, retry.text
+    result = retry.json()
+    assert result["deduplicated"] and result["indexed"]
+    assert result["asset_id"] == asset_id
+    assert result["observation_id"] == "obs_legacy_text"
+    assert container.lexical_index.search_fts("MAPLE84019", scope_id="text-scope", limit=1)[0][0] == asset_id
 
 
 def test_asset_file_returns_original_bytes(client: TestClient):

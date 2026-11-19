@@ -138,6 +138,9 @@ class SqliteMemoryCorrections:
                     json.dumps(value, ensure_ascii=False) if key in {"objects", "clothing"} else value
                 )
             now = datetime.now(UTC).isoformat()
+            if kind == "observation" and "text_content" in changes:
+                columns.append("source_text=?")
+                values.append(changes["text_content"])
             conn.execute(
                 f"UPDATE {table} SET {','.join(columns)},revision=revision+1,updated_at=? WHERE id=?",
                 (*values, now, target_id),

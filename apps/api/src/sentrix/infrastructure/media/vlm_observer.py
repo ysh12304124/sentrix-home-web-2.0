@@ -41,7 +41,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,7 @@ from sentrix.domain.assistant.request_context import request_slot
 from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
 from sentrix.domain.media.ports import ObservationSemantics
 from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
-from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
 from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger(__name__)
@@ -238,11 +238,17 @@ def semantics_from_payload(payload: dict[str, Any]) -> ObservationSemantics:
 
 def chat_json(
     endpoint: str,
-    model: ServedModel,
+    model: ServedModel | FixedModelName,
     prompt: str,
     image: str | Sequence[str] | None,
     timeout_s: float,
     observations: list[dict[str, Any]] | None = None,
+    *,
+    api_key: str = "",
+    max_tokens: int = MAX_ANSWER_TOKENS,
+    json_mode: bool = False,
+    allow_id_slot: bool = True,
+    generation_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """一次「提示词（+ 一张或多张图）→ JSON 对象」的往返。任何失败都返回 ``None``。
 
@@ -269,21 +275,27 @@ def chat_json(
     }
     started = time.perf_counter()
     try:
-        body = {
-            **(model.generation_parameters() if model.generation_profile != "legacy" else {}),
+        generation = dict(generation_parameters or {})
+        if model.generation_profile != "legacy" and generation_parameters is None:
+            generation.update(model.generation_parameters())
+        body: dict[str, Any] = {
+            **generation,
             "model": model.current(),
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": MAX_ANSWER_TOKENS,
+            "max_tokens": max_tokens,
         }
         slot = request_slot()
-        if slot is not None:
+        if slot is not None and allow_id_slot:
             body["id_slot"] = slot
-        if model.generation_profile == "qwen35_nonthinking":
-            # Count the same structured-output request that will be generated.
+        if json_mode or model.generation_profile == "qwen35_nonthinking":
             body["response_format"] = {"type": "json_object"}
         fact["diagnostics"].update(model.apply_output_budget(body, timeout_s=timeout_s))
         fact["diagnostics"]["request_sent"] = None
-        response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers())
+        response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers(api_key))
+        if response.status_code in {400, 422} and "response_format" in body:
+            # 端点不认 response_format 时退回普通提示；只退回一次。
+            body.pop("response_format", None)
+            response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers(api_key))
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()
@@ -327,10 +339,30 @@ def chat_json(
 class OpenAIVlmObserver:
     """实现 ``VlmObserver`` 端口。模型进程的生命周期不归 2.0 管。"""
 
-    def __init__(self, base_url: str, model: ServedModel, *, timeout_s: float = 180.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: ServedModel | FixedModelName,
+        *,
+        timeout_s: float = 180.0,
+        api_key: str = "",
+        max_side: int | None = IMAGE_MAX_SIDE,
+        max_tokens: int = MAX_ANSWER_TOKENS,
+        json_mode: bool = False,
+        allow_id_slot: bool = True,
+        generation_parameters: Mapping[str, Any] | None = None,
+    ) -> None:
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
         self._model = model
         self._timeout = timeout_s
+        self._api_key = api_key
+        self._max_side = max_side
+        self._max_tokens = max_tokens
+        self._json_mode = json_mode
+        self._allow_id_slot = allow_id_slot
+        self._generation_parameters = (
+            dict(generation_parameters) if generation_parameters is not None else None
+        )
 
     @property
     def model_id(self) -> str:
@@ -338,7 +370,7 @@ class OpenAIVlmObserver:
         return self._model.current()
 
     def observe(self, path: Path) -> ObservationSemantics | None:
-        image = _encode_image(Path(path), max_side=IMAGE_MAX_SIDE)
+        image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
             return None
 
@@ -371,7 +403,18 @@ class OpenAIVlmObserver:
         return semantics_from_payload(parsed)
 
     def _chat(self, prompt: str, image: str | None) -> dict[str, Any] | None:
-        return chat_json(self._endpoint, self._model, prompt, image, self._timeout)
+        return chat_json(
+            self._endpoint,
+            self._model,
+            prompt,
+            image,
+            self._timeout,
+            api_key=self._api_key,
+            max_tokens=self._max_tokens,
+            json_mode=self._json_mode,
+            allow_id_slot=self._allow_id_slot,
+            generation_parameters=self._generation_parameters,
+        )
 
 
 def _first_content(payload: object) -> str:

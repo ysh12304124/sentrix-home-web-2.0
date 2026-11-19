@@ -12,13 +12,14 @@ import json
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from sentrix.domain.assistant.models import ChatMessage, ModelReply, ToolCall
-from sentrix.domain.assistant.tools import TOOL_SPECS, ToolSpec
+from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply, ToolCall
+from sentrix.domain.assistant.tools import SOURCE_TEXT_PAGE_CHARS, TOOL_SPECS, ToolSpec
 from sentrix.domain.retrieval import scheme
 
 #: 规划那次调用的 system 提示词开头。**分流按它，不按 ``tools`` 空不空**——JIT 剪枝
@@ -340,6 +341,74 @@ def import_photo(client: TestClient, payload: bytes, scope_id: str = "album1") -
         files={"file": ("a.jpg", payload, "image/jpeg")},
         data={"scope_id": scope_id},
     ).json()["asset_id"]
+
+
+def test_assistant_can_read_past_the_email_preview_and_answer(isolated_app):
+    text = "Woodpecker booking\r\n" + "保留邮件段落。" * 300 + "\r\nBooking reference: NW-70245  \r\n"
+
+    class TextSourceChat:
+        model_id = "fake-text-chat"
+
+        def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply:
+            system = messages[0].content
+            if PLANNER_MARKER in system:
+                assert "source_text" in system
+                return planner_reply("source_text", goal="Woodpecker booking reference")
+            if not tools:
+                return final('{"faithful":true,"problems":[],"reason":"supported"}')
+            assert "read_source_text" in {tool.name for tool in tools}
+            tool_results = [
+                json.loads(message.content) for message in messages if message.role is ChatRole.TOOL
+            ]
+            if not tool_results:
+                return tool_call("search_memories", "search", query="Woodpecker")
+            preview = tool_results[0]["preview"]
+            assert all(item.get("external_source_id") != "foreign-mail" for item in preview)
+            hit = next(item for item in preview if item.get("external_source_id") == "woodpecker-mail")
+            handle = hit["handle"]
+            assert hit["media_kind"] == "text" and hit["text_truncated"]
+            assert "NW-70245" not in hit["evidence_summary"]
+            if len(tool_results) == 1:
+                return tool_call("read_source_text", "read-first", asset_handle=handle)
+            first_page = tool_results[1]
+            assert first_page["next_offset"] == SOURCE_TEXT_PAGE_CHARS
+            if len(tool_results) == 2:
+                return tool_call(
+                    "read_source_text", "read-rest", asset_handle=handle, offset=first_page["next_offset"]
+                )
+            last_page = tool_results[2]
+            assert last_page["next_offset"] is None
+            assert first_page["text"] + last_page["text"] == text
+            answer = last_page["text"].rsplit("Booking reference: ", 1)[1].strip()
+            return tool_call("final_answer", "final", answer=answer, selected_image_handles=[])
+
+    container = dataclasses.replace(
+        isolated_app.state.container,
+        chat_model=TextSourceChat(),
+        model_health=Mock(check=Mock(return_value=(True, ""))),
+    )
+    isolated_app.state.container = container
+    isolated_app.state.import_executor = container.build_import_executor()
+    isolated_app.state.turn_executor = container.build_turn_executor()
+    with TestClient(isolated_app) as client:
+        for scope, source_id, body in (
+            ("mail-test", "woodpecker-mail", text),
+            ("another-scope", "foreign-mail", "Woodpecker booking reference: AB-00001"),
+        ):
+            response = client.post(
+                "/api/v1/media/import",
+                files={"file": ("booking.txt", body.encode(), "text/plain")},
+                data={"scope_id": scope, "external_source_id": source_id},
+            )
+            assert response.status_code == 201, response.text
+        conversation = make_conversation(client, scope_id="mail-test")
+        turn = start_turn(client, conversation["id"], message="What is the Woodpecker booking reference?")
+        record = poll_until_terminal(client, turn["turn_id"])
+
+    assert record["status"] == "complete", record
+    assert record["result"]["answer"] == "NW-70245"
+    assert record["result"]["attachments"] == []
+    assert record["result"]["requirements"][0]["satisfied_by"] == ["read-first", "read-rest"]
 
 
 def test_a_turn_exposes_the_retrieved_candidates(candidate_client: TestClient):

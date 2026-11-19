@@ -4,10 +4,12 @@
 # Ports are intentionally kept compatible with the application contract:
 #   8100  llama.cpp OpenAI-compatible VLM (qwen35-q4km + mmproj)
 #   8101  BGE-M3 text embeddings (1024d)
+#   8102  WeMM embeddings (alternative server scheme; not started by this Mac stack)
 #   8103  Chinese-CLIP ViT-L/14 image embeddings (768d)
 #   8104  BGE reranker (optional; skipped when the weights are missing)
-#   8106  Utility-MRAG Qwen3-VL-2B surrogate (optional local evidence selector)
 #   8105  Qwen3-ASR (optional; started only when a local server is configured)
+#   8106  Utility-MRAG Qwen3-VL-2B surrogate (optional local evidence selector)
+#   8107  shared SenseVoice-Small microphone ASR
 #   8191  Sentrix API (legacy embedding scheme)
 set -euo pipefail
 
@@ -187,6 +189,26 @@ if [ "$ENABLE_UTILITY_VLM" = "1" ] && [ -f "$UTILITY_VLM_MODEL" ] && [ -f "$UTIL
 else
   echo "跳过 Utility-MRAG surrogate（权重缺失或 SENTRIX_ENABLE_UTILITY_VLM != 1）"
 fi
+
+# SenseVoice follows the shared model stack's port reuse / nohup / health flow.
+if ! port_in_use 8107; then
+  if [ ! -f "$DATA_DIR/models/sensevoice-small/model.int8.onnx" ] || \
+     [ ! -f "$DATA_DIR/models/sensevoice-small/tokens.txt" ]; then
+    echo "SenseVoice 本地权重缺失：$DATA_DIR/models/sensevoice-small" >&2
+    echo "请先运行 .venv/bin/python scripts/deploy/prepare_sensevoice.py 准备权重" >&2
+    exit 1
+  fi
+  echo "启动 SenseVoice-Small (sherpa-onnx) :8107"
+  SENTRIX_DATA_DIR="$DATA_DIR" nohup scripts/deploy/start_sensevoice.sh \
+    > logs/sensevoice.log 2>&1 < /dev/null &
+fi
+wait_http "http://127.0.0.1:8107/health" 120 || {
+  echo "SenseVoice 未就绪；请检查本地权重与 logs/sensevoice.log" >&2
+  tail -60 logs/sensevoice.log >&2
+  exit 1
+}
+curl -fsS --max-time 2 http://127.0.0.1:8107/health | .venv/bin/python -c \
+  'import json,sys; h=json.load(sys.stdin); assert h.get("service")=="sentrix-sensevoice" and h.get("available") is True, "8107 is not a ready SenseVoice service"'
 
 if ! port_in_use "$API_PORT"; then
   echo "启动 Sentrix API :$API_PORT"

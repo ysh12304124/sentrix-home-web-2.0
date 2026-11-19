@@ -246,6 +246,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/emails/import:
+    post:
+      tags:
+      - emails
+      summary: Import Emails
+      operationId: import_emails_api_v1_emails_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Import Emails Api V1 Emails Import Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/emails/{asset_id}:
+    get:
+      tags:
+      - emails
+      summary: Email Detail
+      operationId: email_detail_api_v1_emails__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Email Detail Api V1 Emails  Asset Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/text/import:
+    post:
+      tags:
+      - text-memory
+      summary: Import Text
+      operationId: import_text_api_v1_text_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Import Text Api V1 Text Import Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/text/{asset_id}:
+    get:
+      tags:
+      - text-memory
+      summary: Text Detail
+      operationId: text_detail_api_v1_text__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Text Detail Api V1 Text  Asset Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/media/import:
     post:
       tags:
@@ -814,6 +924,16 @@ paths:
           default: ''
           title: Media Type
         description: 媒体类型：image / video / audio / text
+      - name: source_type
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 40
+          description: 可选文本来源标签，如email/note/document
+          default: ''
+          title: Source Type
+        description: 可选文本来源标签，如email/note/document
       responses:
         '200':
           description: Successful Response
@@ -1186,6 +1306,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assistant/speech/status:
+    get:
+      tags:
+      - assistant
+      summary: Speech Status
+      operationId: speech_status_api_v1_assistant_speech_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechStatus'
+  /api/v1/assistant/speech/transcribe:
+    post:
+      tags:
+      - assistant
+      summary: Transcribe Speech
+      operationId: transcribe_speech_api_v1_assistant_speech_transcribe_post
+      parameters:
+      - name: sample_rate
+        in: query
+        required: true
+        schema:
+          type: integer
+          maximum: 192000
+          minimum: 8000
+          title: Sample Rate
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpeechTranscript'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+        description: Mono little-endian float32 PCM, normalized [-1,1], 0.2–60 seconds.
   /api/v1/memory-graph/quality:
     get:
       tags:
@@ -3244,6 +3413,11 @@ components:
           - type: number
           - type: 'null'
           title: Source Timestamp Sec
+        external_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Source Id
       type: object
       required:
       - id
@@ -3266,6 +3440,10 @@ components:
         file_name:
           type: string
           title: File Name
+        media_type:
+          type: string
+          title: Media Type
+          default: ''
       type: object
       required:
       - handle
@@ -3382,6 +3560,18 @@ components:
           type: string
           title: Scope Id
           default: home-default
+        external_source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Source Id
+          description: 文本来源在当前 scope 内的稳定 ID
+        source_timestamp:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Timestamp
+          description: 文本来源的 ISO 8601 日期时间，可带偏移
       type: object
       required:
       - file
@@ -3508,6 +3698,13 @@ components:
           type: string
           title: Reason
           default: ''
+        all_scores:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: All Scores
+          default: []
       type: object
       required:
       - channel
@@ -3855,6 +4052,30 @@ components:
       - embeddings
       - runtime_configuration
       title: DiagnosticsResponse
+    EmailImportRequest:
+      properties:
+        scope_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Scope Id
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Items
+        rebuild_graph:
+          type: boolean
+          title: Rebuild Graph
+          default: true
+      type: object
+      required:
+      - scope_id
+      - items
+      title: EmailImportRequest
     EntityDetailAppearance:
       properties:
         id:
@@ -4576,6 +4797,14 @@ components:
           - type: string
           - type: 'null'
           title: Updated At
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - id
@@ -5175,6 +5404,14 @@ components:
           anyOf:
           - $ref: '#/components/schemas/FamilyMembershipPayload'
           - type: 'null'
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - ok
@@ -5324,6 +5561,14 @@ components:
           anyOf:
           - $ref: '#/components/schemas/FamilyPortraitPayload'
           - type: 'null'
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - ok
@@ -5462,6 +5707,14 @@ components:
             $ref: '#/components/schemas/FamilyRelationshipPayload'
           type: array
           title: Relationships
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - ok
@@ -5526,6 +5779,14 @@ components:
             $ref: '#/components/schemas/FamilyRelationshipPayload'
           type: array
           title: Retracted
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - ok
@@ -7044,6 +7305,14 @@ components:
             type: string
           type: array
           title: Aliases
+        sync_status:
+          type: string
+          title: Sync Status
+          default: synced
+        sync_error:
+          type: string
+          title: Sync Error
+          default: ''
       type: object
       required:
       - entity
@@ -7505,6 +7774,28 @@ components:
       - text
       title: SpeechSegmentPayload
       description: 带视频时间轴的 ASR 片段。
+    SpeechStatus:
+      properties:
+        available:
+          type: boolean
+          title: Available
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - available
+      - message
+      title: SpeechStatus
+    SpeechTranscript:
+      properties:
+        text:
+          type: string
+          title: Text
+      type: object
+      required:
+      - text
+      title: SpeechTranscript
     SplitClusterRequest:
       properties:
         face_instance_id:
@@ -7563,6 +7854,30 @@ components:
       - conversation_id
       - status
       title: StartTurnResponse
+    TextImportRequest:
+      properties:
+        scope_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Scope Id
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Items
+        rebuild_graph:
+          type: boolean
+          title: Rebuild Graph
+          default: true
+      type: object
+      required:
+      - scope_id
+      - items
+      title: TextImportRequest
     TimelineCalendarResponse:
       properties:
         scope_id:

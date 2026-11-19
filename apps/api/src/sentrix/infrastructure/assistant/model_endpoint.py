@@ -221,6 +221,52 @@ class ServedModel:
         return names[0]
 
 
+class FixedModelName:
+    """显式模型名，替代 ``ServedModel`` 的 ``/v1/models`` 探测。
+
+    云端端点常常同时服务多个模型（OpenAI、DeepSeek、豆包等），而 ``ServedModel``
+    在返回多个名字时故意拒绝工作——它对「本机 llama-server 只挂一个模型」是对的。
+    ``SENTRIX_VLM_MODEL`` 或云配置里的 ``roles.*.model`` 给出名字时走这里：不探测、
+    不缓存、404 时不重探。名字是部署配置事实，不是运行时发现。
+    """
+
+    #: 与 ``ServedModel`` 同形的属性，供 ``chat_client`` 的 profile 分支读取。
+    exact_output_budget = False
+
+    def __init__(
+        self,
+        base_url: str,
+        name: str,
+        *,
+        context_tokens: int = 0,
+        generation_profile: str = "cloud",
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._name = str(name or "").strip()
+        if not self._name:
+            raise ValueError("fixed model name must not be empty")
+        self.context_tokens = context_tokens
+        self.generation_profile = generation_profile
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def current(self) -> str:
+        return self._name
+
+    def invalidate(self) -> None:
+        """名字来自配置，没有过期一说；保留方法与 ``ServedModel`` 同形。"""
+        return None
+
+    def generation_parameters(self) -> dict[str, Any]:
+        return {}
+
+    def apply_output_budget(self, payload: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
+        """云端不使用 llama.cpp/vLLM 的 ``/tokenize`` 精确预算。"""
+        return {}
+
+
 def served_names(body: object) -> list[str]:
     """``/v1/models`` 响应里的模型 id 列表：保持端点给的顺序，去重。
 

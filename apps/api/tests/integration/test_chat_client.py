@@ -260,20 +260,25 @@ def test_the_tools_field_carries_standard_json_schema(server: str):
 
     sent = _Handler.received[0]["body"]
     assert sent["tool_choice"] == "auto"
+    wire_tools = [tool["function"] for tool in sent["tools"]]
     # 顺序与 ``TOOL_SPECS`` 一致（``query_photo_people`` 是 S6 T122 加的第五个）。
     # 与 ``test_assistant_policy.test_the_tool_list_is_exactly_what_ships`` 是两处
     # 故意的重复：那条钉**注册表**，这条钉**真的上了线的那份**（发出去的就是它们）。
-    assert [tool["function"]["name"] for tool in sent["tools"]] == [
+    assert [tool["name"] for tool in wire_tools] == [
         "search_memories",
         "query_memory_facts",
         "query_photo_people",
         "inspect_photo",
         "read_photo_text",
+        "read_source_text",
         "get_result_page",
         "get_person_profile",
         "final_answer",
     ]
-    assert sent["tools"][0]["function"]["parameters"]["type"] == "object"
+    assert wire_tools[0]["parameters"]["type"] == "object"
+    text_reader = next(tool for tool in wire_tools if tool["name"] == "read_source_text")
+    assert text_reader["parameters"]["required"] == ["asset_handle"]
+    assert text_reader["parameters"]["properties"]["offset"]["type"] == "integer"
 
 
 def test_qwen_final_only_turn_enforces_the_only_advertised_function(server: str):

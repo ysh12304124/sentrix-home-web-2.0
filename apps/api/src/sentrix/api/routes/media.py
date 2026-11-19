@@ -125,6 +125,7 @@ def to_summary(asset: Asset, place: str = "") -> AssetSummary:
         derived_kind=asset.derived_kind,
         parent_asset_id=asset.parent_asset_id,
         source_timestamp_sec=asset.source_timestamp_sec,
+        external_source_id=asset.external_source_id,
     )
 
 
@@ -132,6 +133,8 @@ def to_summary(asset: Asset, place: str = "") -> AssetSummary:
 async def import_media(
     file: UploadFile = File(...),
     scope_id: str = Form("home-default"),
+    external_source_id: str | None = Form(None, description="文本来源在当前 scope 内的稳定 ID"),
+    source_timestamp: str | None = Form(None, description="文本来源的 ISO 8601 日期时间，可带偏移"),
     container: Container = Depends(get_container),
 ) -> ImportResponse:
     content = await file.read()
@@ -144,6 +147,8 @@ async def import_media(
         content_type=file.content_type,
         content=content,
         defer_processing=False,
+        external_source_id=external_source_id,
+        source_timestamp=source_timestamp,
     )
     media_type = MediaType.from_upload(request.content_type, request.file_name)
     if media_type is MediaType.TEXT:
@@ -234,8 +239,11 @@ async def import_media(
         )
 
     use_case = build_import_assets(container, observe=False)
-    result = use_case.execute(request)
-    refresh_memory_graph(container, scope_id)
+    if media_type is MediaType.TEXT:
+        result = await run_in_threadpool(use_case.execute, request)
+    else:
+        result = use_case.execute(request)
+        refresh_memory_graph(container, scope_id)
     return ImportResponse(
         asset_id=result.asset_id,
         observation_id=result.observation_id,
@@ -1048,6 +1056,15 @@ def deliver_asset(asset_id: str, *, original: bool, container: Container) -> Res
     path = Path(asset.path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="media file missing on disk")
+    if asset.media_type is MediaType.TEXT:
+        if not original:
+            raise HTTPException(status_code=404, detail="image preview is not available for text sources")
+        return FileResponse(
+            path,
+            media_type=asset.mime_type or "application/octet-stream",
+            filename=asset.file_name,
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
     if original:
         return FileResponse(path, media_type=asset.mime_type or "application/octet-stream")
     return _cached_image_response(

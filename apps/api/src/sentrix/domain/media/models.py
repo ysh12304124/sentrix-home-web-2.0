@@ -225,15 +225,7 @@ class Asset:
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
     capture_time: CaptureTime = CaptureTime()
-
-    @property
-    def external_source_id(self) -> str | None:
-        """Compatibility projection for the mainline text-source tool.
-
-        Text provenance is authoritative on ``Observation.external_id`` in the
-        unified text-memory schema; ordinary assets have no asset-level source ID.
-        """
-        return None
+    external_source_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):
@@ -247,6 +239,8 @@ MODEL_FACT_CONFIDENCE = 0.65
 
 # 1.0 ``model_clients.py`` 的提示词原文：``facts 最多8项``。
 MODEL_FACT_LIMIT = 8
+
+TEXT_IMPORT_SOURCE = "text_import"
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,20 +304,20 @@ class Observation:
     text_content: str = ""
     external_id: str = ""
     source_metadata: dict[str, object] = field(default_factory=dict)
+    source_text: str = ""
 
     def __post_init__(self) -> None:
+        # Keep legacy email bodies readable through the mainline source-text API.
+        body = self.text_content or self.source_text
+        object.__setattr__(self, "text_content", body)
+        object.__setattr__(self, "source_text", body)
         if self.revision < 1:
             raise ValueError(f"revision 从 1 开始，收到 {self.revision}")
 
     @property
-    def source_text(self) -> str:
-        """Mainline name for the unified text-memory body."""
-        return self.text_content
-
-    @property
     def has_semantics(self) -> bool:
         """VLM 语义是否已经落上。1.0 用「caption 非空」当这个判据。"""
-        return bool(self.caption or self.place or self.activity or self.event_type)
+        return bool(self.caption or self.place or self.activity or self.event_type or self.source_text)
 
     @property
     def has_content(self) -> bool:

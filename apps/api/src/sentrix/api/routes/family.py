@@ -360,12 +360,27 @@ def _family_graph_service(container: Container) -> FamilyGraphService:
     ``model`` 传容器里那一个：没有配模型时它是 ``None``，服务会走那条「空结果、
     照样 completed」的降级路径（见 ``FamilyGraphService`` 的 docstring）。
     """
+    memory = container.model_profile.memory if container.model_profile is not None else {}
+
+    def cap(key: str, default: int | None) -> int | None:
+        if key not in memory:
+            return default
+        value = memory[key]
+        return None if value is None else int(value)
+
     return FamilyGraphService(
         family=container.family_graph_repository,
         events=container.event_repository,
         # 已确认人物的 family_role 用来补确定性的关系边（模型那条推断被证据闸挡住）。
         entities=container.entity_repository,
         model=container.chat_model,
+        people_limit=cap("family_people_limit", 8),
+        observations_per_person=cap("family_observations_per_person", 6),
+        descriptions_per_person=cap("family_descriptions_per_person", 2),
+        description_chars=cap("family_description_chars", 300),
+        cooccurrences_limit=cap("family_cooccurrences_limit", 30),
+        evidence_descriptions_per_person=cap("family_evidence_descriptions", 20),
+        evidence_cooccurrence_observations=cap("family_evidence_cooccurrences", 8),
     )
 
 

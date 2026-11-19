@@ -171,7 +171,7 @@ def parse_projection_object(text: str) -> dict[str, object] | None:
     return None
 
 
-def build_system_prompt() -> str:
+def build_correction_system_prompt() -> str:
     """系统提示词。**它必须是 ``messages[0]``。**
 
     ``OpenAIChatModel.complete`` 的第一条硬契约就是这个（``chat_client.py:98``），
@@ -197,7 +197,7 @@ name_state=confirmed 是用户命名；status=pending 时可称为用户标记�
     )
 
 
-def build_evidence(
+def build_correction_evidence(
     event: EventRecord,
     observations: Sequence[Observation],
     participants: Sequence[EventParticipantRecord] = (),
@@ -258,6 +258,57 @@ def build_evidence(
     )
 
 
+def build_system_prompt() -> str:
+    """系统提示词。**它必须是 ``messages[0]``。**
+
+    ``OpenAIChatModel.complete`` 的第一条硬契约就是这个（``chat_client.py:98``），
+    1.0 的 ``400 System message must be at the beginning`` 是同一个坑的另一面。
+    这段在 1.0 里是拼进**同一个 user 消息**发给 Ollama 的（``model_clients.py:314``
+    的 ``chat(prompt)`` 只发一条 user 消息，宽松模板容忍）；2.0 的端口不接受那种形状，
+    照搬 1.0 的单条 user 消息会让**每一次模型调用都在本地就抛**
+    （``ChatModelError``），于是模型那条路永远走不到、只剩确定性摘要。
+    """
+    return _SUMMARY_PROMPT
+
+
+def build_evidence(
+    event: EventRecord,
+    observations: Sequence[Observation],
+    participants: Sequence[EventParticipantRecord] = (),
+) -> str:
+    """user 消息：这次要总结的事件的可验证证据（JSON，不含任何提示词）。
+
+    ``participants`` 是**已确认身份**的人（``event_participants`` 由身份确认动作写入）。
+    把它们显式列进证据，模型才可能写出「王建国和张晓莉在正定古城合影」；不列的话，
+    它只能退化成「一名男子与一名女子」——系统明明知道是谁。
+    """
+    evidence = [
+        {
+            "observation_id": item.id,
+            "caption": item.caption,
+            "activity": item.activity,
+            "place": item.place,
+            "objects": list(item.objects),
+            "clothing": list(item.clothing),
+            "ocr_text": item.ocr_text,
+        }
+        for item in observations
+    ]
+    return json.dumps(
+        {
+            "time_start": event.time_start.isoformat() if event.time_start else None,
+            "time_end": event.time_end.isoformat() if event.time_end else None,
+            "place": event.place,
+            "participants": [
+                {"name": item.person_name, "role": item.role} for item in participants if item.person_name
+            ],
+            "observations": evidence,
+            "speech_transcript": str(event.source_metadata.get("speech_transcript") or ""),
+        },
+        ensure_ascii=False,
+    )
+
+
 class SummarizeEvent:
     def __init__(
         self,
@@ -300,6 +351,21 @@ class SummarizeEvent:
             )
             if item is not None
         ]
+        if not correction:
+            if not observations or self._model is None:
+                return event
+            people = self._participants.list_participants(event_id) if self._participants is not None else ()
+            projection = self._from_model(event, observations, people) or fallback_projection(
+                event, observations, people
+            )
+            return self._events.apply_summary(
+                event_id,
+                title=projection.title,
+                event_type=projection.event_type,
+                activity=projection.activity,
+                summary=projection.summary,
+            )
+
         usable = [item for item in observations if item.has_content]
         if observations and not usable:
             log.warning("事件无可用观察语义，保留待处理状态 event=%s", event_id)
@@ -361,7 +427,7 @@ class SummarizeEvent:
                     ChatMessage(role=ChatRole.SYSTEM, content=build_system_prompt()),
                     ChatMessage(
                         role=ChatRole.USER,
-                        content=build_evidence(event, observations, participants, identity_updates),
+                        content=build_evidence(event, observations, participants),
                     ),
                 ),
                 (),
@@ -406,14 +472,15 @@ class SummarizeEvent:
         messages: tuple[ChatMessage, ...] = (
             ChatMessage(
                 role=ChatRole.SYSTEM,
-                content=build_system_prompt() + "\n本次是记忆修正：标题、摘要和活动须一致使用当前身份。"
+                content=build_correction_system_prompt()
+                + "\n本次是记忆修正：标题、摘要和活动须一致使用当前身份。"
                 "有绑定姓名时，标题至少包含一个当前姓名，摘要包含绑定的当前姓名。"
                 "不能仅给旧摘要加姓名冒号前缀；不要提及曾用名或改名过程。"
                 "多人场景保留未命名人物，不能把他们的动作归给已命名人物。",
             ),
             ChatMessage(
                 role=ChatRole.USER,
-                content=build_evidence(event, observations, participants, identity_updates),
+                content=build_correction_evidence(event, observations, participants, identity_updates),
             ),
         )
         for attempt in range(2):

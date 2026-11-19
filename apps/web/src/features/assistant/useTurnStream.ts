@@ -24,7 +24,8 @@ export interface TurnStream {
   turnId: string | null;
   /** 用户已请求停止；服务端会在安全检查点收尾。 */
   cancelled: boolean;
-  ask: (conversationId: string, message: string) => Promise<void>;
+  /** 返回建回合请求是否已被服务端接受，不等待回答完成。 */
+  ask: (conversationId: string, message: string) => Promise<boolean>;
   cancel: () => Promise<void>;
 }
 
@@ -112,7 +113,7 @@ export function useTurnStream(): TurnStream {
           operationId: idempotencyKey,
           errorCode: cause instanceof ApiError ? errorCodeFromStatus(cause.status) : "network",
         });
-        return;
+        return false;
       }
 
       if (cancelRequestedRef.current) {
@@ -127,7 +128,7 @@ export function useTurnStream(): TurnStream {
         } catch (cause) {
           setError((cause as Error).message);
         }
-        return;
+        return true;
       }
 
       const pushProgress = (payload: AssistantProgressEvent) => {
@@ -235,6 +236,7 @@ export function useTurnStream(): TurnStream {
       }
 
       connect();
+      return true;
     },
     [close],
   );

@@ -69,6 +69,7 @@ def setup(migrations_ready_db, tmp_path):
     assets, observations = SqliteAssetRepository(db), SqliteObservationRepository(db)
     entities = SqliteEntityRepository(db)
     c = SimpleNamespace(
+        model_profile=None,
         database=db,
         asset_repository=assets,
         observation_repository=observations,

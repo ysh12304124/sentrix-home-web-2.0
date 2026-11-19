@@ -79,6 +79,10 @@ def build_text_import(container: Container):
 
 def build_memory_graph(container: Container) -> BuildMemoryGraph:
     """把 2.0 标准记忆端口接到独立图投影用例。"""
+    memory = container.model_profile.memory if container.model_profile is not None else {}
+    causal_batch_size = memory.get("causal_batch_size", 12)
+    if causal_batch_size is not None:
+        causal_batch_size = int(causal_batch_size)
     return BuildMemoryGraph(
         assets=container.asset_repository,
         observations=container.observation_repository,
@@ -91,6 +95,7 @@ def build_memory_graph(container: Container) -> BuildMemoryGraph:
         causal_judge=container.causal_judge,
         vectors=container.vector_repository,
         family=container.family_graph_repository,
+        causal_batch_size=causal_batch_size,
     )
 
 
@@ -268,11 +273,26 @@ def _run_family_graph(container: Container, scope_id: str) -> bool:
         if latest is not None and latest.status in {"queued", "running"}:
             return True
         run = repository.create_run(scope_id, {"trigger_type": "ingest", "input_mode": "semantic_text_only"})
+        memory = container.model_profile.memory if container.model_profile is not None else {}
+
+        def cap(key: str, default: int | None) -> int | None:
+            if key not in memory:
+                return default
+            value = memory[key]
+            return None if value is None else int(value)
+
         service = FamilyGraphService(
             family=repository,
             events=container.event_repository,
             entities=container.entity_repository,
             model=container.chat_model,
+            people_limit=cap("family_people_limit", 8),
+            observations_per_person=cap("family_observations_per_person", 6),
+            descriptions_per_person=cap("family_descriptions_per_person", 2),
+            description_chars=cap("family_description_chars", 300),
+            cooccurrences_limit=cap("family_cooccurrences_limit", 30),
+            evidence_descriptions_per_person=cap("family_evidence_descriptions", 20),
+            evidence_cooccurrence_observations=cap("family_evidence_cooccurrences", 8),
         )
         service.run(run.id, scope_id)
         return True
@@ -395,9 +415,7 @@ def _build_video_scenes(
         scene_planner=container.video_scene_planner,
         transcriber=container.audio_transcriber,
         cross_modal_embedder=container.cross_modal_embedder,
-        has_memory=lambda asset: any(
-            item.has_content for item in container.observation_repository.list_by_asset(asset.id)
-        ),
+        has_memory=lambda asset: bool(container.observation_repository.list_by_asset(asset.id)),
         checkpoint=checkpoint,
         resume_event_completed=resume_event_completed,
     )
@@ -437,13 +455,10 @@ def _build_importer(
         place_indexer=IndexAssetPlace(
             resolver=container.place_resolver, places=container.asset_place_repository
         ),
-        observer=(
-            ObserveAsset(
-                observer=container.vlm_observer,
-                observations=container.observation_repository,
-            )
-            if observe
-            else None
+        observer=ObserveAsset(
+            observer=container.vlm_observer if observe else None,
+            observations=container.observation_repository,
+            storage=container.media_storage,
         ),
         event_assigner=lambda observation: _event_id(assigner, observation),
         event_attacher=lambda event_id, observation: container.event_repository.attach(

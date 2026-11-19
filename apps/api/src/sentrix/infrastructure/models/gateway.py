@@ -19,7 +19,16 @@ def gateway_configured() -> bool:
     return bool(os.getenv("SENTRIX_MODEL_GATEWAY_TOKEN", "").strip())
 
 
-def model_auth_headers() -> dict[str, str]:
+def model_auth_headers(api_key: str = "") -> dict[str, str]:
+    """模型请求的鉴权头。
+
+    ``api_key`` 非空时是云端直连：只发 ``Authorization: Bearer``，**不带**
+    ``X-Sentrix-Work``（那是本地控制面的调度头）。为空时保持旧行为：有
+    ``SENTRIX_MODEL_GATEWAY_TOKEN`` 才发 Bearer + 调度头，否则不发头。
+    """
+    key = str(api_key or "").strip()
+    if key:
+        return {"Authorization": f"Bearer {key}"}
     token = os.getenv("SENTRIX_MODEL_GATEWAY_TOKEN", "").strip()
     if not token:
         return {}

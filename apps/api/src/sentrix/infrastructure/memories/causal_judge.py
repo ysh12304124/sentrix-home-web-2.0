@@ -10,7 +10,7 @@ from collections.abc import Sequence
 import httpx
 
 from sentrix.domain.memories.causality import CausalParseError, CausalVerdict
-from sentrix.infrastructure.assistant.model_endpoint import ServedModel
+from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
 from sentrix.infrastructure.models.gateway import model_auth_headers
 
 log = logging.getLogger(__name__)
@@ -25,10 +25,20 @@ class CausalInferenceError(RuntimeError):
 class OpenAICausalJudge:
     """只做传输和结构校验；业务提示词和候选筛选不在适配器里。"""
 
-    def __init__(self, base_url: str, served_model: ServedModel, *, timeout_s: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        served_model: ServedModel | FixedModelName,
+        *,
+        timeout_s: float,
+        api_key: str = "",
+        max_tokens: int = 768,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._served_model = served_model
         self._timeout_s = timeout_s
+        self._api_key = str(api_key or "").strip()
+        self._max_tokens = int(max_tokens)
 
     def judge(self, prompt: str, *, expected_count: int) -> Sequence[CausalVerdict]:
         if expected_count < 1:
@@ -42,10 +52,10 @@ class OpenAICausalJudge:
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.0,
                     "stream": False,
-                    "max_tokens": 768,
+                    "max_tokens": self._max_tokens,
                 },
                 timeout=self._timeout_s,
-                headers=model_auth_headers(),
+                headers=model_auth_headers(self._api_key),
             )
             response.raise_for_status()
             payload = response.json()

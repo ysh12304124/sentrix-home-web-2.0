@@ -48,6 +48,7 @@ class AssetSummary(BaseModel):
     derived_kind: str | None = None
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
+    external_source_id: str | None = None
 
 
 class AssetListResponse(BaseModel):
