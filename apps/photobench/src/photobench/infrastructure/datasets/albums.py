@@ -244,6 +244,8 @@ class JsonAlbumSource:
         entries.extend(
             str(face.get("ref_image")) for face in manifest.get("faces") or [] if face.get("ref_image")
         )
+        if manifest.get("text_memories"):
+            entries.append(str(manifest["text_memories"]))
         missing: list[str] = []
         file_digests: list[dict[str, Any]] = []
         for relative in sorted(set(entries)):

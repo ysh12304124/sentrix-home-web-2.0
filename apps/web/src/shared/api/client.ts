@@ -227,6 +227,7 @@ export async function searchAssets(
 }
 
 export interface TimelinePhoto {
+  media_type?: string;
   asset_id: string;
   file_name: string;
   captured_at: string | null;
@@ -385,6 +386,7 @@ export interface AssistantAttachment {
   handle: string;
   asset_id: string;
   file_name: string;
+  media_type?: string;
 }
 
 export interface AssistantRequirement {

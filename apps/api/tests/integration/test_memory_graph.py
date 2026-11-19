@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import sentrix.api.routes.media as media_routes
+import sentrix.bootstrap.import_wiring as import_wiring
 from sentrix.application.memories.build_graph import BuildMemoryGraph
 from sentrix.application.retrieval.retrieve_graph import RetrieveGraph, graph_direction, graph_intent
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation, ObservationFact
@@ -21,6 +22,32 @@ from sentrix.infrastructure.persistence.repositories.memory_graph import (
 
 SCOPE = "graph-scope"
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+
+
+def test_graph_wiring_includes_authoritative_family_relationships(monkeypatch):
+    captured = {}
+
+    def builder(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(import_wiring, "BuildMemoryGraph", builder)
+    fields = (
+        "asset_repository",
+        "observation_repository",
+        "event_repository",
+        "event_participant_repository",
+        "entity_repository",
+        "fact_repository",
+        "relationship_repository",
+        "memory_graph",
+        "causal_judge",
+        "vector_repository",
+        "family_graph_repository",
+    )
+    container = SimpleNamespace(**{field: object() for field in fields})
+    import_wiring.build_memory_graph(container)
+    assert captured["family"] is container.family_graph_repository
 
 
 def test_sqlite_graph_replaces_scope_and_expands_assets(migrations_ready_db):
@@ -54,6 +81,103 @@ def test_sqlite_graph_replaces_scope_and_expands_assets(migrations_ready_db):
     repository.replace_scope(SCOPE, nodes=(), edges=(), build_revision="revision-2")
     assert repository.status(SCOPE).node_count == 0
     assert repository.expand_assets(("a",), scope_id=SCOPE, max_hops=3, limit=10) == ()
+
+
+def test_named_person_relation_paths_do_not_need_primary_seeds(migrations_ready_db):
+    graph = SqliteMemoryGraphRepository(migrations_ready_db)
+    graph.replace_scope(
+        SCOPE,
+        nodes=(
+            GraphNode(
+                "entity:child",
+                SCOPE,
+                "entity",
+                "小明",
+                {
+                    "entity_type": "person",
+                    "status": "confirmed",
+                    "properties": {"aliases": ["明明"]},
+                },
+            ),
+            GraphNode(
+                "entity:father",
+                SCOPE,
+                "entity",
+                "爸爸",
+                {
+                    "entity_type": "person",
+                    "status": "confirmed",
+                },
+            ),
+            GraphNode("asset:child", SCOPE, "asset", "小明的照片"),
+            GraphNode("asset:father", SCOPE, "asset", "父亲的照片"),
+        ),
+        edges=(
+            GraphEdge("family", SCOPE, "entity:father", "entity:child", "entity_relationship:父亲"),
+            GraphEdge("fc", SCOPE, "asset:child", "entity:child", "asset_mentions_confirmed_entity"),
+            GraphEdge("ff", SCOPE, "asset:father", "entity:father", "asset_mentions_confirmed_entity"),
+        ),
+        build_revision="lean-test",
+    )
+    result = RetrieveGraph(graph=graph).execute(
+        seed_asset_ids=(),
+        scope_id=SCOPE,
+        limit=6,
+        question="明明的父亲的照片",
+    )
+    assert result.anchored
+    assert [item.asset_id for item in result.hits] == ["father"]
+    assert result.paths[0].path == ("entity:child", "entity:father", "asset:father")
+    assert result.paths[0].relations == ("entity_relationship:父亲", "asset_mentions_confirmed_entity")
+    assert not graph.query_paths("小明的父亲", scope_id="another-scope", limit=6)
+    assert not graph.query_paths("小明的母亲的照片", scope_id=SCOPE, limit=6)
+    missing = RetrieveGraph(graph=graph).execute(
+        seed_asset_ids=("child",),
+        scope_id=SCOPE,
+        limit=6,
+        question="小明的母亲的照片",
+    )
+    assert not missing.hits
+    assert missing.reason == "no_matching_relation_or_cooccurrence_path"
+
+
+def test_joint_photo_query_intersects_identity_edges_before_limit(migrations_ready_db):
+    graph = SqliteMemoryGraphRepository(migrations_ready_db)
+    people = ("小明", "小红")
+    nodes = [
+        GraphNode(
+            f"entity:{i}",
+            SCOPE,
+            "entity",
+            name,
+            {
+                "entity_type": "person",
+                "status": "confirmed",
+            },
+        )
+        for i, name in enumerate(people)
+    ]
+    edges = []
+    for i in range(2):
+        for j in range(8):
+            asset = f"asset:{i}-{j}"
+            nodes.append(GraphNode(asset, SCOPE, "asset", asset))
+            edges.append(
+                GraphEdge(f"e:{i}-{j}", SCOPE, asset, f"entity:{i}", "asset_mentions_confirmed_entity")
+            )
+    graph.replace_scope(SCOPE, nodes=nodes, edges=edges, build_revision="separate")
+    assert not graph.query_paths("小明和小红一起的照片", scope_id=SCOPE, limit=1)
+    nodes.append(GraphNode("asset:z-shared", SCOPE, "asset", "真正的合影"))
+    for i in range(2):
+        edges.append(
+            GraphEdge(
+                f"shared:{i}", SCOPE, "asset:z-shared", f"entity:{i}", "asset_mentions_confirmed_entity"
+            )
+        )
+    graph.replace_scope(SCOPE, nodes=nodes, edges=edges, build_revision="together")
+    hits = graph.query_paths("小明和小红一起的照片", scope_id=SCOPE, limit=1)
+    assert [hit.asset_id for hit in hits] == ["z-shared"]
+    assert len(hits[0].edge_statements) == 2
 
 
 class _ListSource:
@@ -139,6 +263,53 @@ def _observation(observation_id: str, asset_id: str) -> Observation:
     )
 
 
+def test_rebuild_after_correction_replaces_names_and_observation_payload(migrations_ready_db):
+    import json
+
+    person = SimpleNamespace(
+        id="p",
+        canonical_name="旧姓名",
+        summary="",
+        entity_type="person",
+        status="confirmed",
+        family_role=None,
+        updated_at=NOW,
+    )
+
+    class People(_ListSource):
+        def list_mentions(self, scope_id, *, limit):
+            return (SimpleNamespace(entity_id="p", observation_id="obs"),)
+
+    people = People((person,))
+    observations = _ListSource((_observation("obs", "a"),))
+    graph = SqliteMemoryGraphRepository(migrations_ready_db)
+    builder = BuildMemoryGraph(
+        assets=_ListSource((_asset("a", "/tmp/a.jpg"),)),
+        observations=observations,
+        events=_EventSource((), ()),
+        participants=_ParticipantSource(),
+        entities=people,
+        facts=_ListSource(()),
+        relationships=_ListSource(()),
+        graph=graph,
+    )
+    builder.execute(SCOPE)
+    assert graph.query_paths("旧姓名的照片", scope_id=SCOPE, limit=6)
+    person.canonical_name = "新姓名"
+    observations.values = (replace(observations.values[0], caption="人工修正后的描述", revision=2),)
+    builder.execute(SCOPE)
+    assert not graph.query_paths("旧姓名的照片", scope_id=SCOPE, limit=6)
+    assert graph.query_paths("新姓名的照片", scope_id=SCOPE, limit=6)
+    with migrations_ready_db.connect() as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT attributes_json FROM memory_graph_nodes WHERE id='asset:a'"
+            ).fetchone()[0]
+        )
+    assert payload["observation"]["caption"] == "人工修正后的描述"
+    assert payload["observation"]["revision"] == 2
+
+
 def test_build_graph_consumes_standard_memory_records_without_keyframes(migrations_ready_db):
     assets = (_asset("a", "/tmp/a.jpg"), _asset("b", "/tmp/b.jpg"))
     observations = (_observation("obs-a", "a"), _observation("obs-b", "b"))
@@ -172,8 +343,17 @@ def test_build_graph_consumes_standard_memory_records_without_keyframes(migratio
 
     stats = use_case.execute(SCOPE)
 
-    assert stats.node_count >= 6
-    assert stats.edge_count >= 5
+    # Lean graph: two media vertices + one event; observations live on the media payload.
+    assert stats.node_count == 3
+    with migrations_ready_db.connect() as connection:
+        node_types = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT node_type FROM memory_graph_nodes WHERE scope_id = ?", (SCOPE,)
+            )
+        }
+    assert node_types == {"asset", "event"}
+    assert stats.edge_count == 4
     assert graph.status(SCOPE).available
     assert [hit.asset_id for hit in graph.expand_assets(("a",), scope_id=SCOPE, max_hops=4, limit=10)] == [
         "b"
@@ -550,8 +730,15 @@ def test_build_graph_projects_event_entities_and_video_scene_source(migrations_r
                 "SELECT relation FROM memory_graph_edges WHERE scope_id = ?", (SCOPE,)
             ).fetchall()
         }
-    assert "event_has_entity" in relations
+    # Places are event attributes, not graph entity nodes/edges.
+    assert "event_has_entity" not in relations
     assert "event_source_asset" in relations
+    with migrations_ready_db.connect() as connection:
+        nodes = connection.execute(
+            "SELECT node_type, attributes_json FROM memory_graph_nodes WHERE scope_id = ?",
+            (SCOPE,),
+        ).fetchall()
+    assert not any(str(row[0]) in {"place_context", "date_context"} for row in nodes)
     assert [
         hit.asset_id for hit in graph.expand_assets(("video",), scope_id=SCOPE, max_hops=2, limit=10)
     ] == ["frame"]
@@ -565,7 +752,7 @@ def test_memory_graph_refresh_is_fail_open_after_memory_writes(monkeypatch):
             calls.append(scope_id)
             raise RuntimeError("derived projection unavailable")
 
-    monkeypatch.setattr(media_routes, "build_memory_graph", lambda container: _Builder())
+    monkeypatch.setattr(import_wiring, "build_memory_graph", lambda container: _Builder())
 
     media_routes.refresh_memory_graph(SimpleNamespace(), SCOPE)
 

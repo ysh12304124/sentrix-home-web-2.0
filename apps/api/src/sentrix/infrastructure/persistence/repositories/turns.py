@@ -48,7 +48,13 @@ def _row_to_turn(row: sqlite3.Row) -> TurnRecord:
         answer=row["answer"],
         termination_reason=row["termination_reason"],
         attachments=tuple(
-            Attachment(handle=item["handle"], asset_id=item["asset_id"], file_name=item["file_name"])
+            Attachment(
+                handle=item["handle"],
+                asset_id=item["asset_id"],
+                file_name=item["file_name"],
+                media_type=item.get("media_type")
+                or ("text" if item["file_name"].lower().endswith((".txt", ".md")) else ""),
+            )
             for item in attachments
         ),
         requirements=tuple(json.loads(row["requirements_json"] or "[]")),
@@ -419,7 +425,12 @@ class SqliteTurnRepository:
         """最终助手消息与回合终态在同一事务里提交；围栏不匹配则不写。"""
         payload = json.dumps(
             [
-                {"handle": item.handle, "asset_id": item.asset_id, "file_name": item.file_name}
+                {
+                    "handle": item.handle,
+                    "asset_id": item.asset_id,
+                    "file_name": item.file_name,
+                    "media_type": item.media_type,
+                }
                 for item in attachments
             ],
             ensure_ascii=False,
@@ -492,7 +503,12 @@ class SqliteTurnRepository:
         """兼容旧入口（无围栏）；新执行器走 ``finish_with_message``。"""
         payload = json.dumps(
             [
-                {"handle": item.handle, "asset_id": item.asset_id, "file_name": item.file_name}
+                {
+                    "handle": item.handle,
+                    "asset_id": item.asset_id,
+                    "file_name": item.file_name,
+                    "media_type": item.media_type,
+                }
                 for item in attachments
             ],
             ensure_ascii=False,

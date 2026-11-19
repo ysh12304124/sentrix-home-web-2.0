@@ -10,8 +10,10 @@ import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 
+from sentrix.domain.identity.family_graph import RELATION_INVERSES
 from sentrix.domain.memories.graph import (
     GraphBuildStats,
     GraphEdge,
@@ -175,6 +177,8 @@ class SqliteMemoryGraphRepository:
             "asset_date_context",
         }
         allowed = {
+            "text_refers_to_event": {("event", "event")},
+            "text_time_candidate": {("event", "event")},
             "asset_derived_from_asset": {("asset", "asset")},
             "event_contains_observation": {("event", "observation")},
             "event_contains_asset": {("event", "asset")},
@@ -308,6 +312,124 @@ class SqliteMemoryGraphRepository:
             "note": "P/R/F1 按来源字段重建的确定性参考边计算，不是独立人工真值；视觉/因果边不计入。",
         }
 
+    def query_paths(self, question: str, *, scope_id: str, limit: int) -> Sequence[GraphExpansionHit]:
+        """Query-anchored paths; never infer an identity from a shared object label.
+
+        Relationship predicates mean subject IS object's predicate (e.g. A is B's
+        father), so 'B的父亲' follows incoming father edges, not outgoing ones.
+        """
+        value = " ".join(question.casefold().split())
+        if not value or limit < 1:
+            return ()
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id,node_type,label,attributes_json FROM memory_graph_nodes "
+                "WHERE scope_id=? AND node_type IN ('entity','event') ORDER BY id LIMIT 10000",
+                (scope_id,),
+            ).fetchall()
+            anchors: list[str] = []
+            for node_id, kind, label, raw in rows:
+                attrs = json.loads(raw)
+                if kind == "entity" and (
+                    attrs.get("entity_type") != "person" or attrs.get("status") != "confirmed"
+                ):
+                    continue
+                properties = attrs.get("properties") or {}
+                aliases = properties.get("aliases", []) if isinstance(properties, dict) else []
+                names = [str(label), *(aliases if isinstance(aliases, list) else [])]
+                if any(len(str(name).strip()) >= 2 and str(name).casefold() in value for name in names):
+                    anchors.append(str(node_id))
+            # Bound seeds independently of the ordinary similarity head.
+            anchors = anchors[:16]
+            if not anchors:
+                return ()
+            relationships = connection.execute(
+                "SELECT source_id,target_id,relation,weight FROM memory_graph_edges "
+                "WHERE scope_id=? AND relation LIKE 'entity_relationship:%' ORDER BY id",
+                (scope_id,),
+            ).fetchall()
+        # Parse the requested relation independently of edges present in this
+        # album. A missing mother edge must not become a search for the child.
+        requested = {
+            f"entity_relationship:{predicate}" for predicate in RELATION_INVERSES if predicate in value
+        }
+        prefixes: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+        labels_by_id = {str(row[0]): str(row[2]) for row in rows}
+        if requested:
+            for source, target, relation, weight in relationships:
+                if target in anchors and relation in requested and float(weight) >= 0.6:
+                    prefixes[str(source)] = ((str(target), str(source)), (str(relation),))
+            if not prefixes:
+                return ()
+        else:
+            prefixes = {anchor: ((anchor,), ()) for anchor in anchors}
+        results: dict[str, GraphExpansionHit] = {}
+        together = (
+            not requested
+            and len(prefixes) > 1
+            and any(token in value for token in ("一起", "同时", "合影", "合照", "共同出现", "together"))
+        )
+        if together:
+            # Intersect authoritative identity edges BEFORE the delivery limit.
+            # Independently truncating each person's photos loses later matches.
+            with self._database.connect() as connection:
+                shared = connection.execute(
+                    "SELECT e.source_id,n.label FROM memory_graph_edges e "
+                    "JOIN memory_graph_nodes n ON n.scope_id=e.scope_id AND n.id=e.source_id "
+                    "WHERE e.scope_id=? AND e.relation='asset_mentions_confirmed_entity' "
+                    "AND e.target_id IN (" + ",".join("?" for _ in prefixes) + ") "
+                    "GROUP BY e.source_id HAVING COUNT(DISTINCT e.target_id)=? "
+                    "ORDER BY e.source_id LIMIT ?",
+                    (scope_id, *prefixes, len(prefixes), limit),
+                ).fetchall()
+            first = next(iter(prefixes))
+            return tuple(
+                GraphExpansionHit(
+                    asset_id=str(node).removeprefix("asset:"),
+                    score=1.0,
+                    hops=1,
+                    path=(first, str(node)),
+                    relations=("asset_mentions_confirmed_entity",),
+                    labels=(labels_by_id.get(first, first), str(label)),
+                    edge_statements=tuple(
+                        f"{label} --asset_mentions_confirmed_entity--> {labels_by_id.get(person, person)}"
+                        for person in prefixes
+                    ),
+                )
+                for node, label in shared
+            )
+        for anchor, (prefix, relations) in prefixes.items():
+            prefix_statements = (
+                (
+                    f"{labels_by_id.get(prefix[1], prefix[1])} 是 "
+                    f"{labels_by_id.get(prefix[0], prefix[0])} 的 {relations[0].split(':', 1)[1]}",
+                )
+                if relations
+                else ()
+            )
+            anchor_hits = self.expand_assets(
+                (),
+                scope_id=scope_id,
+                max_hops=2,
+                limit=limit,
+                intent="identity",
+                seed_node_ids=(anchor,),
+            )
+            for hit in anchor_hits:
+                results.setdefault(
+                    hit.asset_id,
+                    GraphExpansionHit(
+                        asset_id=hit.asset_id,
+                        score=hit.score,
+                        hops=hit.hops + len(relations),
+                        path=(*prefix[:-1], *hit.path),
+                        relations=(*relations, *hit.relations),
+                        labels=(*(labels_by_id.get(node, node) for node in prefix[:-1]), *hit.labels),
+                        edge_statements=(*prefix_statements, *hit.edge_statements),
+                    ),
+                )
+        return tuple(sorted(results.values(), key=lambda hit: (-hit.score, hit.hops, hit.asset_id))[:limit])
+
     def expand_assets(
         self,
         seed_asset_ids: Sequence[str],
@@ -317,8 +439,16 @@ class SqliteMemoryGraphRepository:
         limit: int,
         intent: str = "general",
         direction: str = "",
+        seed_node_ids: Sequence[str] = (),
     ) -> Sequence[GraphExpansionHit]:
-        seeds = tuple(dict.fromkeys(f"asset:{asset_id}" for asset_id in seed_asset_ids if asset_id))
+        seeds = tuple(
+            dict.fromkeys(
+                (
+                    *(f"asset:{asset_id}" for asset_id in seed_asset_ids if asset_id),
+                    *seed_node_ids,
+                )
+            )
+        )
         if not seeds or max_hops < 1 or limit < 1:
             return ()
 
@@ -381,18 +511,33 @@ class SqliteMemoryGraphRepository:
                         "observation_semantic_similar",
                     }
                     hierarchy = relation in {
+                        "text_refers_to_event",
                         "asset_derived_from_asset",
                         "event_contains_asset",
                         "event_contains_observation",
                         "event_source_asset",
                         "observation_of_asset",
                     }
+                    if intent == "identity" and relation not in {
+                        "asset_mentions_confirmed_entity",
+                        "event_has_entity",
+                        "event_contains_asset",
+                        "event_source_asset",
+                        "asset_derived_from_asset",
+                    }:
+                        continue
+                    if object_edge and intent not in {"object", "action"}:
+                        continue
                     # hpq: 因果边不参加普通检索，且只信 >=0.60 的推断。
                     if causal and (weight < 0.60 or intent not in {"causal", "action", "multi_hop"}):
                         continue
                     if intent == "causal" and not (causal or hierarchy):
                         continue
-                    if intent == "temporal" and not (temporal or hierarchy):
+                    if (
+                        intent == "temporal"
+                        and not (temporal or hierarchy)
+                        and relation != "text_time_candidate"
+                    ):
                         continue
                     if intent == "object" and (causal or temporal):
                         continue
@@ -465,9 +610,49 @@ class SqliteMemoryGraphRepository:
                 # Keep the most promising 512 frontier nodes for the next hop.
                 frontier = dict(sorted(next_frontier.items(), key=lambda item: (-item[1][0], item[0]))[:512])
 
-        return tuple(
+        ordered = tuple(
             sorted(
                 candidates.values(),
                 key=lambda item: (-item.score, item.hops, item.asset_id),
             )[:limit]
+        )
+        path_nodes = tuple({node for hit in ordered for node in hit.path})
+        if not path_nodes:
+            return ordered
+        with self._database.connect() as connection:
+            labels = dict(
+                connection.execute(
+                    "SELECT id,label FROM memory_graph_nodes WHERE scope_id=? AND id IN ("
+                    + ",".join("?" for _ in path_nodes)
+                    + ")",
+                    (scope_id, *path_nodes),
+                ).fetchall()
+            )
+            directed = {
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT source_id,target_id,relation FROM memory_graph_edges "
+                    "WHERE scope_id=? AND source_id IN ("
+                    + ",".join("?" for _ in path_nodes)
+                    + ") AND target_id IN ("
+                    + ",".join("?" for _ in path_nodes)
+                    + ")",
+                    (scope_id, *path_nodes, *path_nodes),
+                )
+            }
+
+        def statements(hit: GraphExpansionHit) -> tuple[str, ...]:
+            result = []
+            for left, right, relation in zip(hit.path, hit.path[1:], hit.relations, strict=False):
+                source, target = (left, right) if (left, right, relation) in directed else (right, left)
+                result.append(f"{labels.get(source, source)} --{relation}--> {labels.get(target, target)}")
+            return tuple(result)
+
+        return tuple(
+            replace(
+                hit,
+                labels=tuple(labels.get(node, node) for node in hit.path),
+                edge_statements=statements(hit),
+            )
+            for hit in ordered
         )

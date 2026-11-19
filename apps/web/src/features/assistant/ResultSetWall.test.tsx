@@ -34,6 +34,16 @@ function retrievalEvent(overrides: Partial<AssistantProgressEvent> = {}): Assist
 afterEach(() => cleanup());
 
 describe("结果集缩略图墙", () => {
+  it("文本候选显示正文链接，不请求图片缩略图", () => {
+    const event = retrievalEvent({ payload: { tool: "search_memories", result: {
+      result_set_id: "rs_text", asset_ids: ["text1"], total: 1,
+      preview: [{ handle: "photo_1", source_kind: "text", media_kind: "text" }],
+    } } });
+    render(<ResultSetWall events={[event]} scopeId="album1" />);
+    expect(screen.getByRole("link", { name: "查看文本证据" }).getAttribute("href"))
+      .toContain("rs_text/photo?handle=photo_1");
+    expect(screen.queryAllByRole("img")).toHaveLength(0);
+  });
   it("渲染当前页的缩略图，并给出「还有 N 张 · 看下一页」", () => {
     const onNextPage = vi.fn();
     render(

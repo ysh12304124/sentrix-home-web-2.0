@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -298,6 +298,9 @@ class Observation:
     # 那两个纯规则就只能靠字符串约定去取字段了。
     facts: tuple[ObservationFact, ...] = ()
     revision: int = 1
+    text_content: str = ""
+    external_id: str = ""
+    source_metadata: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.revision < 1:

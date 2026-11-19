@@ -19,7 +19,6 @@ from sentrix.domain.retrieval.scheme import VISUAL_SPACE
 
 log = logging.getLogger("sentrix.memories.keyframe_graph")
 
-HUB_THRESHOLD = 30
 OBJECTS_PER_FRAME = 4
 PAIR_WINDOW = 8
 RELATION_WINDOW_SECONDS = 60.0
@@ -140,7 +139,6 @@ def project_keyframe_graph(
     latest_observations: Mapping[str, Observation],
     scene_by_asset: Mapping[str, str],
     vectors: VectorRepository | None,
-    add_node: Callable[[str, str, Mapping[str, object]], None],
     add_edge: Callable[[str, str, str, float, Mapping[str, object], str], None],
 ) -> KeyframeGraphStats:
     """旧 hpq 的时序、对象、关系与视觉近邻策略在 2.0 端口上的等价投影。"""
@@ -196,34 +194,8 @@ def project_keyframe_graph(
             for label, matches in sorted(labels_to_frames.items()):
                 if kind == "relation" and len(matches) < 2:
                     continue
-                if len(matches) >= HUB_THRESHOLD:
-                    # 旧版 hub 阈值仍为 30；按源视频隔离，避免同名关系跨视频误连。
-                    hub_id = f"{kind}_hub:{video_id}:{label}"
-                    add_node(
-                        hub_id,
-                        kind,
-                        {"source_video_id": video_id, "label": label, "frame_count": len(matches)},
-                    )
-                    for frame in matches:
-                        relation = f"frame_mentions_{kind}"
-                        weight = 0.9 if kind == "object" else 0.7
-                        add_edge(
-                            frame.node_id,
-                            hub_id,
-                            relation,
-                            weight,
-                            {
-                                "sub_type": "MENTIONS_OBJECT" if kind == "object" else "SHARES_RELATION",
-                                "label": label,
-                                "evidence_tier": "supported",
-                            },
-                            label,
-                        )
-                        if kind == "object":
-                            object_count += 1
-                        else:
-                            relation_count += 1
-                    continue
+                # No object/relation hub vertices: emit bounded media-to-media links.
+                # A repeated label is only a shared observation, never identity/causality.
                 for index, left in enumerate(matches):
                     for right in matches[index + 1 : index + 1 + PAIR_WINDOW]:
                         if kind == "relation" and right.timestamp - left.timestamp > RELATION_WINDOW_SECONDS:
@@ -236,7 +208,7 @@ def project_keyframe_graph(
                             relation,
                             weight,
                             {
-                                "sub_type": "SAME_ENTITY" if kind == "object" else "SHARES_RELATION",
+                                "sub_type": "SHARED_OBJECT_LABEL" if kind == "object" else "SHARES_RELATION",
                                 "label": label,
                                 "evidence_tier": "supported",
                             },

@@ -20,6 +20,7 @@ from sentrix.application.assistant.run_turn import (
     TurnAlreadyClaimedError,
     TurnNotFoundError,
     TurnRequest,
+    _tool_status_text,
 )
 from sentrix.application.assistant.tools import ToolOutcome
 from sentrix.domain.assistant.models import (
@@ -41,6 +42,46 @@ from sentrix.infrastructure.persistence.repositories.conversations import (
 from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepository
 
 QUESTION = "给我看看在海边的照片"
+
+
+def test_email_memory_search_progress_is_not_mislabeled_as_photo_results() -> None:
+    outcome = ToolOutcome(
+        observation={"total": 2},
+        model_visible={
+            "preview": [
+                {"media_kind": "text", "source_kind": "text", "source_type": "email"},
+                {"media_kind": "text", "source_kind": "text", "source_type": "email"},
+            ]
+        },
+    )
+
+    assert _tool_status_text("search_memories", outcome) == "结果集里共有 2 条邮件/文本记忆。"
+
+
+def test_text_only_turn_redirects_legacy_media_search_to_text_retrieval(env) -> None:
+    """A model emitting the old media tool must not bypass text-only retrieval."""
+    _conversations, _turns, conversation, _db = env
+    model = ScriptedModel(
+        [tool_call("search_memories", "c1", query="BMVC accommodation"), final("邮件中找到金额。")],
+        planner=planner_reply(
+            "text_content",
+            goal="检索邮件中的住宿金额",
+            value_type="amount",
+        ),
+    )
+    toolbox = StubToolbox(
+        {
+            "search_text_memories": SEARCH_OK,
+            FINAL_ANSWER_TOOL: DELIVER_OK,
+        }
+    )
+    run_turn = build(env, model, toolbox)
+
+    run_turn.run(start(run_turn, conversation))
+
+    assert toolbox.calls[0][0] == "search_text_memories"
+    assert "search_memories" not in model.tool_sets[0]
+    assert "search_text_memories" in model.tool_sets[0]
 
 
 # ---- 假件 -------------------------------------------------------------------
@@ -871,7 +912,11 @@ def test_a_third_search_is_refused_after_one_retry(env):
     run_turn.run(turn_id)
 
     assert [name for name, _ in toolbox.calls] == ["search_memories", "search_memories"]
-    refusals = [event for _seq, _attempt, event in turns.events_after(turn_id, 0) if event.status.value == "denied"]
+    refusals = [
+        event
+        for _seq, _attempt, event in turns.events_after(turn_id, 0)
+        if event.status.value == "denied"
+    ]
     assert refusals and "检索额度" in refusals[0].text
 
 

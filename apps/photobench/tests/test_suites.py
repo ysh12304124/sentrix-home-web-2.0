@@ -931,6 +931,7 @@ def test_resume_records_lineage_and_explicit_configured_product_revision(tmp_pat
     captured = []
     gate = threading.Event()
     saved = _cancelled_state()
+    saved["phases"] = {"text_memory_import": {"status": "done"}}
     saved["runtime_snapshot"] = {
         "sentrix_url": "http://original:8291",
         "model_base_url": "http://original:8100/v1",
@@ -952,6 +953,7 @@ def test_resume_records_lineage_and_explicit_configured_product_revision(tmp_pat
         request = captured[0]
         assert result["resumed_from"] == "run-1"
         assert request.repair_missing_judges is True
+        assert request.text_import_already_completed is True
         assert request.resume_context["source_runtime_snapshot"]["required_build_revision"] == "old-product"
         assert request.runtime_snapshot.connection()["required_build_revision"] == "reviewed-product"
         assert request.runtime_snapshot.connection()["embedding"] == {"mode": "original"}

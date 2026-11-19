@@ -137,6 +137,26 @@ def test_qa_dataset_requires_both_parameters(client: TestClient):
         assert response.json() == {"error": "album_id and qa_set are required"}
 
 
+def test_email_qa_browsing_preserves_email_ids_without_a_memory_api(client: TestClient):
+    root = client.app.state.container.albums._data_root
+    _write(
+        root / "album-a/qa/plain.jsonl",
+        {
+            "qa_id": "email-q",
+            "question": "Which invoice?",
+            "answer": "Invoice 1",
+            "retrieval_media_refs": [{"media_type": "email", "media_id": "email202401010001"}],
+        },
+    )
+    _with_http(client, {})
+    response = client.get("/api/v1/qa-dataset?album_id=album-a&qa_set=qa-plain")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["media_resolution"]["status"] == "email_memory_pending"
+    assert body["items"][0]["retrieval_media_refs"][0]["media_type"] == "email"
+    assert body["items"][0]["retrieval_media_refs"][0]["media_id"] == "email202401010001"
+
+
 def test_qa_dataset_reports_the_three_missing_things_apart(client: TestClient):
     """相册 / qa_set / qa 文件是三条不同的 404——前端对它们的提示不同。"""
     album = client.get("/api/v1/qa-dataset?album_id=nope&qa_set=qa-1")
@@ -203,6 +223,36 @@ def test_qa_dataset_without_media_refs_does_not_touch_sentrix(client: TestClient
         "ambiguous_count": 0,
     }
     assert http.calls == []
+
+
+def test_email_qa_resolves_later_asset_pages_in_the_selected_album(client: TestClient):
+    root = client.app.state.container.albums._data_root
+    _write(
+        root / "album-a/qa/plain.jsonl",
+        {
+            "qa_id": "email-q",
+            "question": "Which invoice?",
+            "retrieval_media_refs": [{"media_type": "email", "media_id": "email202401010001"}],
+        },
+    )
+    http = _with_http(
+        client,
+        {
+            "memory-spaces": {"spaces": [{"id": "scope-1", "name": "PhotoBench-album-a"}]},
+            "offset=1": {
+                "items": [{"id": "mail-1", "file_name": "email202401010001.txt", "media_type": "text"}]
+            },
+            "assets": {
+                "items": [{"id": "other", "file_name": "photo.jpg", "media_type": "image"}],
+                "total": 2,
+            },
+        },
+    )
+    body = client.get("/api/v1/qa-dataset?album_id=album-a&qa_set=qa-plain").json()
+    assert body["media_resolution"]["status"] == "resolved"
+    assert body["media_resolution"]["resolved_count"] == 1
+    assert body["items"][0]["retrieval_media_refs"][0]["asset_id"] == "mail-1"
+    assert "scope_id=scope-1&offset=1" in http.calls[-1][0]
 
 
 def test_qa_dataset_survives_an_unreachable_sentrix(client: TestClient):

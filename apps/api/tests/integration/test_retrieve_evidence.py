@@ -339,6 +339,23 @@ def test_graph_path_candidate_uses_reserved_tail_slot(library):
     assert "asset_graph_only" in [hit.asset_id for hit in result.hits]
 
 
+def test_explicit_graph_paths_are_not_reduced_to_one_tail_slot(library):
+    class AnchoredGraph:
+        def execute(self, **kwargs):
+            return GraphSearchResult(
+                anchored=True,
+                hits=tuple(
+                    CandidateHit(asset_id, "graph", rank, 1.0)
+                    for rank, asset_id in enumerate(("asset_c", "asset_a"), 1)
+                ),
+            )
+
+    result = build(library, graph=AnchoredGraph()).execute(
+        EvidenceRequest(text="海边", scope_id=SCOPE, limit=2)
+    )
+    assert [item.asset_id for item in result.hits] == ["asset_c", "asset_a"]
+
+
 def test_graph_result_without_legacy_provenance_uses_reserved_slot(library):
     """新接口无需旧版 provenance 字段，也能保留图候选轨迹。"""
     result = build(library, graph=DirectLineageGraph()).execute(
@@ -387,9 +404,7 @@ def test_utility_trace_keeps_every_candidate_without_expanding_model_preview(lib
         def score(self, question, image):
             return self.score_with_trace(question, image)["score"]
 
-    result = build(library, utility=Utility()).execute(
-        EvidenceRequest(text="海边", scope_id=SCOPE, limit=1)
-    )
+    result = build(library, utility=Utility()).execute(EvidenceRequest(text="海边", scope_id=SCOPE, limit=1))
     trace = next(t for t in result.channel_trace if t.channel == "utility")
     assert len(trace.all_scores) == trace.candidate_count
     assert len(trace.all_scores) > len(result.hits)

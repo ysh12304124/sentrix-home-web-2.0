@@ -431,7 +431,12 @@ export function AssistantPanel({
                     <li key={photo.handle}>
                       {/* **点图片是放大**，不是新标签打开原文件——后者遇到 HEIC
                           或不认识的 MIME 会被浏览器直接下载。 */}
-                      <button
+                      {photo.media_type === "text" || photo.media_type === "email" || /\.(txt|md)$/i.test(photo.file_name) ? (
+                        <a href={`/api/v1/assets/${encodeURIComponent(photo.asset_id)}/file`}
+                          target="_blank" rel="noreferrer" className="button secondary">
+                          查看文本证据 · {photo.file_name}
+                        </a>
+                      ) : <button
                         type="button"
                         className="assistant-photo-open"
                         onClick={() =>
@@ -446,7 +451,7 @@ export function AssistantPanel({
                           alt="相关照片"
                           loading="lazy"
                         />
-                      </button>
+                      </button>}
                     </li>
                   ))}
                 </ul>

@@ -552,6 +552,10 @@ class RunSuites:
             run_id=new_run_id,
             mode="reuse",
             scope_id=scope_id,
+            text_import_already_completed=(
+                str((saved.get("phases") or {}).get("text_memory_import", {}).get("status") or "")
+                == "done"
+            ),
             runtime_framework=str(saved.get("runtime_framework") or ""),
             judge_url=resumed_judge.judge_url,
             judge_model=resumed_judge.judge_model,

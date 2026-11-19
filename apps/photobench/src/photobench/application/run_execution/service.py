@@ -61,6 +61,7 @@ from photobench.application.run_execution.profile_scoring import ProfileScoring,
 from photobench.application.run_execution.state import RunState
 from photobench.config import default_qa_concurrency
 from photobench.domain.datasets.ports import AlbumSource
+from photobench.domain.datasets.qa_media import qa_media_refs
 from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
 from photobench.domain.deploy.ports import (
     BENCHMARK_GATEWAY_TOKEN_ENV,
@@ -245,6 +246,9 @@ class RunRequest:
     #: 1.0 的 ``resume_state``（``:7560-7564`` 把整份旧 state 塞进新 run），
     #: 2.0 只带 items 那一格——其余字段（相位、硬件快照）属于那一次运行，不该被覆盖。
     prior_items: tuple[Mapping[str, Any], ...] = ()
+    #: Resume may reuse an already-imported, unchanged text-memory scope. In that case
+    #: don't re-index thousands of records and rebuild the same graph before every retry.
+    text_import_already_completed: bool = False
     repair_missing_judges: bool = False
     resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
@@ -521,6 +525,7 @@ class RunExecution:
             phases: list[tuple[str, Callable[[RunState, RunRequest], None]]] = [
                 ("model_deploy", self._phase_model_deploy),
                 ("scope_setup", self._phase_scope_setup),
+                ("text_memory_import", self._phase_text_memory_import),
                 ("qa_eval", self._phase_qa_eval),
                 ("gpu_metrics", self._phase_gpu_metrics),
                 ("aggregate", self._phase_aggregate),
@@ -532,6 +537,7 @@ class RunExecution:
                 ("identity_seed", self._phase_identity_seed),
                 ("photo_import", self._phase_photo_import),
                 ("pipeline_processing", self._phase_processing),
+                ("text_memory_import", self._phase_text_memory_import),
                 ("qa_eval", self._phase_qa_eval),
                 ("gpu_metrics", self._phase_gpu_metrics),
                 ("aggregate", self._phase_aggregate),
@@ -603,8 +609,13 @@ class RunExecution:
                 if request.mode in {"full", "build"}:
                     build_phases = state.get("phases") or {}
                     build_ready = all(
-                        (build_phases.get(key) or {}).get("status") == "done"
-                        for key in ("identity_seed", "photo_import", "pipeline_processing")
+                        (build_phases.get(key) or {}).get("status") in {"done", "skipped"}
+                        for key in (
+                            "identity_seed",
+                            "photo_import",
+                            "pipeline_processing",
+                            "text_memory_import",
+                        )
                     )
                     state.set(
                         "scope_build",
@@ -715,6 +726,11 @@ class RunExecution:
             ),
             "qa_set": request.qa_set,
             "qa_count": len(snapshot["rows"]),
+            "email_only_qa": bool(
+                manifest.get("text_memories")
+                and (email_refs := qa_media_refs(snapshot["rows"]))
+                and all(ref.get("media_type") == "email" for ref in email_refs.values())
+            ),
             "scope_id": scope_id,
             "scope_name": scope_id,
             "sentrix_url": request.sentrix_url,
@@ -1231,6 +1247,9 @@ class RunExecution:
         但那条错误必须留在 run.json 里，否则「模型答不出明明」与「明明根本没入库」
         看起来一模一样。
         """
+        if state.get("email_only_qa"):
+            state.phase_done("identity_seed", {"status": "skipped", "reason": "email_only_qa"})
+            return
         started = time.perf_counter()
         scope_id = str(state.get("scope_id"))
         manifest = self.albums.manifest(str(state.get("album_id")))
@@ -1311,6 +1330,9 @@ class RunExecution:
         （``import_directories``），而 manifest 里缺失的文件由
         ``input_integrity.missing_files`` 单独记录。
         """
+        if state.get("email_only_qa"):
+            state.phase_done("photo_import", {"status": "skipped", "reason": "email_only_qa"})
+            return
         started = time.perf_counter()
         state.set("current_phase", "photo_import")
         scope_id = str(state.get("scope_id"))
@@ -1612,6 +1634,9 @@ class RunExecution:
         批次翻转落地（上传与流水线重叠）。2.0 里这个窗口更小，但**判据去掉它就会
         在状态行恰好还没写的瞬间收工**，而那正是这段代码唯一要防的事。
         """
+        if state.get("email_only_qa"):
+            state.phase_done("pipeline_processing", {"status": "skipped", "reason": "email_only_qa"})
+            return
         if getattr(self.client, "supports_explicit_pipeline", False):
             self._phase_processing_explicit(state, request)
             return
@@ -1949,6 +1974,158 @@ class RunExecution:
             state.phase_done("pipeline_processing", phase_result)
         if not asset_ids:
             raise RuntimeError("导入后没有可处理的源资产，已停止测评；请修复导入错误后重新构建相册")
+
+    def _phase_text_memory_import(self, state: RunState, request: RunRequest) -> None:
+        """导入 manifest 声明的统一文本记忆（ATM-Bench 的邮件），并在最后一批构建图。"""
+        started = time.perf_counter()
+        if request.text_import_already_completed:
+            state.phase_done(
+                "text_memory_import",
+                {"status": "skipped", "reason": "reusing_verified_import_from_source_run"},
+            )
+            return
+        album_id = str(state.get("album_id"))
+        state.record_phase(
+            "text_memory_import",
+            "progress",
+            {"stage": "reading_source", "total": 0, "processed": 0, "batches": 0},
+        )
+        self._persist(str(state.get("run_id")), state)
+        manifest = self.albums.manifest(album_id)
+        relative = str(manifest.get("text_memories") or "").strip()
+        if not relative:
+            state.phase_done(
+                "text_memory_import",
+                {"status": "skipped", "reason": "dataset_has_no_text_memories"},
+            )
+            return
+        if not hasattr(self.client, "import_text_memories"):
+            raise RuntimeError("当前 Sentrix 客户端不支持统一文本记忆导入，无法执行邮件 QA")
+
+        try:
+            rows = json.loads(self.albums.read_file(album_id, relative))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"文本记忆数据集无法解析：{relative}: {exc}") from exc
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(f"文本记忆数据集为空或格式错误：{relative}")
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError(f"文本记忆数据集包含非对象记录：{relative}")
+            items.append(
+                {
+                    "external_id": row.get("id"),
+                    "recorded_at": row.get("timestamp") or "",
+                    "summary": row.get("short_summary") or "",
+                    "text": row.get("detail") or "",
+                    "metadata": {"source_type": "email"},
+                }
+            )
+
+        scope_id = str(state.get("scope_id"))
+        total = len(items)
+        imported = skipped = indexed = 0
+        batches = (total + 499) // 500
+        state.record_phase(
+            "text_memory_import",
+            "progress",
+            {
+                "stage": "memory_indexing",
+                "total": total,
+                "processed": 0,
+                "batches": batches,
+                "current_batch": 0,
+                "imported": 0,
+                "skipped": 0,
+                "indexed": 0,
+                "graph_status": "pending" if request.graph_enabled else "disabled",
+            },
+        )
+        self._persist(str(state.get("run_id")), state)
+        for start in range(0, total, 500):
+            if state.cancelled:
+                raise RunCancelledError("cancelled during text_memory_import")
+            batch = items[start : start + 500]
+            is_last_batch = start + len(batch) >= total
+            state.record_phase(
+                "text_memory_import",
+                "progress",
+                {
+                    "stage": (
+                        "final_batch_graph_building"
+                        if is_last_batch and request.graph_enabled
+                        else "memory_indexing"
+                    ),
+                    "total": total,
+                    "processed": start,
+                    "batches": batches,
+                    "current_batch": start // 500 + 1,
+                    "imported": imported,
+                    "skipped": skipped,
+                    "indexed": indexed,
+                    "graph_status": (
+                        "running"
+                        if is_last_batch and request.graph_enabled
+                        else "pending"
+                        if request.graph_enabled
+                        else "disabled"
+                    ),
+                },
+            )
+            self._persist(str(state.get("run_id")), state)
+            result = self.client.import_text_memories(
+                scope_id=scope_id,
+                items=batch,
+                rebuild_graph=request.graph_enabled and is_last_batch,
+                timeout=max(600, request.import_timeout),
+            )
+            if result.get("status") != "completed" or result.get("errors"):
+                first_error = (result.get("errors") or [{}])[0]
+                raise RuntimeError(
+                    "邮件记忆导入/索引未完整完成："
+                    + str(first_error.get("error") or result.get("graph_error") or result.get("status"))
+                )
+            imported += int(result.get("imported") or 0)
+            skipped += int(result.get("skipped") or 0)
+            indexed += int(result.get("indexed") or 0)
+            progress_state = {
+                "stage": "completed" if is_last_batch else "memory_indexing",
+                "total": total,
+                "processed": min(total, start + len(batch)),
+                "batches": batches,
+                "current_batch": start // 500 + 1,
+                "imported": imported,
+                "skipped": skipped,
+                "indexed": indexed,
+                "graph_status": (
+                    result.get("graph_status")
+                    if is_last_batch
+                    else "pending"
+                    if request.graph_enabled
+                    else "disabled"
+                ),
+            }
+            state.record_phase(
+                "text_memory_import",
+                "progress",
+                progress_state,
+            )
+            self._persist(str(state.get("run_id")), state)
+
+        state.phase_done(
+            "text_memory_import",
+            {
+                "source": relative,
+                "memory_type": "text",
+                "source_type": "email",
+                "total": total,
+                "imported": imported,
+                "skipped": skipped,
+                "indexed": indexed,
+                "graph_status": result.get("graph_status"),
+                "total_seconds": round(time.perf_counter() - started, 1),
+            },
+        )
 
     @staticmethod
     def _stall_timeout() -> int:

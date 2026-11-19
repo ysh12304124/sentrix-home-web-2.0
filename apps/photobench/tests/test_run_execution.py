@@ -395,6 +395,7 @@ def test_the_chain_runs_every_phase_in_order_and_completes():
         "identity_seed",
         "photo_import",
         "pipeline_processing",
+        "text_memory_import",
         "qa_eval",
         "gpu_metrics",
         "aggregate",
@@ -406,6 +407,7 @@ def test_the_chain_runs_every_phase_in_order_and_completes():
         "identity_seed": "done",
         "photo_import": "done",
         "pipeline_processing": "done",
+        "text_memory_import": "skipped",
         "qa_eval": "done",
         "gpu_metrics": "done",
         "aggregate": "done",
@@ -418,6 +420,102 @@ def test_the_chain_runs_every_phase_in_order_and_completes():
     assert state["items"][0]["judge_status"] == "pending"
     assert state["status"] == "completed"
     assert writer.last_state()["run_id"] == "run_test"
+
+
+def test_email_memories_import_before_qa_with_source_ids_preserved():
+    manifest = {**_manifest(), "text_memories": "text/emails.json"}
+    albums = FakeAlbums(
+        manifest=manifest,
+        files={
+            "text/emails.json": (
+                b'[{"id":"email202401010001","timestamp":"2024-01-01 12:00:00",'
+                b'"short_summary":"Hotel booking","detail":"Confirmed hotel booking"}]'
+            )
+        },
+    )
+    execution, client, *_ = _execution(albums=albums)
+    state = RunState({"run_id": "run_email", "album_id": ALBUM, "scope_id": "scope_email"})
+    execution._phase_text_memory_import(state, _request(graph_enabled=True))
+    call = next(kwargs for name, kwargs in client.calls if name == "import_text_memories")
+    assert call["scope_id"] == "scope_email"
+    assert call["items"] == [
+        {
+            "external_id": "email202401010001",
+            "recorded_at": "2024-01-01 12:00:00",
+            "summary": "Hotel booking",
+            "text": "Confirmed hotel booking",
+            "metadata": {"source_type": "email"},
+        }
+    ]
+    assert call["rebuild_graph"] is True
+    assert state.data["phases"]["text_memory_import"]["status"] == "done"
+    progress = state.data["phases"]["text_memory_import"]["progress"]
+    assert progress["stage"] == "completed"
+    assert progress["processed"] == progress["total"] == 1
+    assert progress["imported"] == progress["indexed"] == 1
+    assert progress["graph_status"] == "completed"
+
+
+def test_resumed_run_skips_verified_completed_text_memory_import():
+    albums = FakeAlbums(
+        manifest={"album_id": ALBUM, "album_name": "x", "text_memories": "emails.json"},
+        files={"emails.json": b'[{"id":"email1","detail":"Body"}]'},
+    )
+    execution, client, *_ = _execution(albums=albums)
+    state = RunState({"run_id": "run_email_resume", "album_id": ALBUM, "scope_id": "scope_email"})
+    execution._phase_text_memory_import(
+        state, _request(text_import_already_completed=True, graph_enabled=True)
+    )
+    assert state.data["phases"]["text_memory_import"]["status"] == "skipped"
+    assert (
+        state.data["phases"]["text_memory_import"]["reason"]
+        == "reusing_verified_import_from_source_run"
+    )
+    assert "import_text_memories" not in client.call_names()
+
+
+def test_email_import_respects_graph_disabled_setting():
+    albums = FakeAlbums(
+        manifest={**_manifest(), "text_memories": "text/emails.json"},
+        files={"text/emails.json": b'[{"id":"email1","detail":"Body"}]'},
+    )
+    execution, client, *_ = _execution(albums=albums)
+    state = RunState({"run_id": "run_email", "album_id": ALBUM, "scope_id": "scope_email"})
+    execution._phase_text_memory_import(state, _request(graph_enabled=False))
+    call = next(kwargs for name, kwargs in client.calls if name == "import_text_memories")
+    assert call["rebuild_graph"] is False
+
+
+def test_email_only_qa_skips_unrelated_media_import_and_pipeline():
+    manifest = {**_manifest(), "text_memories": "text/emails.json"}
+    rows = [
+        {
+            "qa_id": "email-q1",
+            "question": "What was confirmed?",
+            "answer": "Hotel booking",
+            "retrieval_media_refs": [{"media_type": "email", "media_id": "email202401010001"}],
+        }
+    ]
+    albums = FakeAlbums(
+        manifest=manifest,
+        qa_rows=rows,
+        files={"text/emails.json": b'[{"id":"email202401010001","detail":"Confirmed hotel booking"}]'},
+    )
+    execution, client, *_ = _execution(albums=albums)
+    state_data = execution._initial_state("run_email", _request(), manifest, "scope_email", ALBUM)
+    assert state_data["email_only_qa"] is True
+    state = RunState(state_data)
+    execution._phase_identity_seed(state, _request())
+    execution._phase_photo_import(state, _request())
+    execution._phase_processing(state, _request())
+    execution._phase_text_memory_import(state, _request())
+    assert state.data["phases"]["identity_seed"]["status"] == "skipped"
+    assert state.data["phases"]["photo_import"]["status"] == "skipped"
+    assert state.data["phases"]["pipeline_processing"]["status"] == "skipped"
+    assert state.data["phases"]["text_memory_import"]["status"] == "done"
+    assert "seed_person" not in client.call_names()
+    assert "import_assets" not in client.call_names()
+    assert "process_pipeline" not in client.call_names()
 
 
 def test_the_scope_is_registered_as_benchmark_before_any_identity_or_assets():
@@ -1674,7 +1772,7 @@ def test_qa_concurrency_never_exceeds_the_endpoint_limit(monkeypatch):
 
 
 def test_reuse_skips_the_import_phases_and_keeps_the_existing_scope():
-    """reuse 只跑绑定与问答收尾——导入那三个相位的产物上一次已经落在那个 scope 里了。
+    """reuse 不重建媒体；声明了文本记忆的数据集会幂等补齐邮件后再答题。
 
     1.0 的 reuse 复用已存在的 scope（读侧 ``_build_reuse_bases``），相位是
     ``scope_attach / qa_eval / aggregate``。2.0 自 S9b-2 起只接 full，
@@ -1690,10 +1788,10 @@ def test_reuse_skips_the_import_phases_and_keeps_the_existing_scope():
     assert state["scope_id"] == "PhotoBench-20260101-000000-album-qwen"
     # 1.0 的形状：``existing_scope_id`` 是调用方要求复用的那个，与实际的 ``scope_id`` 分开记。
     assert state["existing_scope_id"] == "PhotoBench-20260101-000000-album-qwen"
-    # 导入三个相位**一个都不该出现**；绑定与收尾四个都在。
+    # 媒体导入三个相位**一个都不该出现**；无邮件的数据集的文本导入相位会快速跳过。
     for skipped in ("identity_seed", "photo_import", "pipeline_processing"):
         assert skipped not in state["phases"], skipped
-    for run_phase in ("scope_setup", "qa_eval", "gpu_metrics", "aggregate"):
+    for run_phase in ("scope_setup", "text_memory_import", "qa_eval", "gpu_metrics", "aggregate"):
         assert run_phase in state["phases"], run_phase
 
 

@@ -241,9 +241,11 @@ def numeric_ms(value: Any) -> float | None:
 def infer_media_type(value: object, explicit: object = None) -> str:
     """1.0 ``:936``。"""
     media_type = str(explicit or "").strip().lower()
-    if media_type in {"image", "video"}:
+    if media_type in {"image", "video", "email"}:
         return media_type
     text = str(value or "").strip()
+    if re.fullmatch(r"email\d+(?:\.txt)?", Path(text).name, re.I):
+        return "email"
     suffix = Path(text.split("?", 1)[0].split("#", 1)[0]).suffix.lower()
     if suffix in VIDEO_EXTENSIONS or re.fullmatch(r"video-\d+", Path(text).name, re.I):
         return "video"
@@ -254,7 +256,7 @@ def media_key(media_type: object, media_id: object) -> tuple[str, str]:
     """1.0 ``:947``。GT 与召回结果比对的稳定键。"""
     kind = infer_media_type(media_id, media_type)
     name = Path(str(media_id or "").split("?", 1)[0].split("#", 1)[0]).name
-    canonical = Path(name).stem if kind == "video" else name
+    canonical = Path(name).stem if kind in {"video", "email"} else name
     return kind, canonical.casefold()
 
 

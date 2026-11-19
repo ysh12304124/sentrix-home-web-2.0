@@ -29,6 +29,7 @@ from sentrix.api.routes import (
     assistant,
     corrections,
     diagnostics,
+    emails,
     facts,
     family,
     health,
@@ -43,6 +44,7 @@ from sentrix.api.routes import (
     relationships,
     search,
     spaces,
+    text,
     timeline,
     videos,
 )
@@ -204,6 +206,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1 = APIRouter(prefix="/api/v1", dependencies=[Depends(internal_call_guard)])
     v1.include_router(health.router)
     v1.include_router(corrections.router)
+    v1.include_router(emails.router)
+    v1.include_router(text.router)
     v1.include_router(media.router)
     v1.include_router(import_jobs.router)
     v1.include_router(internal.router)

@@ -43,6 +43,16 @@ describe("QaReviewCard · GT 媒体与问答气泡（1.0 App.vue:3703-3745）", 
     expect(container.querySelector(".answer-bubble")?.textContent).toContain("妈妈");
   });
 
+  it("邮件 QA 保留证据 ID，显示待接入提示而非图片", () => {
+    const { container } = render(<QaReviewCard item={{
+      ...WITH_GT,
+      retrieval_media_refs: [{ media_type: "email", media_id: "email202401010001" }],
+    }} index={0} />);
+    expect(screen.getByText("邮件证据 · 邮件记忆待接入")).not.toBeNull();
+    expect(screen.getByText("email202401010001")).not.toBeNull();
+    expect(container.querySelector("img, video")).toBeNull();
+  });
+
   it("无 GT：不渲染媒体面板，布局带 no-evidence，参考回答回退占位", () => {
     const { container } = render(<QaReviewCard item={WITHOUT_GT} index={0} />);
 

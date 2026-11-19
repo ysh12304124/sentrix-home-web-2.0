@@ -66,6 +66,16 @@ afterEach(() => {
 });
 
 describe("助手面板的历史回放", () => {
+  it("文本证据显示正文链接而不是图片缩略图", async () => {
+    const record = detail("text1", "会议在哪里", "海棠厅", "text-asset");
+    record.turns[0].attachments = [{ handle: "photo_1", asset_id: "text-asset",
+      file_name: "note.txt", media_type: "text" }];
+    vi.mocked(client.getConversation).mockResolvedValueOnce(record);
+    render(<AssistantPanel conversationId="text1" scopeId="album1" />);
+    const link = await screen.findByRole("link", { name: /查看文本证据/ });
+    expect(link.getAttribute("href")).toBe("/api/v1/assets/text-asset/file");
+    expect(screen.queryByRole("img", { name: "相关照片" })).toBeNull();
+  });
   it("切换会话时加载并渲染后端存下的消息与交付照片", async () => {
     vi.mocked(client.getConversation)
       .mockResolvedValueOnce(detail("c1", "去年夏天在海边", "找到了两张。", "a1"))

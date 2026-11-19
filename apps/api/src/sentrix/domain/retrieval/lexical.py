@@ -38,6 +38,7 @@ FIELD_SOURCES: tuple[tuple[str, str], ...] = (
     ("place", "place"),
     ("activity", "activity"),
     ("caption", "caption"),
+    ("text_content", "text_content"),
     ("object", "objects"),
     ("clothing", "clothing"),
     ("ocr", "ocr_text"),

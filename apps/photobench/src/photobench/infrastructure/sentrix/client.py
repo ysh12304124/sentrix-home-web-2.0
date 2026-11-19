@@ -189,7 +189,33 @@ class HttpxSentrixClient:
         return dict(
             self._http.request_json(
                 self._url("/pipeline/process"),
-                {"scope_id": scope_id, "asset_ids": list(asset_ids), "graph_enabled": graph_enabled},
+                {
+                    "scope_id": scope_id,
+                    "asset_ids": list(asset_ids),
+                    "graph_enabled": graph_enabled,
+                    "finalize": finalize,
+                },
+                "POST",
+                timeout,
+            )
+        )
+
+    def import_text_memories(
+        self,
+        *,
+        scope_id: str,
+        items: Sequence[Mapping[str, Any]],
+        rebuild_graph: bool,
+        timeout: int = 600,
+    ) -> dict[str, Any]:
+        return dict(
+            self._http.request_json(
+                self._url("/text/import"),
+                {
+                    "scope_id": scope_id,
+                    "items": [dict(item) for item in items],
+                    "rebuild_graph": rebuild_graph,
+                },
                 "POST",
                 timeout,
             )

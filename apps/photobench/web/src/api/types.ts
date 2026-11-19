@@ -19,7 +19,7 @@
 // 媒体
 // ---------------------------------------------------------------------------
 
-export type MediaType = "image" | "video";
+export type MediaType = "image" | "video" | "email";
 
 /** 一处媒体引用。1.0 `mediaRefs`（`App.vue:394`）与 run item 的 `*_media_refs` 同形。 */
 export interface MediaRef {
@@ -394,6 +394,7 @@ export interface Run {
   model_name?: string | null;
   endpoint_model?: string;
   graph_enabled?: boolean;
+  email_only_qa?: boolean;
   graph_baseline_run_id?: string | null;
   model_identity?: Record<string, unknown> | null;
   execution_budgets?: Record<string, unknown> | null;
@@ -873,8 +874,15 @@ export interface MemorySpace {
 /** 可复用基座（`build_reuse_bases`，`domain/runs/reuse.py`）。 */
 export interface ReuseBase {
   base_id: string;
+  run_id: string;
   album_id: string;
   model_profile: string;
+  model_name?: string;
+  qa_set?: string;
+  run_status?: string;
+  started_at?: string;
+  finished_at?: string;
+  graph_enabled?: boolean | null;
   scope_id: string;
   scope_name: string;
   created_at: string;

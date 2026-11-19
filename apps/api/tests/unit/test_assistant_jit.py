@@ -65,6 +65,20 @@ def test_a_missing_result_set_always_offers_search():
     assert "search_memories" in offered
 
 
+def test_email_requirements_offer_text_search_without_photo_search():
+    offered = names(
+        select_tools(
+            ledger_with(EvidenceType.EMAIL_TEXT),
+            has_result_set=False,
+            tools_exhausted=False,
+        )
+    )
+
+    assert "search_text_memories" in offered
+    assert "search_memories" not in offered
+    assert "inspect_photo" not in offered
+
+
 def test_the_photo_level_tools_wait_for_a_result_set():
     """三个照片级工具都要一个**来自当前结果集**的 handle。
 

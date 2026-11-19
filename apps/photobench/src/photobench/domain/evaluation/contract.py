@@ -112,7 +112,7 @@ def scoring_options(value: object = None) -> dict[str, Any]:
 def media_key(ref: Mapping[str, Any]) -> str:
     kind = str(ref.get("media_type") or "image")
     name = PurePosixPath(str(ref.get("media_id") or ref.get("file_name") or "")).name
-    return kind + ":" + (PurePosixPath(name).stem if kind == "video" else name).casefold()
+    return kind + ":" + (PurePosixPath(name).stem if kind in {"video", "email"} else name).casefold()
 
 
 def media_set_metrics(

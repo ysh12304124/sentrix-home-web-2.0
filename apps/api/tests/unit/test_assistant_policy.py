@@ -35,6 +35,7 @@ def test_the_tool_list_is_exactly_what_ships():
     """
     assert [spec.name for spec in TOOL_SPECS] == [
         "search_memories",
+        "search_text_memories",
         "query_memory_facts",
         "query_photo_people",
         "inspect_photo",
@@ -54,6 +55,10 @@ def test_every_tool_declares_the_evidence_it_satisfies():
     assert TOOLS_BY_NAME["search_memories"].satisfies == (
         EvidenceType.PHOTO_SET,
         EvidenceType.SPOKEN_CONTENT,
+    )
+    assert TOOLS_BY_NAME["search_text_memories"].satisfies == (
+        EvidenceType.TEXT_CONTENT,
+        EvidenceType.EMAIL_TEXT,
     )
     assert TOOLS_BY_NAME["final_answer"].satisfies == (EvidenceType.DELIVERED_PHOTO,)
     assert TOOLS_BY_NAME["get_person_profile"].satisfies == (EvidenceType.PERSON_PROFILE,)

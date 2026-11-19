@@ -30,6 +30,7 @@ export interface ResultSetView {
   total: number;
   remaining: number;
   hasMore: boolean;
+  textHandles?: string[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -81,7 +82,13 @@ export function resultSetFromEvents(events: AssistantProgressEvent[]): ResultSet
     const remaining = Math.max(0, total - (start + handles.length));
     const hasMore = typeof result.has_more === "boolean" ? result.has_more : remaining > 0;
 
-    return { resultSetId, page, handles, total, remaining, hasMore };
+    const preview = Array.isArray(result.preview) ? result.preview : [];
+    const textHandles = preview.filter((item) => {
+      const row = asRecord(item);
+      return row?.media_kind === "text" || row?.source_kind === "text" || row?.source_kind === "email";
+    }).map((item) => String(asRecord(item)?.handle ?? ""));
+    return { resultSetId, page, handles, total, remaining, hasMore,
+      ...(textHandles.length ? { textHandles } : {}) };
   }
   return null;
 }
@@ -112,7 +119,10 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
           <li key={handle}>
             {/* **点缩略图是放大**，不是新标签打开原图。原图仍然在
                 `resultSetPhotoUrl(..., true)` 里——那是 Lightbox 要显示的源。 */}
-            <button
+            {view.textHandles?.includes(handle) ? (
+              <a href={resultSetPhotoUrl(view.resultSetId, handle, scopeId, true)} target="_blank"
+                rel="noreferrer" className="button secondary">查看文本证据</a>
+            ) : <button
               type="button"
               className="result-set-open"
               title={`${handle} · 查看大图`}
@@ -128,7 +138,7 @@ export function ResultSetWall({ events, scopeId, onNextPage, busy = false }: Res
                 alt={handle}
                 loading="lazy"
               />
-            </button>
+            </button>}
           </li>
         ))}
       </ul>

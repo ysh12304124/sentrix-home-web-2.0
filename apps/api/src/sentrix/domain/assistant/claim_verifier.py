@@ -17,7 +17,7 @@ from enum import StrEnum
 from typing import Any
 
 from sentrix.domain.assistant.evidence_binding import Fact
-from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement, RequirementValueType
+from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement, EvidenceType, RequirementValueType
 
 
 class ClaimVerdict(StrEnum):
@@ -47,7 +47,11 @@ class ClaimReview:
 
 
 #: 高风险的「事实性断言」。只认形状，不认具体内容——具体对错交给模型核验。
-_AMOUNT = re.compile(r"(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块钱|块|万元|万|千元|百元))")
+_AMOUNT = re.compile(
+    r"(?:[¥￥£$€]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:元|块钱|块|万元|万|千元|百元|英镑|镑|pounds?|GBP|USD|EUR))",
+    re.IGNORECASE,
+)
 _TIME = re.compile(
     r"(?:(?:19|20)\d{2}\s*年|\d{1,2}\s*月(?:\s*\d{1,2}\s*[日号])?|"
     r"春天|夏天|秋天|冬天|春季|夏季|秋季|冬季)"
@@ -154,7 +158,17 @@ def build_claim_messages(
         "unsupported：facts 没有该信息或没有能支撑它的值；ambiguous：信息不足以判断。\n"
         "数字/日期表达等价不算冲突（三个人 = 3 人，2024-03-02 = 2024年3月2日）。"
     )
-    relevant = [_fact_payload(fact) for fact in facts if fact.value_type is claim.value_type][:12]
+    textual_source = requirement is not None and requirement.evidence_type in {
+        # Scalar claims in an email are verified against its original body, not
+        # against synthetic typed facts that may combine unrelated messages.
+        EvidenceType.TEXT_CONTENT,
+        EvidenceType.EMAIL_TEXT,
+    }
+    relevant = [
+        _fact_payload(fact)
+        for fact in facts
+        if fact.value_type is claim.value_type or (textual_source and fact.fact_type == "text_content")
+    ][:12]
     requirement_payload = (
         {
             "id": requirement.id,

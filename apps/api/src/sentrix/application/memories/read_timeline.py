@@ -31,6 +31,7 @@ class TimelinePhoto:
     file_name: str
     captured_at: datetime | None
     place: str
+    media_type: str = "image"
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +235,7 @@ class ReadTimeline:
                     file_name=asset.file_name,
                     captured_at=asset.captured_at,
                     place=place.display() if place else "",
+                    media_type=asset.media_type.value,
                 )
             )
         return TimelineEvent(

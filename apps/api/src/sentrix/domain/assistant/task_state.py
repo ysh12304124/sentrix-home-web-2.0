@@ -119,7 +119,11 @@ class TaskState:
 
     @property
     def search_calls(self) -> int:
-        return sum(1 for record in self.records if record.tool == "search_memories")
+        return sum(
+            1
+            for record in self.records
+            if record.tool in {"search_memories", "search_text_memories"}
+        )
 
     @property
     def page_calls(self) -> int:

@@ -20,7 +20,8 @@ from sentrix.application.identity.extract_moments import ExtractMoments
 from sentrix.application.identity.family_graph_service import FamilyGraphService
 from sentrix.application.identity.run_insights import RunInsights
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets, ImportResult, StagedImport
+from sentrix.application.media.import_assets import ImportAssets, ImportRequest, ImportResult, StagedImport
+from sentrix.application.media.import_emails import ImportEmails
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
 from sentrix.application.media.observe_asset import ObserveAsset
@@ -45,6 +46,32 @@ if TYPE_CHECKING:
 log = logging.getLogger("sentrix.bootstrap.import_wiring")
 
 
+def build_email_import(container: Container) -> ImportEmails:
+    return ImportEmails(
+        repository=container.text_memory_repository,
+        observations=container.observation_repository,
+        storage=container.media_storage,
+        lexical=container.lexical_index,
+        index=IndexObservationText(
+            embedder=container.text_embedder, vectors=container.text_vector_repository
+        ),
+    )
+
+
+def build_text_import(container: Container):
+    from sentrix.application.media.import_text import ImportTextMemories
+
+    return ImportTextMemories(
+        repository=container.text_memory_repository,
+        observations=container.observation_repository,
+        storage=container.media_storage,
+        lexical=container.lexical_index,
+        index=IndexObservationText(
+            embedder=container.text_embedder, vectors=container.text_vector_repository
+        ),
+    )
+
+
 def build_memory_graph(container: Container) -> BuildMemoryGraph:
     """把 2.0 标准记忆端口接到独立图投影用例。"""
     return BuildMemoryGraph(
@@ -58,6 +85,35 @@ def build_memory_graph(container: Container) -> BuildMemoryGraph:
         graph=container.memory_graph,
         causal_judge=container.causal_judge,
         vectors=container.vector_repository,
+        family=container.family_graph_repository,
+    )
+
+
+def _import_text_file(container: Container, request: ImportRequest) -> ImportResult:
+    size = request.source_path.stat().st_size if request.source_path else len(request.content)
+    if size > 20 * 1024 * 1024:
+        raise ValueError("文本文件不能超过20MB")
+    content = request.source_path.read_bytes() if request.source_path else request.content
+    body = content.decode("utf-8-sig")
+    if "\x00" in body:
+        raise ValueError("不能把二进制文件作为文本导入")
+    result = build_text_import(container).execute(
+        request.scope_id,
+        [{"text": body, "metadata": {"source_type": "document", "source_file": request.file_name}}],
+    )
+    if result["status"] != "completed":
+        raise RuntimeError(f"文本已保存，索引待重试：{result['errors']}")
+    item = result["items"][0]
+    state = container.text_memory_repository.find(request.scope_id, item["external_id"])
+    return ImportResult(
+        asset_id=item["asset_id"],
+        observation_id=state["observation_id"],
+        media_type=MediaType.TEXT,
+        status=AssetStatus.PROCESSED,
+        indexed=True,
+        deduplicated=item["deduplicated"],
+        event_id=state["event_id"],
+        text_rows=0 if item["deduplicated"] else 3,
     )
 
 
@@ -390,6 +446,7 @@ def _build_importer(
         face_enroller=_face_enroller(container),
         fact_maintainer=_fact_maintainer(container),
         text_indexer=_text_indexer(container),
+        text_importer=lambda request: _import_text_file(container, request),
         entity_extractor=_entity_extractor(container),
         lexical_index=container.lexical_index,
         spaces=container.spaces,

@@ -163,13 +163,16 @@ export function QaReviewCard({ item, index, onOpenMedia }: QaReviewCardProps) {
               {evidence.map((media) => {
                 const url = imageUrl(media);
                 const video = qaIsVideoEvidence(item, media);
+                const email = inferMediaType(media.media_id, media.media_type) === "email";
                 const direct = isDirectEvidence(item, media);
                 return (
                   <div
                     key={mediaKey(media)}
                     className={`gt-thumb-card${direct ? " direct-evidence" : ""}${video ? " video-evidence" : ""}`}
                   >
-                    {video && url ? (
+                    {email ? (
+                      <span className="image-empty">邮件证据 · 邮件记忆待接入</span>
+                    ) : video && url ? (
                       <video src={url} controls playsInline preload="none" />
                     ) : url ? (
                       <button
@@ -186,7 +189,7 @@ export function QaReviewCard({ item, index, onOpenMedia }: QaReviewCardProps) {
                     )}
                     <span>
                       {mediaFileName(media)}
-                      <em>{video ? "视频证据" : direct ? "直接证据" : "事件相关"}</em>
+                      <em>{email ? "邮件证据" : video ? "视频证据" : direct ? "直接证据" : "事件相关"}</em>
                     </span>
                   </div>
                 );

@@ -74,3 +74,5 @@ class GraphExpansionHit:
     hops: int
     path: tuple[str, ...] = ()
     relations: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    edge_statements: tuple[str, ...] = ()

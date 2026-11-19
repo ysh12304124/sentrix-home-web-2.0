@@ -204,7 +204,7 @@ def project_image_graph(
                     "image_shares_object",
                     0.9,
                     {
-                        "sub_type": "SAME_OBJECT",
+                        "sub_type": "SHARED_OBJECT_LABEL",
                         "label": label,
                         "evidence_tier": "supported",
                     },

@@ -65,6 +65,7 @@ def search_assets(
     person: list[str] = Query(default=[], description="人物条件，可重复：scope 内已确认人物的本名"),
     place: str = Query("", max_length=60, description="地点条件，服务端按解析出的行政区/地名匹配"),
     media_type: str = Query("", max_length=20, description="媒体类型：image / video / audio / text"),
+    source_type: str = Query("", max_length=40, description="可选文本来源标签，如email/note/document"),
     container: Container = Depends(get_container),
 ) -> SearchResponse:
     try:
@@ -78,6 +79,7 @@ def search_assets(
             text=q,
             scope_id=scope_id or None,
             limit=limit,
+            source_type=source_type,
             # 正向条件同时喂两处：**召回前筛**（metadata 通道用它决定要不要给信号）
             # 与**融合后排除**（conditions）。两者不是一回事，见 conditions.py 的模块注释。
             time_bounds=parse_time_expression(time_range) if time_range.strip() else None,

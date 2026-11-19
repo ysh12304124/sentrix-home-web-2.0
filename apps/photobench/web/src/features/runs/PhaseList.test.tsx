@@ -14,6 +14,29 @@ function activeRun(phases: Run["phases"]): Run {
 }
 
 describe("阶段卡（1.0 :3099-3129）", () => {
+  it("邮件专属测评把文本记忆导入进度显示在导入和流水线阶段", () => {
+    const { container, getByLabelText, getByTestId } = render(<PhaseList activeRun={{
+      run_id: "email-run", status: "running", email_only_qa: true,
+      phases: {
+        photo_import: { status: "skipped" },
+        pipeline_processing: { status: "skipped" },
+        text_memory_import: {
+          status: "running", source_type: "email",
+          progress: { total: 6742, processed: 3500, batches: 14 },
+        },
+      },
+    }} />);
+    const cards = container.querySelectorAll(".phase-card");
+    expect(cards[3]?.querySelector(".phase-status")?.textContent).toBe("完成");
+    expect(cards[3]?.textContent).toContain("视频/图片/文本导入");
+    expect(getByTestId("text-memory-import").textContent).toContain("已载入 6,742 条文本记忆");
+    expect(cards[4]?.querySelector(".phase-status")?.textContent).toBe("进行中");
+    expect(getByTestId("text-memory-build").textContent).toContain("写入记忆与建立索引");
+    expect(getByTestId("text-memory-build").textContent).toContain("构建图结构");
+    expect(getByTestId("text-memory-build").textContent).toContain("3,500/6,742 条（52%）");
+    expect(getByLabelText("文本记忆构建进度").getAttribute("aria-valuenow")).toBe("52");
+  });
+
   it("隔离小样区分答卷与源任务日志", () => {
     const {container} = render(<PhaseList activeRun={{run_id:'sample', source_run_id:'full',
       qa_count:3, item_count:3, summary:{judge_valid_count:3},

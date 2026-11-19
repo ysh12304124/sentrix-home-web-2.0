@@ -35,10 +35,11 @@ const FACE_FILE = /^faceid_[^/]+\.(?:jpe?g|png|webp)$/i;
 
 /** 1.0 `:384`。显式 `image`/`video` 优先，否则按扩展名或 `video-<n>` 命名判。 */
 export function inferMediaType(value: unknown, explicit: unknown = ""): MediaType {
-  if (["image", "video"].includes(String(explicit || "").toLowerCase())) {
+  if (["image", "video", "email"].includes(String(explicit || "").toLowerCase())) {
     return String(explicit).toLowerCase() as MediaType;
   }
   const text = String(value || "").split(/[?#]/)[0];
+  if (/^email\d+(?:\.txt)?$/i.test(text.split("/").pop() || "")) return "email";
   return VIDEO_EXT.test(text) || /^video-\d+$/i.test(text.split("/").pop() || "")
     ? "video"
     : "image";
@@ -55,7 +56,7 @@ export function mediaKey(ref: MediaLike | null | undefined): string {
       .split(/[/?#]/)
       .filter(Boolean)
       .pop() || "";
-  return `${mediaType}:${mediaType === "video" ? name.replace(/\.[^.]+$/, "") : name}`.toLocaleLowerCase();
+  return `${mediaType}:${mediaType === "video" || mediaType === "email" ? name.replace(/\.[^.]+$/, "") : name}`.toLocaleLowerCase();
 }
 
 /**
@@ -102,6 +103,7 @@ export function imageUrl(image: MediaLike | null | undefined): string {
  * 无扩展名的视频补 `.mp4`。
  */
 export function albumLocalUrl(albumId: string, fileName: unknown, mediaType: unknown = ""): string {
+  if (inferMediaType(fileName, mediaType) === "email") return "";
   const album = albumId || "";
   const video = inferMediaType(fileName, mediaType) === "video";
   const collection = video ? "videos" : FACE_FILE.test(String(fileName || "")) ? "faces" : "photos";

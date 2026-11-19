@@ -145,6 +145,37 @@ async def import_media(
         defer_processing=False,
     )
     media_type = MediaType.from_upload(request.content_type, request.file_name)
+    if media_type is MediaType.TEXT:
+        from sentrix.api.routes.text import TextImportRequest, import_items
+
+        try:
+            body = content.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail="文本上传需要 UTF-8 编码") from exc
+        if "\x00" in body:
+            raise HTTPException(status_code=400, detail="不支持把二进制文件作为文本导入")
+        result = await run_in_threadpool(
+            import_items,
+            TextImportRequest(
+                scope_id=scope_id,
+                items=[
+                    {"text": body, "metadata": {"source_type": "document", "source_file": request.file_name}}
+                ],
+            ),
+            container,
+        )
+        aid = result["items"][0]["asset_id"]
+        state = container.text_memory_repository.find(scope_id, result["items"][0]["external_id"])
+        return ImportResponse(
+            asset_id=aid,
+            observation_id=state["observation_id"],
+            media_type="text",
+            status="processed" if result["status"] == "completed" else "failed",
+            deduplicated=result["items"][0]["deduplicated"],
+            indexed=result["indexed"] == 1,
+            placed=False,
+            event_id=state["event_id"],
+        )
     if media_type is MediaType.VIDEO:
         staged = build_import_assets(container, observe=False).stage(replace(request, defer_processing=True))
         asset = (
@@ -1091,6 +1122,21 @@ def get_asset_file(
     （契约测试钉着「交出去的字节与传上来的一模一样」），预览在 ``/preview``。
     不为了对称去改图片——改了会让 HEIC 从「原图直出」变成「转码件直出」，那是另一个决定。
     """
+    if not original:
+        text_asset = container.asset_repository.get(asset_id)
+        if text_asset is not None and text_asset.media_type == MediaType.TEXT:
+            email = next(
+                (
+                    o
+                    for o in container.observation_repository.list_by_asset(asset_id)
+                    if o.source_type in {"text", "email"}
+                ),
+                None,
+            )
+            if email is not None:
+                return Response(
+                    content=email.text_content, media_type="text/plain", headers={"Cache-Control": "no-store"}
+                )
     asset = _self_served_or_none(asset_id, container)
     if asset is not None and not original:
         return deliver_media(asset, container)

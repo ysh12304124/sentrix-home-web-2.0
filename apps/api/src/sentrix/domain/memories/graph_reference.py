@@ -64,6 +64,7 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
     contexts: dict[tuple[str, str], str] = {}
     observations_by_asset: dict[str, list[tuple[int, str, str, Mapping[str, object]]]] = defaultdict(list)
     frames_by_video: dict[str, list[tuple[float, str, Mapping[str, object]]]] = defaultdict(list)
+    latest: dict[str, Mapping[str, object]] = {}
     events: list[tuple[str, Mapping[str, object]]] = []
 
     for node_id, (kind, attrs) in nodes.items():
@@ -85,6 +86,11 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
             asset_node = f"asset:{asset_id}"
             if asset_node in nodes:
                 reference.add((node_id, asset_node, "observation_of_asset", ""))
+        elif kind == "asset":
+            asset_id = str(attrs.get("asset_id") or node_id.removeprefix("asset:"))
+            observation = attrs.get("observation")
+            if isinstance(observation, Mapping):
+                latest[asset_id] = observation
         elif kind == "event":
             events.append((node_id, attrs))
 
@@ -117,6 +123,11 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
                 elif concept := concepts.get((kind_name, normalised)):
                     reference.add((node_id, concept, "observation_mentions_concept", ""))
         if kind == "asset":
+            # Lean graph v3 stores confirmed identity links directly on the media vertex.
+            for entity_id in _strings(attrs.get("confirmed_entity_ids")):
+                target = f"entity:{entity_id}"
+                if target in nodes and nodes[target][1].get("status") == "confirmed":
+                    reference.add((node_id, target, "asset_mentions_confirmed_entity", ""))
             parent = str(attrs.get("parent_asset_id") or "")
             if parent and f"asset:{parent}" in nodes:
                 reference.add((node_id, f"asset:{parent}", "asset_derived_from_asset", ""))
@@ -142,13 +153,7 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
         for kind, value in (("place", place), ("date", date_value.date().isoformat() if date_value else "")):
             if value and (context_id := contexts.get((kind, value))):
                 reference.add((event_id, context_id, f"event_{kind}_context", ""))
-        for observation_id in _strings(attrs.get("observation_ids")):
-            observation_node = f"observation:{observation_id}"
-            if observation_node not in nodes:
-                continue
-            reference.add((event_id, observation_node, "event_contains_observation", ""))
-            observation_attrs = nodes[observation_node][1]
-            asset_id = str(observation_attrs.get("asset_id") or "")
+        for asset_id in _strings(attrs.get("asset_ids")):
             if f"asset:{asset_id}" in nodes:
                 reference.add((event_id, f"asset:{asset_id}", "event_contains_asset", ""))
         for entity_id in (
@@ -161,10 +166,53 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
         if source_asset and f"asset:{source_asset}" in nodes:
             reference.add((event_id, f"asset:{source_asset}", "event_source_asset", ""))
 
+    # The lean schema keeps observations on the media node. Reconstruct media links
+    # from that embedded source payload so quality checks remain source-based.
+    images: list[tuple[float, str, Mapping[str, object]]] = []
+    object_images: list[tuple[bool, float, str, Mapping[str, object]]] = []
+    for node_id, (kind, attrs) in nodes.items():
+        if kind != "asset" or attrs.get("media_type") != "image" or attrs.get("derived_kind"):
+            continue
+        observation = attrs.get("observation")
+        if not isinstance(observation, Mapping) or not observation:
+            continue
+        captured = _date(attrs.get("captured_at"))
+        if captured is None:
+            observation = attrs.get("observation")
+            if isinstance(observation, Mapping):
+                captured = _date(observation.get("captured_at"))
+        if captured is not None:
+            images.append((captured.timestamp(), node_id, attrs))
+        object_images.append(
+            (
+                not bool(attrs.get("captured_at")),
+                captured.timestamp() if captured else 0.0,
+                node_id,
+                observation,
+            )
+        )
+    images.sort(key=lambda item: (item[0], item[1]))
+    for (left_time, left_id, _), (right_time, right_id, _) in zip(images, images[1:], strict=False):
+        gap = right_time - left_time
+        if 0 <= gap <= 24 * 60 * 60:
+            reference.add((left_id, right_id, "image_temporal_next", ""))
+    by_object: dict[str, list[str]] = defaultdict(list)
+    for _, _, node_id, observation in sorted(object_images, key=lambda row: row[:3]):
+        labels = tuple(
+            dict.fromkeys(label.strip().casefold() for label in _strings(observation.get("objects")))
+        )
+        for label in tuple(label for label in labels if label and label not in GENERIC_OBJECTS)[:8]:
+            by_object[label].append(node_id)
+    for label, matches in by_object.items():
+        for index, left_id in enumerate(matches):
+            for right_id in matches[index + 1 : index + 1 + 8]:
+                reference.add((left_id, right_id, "image_shares_object", label))
+
     timed_events = sorted(
         (
             (moment, node_id)
             for node_id, attrs in events
+            if attrs.get("source_type") not in {"text", "email"}
             if (moment := _date(attrs.get("time_start"))) is not None
         ),
         key=lambda item: (item[0].utcoffset() is not None, item[0], item[1]),
@@ -176,10 +224,12 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
         if 0 <= gap <= 6 * 60 * 60:
             reference.add((left_id, right_id, "event_temporal_next", ""))
 
-    latest = {
-        asset_id: max(rows, key=lambda item: (item[0], item[1]))[3]
-        for asset_id, rows in observations_by_asset.items()
-    }
+    latest.update(
+        {
+            asset_id: max(rows, key=lambda item: (item[0], item[1]))[3]
+            for asset_id, rows in observations_by_asset.items()
+        }
+    )
     for video_id, rows in frames_by_video.items():
         rows = [row for row in rows if row[1].removeprefix("asset:") in latest]
         rows.sort(key=lambda row: (row[0], row[1]))
@@ -214,14 +264,14 @@ def reference_edges_from_sources(nodes: NodeSource) -> set[ReferenceEdge]:
             for label, matches in by_label.items():
                 if kind_name == "relation" and len(matches) < 2:
                     continue
-                if len(matches) >= 30:
+                if len(matches) >= 30 and not any(attrs.get("schema_version") == 3 for _, _, attrs in rows):
                     hub_id = f"{kind_name}_hub:{video_id}:{label}"
                     if hub_id in nodes:
                         for _, frame_id in matches:
                             reference.add((frame_id, hub_id, f"frame_mentions_{kind_name}", label))
                 else:
                     for index, (left_sec, left_id) in enumerate(matches):
-                        for right_sec, right_id in matches[index + 1 : index + 8]:
+                        for right_sec, right_id in matches[index + 1 : index + 9]:
                             if kind_name == "relation" and right_sec - left_sec > 60.0:
                                 break
                             reference.add((left_id, right_id, f"frame_shares_{kind_name}", label))

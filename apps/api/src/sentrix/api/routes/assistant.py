@@ -87,7 +87,9 @@ def _conversation_summary(conversation: Conversation) -> ConversationSummary:
 
 def _attachments(record: TurnRecord) -> list[AttachmentSummary]:
     return [
-        AttachmentSummary(handle=item.handle, asset_id=item.asset_id, file_name=item.file_name)
+        AttachmentSummary(
+            handle=item.handle, asset_id=item.asset_id, file_name=item.file_name, media_type=item.media_type
+        )
         for item in record.attachments
     ]
 
@@ -258,7 +260,12 @@ def _complete_payload(record: TurnRecord) -> CompleteEventPayload:
         termination_reason=record.termination_reason,
         answer=record.answer,
         attachments=[
-            AttachmentSummary(handle=item.handle, asset_id=item.asset_id, file_name=item.file_name)
+            AttachmentSummary(
+                handle=item.handle,
+                asset_id=item.asset_id,
+                file_name=item.file_name,
+                media_type=item.media_type,
+            )
             for item in record.attachments
         ],
         requirements=[dict(item) for item in record.requirements],

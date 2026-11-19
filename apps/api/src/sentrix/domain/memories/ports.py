@@ -319,6 +319,10 @@ class MemoryGraphRepository(Protocol):
 
     def status(self, scope_id: str) -> GraphStatus: ...
 
+    def query_paths(self, question: str, *, scope_id: str, limit: int) -> Sequence[GraphExpansionHit]:
+        """Resolve explicit identities/events before traversing to source media."""
+        ...
+
     def quality(self, scope_id: str) -> Mapping[str, object]:
         """返回不读取 benchmark GT 的图结构审计指标。"""
         ...

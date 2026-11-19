@@ -294,6 +294,7 @@ class ImportAssets:
         # 不传就退化成「只入库、不建场景」——正是 S8a 的行为，测试与不需要视频
         # 场景的调用方都不必构造它。
         video_scene_extractor: Callable[[str], VideoSceneExtraction | int] | None = None,
+        text_importer: Callable[[ImportRequest], ImportResult] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._assets = assets
@@ -321,6 +322,7 @@ class ImportAssets:
         self._lexical_index = lexical_index
         self._spaces = spaces
         self._clock = clock
+        self._text_importer = text_importer
 
     @import_task
     def execute(self, request: ImportRequest) -> ImportResult:
@@ -347,6 +349,9 @@ class ImportAssets:
         # 空间行排在最前：簇列表内连它，没有它这次导入在审阅页上等于没发生。
         # 放在去重判断**之前**——去重命中同样是一条「这个 scope 被用到了」的证据。
         self._ensure_space(request.scope_id)
+        media_type = request.media_type or MediaType.from_upload(request.content_type, request.file_name)
+        if media_type is MediaType.TEXT and self._text_importer is not None:
+            return self._text_importer(request)
 
         source_size = (
             request.source_path.stat().st_size if request.source_path is not None else len(request.content)

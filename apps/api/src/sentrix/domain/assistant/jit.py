@@ -34,6 +34,10 @@ _PHOTO_LEVEL_TOOLS = frozenset({"inspect_photo", "read_photo_text", "query_photo
 #: 但**不能反过来从 ``satisfies`` 现算**：``final_answer`` 也声明了 ``delivered_photo``，
 #: 而它是终止动作、永远在表里，让它出现在「满足这个需求的工具」里只会把规则绕回去。
 _TOOLS_BY_REQUIREMENT: dict[EvidenceType, frozenset[str]] = {
+    EvidenceType.PHOTO_SET: frozenset({"search_memories"}),
+    EvidenceType.SPOKEN_CONTENT: frozenset({"search_memories"}),
+    EvidenceType.TEXT_CONTENT: frozenset({"search_text_memories"}),
+    EvidenceType.EMAIL_TEXT: frozenset({"search_text_memories"}),
     EvidenceType.VISIBLE_TEXT: frozenset({"read_photo_text"}),
     EvidenceType.VISUAL_OBSERVATION: frozenset({"inspect_photo"}),
     EvidenceType.PHOTO_IDENTITY: frozenset({"query_photo_people"}),
@@ -79,9 +83,13 @@ def select_turn_tools(ledger: EvidenceLedger) -> tuple[ToolSpec, ...]:
     检索额度用完后仍然可见；收敛交给失败移除与预算耗尽后的 final-only（见
     ``run_turn._converse``）。
     """
-    offered = {FINAL_ANSWER_TOOL, "search_memories"}
+    offered = {FINAL_ANSWER_TOOL}
     for item in ledger.requirements:
         offered.update(_TOOLS_BY_REQUIREMENT.get(item.evidence_type, frozenset()))
+    if len(offered) == 1:
+        # Older planner declarations may omit an evidence type; retain the safe
+        # historical media-search fallback only for those untyped turns.
+        offered.add("search_memories")
     return tuple(replace(spec, description=spec.brief) for spec in TOOL_SPECS if spec.name in offered)
 
 
@@ -112,8 +120,12 @@ def _select_offered(
     # 明知会被拒的工具。但它也不能更早剪掉：**还没有结果集时它是唯一能打开局面的东西**
     # （1.0 ``jit_prompt.py:196`` 在没有未决需求时也专门把 ``search_memories`` 留着，
     # 理由是「避免模型在事实看似足够时凭空编数字」）。
-    if not has_result_set or EvidenceType.PHOTO_SET in open_types:
+    text_types = {EvidenceType.TEXT_CONTENT, EvidenceType.EMAIL_TEXT}
+    media_types = {EvidenceType.PHOTO_SET, EvidenceType.SPOKEN_CONTENT}
+    if open_types & media_types or (not has_result_set and not open_types & text_types):
         offered.add("search_memories")
+    if open_types & text_types:
+        offered.add("search_text_memories")
 
     for evidence_type, tools in _TOOLS_BY_REQUIREMENT.items():
         if evidence_type not in open_types:

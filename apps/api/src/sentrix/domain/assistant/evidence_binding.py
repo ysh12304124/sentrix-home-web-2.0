@@ -141,11 +141,19 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     provenance=f"{record.call_id}:{handle}",
                 )
             )
-        description = _text(row.get("evidence_summary")) or _text(row.get("scene_hint"))
+        description = (
+            (_text(row.get("text_content")) if row.get("source_kind") in {"text", "email"} else "")
+            or _text(row.get("evidence_summary"))
+            or _text(row.get("scene_hint"))
+        )
         if description:
             facts.append(
                 Fact(
-                    fact_type="preview_description",
+                    fact_type=(
+                        "text_content"
+                        if row.get("source_kind") in {"text", "email"}
+                        else "preview_description"
+                    ),
                     value_type=RequirementValueType.DESCRIPTION,
                     value=description,
                     scope=scope,
@@ -333,7 +341,7 @@ def facts_from_state(state: TaskState) -> tuple[Fact, ...]:
     for record in state.records:
         if record.status != "ok":
             continue
-        if record.tool in {"search_memories", "get_result_page"}:
+        if record.tool in {"search_memories", "search_text_memories", "get_result_page"}:
             facts.extend(_retrieval_facts(record))
         elif record.tool == "query_memory_facts":
             facts.extend(_structured_fact(record))
@@ -406,6 +414,16 @@ def bind_requirement(requirement: EvidenceRequirement, facts: Sequence[Fact]) ->
     for fact in typed:
         matches = True
         for key, expected in requirement.scope:
+            # For a text-mail requirement, a literal subject/place/person mention
+            # is evidence about the text's subject, not the sender's GPS/location.
+            # Never apply this rule to photographs or scalar amount/time answers.
+            if (
+                requirement.evidence_type.value in {"text_content", "email_text"}
+                and fact.fact_type == "text_content"
+                and key in {"place", "person", "event"}
+                and expected.casefold() in str(fact.value).casefold()
+            ):
+                continue
             if key in fact.filters_not_applied:
                 # 参数里有、工具没应用：这是明确的 scope 失配，不是「信息缺失」。
                 matches = False

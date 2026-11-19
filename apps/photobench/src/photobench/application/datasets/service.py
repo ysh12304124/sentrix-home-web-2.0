@@ -149,7 +149,23 @@ class DatasetCatalog:
             # 已经按 2.0 拼了——泛化两种信封只会在「参数指向 1.0 后端」时把
             # 「路径打不中」这个更清楚的现象伪装成「资产表是空的」。
             assets = assets_data.get("items") if isinstance(assets_data, dict) else assets_data
+            assets = list(assets or [])
+            total = assets_data.get("total", len(assets)) if isinstance(assets_data, dict) else len(assets)
+            while len(assets) < total:
+                page = self._http.request_json(f"{query}&offset={len(assets)}", timeout=30)
+                items = page.get("items", []) if isinstance(page, dict) else page
+                if not items:
+                    break
+                assets.extend(items)
         except Exception as exc:  # noqa: BLE001 —— 1.0 如此：连不上是状态，不是 500
+            if all(kind == "email" for kind, _ in refs):
+                enriched, counts = resolve_qa_rows(rows, refs, [], "")
+                return enriched, {
+                    "status": "email_memory_pending",
+                    "total_refs": len(refs),
+                    **counts,
+                    "error": str(exc),
+                }
             return rows, {
                 "status": "sentrix_unavailable",
                 "error": str(exc),

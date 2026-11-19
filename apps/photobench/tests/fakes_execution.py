@@ -179,8 +179,27 @@ class FakeSentrixClient:
         )
         return {**self.pipeline_result, "scope_id": scope_id}
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
-        self._record("list_assets", scope_id=scope_id, limit=limit)
+    def import_text_memories(self, *, scope_id, items, rebuild_graph, timeout=600):
+        self._record(
+            "import_text_memories",
+            scope_id=scope_id,
+            items=[dict(item) for item in items],
+            rebuild_graph=rebuild_graph,
+            timeout=timeout,
+        )
+        return {
+            "status": "completed",
+            "imported": len(items),
+            "skipped": 0,
+            "indexed": len(items),
+            "errors": [],
+            "graph_status": "completed" if rebuild_graph else "deferred",
+        }
+
+    def list_assets(
+        self, *, scope_id: str, limit: int, timeout: int = 60, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        self._record("list_assets", scope_id=scope_id, limit=limit, **({"offset": offset} if offset else {}))
         self.poll_count += 1
         if self.poll_limit and self.poll_count > self.poll_limit:
             raise AssertionError(f"list_assets 被调了 {self.poll_count} 次仍未收敛（上限 {self.poll_limit}）")

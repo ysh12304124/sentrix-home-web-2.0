@@ -135,11 +135,26 @@ def test_split_import_and_pipeline_use_the_explicit_endpoints():
     )
     assert http.calls[1][:3] == (
         f"{BASE}/api/v1/pipeline/process",
-        {"scope_id": "s1", "asset_ids": ["a1", "a2"], "graph_enabled": True},
+        {"scope_id": "s1", "asset_ids": ["a1", "a2"], "graph_enabled": True, "finalize": True},
         "POST",
     )
 
 
+def test_text_memory_import_uses_unified_text_endpoint_and_forwards_graph_policy():
+    client, http = _client({"text/import": {"status": "completed", "imported": 1}})
+    items = [{"external_id": "email1", "text": "body", "metadata": {"source_type": "email"}}]
+    result = client.import_text_memories(
+        scope_id="scope1", items=items, rebuild_graph=False, timeout=600
+    )
+    assert result["status"] == "completed"
+    assert http.calls == [
+        (
+            f"{BASE}/api/v1/text/import",
+            {"scope_id": "scope1", "items": items, "rebuild_graph": False},
+            "POST",
+            600,
+        )
+    ]
 def test_ask_is_two_calls_and_the_turn_poll_uses_the_plural_path():
     """1.0 一次 ``POST /assistant/turn`` 拿到答案；2.0 先建会话再发起回合，
     而轮询路径是**复数** ``/assistant/turns/{id}``（1.0 是单数）。

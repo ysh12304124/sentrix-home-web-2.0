@@ -11,7 +11,11 @@ from sentrix.domain.assistant.claim_verifier import (
     parse_claim_review,
 )
 from sentrix.domain.assistant.evidence_binding import Fact
-from sentrix.domain.assistant.evidence_ledger import RequirementValueType
+from sentrix.domain.assistant.evidence_ledger import (
+    EvidenceRequirement,
+    EvidenceType,
+    RequirementValueType,
+)
 from sentrix.domain.assistant.models import ChatMessage, ModelReply
 
 
@@ -59,6 +63,31 @@ def test_claim_messages_only_include_matching_fact_types():
 
     assert "asset_amount" in messages[1]["content"]
     assert "asset_count" not in messages[1]["content"]
+
+
+def test_email_amount_claim_is_checked_against_original_text_body():
+    claim = high_risk_claims("住宿总共花费 £1,750。")[0]
+    body_fact = Fact(
+        "text_content",
+        RequirementValueType.DESCRIPTION,
+        "The accommodation booking was GBP 1,750 for BMVC 2024.",
+        provenance="email-search:memory_1",
+    )
+    requirement = EvidenceRequirement(
+        id="req_email_amount",
+        evidence_type=EvidenceType.TEXT_CONTENT,
+        description="从住宿邮件中确认住宿总金额",
+        value_type=RequirementValueType.AMOUNT,
+    )
+
+    messages = build_claim_messages(
+        query="How much did I pay for accommodation?",
+        claim=claim,
+        facts=[body_fact],
+        requirement=requirement,
+    )
+
+    assert "GBP 1,750" in messages[1]["content"]
 
 
 class _ScriptedModel:

@@ -65,6 +65,7 @@ from sentrix.domain.media.ports import (
     VlmObserver,
 )
 from sentrix.domain.media.progress import ImportProgressStore
+from sentrix.domain.media.text_memory import TextMemoryRepository
 from sentrix.domain.memories.ports import (
     CausalJudge,
     EventParticipantRepository,
@@ -164,6 +165,7 @@ from sentrix.infrastructure.persistence.repositories.spaces import SqliteSpaceRe
 from sentrix.infrastructure.persistence.repositories.structured import (
     SqliteStructuredQueryRepository,
 )
+from sentrix.infrastructure.persistence.repositories.text_memories import SqliteTextMemoryRepository
 from sentrix.infrastructure.persistence.repositories.text_vectors import SqliteTextVectorRepository
 from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepository
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
@@ -249,6 +251,7 @@ class Container:
     database: Database
 
     spaces: SpaceRepository
+    text_memory_repository: TextMemoryRepository
 
     operation_control: OperationControl
     import_progress: ImportProgressStore
@@ -369,6 +372,11 @@ class Container:
     turn_event_broker: TurnEventBroker
     build_revision: str = "development"
 
+    @property
+    def email_repository(self) -> TextMemoryRepository:
+        """Compatibility for old CLI adapters; storage and processing are shared."""
+        return self.text_memory_repository
+
     @classmethod
     def build(cls, settings: Settings) -> Container:
         # 默认走 SVD/Katna；体验实例也用它。部署可用 env 显式切回 window。
@@ -484,7 +492,9 @@ class Container:
         )
         utility = (
             OpenAIVisualEvidenceUtility(
-                utility_url, utility_model, timeout_s=settings.utility_vlm_timeout_s,
+                utility_url,
+                utility_model,
+                timeout_s=settings.utility_vlm_timeout_s,
                 concurrency=settings.utility_vlm_concurrency,
                 cache_path=settings.data_dir / "utility-cache" / "scores.sqlite",
                 model_name=settings.utility_vlm_model,
@@ -503,6 +513,7 @@ class Container:
             operation_control=InProcessOperationControl(),
             import_progress=InProcessImportProgressStore(),
             spaces=SqliteSpaceRepository(database),
+            text_memory_repository=SqliteTextMemoryRepository(database),
             asset_repository=assets,
             observation_repository=observations,
             media_storage=FileSystemMediaStorage(settings.media_dir),

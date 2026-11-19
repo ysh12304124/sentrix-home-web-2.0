@@ -133,7 +133,10 @@ class ToolPolicy:
                 ),
             )
 
-        if call.name == "search_memories" and state.search_calls >= state.profile.max_search_calls:
+        if (
+            call.name in {"search_memories", "search_text_memories"}
+            and state.search_calls >= state.profile.max_search_calls
+        ):
             return ToolDecision(
                 action=ToolAction.DENY,
                 code="search_call_limit",

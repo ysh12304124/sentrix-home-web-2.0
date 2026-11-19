@@ -408,7 +408,14 @@ def media_ranking(
 ) -> dict[str, Any]:
     if (item.get("evaluation") or {}).get("media_metrics_policy") == "exclude":
         return {"status": "not_applicable", "gt_count": 0, "reason": "excluded_by_evaluation_policy"}
-    targets = item.get("retrieval_media_refs") or []
+    # Ranking@5 is a visual-media metric. Text memories (including email) can be
+    # retrieval evidence, but aren't image/video identities and must not poison the
+    # visual ranking index or prevent the QA result from being persisted.
+    targets = [
+        ref
+        for ref in item.get("retrieval_media_refs") or []
+        if isinstance(ref, Mapping) and ref.get("media_type") in {"image", "video"}
+    ]
     candidates = item.get("retrieved_candidate_media")
     if not targets:
         return {"status": "not_applicable", "gt_count": 0}
@@ -417,6 +424,8 @@ def media_ranking(
         return {"status": "not_collected"}
     by_asset: dict[str, Mapping[str, Any]] = {}
     for ref in candidates:
+        if not isinstance(ref, Mapping):
+            continue
         for field in ("asset_id", "source_keyframe_asset_id"):
             if ref.get(field):
                 by_asset[str(ref[field])] = ref
@@ -425,7 +434,13 @@ def media_ranking(
         return {"status": "not_collected", "reason": "candidate_mapping_incomplete"}
     try:
         gt = {index.resolve(r) for r in targets}
-        ordered = list(dict.fromkeys(index.resolve(by_asset[str(identifier)]) for identifier in sequence))
+        ordered = list(
+            dict.fromkeys(
+                index.resolve(by_asset[str(identifier)])
+                for identifier in sequence
+                if by_asset[str(identifier)].get("media_type") in {"image", "video"}
+            )
+        )
     except ValueError as exc:
         return {"status": "not_collected", "reason": str(exc)}
     return {
@@ -438,7 +453,12 @@ def media_ranking(
 
 
 def media_ranking_summary(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    universe = [r for item in items for r in item.get("retrieval_media_refs") or []]
+    universe = [
+        ref
+        for item in items
+        for ref in item.get("retrieval_media_refs") or []
+        if isinstance(ref, Mapping) and ref.get("media_type") in {"image", "video"}
+    ]
     index = MediaIndex(universe)
     ranks = [
         media_ranking(i, index=index)

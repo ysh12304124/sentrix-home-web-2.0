@@ -120,8 +120,16 @@ class SentrixClient(Protocol):
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
-        """``GET /api/v1/assets?scope_id=&limit=``，**拆掉响应信封后**的资产表。
+    def import_text_memories(
+        self, *, scope_id: str, items: Sequence[Mapping[str, Any]], rebuild_graph: bool, timeout: int = 600
+    ) -> dict[str, Any]:
+        """``POST /api/v1/text/import``：按统一文本记忆接口导入邮件等文本证据。"""
+        ...
+
+    def list_assets(
+        self, *, scope_id: str, limit: int, timeout: int = 60, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """``GET /api/v1/assets?scope_id=&limit=&offset=``，**拆掉响应信封后**的资产表。
 
         2.0 的响应是 ``{"items": [...]}`` 而 1.0 是 ``{"assets": [...]}``
         （``api/schemas/media.py:136``）——这个差异由适配器吸收，因为调用方用的是

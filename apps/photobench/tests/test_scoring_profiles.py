@@ -603,6 +603,27 @@ def test_media_r5_keeps_video_in_joint_order_and_uses_parent_identity():
     assert summary["included"] == 1 and summary["excluded_gt_over_5"] == 1 and summary["unavailable"] == 1
 
 
+def test_media_r5_ignores_email_evidence_and_keeps_email_only_qa_not_applicable():
+    email = {"media_type": "email", "media_id": "email-42", "asset_id": "email-42"}
+    email_only = {
+        "retrieval_media_refs": [email],
+        "retrieved_candidate_media": [email],
+        "retrieved_candidate_asset_ids": ["email-42"],
+    }
+    assert media_ranking(email_only) == {"status": "not_applicable", "gt_count": 0}
+    assert media_ranking_summary([email_only])["included"] == 0
+    from photobench.domain.runs.analysis import list_summary
+
+    assert list_summary({"items": [email_only]})["media_ranking"]["included"] == 0
+
+    visual = {**email_only, "retrieval_media_refs": [email, media("trip.jpg")]}
+    visual["retrieved_candidate_media"] = [email, media("trip.jpg", asset_id="photo-1")]
+    visual["retrieved_candidate_asset_ids"] = ["email-42", "photo-1"]
+    ranked = media_ranking(visual)
+    assert ranked["status"] == "available"
+    assert ranked["ranked"] == ["image:trip.jpg"]
+
+
 @pytest.mark.parametrize("flag", ["use_gt_images", "use_gt_metadata"])
 def test_required_gt_failure_is_not_silently_text_only(flag):
     s = state()

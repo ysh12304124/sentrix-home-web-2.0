@@ -75,6 +75,8 @@ class EvidenceType(StrEnum):
     VISIBLE_TEXT = "visible_text"
     # ASR/transcribed speech is spoken evidence, not OCR from visible text in an image.
     SPOKEN_CONTENT = "spoken_content"
+    EMAIL_TEXT = "email_text"
+    TEXT_CONTENT = "text_content"
 
 
 class RequirementStatus(StrEnum):

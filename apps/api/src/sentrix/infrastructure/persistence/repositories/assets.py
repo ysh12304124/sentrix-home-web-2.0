@@ -195,7 +195,7 @@ class SqliteAssetRepository:
 _OBSERVATION_COLUMNS = (
     "id, scope_id, asset_id, source_type, captured_at, confidence, caption, place, activity,"
     " event_type, ocr_text, objects_json, clothing_json, people_json, facts_json, revision,"
-    " created_at, updated_at"
+    " created_at, updated_at, text_content, external_id, source_metadata_json"
 )
 
 
@@ -307,6 +307,9 @@ def row_to_observation(row: sqlite3.Row) -> Observation:
         people=people_names(row["people_json"]),
         facts=_json_facts(row["facts_json"]),
         revision=row["revision"],
+        text_content=row["text_content"],
+        external_id=row["external_id"],
+        source_metadata=json.loads(row["source_metadata_json"]),
     )
 
 
@@ -319,8 +322,9 @@ class SqliteObservationRepository:
             connection.execute(
                 "INSERT INTO observations (id, scope_id, asset_id, source_type, captured_at,"
                 " confidence, caption, place, activity, event_type, ocr_text, objects_json,"
-                " clothing_json, people_json, facts_json, revision, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " clothing_json, people_json, facts_json, revision, created_at, updated_at,"
+                " text_content, external_id,"
+                " source_metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     observation.id,
                     observation.scope_id,
@@ -343,6 +347,9 @@ class SqliteObservationRepository:
                     observation.revision,
                     observation.created_at.isoformat(),
                     observation.updated_at.isoformat(),
+                    observation.text_content,
+                    observation.external_id,
+                    json.dumps(observation.source_metadata, ensure_ascii=False),
                 ),
             )
 

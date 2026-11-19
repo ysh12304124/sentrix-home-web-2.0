@@ -106,6 +106,9 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 - 只有 preview 摘要不足、且问画面可见属性（颜色、服饰、动作、物体、建筑）时才声明 visual_observation。
 - 只有问图内文字、数字、价格、招牌时声明 visible_text；地点、颜色、服饰、场景不算。
 - 问视频或录音里的人说了什么、提到什么内容时声明 spoken_content；不要把语音转写归为图内 OCR。
+- 问文本、笔记、邮件、通知、预订或账单正文时声明 text_content，必须由专用
+  search_text_memories 检索正文；不要用照片/视频检索工具代替。
+  不预设必须来自邮件，不把文本内容声明为图内 visible_text；保留英文实体词供检索。
 - 只有问照片里的人是谁、身份归属时声明 photo_identity。
 - 一条 requirement 只对应一种 evidence_type；「先找照片」与「看清细节」要分成两条。
 - photo_set + delivered_photo 之外最多再声明 2 条证据需求；同一 evidence_type 可按
@@ -152,6 +155,8 @@ _TYPE_ALIASES: Mapping[str, str] = {
     "transcript": EvidenceType.SPOKEN_CONTENT.value,
     "audio_transcript": EvidenceType.SPOKEN_CONTENT.value,
     "spoken_content": EvidenceType.SPOKEN_CONTENT.value,
+    "email_text": EvidenceType.TEXT_CONTENT.value,
+    "text_content": EvidenceType.TEXT_CONTENT.value,
 }
 
 _HEX_DIGITS = re.compile(r"^[0-9a-f]+$")
@@ -163,7 +168,7 @@ _UNKNOWN_SCOPE_VALUES = frozenset({"未知", "unknown", "n/a", "na", "none", "nu
 def planner_evidence_types() -> tuple[str, ...]:
     """给提示词用的证据类型清单。1.0 ``evidence_contract.planner_evidence_types`` 同形：
     稳定顺序，集合本身是唯一事实来源。"""
-    return tuple(sorted(item.value for item in EvidenceType))
+    return tuple(sorted(item.value for item in EvidenceType if item is not EvidenceType.EMAIL_TEXT))
 
 
 def build_prompt() -> str:

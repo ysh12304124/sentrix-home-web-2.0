@@ -475,7 +475,18 @@ class ImportJobExecutor:
             "lexical_indexed",
             "video_scenes_done",
         ):
-            self._mark(job, stage, "skipped", "deduplicated")
+            if not result.deduplicated and stage in {
+                "prepared",
+                "observation_saved",
+                "event_assigned",
+                "text_indexed",
+                "lexical_indexed",
+            }:
+                self._mark(job, stage, "done")
+            else:
+                self._mark(job, stage, "skipped", "deduplicated" if result.deduplicated else "not_applicable")
+        if not result.deduplicated:
+            self._jobs.bump_scope_generation(job.scope_id, now=self._clock())
         self._jobs.set_job_status(
             job.id,
             job.fence,
