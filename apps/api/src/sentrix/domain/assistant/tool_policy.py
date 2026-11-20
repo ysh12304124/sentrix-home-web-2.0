@@ -77,6 +77,11 @@ class ToolPolicy:
         arguments = dict(arguments)
         if call.name in {"inspect_photo", "read_photo_text", "query_photo_people", "read_source_text"}:
             arguments["result_set_id"] = state.current_result_set_id or ""
+        if call.name == "read_source_text":
+            requested,sep,handle = str(arguments.get('asset_handle') or '').partition('/')
+            if sep and requested in state.result_set_ids:
+                arguments['result_set_id'] = requested
+                arguments['asset_handle'] = handle
 
         # **「缺」的判据是「键不在 / 是 null / 是空串」，不是「falsy」。**
         #
@@ -134,7 +139,7 @@ class ToolPolicy:
             )
 
         if (
-            call.name == "search_memories"
+            call.name in {"search_memories", "search_text_memories"}
             and state.profile.max_search_calls is not None
             and state.search_calls >= state.profile.max_search_calls
         ):

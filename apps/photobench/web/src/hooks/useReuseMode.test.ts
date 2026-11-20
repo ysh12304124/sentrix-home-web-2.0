@@ -18,6 +18,7 @@ function jsonResponse(status: number, body: unknown) {
 const space = (id: string, name = ""): MemorySpace => ({ id, name });
 
 const base = (overrides: Partial<ReuseBase> = {}): ReuseBase => ({
+  run_id: "r1",
   base_id: "b1",
   album_id: "album3",
   model_profile: "mp",

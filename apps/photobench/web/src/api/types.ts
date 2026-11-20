@@ -186,6 +186,12 @@ export interface MemorySourceObservation {
 
 /** run 指标汇总。后端 `summary` 的字段是开放的，前端 `effectiveRunSummary` 现算 60+ 项。 */
 export interface RunSummary {
+  text_retrieval_summary?: {
+    question_count:number;recorded_count:number;
+    retrieval:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
+    citation:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
+    recall_at_k:Record<string,number|null>;
+  };
   structured_json_requested?: number | null;
   structured_json_total?: number | null;
   structured_json_success?: number | null;
@@ -475,6 +481,15 @@ export interface TaskJudge {
 
 /** 一行逐题摘要（`/api/v1/runs/{id}/items` 的 `items[]`）。 */
 export interface RunItemSummary {
+  text_retrieval_metrics?: {
+    version: number;
+    retrieved_evidence_ids?: string[];
+    cited_evidence_ids?: string[];
+    retrieval: {status:string;precision:number|null;recall:number|null;f1:number|null;gt:number;matched:number};
+    citation: {status:string;precision:number|null;recall:number|null;f1:number|null};
+    recall_at_k: Record<string, number|null>;
+    reason: string;
+  };
   profile_scores?: Record<string, Judge>;
   display_question?: string;
   conversation_turn_count?: number;

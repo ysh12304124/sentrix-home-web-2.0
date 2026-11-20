@@ -9,6 +9,18 @@ import { KeyMetrics } from "./KeyMetrics.tsx";
 //   - 没有（该 run 未落盘候选顺序）→ `recallMetricRows` 回空数组 → 整块不渲染。
 afterEach(cleanup);
 
+it("邮件检索和最终引用分别显示，历史缺失不伪装成零", () => {
+  render(<KeyMetrics run={{run_id:'text-run',summary:{text_retrieval_summary:{
+    question_count:2,recorded_count:1,
+    retrieval:{sample_count:1,precision:1,recall:1,f1:1},
+    citation:{sample_count:1,precision:1,recall:.5,f1:2/3},
+    recall_at_k:{'1':.5,'5':1,'10':null},
+  }}}} />);
+  expect(screen.getByRole('region',{name:'邮件文本召回指标'}).textContent).toContain('已记录 1/2');
+  expect(screen.getByText(/最终引用（1题）/).textContent).toContain('R 50.0%');
+  expect(screen.getByText(/R@1/).textContent).toContain('R@10 未记录');
+});
+
 const RUN: Run = {
   run_id: "r1",
   mode: "full",

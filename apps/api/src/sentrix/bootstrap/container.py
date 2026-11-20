@@ -92,6 +92,7 @@ from sentrix.domain.retrieval.ports import (
     VisualEmbedder,
     VisualEvidenceUtility,
 )
+from sentrix.domain.retrieval.text_memory import TextChunkRepository
 from sentrix.domain.spaces.ports import SpaceRepository
 from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS, ModelBudget, OpenAIChatModel
 from sentrix.infrastructure.assistant.events import InProcessTurnEventBroker
@@ -173,6 +174,7 @@ from sentrix.infrastructure.persistence.repositories.spaces import SqliteSpaceRe
 from sentrix.infrastructure.persistence.repositories.structured import (
     SqliteStructuredQueryRepository,
 )
+from sentrix.infrastructure.persistence.repositories.text_chunks import SqliteTextChunkRepository
 from sentrix.infrastructure.persistence.repositories.text_memories import SqliteTextMemoryRepository
 from sentrix.infrastructure.persistence.repositories.text_vectors import SqliteTextVectorRepository
 from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepository
@@ -289,6 +291,7 @@ class Container:
     # 观察文本索引用 ``text_vector_repository``。
     vector_repository: VectorRepository
     text_vector_repository: VectorRepository
+    text_chunks: TextChunkRepository
     vector_index: VectorIndex
     visual_embedder: VisualEmbedder
     cross_modal_embedder: VisualEmbedder | None
@@ -637,6 +640,7 @@ class Container:
             audio_repository=SqliteAudioRepository(database),
             vector_repository=SqliteVectorRepository(database),
             text_vector_repository=SqliteTextVectorRepository(database),
+            text_chunks=SqliteTextChunkRepository(database),
             vector_index=QdrantVectorIndex(settings.qdrant_dir),
             visual_embedder=visual_embedder,
             cross_modal_embedder=(

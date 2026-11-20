@@ -141,6 +141,19 @@ export function QaItemCard({
         {s.evidence_judge?.score != null && (
           <span className={`score ${scoreClass(s.evidence_judge.score)}`}>证据 {esc(s.evidence_judge.score)}</span>
         )}
+        {summary.text_retrieval_metrics && (
+          <span className="muted small">
+            邮件检索 P {fmtPct(summary.text_retrieval_metrics.retrieval.precision)} · R {fmtPct(summary.text_retrieval_metrics.retrieval.recall)}
+            {' '}· F1 {fmtPct(summary.text_retrieval_metrics.retrieval.f1)}
+            {' '}· R@5 {fmtPct(summary.text_retrieval_metrics.recall_at_k['5'])}
+            {' '}· 引用 P {fmtPct(summary.text_retrieval_metrics.citation.precision)}
+            {' '}· R {fmtPct(summary.text_retrieval_metrics.citation.recall)}
+            {' '}· F1 {fmtPct(summary.text_retrieval_metrics.citation.f1)}
+            {' '}· 引用邮件：{summary.text_retrieval_metrics.citation.status === 'available'
+              ? (summary.text_retrieval_metrics.cited_evidence_ids?.join('、') || '无') : '未记录'}
+            {summary.text_retrieval_metrics.reason ? ' · 取证事实未完整记录' : ''}
+          </span>
+        )}
         <span className="muted small">
           模型 {esc(s.model_call_count)} · 工具 {esc(s.tool_call_count)}
         </span>

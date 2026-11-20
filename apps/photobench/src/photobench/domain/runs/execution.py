@@ -294,6 +294,11 @@ def selected_asset_ids(turn_result: dict[str, Any]) -> list[str]:
         for item in (attachments or [])
         if isinstance(item, dict) and item.get("asset_id")
     ]
+    ids.extend(
+        str(s["asset_id"])
+        for s in (turn_result.get("trace") or {}).get("text_evidence", ())
+        if isinstance(s, dict) and s.get("asset_id")
+    )
     return list(dict.fromkeys(ids))
 
 
@@ -312,6 +317,9 @@ def retrieved_candidate_asset_ids(turn_result: dict[str, Any]) -> list[str]:
     """
     candidates = turn_result.get("retrieved_candidates")
     ids = [str(item) for item in (candidates or []) if item]
+    ids.extend(
+        str(i) for i in (turn_result.get("trace") or {}).get("text_retrieval", {}).get("asset_ids", ())
+    )
     return list(dict.fromkeys(ids))
 
 
@@ -365,7 +373,7 @@ def resolve_predicted_media(
             "asset_id": str(asset_id),
             "file_name": file_name,
             "media_type": media_type,
-            "media_id": Path(file_name).stem if media_type == "video" else file_name,
+            "media_id": Path(file_name).stem if media_type in {"video", "email"} else file_name,
         }
         if asset.get("media_url"):
             media["media_url"] = asset["media_url"]

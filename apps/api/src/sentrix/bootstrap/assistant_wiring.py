@@ -20,6 +20,7 @@ from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
 from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
+from sentrix.application.retrieval.text_memories import RetrieveTextMemories
 from sentrix.domain.assistant.profile import CLOUD_PROFILE, DEFAULT_PROFILE, TurnProfile
 
 if TYPE_CHECKING:
@@ -150,6 +151,7 @@ def build_run_turn(container: Container) -> RunTurn:
             events=container.event_repository,
             asset_places=container.asset_place_repository,
             limits=_tool_limits(container),
+            text_retrieval=RetrieveTextMemories(container.text_chunks, container.text_embedder),
         ),
         observations=container.observation_repository,
         profile=_turn_profile(container),

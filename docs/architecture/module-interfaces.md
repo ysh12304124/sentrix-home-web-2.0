@@ -278,6 +278,12 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 
 ### 3.4 Retrieval
 
+文本路径新增 `TextChunkRepository`（domain/retrieval/text_memory.py），由 Container
+装配SQLite实现。分块按观察revision原子替换，独立词法/文本向量RRF，先过滤scope、
+来源与记录时间；不调用视觉通道，不改媒体融合权重。修正时旧revision立即不可检索，
+删除由外键清除分块。来源引用和邮件P/R/F1、R@K的增量契约、历史缺失及验收边界见
+[独立文本检索](../refactor/text-retrieval-deviations.md)。
+
 | 端口 | 定义 | 方法摘要 | 当前实现 |
 |---|---|---|---|
 | `LexicalIndex` | `domain/retrieval/ports.py:76` | `refresh_from_observation/rebuild_scope/count` | `SqliteLexicalIndex` |

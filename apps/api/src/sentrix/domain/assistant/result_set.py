@@ -62,6 +62,7 @@ class ResultSet:
     # 同一张图在第一页是 ``exact``、翻回来变成 ``strong``。
     evidence_classes: Mapping[str, str] = field(default_factory=dict)
     graph_provenance: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    text_offsets: Mapping[str, int] = field(default_factory=dict)
 
     def page(self, page_no: int, page_size: int = PAGE_SIZE) -> ResultSetPage:
         """第 ``page_no`` 页（1-based）。页码越界返回空页，不抛异常。

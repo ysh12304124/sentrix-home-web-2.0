@@ -440,8 +440,26 @@ READ_SOURCE_TEXT = ToolSpec(
 )
 
 
+SEARCH_TEXT_MEMORIES = ToolSpec(
+    name="search_text_memories",
+    brief="独立检索邮件/文档，返回相关原文块与源证据ID。",
+    description="仅检索文本资料；融合后按源邮件去重。时间条件为记录时间，不证明正文活动时间。",
+    parameters=_object_schema(
+        {
+            "query": {"type": "string"},
+            "source_type": {"type": "string"},
+            "after": {"type": "string", "description": "记录时间下界 ISO8601"},
+            "before": {"type": "string", "description": "记录时间上界 ISO8601"},
+        },
+        ["query"],
+    ),
+    satisfies=(),
+    required=("query",),
+)
+
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     SEARCH_MEMORIES,
+    SEARCH_TEXT_MEMORIES,
     QUERY_MEMORY_FACTS,
     QUERY_PHOTO_PEOPLE,
     INSPECT_PHOTO,
@@ -455,7 +473,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
 TOOLS_BY_NAME: Mapping[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
 
 # 能产出一组照片的检索工具。门禁用它判断「有没有检索过」。
-RETRIEVAL_TOOLS = frozenset({"search_memories", "get_result_page"})
+RETRIEVAL_TOOLS = frozenset({"search_memories", "search_text_memories", "get_result_page"})
 
 
 def openai_tools(specs: Sequence[ToolSpec] = TOOL_SPECS) -> tuple[Mapping[str, Any], ...]:

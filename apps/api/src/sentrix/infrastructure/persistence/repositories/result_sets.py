@@ -29,6 +29,7 @@ def _row_to_result_set(row: sqlite3.Row) -> ResultSet:
         created_at=datetime.fromisoformat(row["created_at"]),
         evidence_classes=dict(json.loads(row["evidence_classes_json"] or "{}")),
         graph_provenance=dict(json.loads(row["graph_provenance_json"] or "{}")),
+        text_offsets=dict(json.loads(row["text_offsets_json"] or "{}")),
     )
 
 
@@ -42,8 +43,8 @@ class SqliteResultSetRepository:
             connection.execute(
                 "INSERT OR REPLACE INTO agent_result_sets"
                 " (id, scope_id, query, asset_ids_json, evidence_classes_json,"
-                " graph_provenance_json, total, created_at, turn_id, attempt_no)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " graph_provenance_json, total, created_at, turn_id, attempt_no, text_offsets_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     result_set.id,
                     result_set.scope_id,
@@ -55,6 +56,7 @@ class SqliteResultSetRepository:
                     result_set.created_at.isoformat(),
                     context.turn_id if context is not None else "",
                     context.attempt_no if context is not None else 0,
+                    json.dumps(dict(result_set.text_offsets)),
                 ),
             )
 

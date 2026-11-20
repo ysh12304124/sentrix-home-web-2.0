@@ -129,6 +129,7 @@ class JudgeObservation(BaseModel):
 
 class RunItemObservation(BaseModel):
     model_config = ConfigDict(extra="allow")
+    text_retrieval_metrics: dict[str, Any] | None = None
     display_question: str | None = None
     conversation_turn_count: int | None = None
     conversation_context_mode: str | None = None

@@ -71,6 +71,7 @@ from photobench.domain.deploy.ports import (
 from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.evaluation.profiles import uses_readable_metadata
 from photobench.domain.evaluation.prompts import evaluation_prompts
+from photobench.domain.evaluation.text_retrieval import text_retrieval_metrics
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter
 from photobench.domain.runs.analysis import (
@@ -2799,6 +2800,9 @@ class RunExecution:
             # 轨迹：从**同一条事件流**投影出两条（见 ``traces_from_progress``）。
             # 读侧的 ``bind_tool_calls_to_model_rounds`` 早就在等它们了。
             tool_trace, execution_trace = traces_from_progress(turn_records)
+            text_metrics = text_retrieval_metrics(row, turn_records)
+            if text_metrics is not None:
+                item["text_retrieval_metrics"] = text_metrics
             selected = selected_asset_ids(last_result)
             predicted_media = resolve_predicted_media(selected, assets_by_name)
             gt_media = resolve_gt_media(gt_refs, assets_by_name, predicted_media)

@@ -37,6 +37,7 @@ from typing import Any
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
 from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
+from sentrix.application.retrieval.text_memories import RetrieveTextMemories
 from sentrix.domain.assistant.evidence_binding import fact_value_type
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import Attachment
@@ -211,8 +212,10 @@ class AssistantToolbox:
         asset_places: AssetPlaceRepository | None = None,
         events: EventRepository | None = None,
         limits: ToolLimits | None = None,
+        text_retrieval: RetrieveTextMemories | None = None,
     ) -> None:
         self._limits = limits or ToolLimits()
+        self._text_retrieval = text_retrieval
         self._retrieval = retrieval
         self._assets = assets
         self._result_sets = result_sets
@@ -244,6 +247,8 @@ class AssistantToolbox:
         question: str = "",
         graph_enabled: bool = True,
     ) -> ToolOutcome:
+        if name == "search_text_memories":
+            return self._search_text(arguments, scope_id=scope_id, now=now)
         if name == "search_memories":
             return self._search(arguments, scope_id=scope_id, now=now, graph_enabled=graph_enabled)
         if name == "get_result_page":
@@ -261,6 +266,92 @@ class AssistantToolbox:
         if name == "query_memory_facts":
             return self._facts(arguments, scope_id=scope_id, now=now)
         return _failure("unknown_tool", f"没有名为 {name} 的工具。")
+
+    def _search_text(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime) -> ToolOutcome:
+        if self._text_retrieval is None:
+            return _failure("text_index_unavailable", "文本索引不可用，请先完成文本构建。")
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return _failure("empty_query", "query不能为空")
+        result = self._text_retrieval.execute(
+            query,
+            scope_id,
+            source_type=str(arguments.get("source_type") or ""),
+            after=str(arguments.get("after") or ""),
+            before=str(arguments.get("before") or ""),
+        )
+        hits = result.hits
+        result_set = ResultSet(
+            id=f"rs_{uuid.uuid4().hex[:12]}",
+            scope_id=scope_id,
+            query=query,
+            asset_ids=tuple(c.asset_id for c in hits),
+            created_at=now,
+            text_offsets={c.asset_id: c.start for c in hits},
+        )
+        self._result_sets.add(result_set)
+        preview = [
+            {
+                "handle": f"{result_set.id}/photo_{i}",
+                "citation_handle": f"{result_set.id}/photo_{i}",
+                "media_kind": "text",
+                "evidence_id": c.external_id,
+                "source_type": c.source_type,
+                "matched_text": c.text,
+                "offset": c.start,
+                "end_offset": c.end,
+                "revision": c.revision,
+            }
+            for i, c in enumerate(hits, 1)
+        ]
+        visible = {
+            "result_set_id": result_set.id,
+            "preview": preview,
+            "total": len(hits),
+            "has_more": False,
+            "degraded": result.degraded,
+            "reason": result.reason,
+        }
+        return ToolOutcome(
+            observation={
+                **visible,
+                "asset_ids": list(result_set.asset_ids),
+                "candidate_asset_ids": list(result_set.asset_ids),
+                "retrieval_channels": ["lexical", "text_ann"],
+            },
+            model_visible=visible,
+        )
+
+    def text_citations(
+        self, handles: Sequence[str], result_set_ids: Sequence[str], *, scope_id: str
+    ) -> list[dict[str, str]]:
+        citations = {}
+        for handle in handles:
+            qualified_id, sep, local_handle = handle.partition("/")
+            allowed_ids = (
+                [qualified_id] if sep and qualified_id in result_set_ids else list(result_set_ids[-1:])
+            )
+            if sep and qualified_id not in result_set_ids:
+                continue
+            for result_id in reversed(allowed_ids):
+                result = self._result_sets.get(result_id)
+                if result is None or result.scope_id != scope_id:
+                    continue
+                asset = self._assets.get(result.resolve(local_handle if sep else handle) or "")
+                if asset is None or asset.scope_id != scope_id or asset.media_type is not MediaType.TEXT:
+                    continue
+                observations = self._observations.list_by_asset(asset.id)
+                if not observations:
+                    continue
+                observation = observations[0]
+                citations[asset.id] = {
+                    "asset_id": asset.id,
+                    "evidence_id": observation.external_id,
+                    "source_type": str(observation.source_metadata.get("source_type", "unknown")),
+                    "handle": handle,
+                }
+                break
+        return list(citations.values())
 
     # ---- query_memory_facts -------------------------------------------------
 
@@ -1162,6 +1253,8 @@ class AssistantToolbox:
             return _failure("scope_mismatch", "这个结果集不属于当前资料范围。")
 
         handle = str(arguments.get("asset_handle") or "").strip()
+        if handle.startswith(result_set.id + "/"):
+            handle = handle.partition("/")[2]
         asset_id = result_set.resolve(handle)
         if asset_id is None:
             return _failure("bad_handle", "请使用当前检索预览中返回的 handle。")
@@ -1175,16 +1268,19 @@ class AssistantToolbox:
         text = observations[0].source_text if observations else ""
         if not text:
             return _failure("source_text_unavailable", "这条资料没有可读取的原文。")
-        offset = arguments.get("offset", 0)
+        offset = arguments.get("offset", result_set.text_offsets.get(asset.id, 0))
         if type(offset) is not int or not 0 <= offset < len(text):
             return _failure("bad_offset", "请从 0 开始，或用上一段返回的 next_offset 续读。")
-        end = min(offset + SOURCE_TEXT_PAGE_CHARS, len(text))
+        page_chars = 640 if result_set.text_offsets else SOURCE_TEXT_PAGE_CHARS
+        end = min(offset + page_chars, len(text))
         page = {
             "asset_handle": handle,
             "text": text[offset:end],
             "offset": offset,
             "next_offset": end if end < len(text) else None,
             "total_chars": len(text),
+            "evidence_id": observations[0].external_id,
+            "citation_handle": f"{result_set.id}/{handle}",
             **_text_source_metadata(asset),
         }
         return ToolOutcome(

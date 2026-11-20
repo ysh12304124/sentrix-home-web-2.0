@@ -6,6 +6,7 @@ import json
 from collections.abc import Sequence
 
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
+from sentrix.application.retrieval.text_memories import IndexTextMemories
 from sentrix.domain.media.ports import MediaStorage, ObservationRepository
 from sentrix.domain.media.text_memory import TextMemoryItem, TextMemoryRepository, text_asset_id
 from sentrix.domain.retrieval.ports import LexicalIndex
@@ -19,7 +20,7 @@ class ImportTextMemories:
         observations: ObservationRepository,
         storage: MediaStorage,
         lexical: LexicalIndex,
-        index: IndexObservationText,
+        index: IndexObservationText | IndexTextMemories,
     ) -> None:
         self.repository, self.observations = repository, observations
         self.storage, self.lexical, self.index = storage, lexical, index
@@ -61,7 +62,9 @@ class ImportTextMemories:
             observation = self.observations.get(str(record["observation_id"]))
             if observation is None:
                 raise RuntimeError("文本观察缺失")
-            if record["indexed_revision"] == observation.revision:
+            if record["indexed_revision"] == observation.revision and (
+                not isinstance(self.index, IndexTextMemories) or self.index.is_indexed(observation)
+            ):
                 indexed += 1
                 continue
             error = ""

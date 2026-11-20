@@ -40,6 +40,7 @@ from sentrix.application.memories.sync_corrections import (
 )
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
+from sentrix.application.retrieval.text_memories import IndexTextMemories
 from sentrix.domain.media.import_jobs import ImportJob
 from sentrix.domain.media.models import AssetStatus, MediaType, Observation
 from sentrix.domain.memories.graph import GraphBuildStats
@@ -57,9 +58,7 @@ def build_email_import(container: Container) -> ImportEmails:
         observations=container.observation_repository,
         storage=container.media_storage,
         lexical=container.lexical_index,
-        index=IndexObservationText(
-            embedder=container.text_embedder, vectors=container.text_vector_repository
-        ),
+        index=IndexTextMemories(container.text_chunks, container.text_embedder),
     )
 
 
@@ -71,9 +70,7 @@ def build_text_import(container: Container):
         observations=container.observation_repository,
         storage=container.media_storage,
         lexical=container.lexical_index,
-        index=IndexObservationText(
-            embedder=container.text_embedder, vectors=container.text_vector_repository
-        ),
+        index=IndexTextMemories(container.text_chunks, container.text_embedder),
     )
 
 
@@ -544,6 +541,7 @@ def build_memory_sync(container: Container, *, strict_summary: bool = True) -> S
         container.text_embedder,
         container.text_vector_repository,
         container.memory_corrections,
+        text_index=IndexTextMemories(container.text_chunks, container.text_embedder),
     ).reindex
 
     def graph(scope: str) -> None:

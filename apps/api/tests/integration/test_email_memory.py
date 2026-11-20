@@ -37,6 +37,7 @@ from sentrix.infrastructure.persistence.repositories.participants import SqliteE
 from sentrix.infrastructure.persistence.repositories.relationships import SqliteRelationshipRepository
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
 from sentrix.infrastructure.persistence.repositories.spaces import SqliteSpaceRepository
+from sentrix.infrastructure.persistence.repositories.text_chunks import SqliteTextChunkRepository
 from sentrix.infrastructure.persistence.repositories.text_vectors import SqliteTextVectorRepository
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 
@@ -80,6 +81,7 @@ def setup(migrations_ready_db, tmp_path):
             db, observations, assets=assets, places=SqliteAssetPlaceRepository(db)
         ),
         text_embedder=Embedder(),
+        text_chunks=SqliteTextChunkRepository(db),
         text_vector_repository=SqliteTextVectorRepository(db),
         vector_repository=SqliteVectorRepository(db),
         memory_graph=SqliteMemoryGraphRepository(db),
@@ -124,9 +126,8 @@ def test_email_import_api_text_index_timeline_and_idempotence(setup):
     assert c.asset_repository.get(aid).captured_at.tzinfo is None
     assert c.event_repository.get(record["event_id"]).time_start.day == 11
     assert c.lexical_index.search_fts("AB123", scope_id=SCOPE, limit=6)
-    assert c.text_vector_repository.has_vector(
-        space="semantic", source_type="observation", source_id=observation.id, model_name="test-text"
-    )
+    assert c.text_chunks.indexed(observation.id, observation.revision, "test-text")
+    assert c.text_vector_repository.count(space="semantic") == 0
     again = client.post("/api/v1/emails/import", json={"scope_id": SCOPE, "items": [MAIL]}).json()
     assert again["imported"] == 0 and again["skipped"] == 1
     with c.database.connect() as db:
@@ -190,8 +191,8 @@ def test_text_import_repairs_orphaned_email_asset_rows(setup):
                 str(path),
                 len(item.body.encode()),
                 item.fingerprint,
-                "now",
-                "now",
+                "2025-02-11T21:35:00",
+                "2025-02-11T21:35:00",
             ),
         )
         db.execute(
@@ -371,6 +372,8 @@ def test_generic_text_and_email_share_authority_and_keep_source_metadata(setup):
 
 
 def test_text_english_subjects_are_not_drowned_by_common_words_or_latin_bigrams(setup):
+    from sentrix.application.retrieval.text_memories import RetrieveTextMemories
+
     c, client = setup
     rows = [
         {
@@ -389,23 +392,21 @@ def test_text_english_subjects_are_not_drowned_by_common_words_or_latin_bigrams(
     ]
     result = client.post("/api/v1/text/import", json={"scope_id": SCOPE, "items": rows}).json()
     correct = result["items"][0]["asset_id"]
-    hits = c.lexical_index.search_fts("Zephyrium TA payment salary", scope_id=SCOPE, limit=6)
-    assert hits[0][0] == correct
-    assert {aid for aid, _ in c.lexical_index.search_fts("TA", scope_id=SCOPE, limit=20)} == {correct}
-    from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
-    from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
-    from sentrix.application.retrieval.retrieve_text_ann import TextSearchResult
-    from sentrix.application.retrieval.retrieve_visual import VisualSearchResult
-
-    retrieval = RetrieveEvidence(
-        lexical=RetrieveLexical(index=c.lexical_index),
-        observations=c.observation_repository,
-        visual=SimpleNamespace(execute=lambda request: VisualSearchResult()),
-        text=SimpleNamespace(execute=lambda request: TextSearchResult()),
-        metadata=SimpleNamespace(execute=lambda *args, **kwargs: []),
-        entity=SimpleNamespace(execute=lambda *args, **kwargs: []),
+    hits = (
+        RetrieveTextMemories(c.text_chunks, c.text_embedder)
+        .execute("Zephyrium TA payment salary", SCOPE, source_type="email")
+        .hits
     )
-    hits = retrieval.execute(EvidenceRequest(text="Zephyrium salary", scope_id=SCOPE, source_type="email"))
+    assert hits[0].asset_id == correct
+    assert {
+        h.asset_id
+        for h in RetrieveTextMemories(c.text_chunks, c.text_embedder)
+        .execute("TA", SCOPE, source_type="email", limit=20)
+        .hits
+    } == {correct}
+    hits = RetrieveTextMemories(c.text_chunks, c.text_embedder).execute(
+        "Zephyrium salary", SCOPE, source_type="email"
+    )
     assert {hit.asset_id for hit in hits.hits} == {correct}
 
 

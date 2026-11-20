@@ -55,16 +55,16 @@ def test_email_memory_search_progress_is_not_mislabeled_as_photo_results() -> No
         },
     )
 
-    assert _tool_status_text("search_memories", outcome) == "结果集里共有 2 条邮件/文本记忆。"
+    assert _tool_status_text("search_text_memories", outcome) == "结果集里共有 2 条邮件/文本记忆。"
 
 
-def test_text_only_turn_redirects_legacy_media_search_to_text_retrieval(env) -> None:
-    """A model emitting the old media tool must not bypass text-only retrieval."""
+def test_text_scope_uses_explicit_text_path_with_media_baseline_available(env) -> None:
+    """Text retrieval is explicit; mixed scopes retain the visual tool contract."""
     _conversations, _turns, conversation, _db = env
     model = ScriptedModel(
-        [tool_call("search_memories", "c1", query="BMVC accommodation"), final("邮件中找到金额。")],
+        [tool_call("search_text_memories", "c1", query="BMVC accommodation"), final("邮件中找到金额。")],
         planner=planner_reply(
-            "text_content",
+            "source_text",
             goal="检索邮件中的住宿金额",
             value_type="amount",
         ),
@@ -75,12 +75,21 @@ def test_text_only_turn_redirects_legacy_media_search_to_text_retrieval(env) -> 
             FINAL_ANSWER_TOOL: DELIVER_OK,
         }
     )
-    run_turn = build(env, model, toolbox)
+    from types import SimpleNamespace
+
+    conversations, turns, _conversation, _db = env
+    run_turn = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=toolbox,
+        observations=SimpleNamespace(has_source_text=lambda scope: True),
+    )
 
     run_turn.run(start(run_turn, conversation))
 
     assert toolbox.calls[0][0] == "search_text_memories"
-    assert "search_memories" not in model.tool_sets[0]
+    assert "search_memories" in model.tool_sets[0]
     assert "search_text_memories" in model.tool_sets[0]
 
 
@@ -913,9 +922,7 @@ def test_a_third_search_is_refused_after_one_retry(env):
 
     assert [name for name, _ in toolbox.calls] == ["search_memories", "search_memories"]
     refusals = [
-        event
-        for _seq, _attempt, event in turns.events_after(turn_id, 0)
-        if event.status.value == "denied"
+        event for _seq, _attempt, event in turns.events_after(turn_id, 0) if event.status.value == "denied"
     ]
     assert refusals and "检索额度" in refusals[0].text
 

@@ -57,10 +57,9 @@ def test_every_tool_declares_the_evidence_it_satisfies():
         EvidenceType.PHOTO_SET,
         EvidenceType.SPOKEN_CONTENT,
     )
-    assert TOOLS_BY_NAME["search_text_memories"].satisfies == (
-        EvidenceType.TEXT_CONTENT,
-        EvidenceType.EMAIL_TEXT,
-    )
+    # A candidate chunk does not prove the full source requirement; readback does.
+    assert TOOLS_BY_NAME["search_text_memories"].satisfies == ()
+    assert TOOLS_BY_NAME["read_source_text"].satisfies == (EvidenceType.SOURCE_TEXT,)
     assert TOOLS_BY_NAME["final_answer"].satisfies == (EvidenceType.DELIVERED_PHOTO,)
     assert TOOLS_BY_NAME["get_person_profile"].satisfies == (EvidenceType.PERSON_PROFILE,)
 

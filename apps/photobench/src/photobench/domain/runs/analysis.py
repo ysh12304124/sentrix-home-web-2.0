@@ -34,6 +34,7 @@ from typing import Any
 from photobench.domain.datasets.ability_taxonomy import ABILITY_FIELDS
 from photobench.domain.evaluation.contract import evaluation_summary
 from photobench.domain.evaluation.profiles import media_ranking_summary, scoring_summary
+from photobench.domain.evaluation.text_retrieval import aggregate_text_retrieval
 from photobench.domain.runs.graph_quality import aggregate_graph_qa_by_type
 from photobench.domain.runs.judge import normalize_judge_score, parse_judge_json
 from photobench.domain.runs.task_history import execution_metadata
@@ -1398,6 +1399,7 @@ def capability_summary(
         "evaluation_summary": evaluation_summary(items),
         "judge_distribution": answer_dist,
         "judge_valid_count": len(answer_scores),
+        **aggregate_text_retrieval(items),
         "answer_quality_mean": round(sum(answer_scores) / len(answer_scores), 3) if answer_scores else None,
         "exact_accuracy": round(answer_dist["2"] / len(answer_scores), 3) if answer_scores else None,
         "core_accuracy": round((answer_dist["1"] + answer_dist["2"]) / len(answer_scores), 3)
@@ -1967,6 +1969,11 @@ def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None
     judge = judge_projection(item.get("judge"))
     media_counts = item.get("media_retrieval_counts") or {}
     return {
+        **(
+            {"text_retrieval_metrics": item["text_retrieval_metrics"]}
+            if "text_retrieval_metrics" in item
+            else {}
+        ),
         "index": index,
         "qa_id": item.get("qa_id"),
         **{key: item[key] for key in ABILITY_FIELDS if key in item},

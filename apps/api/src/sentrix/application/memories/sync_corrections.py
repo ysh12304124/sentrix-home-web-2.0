@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sentrix.application.memories.summarize_event import parse_projection_object
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
+from sentrix.application.retrieval.text_memories import IndexTextMemories
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
 from sentrix.domain.assistant.ports import ChatModel
 from sentrix.domain.identity.ports import EntityRepository
@@ -159,6 +160,7 @@ class ReindexCorrectedMemories:
         embedder: TextEmbedder,
         vectors: VectorRepository,
         corrections: MemoryCorrectionRepository,
+        text_index: IndexTextMemories | None = None,
     ) -> None:
         self.observations = observations
         self.events = events
@@ -166,6 +168,7 @@ class ReindexCorrectedMemories:
         self.embedder = embedder
         self.vectors = vectors
         self.corrections = corrections
+        self.text_index = text_index
 
     def reindex(self, scope: str) -> None:
         observations = [
@@ -178,7 +181,8 @@ class ReindexCorrectedMemories:
         for observation in observations:
             self.lexical.refresh_from_observation(observation)
             event_ids = [event_id for event_id, ids in events.items() if observation.id in ids]
-            outcome = index.index(observation, event_ids[0] if event_ids else None, force=True)
+            selected_index = self.text_index if observation.text_content and self.text_index else index
+            outcome = selected_index.index(observation, event_ids[0] if event_ids else None, force=True)
             if not outcome.indexed and outcome.reason != "empty_text":
                 raise RuntimeError(outcome.reason)
         affected_event_ids = set(self.corrections.affected_events(scope))

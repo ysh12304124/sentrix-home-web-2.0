@@ -25,7 +25,13 @@ from sentrix.application.assistant.debug_trace import (
     chat_messages_payload,
     model_reply_payload,
 )
-from sentrix.domain.assistant.judge import JudgeVerdict, build_messages, parse_verdict, verdict_from_payload
+from sentrix.domain.assistant.judge import (
+    TEXT_SOURCE_REVIEW_RULES,
+    JudgeVerdict,
+    build_messages,
+    parse_verdict,
+    verdict_from_payload,
+)
 from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply
 from sentrix.domain.assistant.ports import ChatModel
 from sentrix.domain.media.progress import OperationCancelled
@@ -54,6 +60,7 @@ class FaithfulnessJudge:
         complete: Callable[[Sequence[ChatMessage]], ModelReply] | None = None,
         include_debug: bool = False,
         step_id: str = "judge",
+        source_text: bool = False,
     ) -> JudgeVerdict:
         """评审一次。任何失败都返回「忠实」——这是 1.0 的 fail-open 口径。
 
@@ -68,6 +75,8 @@ class FaithfulnessJudge:
             message_chars=self._message_chars,
         )
         messages = [ChatMessage(ChatRole(str(item["role"])), str(item["content"])) for item in call.messages]
+        if source_text:
+            messages[0] = ChatMessage(ChatRole.SYSTEM, messages[0].content + TEXT_SOURCE_REVIEW_RULES)
         started = time.perf_counter()
         debug_call: dict[str, Any] | None = None
         if include_debug:

@@ -211,6 +211,11 @@ make ci
 
 ## 评测
 
+邮件/文档走独立分块文本索引与 `search_text_memories`，原文保留源ID与offset。
+邮件测评分别展示检索和最终引用的P/R/F1及R@1/5/10，按源邮件去重。
+旧索引需要重建文本运行；历史缺取证事实的指标保持未记录。
+边界与验证见[独立文本检索说明](docs/refactor/text-retrieval-deviations.md)。
+
 PhotoBench 运行结果在 `apps/photobench/results/<run_id>/`，页面在 8772。
 QA 数据集在 `apps/photobench/datasets/`。
 

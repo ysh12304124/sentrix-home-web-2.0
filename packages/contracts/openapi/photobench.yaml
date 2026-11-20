@@ -3811,6 +3811,12 @@ components:
       title: QaTaxonomyResponse
     RunItemObservation:
       properties:
+        text_retrieval_metrics:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Text Retrieval Metrics
         display_question:
           anyOf:
           - type: string

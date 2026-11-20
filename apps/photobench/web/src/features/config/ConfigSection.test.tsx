@@ -15,6 +15,7 @@ const MANIFEST: ManifestSummary = {
 };
 
 const REUSE_BASE: ReuseBase = {
+  run_id: "r1",
   base_id: "b1",
   album_id: "albumX",
   model_profile: "prof",

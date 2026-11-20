@@ -13,7 +13,11 @@ def delivered_media_aliases(record: Mapping[str, Any]) -> list[dict[str, str]]:
     """Resolve recorded handles by asset identity, without guessing from list order."""
     by_asset: dict[str, set[tuple[str, str]]] = {}
     for ref in record.get("predicted_media") or []:
-        if ref.get("asset_id") and ref.get("media_type") in {"image", "video"} and ref.get("media_id"):
+        if (
+            ref.get("asset_id")
+            and ref.get("media_type") in {"image", "video", "email"}
+            and ref.get("media_id")
+        ):
             kind, identifier = stable_media_key(ref).split(":", 1)
             by_asset.setdefault(str(ref["asset_id"]), set()).add((kind, identifier))
     aliases: dict[str, set[tuple[str, str]]] = {}

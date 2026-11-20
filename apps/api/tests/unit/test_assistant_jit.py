@@ -13,7 +13,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     EvidenceRequirement,
     EvidenceType,
 )
-from sentrix.domain.assistant.jit import select_tools
+from sentrix.domain.assistant.jit import select_tools, select_turn_tools
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS
 
 
@@ -65,17 +65,17 @@ def test_a_missing_result_set_always_offers_search():
     assert "search_memories" in offered
 
 
-def test_email_requirements_offer_text_search_without_photo_search():
+def test_source_text_requirements_offer_independent_search_without_visual_inspection():
     offered = names(
-        select_tools(
-            ledger_with(EvidenceType.EMAIL_TEXT),
-            has_result_set=False,
-            tools_exhausted=False,
+        select_turn_tools(
+            ledger_with(EvidenceType.SOURCE_TEXT),
+            has_source_text=True,
         )
     )
 
     assert "search_text_memories" in offered
-    assert "search_memories" not in offered
+    assert "search_memories" in offered
+    assert "read_source_text" in offered
     assert "inspect_photo" not in offered
 
 

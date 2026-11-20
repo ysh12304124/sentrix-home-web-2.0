@@ -5,6 +5,7 @@ import type { ReuseBase } from "../../api/types.ts";
 import { ReuseBasePicker } from "./ReuseBasePicker.tsx";
 
 const BASE: ReuseBase = {
+  run_id: "r1",
   base_id: "b1",
   album_id: "albumX",
   model_profile: "prof",

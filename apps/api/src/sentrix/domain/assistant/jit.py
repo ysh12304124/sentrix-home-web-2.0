@@ -79,6 +79,8 @@ def select_turn_tools(ledger: EvidenceLedger, *, has_source_text: bool = False) 
     ``run_turn._converse``）。
     """
     offered = {FINAL_ANSWER_TOOL, "search_memories"}
+    if has_source_text:
+        offered.add("search_text_memories")
     for item in ledger.requirements:
         offered.update(_TOOLS_BY_REQUIREMENT.get(item.evidence_type, frozenset()))
     if has_source_text:
@@ -90,12 +92,34 @@ def select_turn_tools(ledger: EvidenceLedger, *, has_source_text: bool = False) 
 
 
 def _turn_spec(spec: ToolSpec, *, has_source_text: bool) -> ToolSpec:
+    if has_source_text and spec.name == "read_source_text":
+        return replace(
+            spec,
+            description="读文本原文：省略offset从命中块开始，next_offset续读。",
+        )
     if has_source_text and spec.name == "search_memories":
         return replace(spec, description="按人名、日期或内容词检索照片、视频和文本资料。")
     if has_source_text and spec.name == FINAL_ANSWER_TOOL:
         properties = dict(spec.parameters["properties"])
         properties["answer"] = {"type": "string", "description": "使用用户语言给出最终回答。"}
-        return replace(spec, description=spec.brief, parameters={**spec.parameters, "properties": properties})
+        properties["selected_image_handles"] = {
+            **properties["selected_image_handles"],
+            "description": "仅填写图片handle。纯文本回答必须填空数组，文本citation_handle不能放在这里。",
+        }
+        properties["selected_text_handles"] = {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "实际引用的 citation_handle（结果集ID/文本handle）；未引用文本时填空数组。",
+        }
+        return replace(
+            spec,
+            description="回答并结束；文本填引用栏，照片填图片栏。",
+            parameters={
+                **spec.parameters,
+                "properties": properties,
+                "required": [*spec.parameters["required"], "selected_text_handles"],
+            },
+        )
     return replace(spec, description=spec.brief)
 
 
