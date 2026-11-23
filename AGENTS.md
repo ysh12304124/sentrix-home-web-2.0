@@ -1,6 +1,6 @@
 # Sentrix 与 PhotoBench 开发约定
 
-- 11/24豆包49题补跑fc11be已验994有效分，19失败计入全1013为73.0141%；原964分保持。16时限/3上下文，局部修复d714c62a通过真实重放、未部署；原版双流wake85623e13/worker2768666验证中，之后比较并仅补3题。草莓菜单双选项GT歧义已记，见audit/20261123-doubao-supplement49，接T006。
+- 11/24豆包994分基线双流及992共同题比较已验；上下文修复上线8294，8874仅更新产品版本配置。新84baa3继承1010项/994分/16失败，只补3题，wakefb82f707/watch91266；其余16按错计总分。见audit/20261124-doubao-context-three，接T006。
 
 - 11/23豆包161补做及双流验收、重统计完成：964/1013有效分（74.91%，覆盖95.16%），49失败空分保留；共同962题Plus67.23%/Q4 46.04%/豆包74.86%。原852分和各历史保持；随后49题新补跑见上条；见T006及audit/20261123-doubao-supplement-comparison。
 
@@ -45,4 +45,4 @@
 
 | ID | 任务方向 | 状态 | 最近更新 | 一句话范围 | 记录文档 |
 |---|---|---|---|---|---|
-| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 豆包994分终态；先双流验收再局部修复补3题 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |
+| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 994分基线已验，局部修复后仅补3道上下文题 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |

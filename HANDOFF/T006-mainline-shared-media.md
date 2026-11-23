@@ -2,6 +2,16 @@
 
 ## 当前状态
 
+2026-11-24：fc11be的994分、19失败null和1013逐项合同/完整trace-SFT双流已验；新992共同题Plus66.7088%、Q445.2991%、豆包74.3581%，豆包有效均值74.4097%/全1013缺分计错73.0141%，Decimal独立复算，旧964/962报告保持。见产品项目audit/20261124-doubao-supplement49-comparison。
+
+局部上下文修复d714c62a已上线，仅run_turn.py及版本标记变化；81项测试/3真轨迹离线重放通过。原产品树、配置预算、独立库及保护服务保持。8294PID2787511使用doubao-context-three-20261124-v1/product；8874PID2787640代码目录未变，仅重启读取新product_build_revision。新build尾缀context-preview-d714c62a。
+
+先注册wakefb82f707-0ea9-416e-9e37-f08f70becc1f，再单次seed/resume为20261124-042008-2026.11.17-atm-sources-addresses-current-resume-84baa3，继承994答卷/有效分及16原失败共1010项，只补3个context QA。retry_qa_ids为空、repair_missing_judges=false；实际resume源码已审查，16失败不会自动重跑。初探1010项/994分/3产品turn运行，watcher91266及精确命令已核。原全部source/seed manifest保持。新操作目录和审计见audit/20261124-doubao-context-three；prepare/publish/plan/seed/resume均已消费，不重放，probe只读。
+
+首计划调用在导入阶段失败，无plan/seed/Agent写入；2bb3b471先本机提交→同步100核SHA/import smoke→push后实际计划通过，发布未重复。终态核3新turn真实产品状态/认领代次、1010继承项及994回执（内部_index差异单列），缺Judge才另新wake仅Judge。之后新run双流验收和全1013计错总分重算。16时限不再Agent；草莓GT歧义和原0保持。
+
+以下为此前验收点记录，当前运行映射以84baa3及新审计为准。
+
 2026-11-24 04:03已先注册新wake85623e13-d681-47a8-8139-9d3cb7aaea93，再单次launch完整在线trace/SFT验证：远端worker2768666，本机watcher86140，绑定8874PID1588、原app-dir/导出源码和revision e98645d1e4a5465cba59747e1514ecf7。launch输出两行JSON导致本机初次解析失败；随后只读取远端exports-response确认已启动，未重放launch。验收后运行尚未消费的compare_supplement.py保存994分基线，再空闲发布上下文局部修复，仅补3题。当前业务未部署、新Agent尚未提交。
 
 2026-11-24豆包49题补跑fc11be终态验收：994/1013有效分，新增30份，原964答卷/分及历史保持；19缺分按错误计入全1013总分73.0141%，有效均分74.4097%。16题一小时时限、3题上下文超限。d714c62a修正并行工具结果连带保护，真实3轨迹本机/100离线重放通过，候选未上线；先完成原版双流/比较，再按用户新授权仅重跑3上下文题。草莓菜单含fraisier/mousse两选项，单一GT证据不足待复核，原0分保持。详见audit/20261123-doubao-supplement49/{failure19-review.md,followup-plan.json,terminal-acceptance.json}。
