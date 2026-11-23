@@ -32,7 +32,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -538,15 +538,15 @@ def _round_trip_spans(messages: Sequence[ChatMessage]) -> list[tuple[int, int]]:
 def _drop_oldest_tool_round_trip(
     messages: Sequence[ChatMessage], *, protect_latest_preview: bool = True
 ) -> list[ChatMessage] | None:
-    """丢掉**除最新检索/翻页预览外**最老的一整轮工具往返；没有可丢的返回 ``None``。
+    """移除最老的工具往返，保留最新检索/翻页预览；没有可丢的返回 ``None``。
 
     **保护对象：最新的一次 ``search_memories`` / ``get_result_page`` 往返。**
     这一轮的 tool 结果里是六张候选的完整 preview（handle、时间、地点、人物、摘要），
     是模型回答与继续 ``inspect_photo`` 的唯一入口。丢掉它，模型就不知道在说哪几张照片，
     整道题会退化成猜——这比「少一轮精读」贵得多。
 
-    其余往返按**从老到新**丢弃：``inspect_photo`` / ``read_photo_text`` / 人物查询等
-    都只提供某一轮的细节，丢掉最老的几轮通常还能靠最新一轮继续。
+    其余往返按从老到新丢弃。最新预览所在批次有并行调用时，只保留最新预览及其
+    assistant 调用，成对移除同批旧预览、统计等结果，避免连带保护超大工具输出。
 
     若历史里**只有**受保护的那一轮（或没有可丢的），返回 ``None``：宁可让这一轮
     如实以 ``MODEL_ERROR`` 收尾，也不删掉六图集硬答。
@@ -554,15 +554,32 @@ def _drop_oldest_tool_round_trip(
     spans = _round_trip_spans(messages)
     if not spans:
         return None
-    # 最新的一轮获胜：同一回合里可能既有 search 又有 page，保护最后出现的那一轮。
+    # 并行调用的旧预览和统计结果可移除，只保护最后返回的检索/翻页预览。
     protected_start: int | None = None
+    protected_call_id: str | None = None
     if protect_latest_preview:
-        for start, _end in spans:
-            names = {call.name for call in messages[start].tool_calls}
-            if names & _PROTECTED_PREVIEW_TOOLS:
-                protected_start = start
+        for start, end in spans:
+            preview_ids = {
+                call.call_id for call in messages[start].tool_calls if call.name in _PROTECTED_PREVIEW_TOOLS
+            }
+            for message in messages[start + 1 : end]:
+                if message.tool_call_id in preview_ids:
+                    protected_start, protected_call_id = start, message.tool_call_id
     for start, end in spans:
         if protect_latest_preview and start == protected_start:
+            calls = messages[start].tool_calls
+            if len(calls) > 1:
+                retained = tuple(call for call in calls if call.call_id == protected_call_id)
+                return [
+                    *messages[:start],
+                    replace(messages[start], tool_calls=retained),
+                    *(
+                        message
+                        for message in messages[start + 1 : end]
+                        if message.tool_call_id == protected_call_id
+                    ),
+                    *messages[end:],
+                ]
             continue
         return list(messages[:start]) + list(messages[end:])
     return None

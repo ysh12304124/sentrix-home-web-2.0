@@ -84,3 +84,50 @@ def test_dropped_history_keeps_tool_call_id_pairing():
     }
     actual = {message.tool_call_id for message in result if message.role is ChatRole.TOOL}
     assert actual == expected
+
+
+def test_parallel_facts_do_not_prevent_retaining_only_the_latest_preview():
+    preview = '{"preview":[{"handle":"photo_1","file_name":"ticket.jpg"}]}'
+    original = messages(
+        [
+            assistant("parallel", "query_memory_facts", "search_memories"),
+            tool("parallel-0", "x" * 320431),
+            tool("parallel-1", preview),
+        ]
+    )
+    result = _drop_oldest_tool_round_trip(original)
+    assert result is not None
+    assert result[:2] == original[:2]
+    assert result[2].tool_calls == (original[2].tool_calls[1],)
+    assert result[3] == original[4]
+    assert result[3].content == preview
+    assert _drop_oldest_tool_round_trip(result) is None
+    assert len(original[3].content) == 320431
+
+
+def test_parallel_searches_keep_the_last_returned_preview_and_its_call():
+    original = messages(
+        [
+            assistant("parallel", *("search_memories" for _ in range(7))),
+            *(tool(f"parallel-{i}", f"preview-{i}") for i in range(7)),
+        ]
+    )
+    result = _drop_oldest_tool_round_trip(original)
+    assert result is not None
+    assert result[2].tool_calls == (original[2].tool_calls[-1],)
+    assert result[3:] == [original[-1]]
+    assert result[3].tool_call_id == result[2].tool_calls[0].call_id
+
+
+def test_latest_preview_uses_response_order_and_preserves_following_history():
+    parallel = [
+        assistant("parallel", "search_memories", "get_result_page"),
+        tool("parallel-1", "page returned first"),
+        tool("parallel-0", "search returned last"),
+    ]
+    original = messages(parallel, INSPECT)
+    result = _drop_oldest_tool_round_trip(original)
+    assert result is not None
+    assert result[2].tool_calls == (original[2].tool_calls[0],)
+    assert result[3] == original[4]
+    assert result[4:] == original[5:]
