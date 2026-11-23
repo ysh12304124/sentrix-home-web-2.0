@@ -37,6 +37,7 @@ TARGETS = {
     "atm-5703b8c1-2e4f-4a5e-9385-44643f5a33c5",
 }
 api, fingerprint = terminal.api, terminal.fingerprint
+prior = sys.modules["supplement"]
 
 
 def read(name):

@@ -10,7 +10,6 @@ import sqlite3
 import uuid
 from datetime import datetime
 
-import supplement as prior  # noqa: E402
 from common import (
     AFTER,
     APP,
@@ -33,6 +32,7 @@ from common import (
     manifest_sha,
     pid,
     preserved,
+    prior,
     read,
     runtime,
     save,
