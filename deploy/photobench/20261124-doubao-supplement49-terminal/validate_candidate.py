@@ -1,5 +1,6 @@
 """Replay three saved failing contexts with the committed candidate, without model requests."""
 
+import hashlib
 import importlib.util
 import json
 import sqlite3
@@ -15,8 +16,6 @@ from sentrix.infrastructure.assistant.chat_client import (  # noqa: E402
     TOKENS_PER_CHAR,
     TOOLS_TOKENS_PER_CHAR,
 )
-
-import hashlib  # noqa: E402
 
 reader, state, _ = current()
 accepted = json.loads((HERE / "terminal-acceptance.json").read_text())
