@@ -9,7 +9,12 @@ from typing import Protocol
 
 from sentrix.domain.identity.models import EntityPropertyRecord, EntityRecord
 from sentrix.domain.memories.causality import CausalVerdict
-from sentrix.domain.memories.events import EventEntityRecord, EventParticipantRecord, EventRecord
+from sentrix.domain.memories.events import (
+    EventDocument,
+    EventEntityRecord,
+    EventParticipantRecord,
+    EventRecord,
+)
 from sentrix.domain.memories.facts import Fact
 from sentrix.domain.memories.graph import (
     GraphBuildStats,
@@ -288,6 +293,24 @@ class EventParticipantRepository(Protocol):
         ``DELETE FROM events``——那正是本方法存在的理由。
         """
         ...
+
+
+class EventDocumentRepository(Protocol):
+    """事件文档的追加发布与读取；读取只认 active。"""
+
+    def publish(self, document: EventDocument) -> EventDocument:
+        """同 input_hash 复用已有 active；否则写新 revision 并把旧 active 置 superseded。"""
+        ...
+
+    def active_for_event(self, event_id: str) -> EventDocument | None: ...
+
+    def active_for_events(self, event_ids: Sequence[str]) -> Mapping[str, EventDocument]: ...
+
+    def list_active(self, scope_id: str | None, *, limit: int = 1000) -> Sequence[EventDocument]: ...
+
+    def redirect(self, *, scope_id: str, old_event_id: str, new_event_id: str) -> None: ...
+
+    def redirect_target(self, event_id: str) -> str | None: ...
 
 
 class FactRepository(Protocol):

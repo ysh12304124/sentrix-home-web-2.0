@@ -306,6 +306,7 @@ class ImportAssets:
         appearance_repository: AppearanceRepository | None = None,
         occurrence_index: PersonOccurrenceIndex | None = None,
         evidence_repository: MemoryEvidenceRepository | None = None,
+        event_document_publisher: Callable[[str], object] | None = None,
         fact_maintainer: Callable[[Observation], tuple[str, ...]] | None = None,
         text_indexer: Callable[[Observation, str | None], int] | None = None,
         # 非人物实体抽取（S6 T127）。**入参带 event_id**：1.0 ``pipeline.py:336`` 在事件
@@ -362,6 +363,7 @@ class ImportAssets:
         self._appearance_repository = appearance_repository
         self._occurrence_index = occurrence_index
         self._evidence_repository = evidence_repository
+        self._event_document_publisher = event_document_publisher
         self._fact_maintainer = fact_maintainer
         self._text_indexer = text_indexer
         self._entity_extractor = entity_extractor
@@ -763,6 +765,11 @@ class ImportAssets:
         enrollments = self._enroll_faces(asset, observation, prepared)
         self._bind_face_descriptions(observation, prepared, enrollments)
         event_id = self._assign_event(observation, forced_event_id)
+        if event_id and self._event_document_publisher is not None:
+            try:
+                self._event_document_publisher(event_id)
+            except Exception as error:  # noqa: BLE001 - 文档发布失败不阻断图片详情
+                log.warning("事件文档发布失败（event=%s）: %s", event_id, error)
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
         # 写在前面则 event_id 恒为空，而那条 metadata 只在召回时用得到——

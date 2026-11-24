@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from sentrix.domain.assistant.models import ChatMessage, ChatRole, ModelReply
@@ -119,7 +119,7 @@ def fallback_projection(
         title=title[:20],
         event_type=event_type[:20],
         activity=activity[:20],
-        summary=summary[:240],
+        summary=summary,
         confidence=FALLBACK_CONFIDENCE,
         model=FALLBACK_MODEL,
     )
@@ -141,7 +141,7 @@ def projection_from_reply(reply: str, *, event: EventRecord) -> EventProjection 
         title=title[:20],
         event_type=str(parsed.get("event_type") or "家庭记录").strip()[:20],
         activity=str(parsed.get("activity") or "家庭活动").strip()[:20],
-        summary=str(parsed.get("summary") or "").strip()[:240],
+        summary=str(parsed.get("summary") or "").strip(),
         confidence=_confidence(parsed.get("confidence")),
         model="event_summary",
     )
@@ -231,6 +231,7 @@ class SummarizeEvent:
         assets: AssetRepository,
         participants: EventParticipantRepository | None = None,
         model: ChatModel | None = None,
+        documents: Callable[..., object] | None = None,
     ) -> None:
         self._events = events
         self._observations = observations
@@ -239,6 +240,7 @@ class SummarizeEvent:
         # 「一名男子」那种描述，与这次改动之前的行为一致。
         self._participants = participants
         self._model = model
+        self._documents = documents
 
     def execute(self, event_id: str) -> EventRecord:
         """总结一个事件并落库。事件不存在时抛 ``KeyError``。
@@ -265,13 +267,28 @@ class SummarizeEvent:
         projection = self._from_model(event, observations, people) or fallback_projection(
             event, observations, people
         )
-        return self._events.apply_summary(
+        updated = self._events.apply_summary(
             event_id,
             title=projection.title,
             event_type=projection.event_type,
             activity=projection.activity,
             summary=projection.summary,
         )
+        if self._documents is not None:
+            deterministic = projection.model == FALLBACK_MODEL
+            try:
+                self._documents(
+                    event_id,
+                    summary_source="deterministic" if deterministic else "model",
+                    summary_state=(
+                        "supported_by_content_items"
+                        if deterministic
+                        else "model_generated_unverified"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - 文档发布失败不回滚事件摘要
+                log.warning("事件文档发布失败（event=%s）", event_id, exc_info=True)
+        return updated
 
     def _from_model(
         self,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from sentrix.api.schemas.family import FamilyRunResponse
@@ -14,6 +16,57 @@ class TimelinePhoto(BaseModel):
     # ``Place.display()`` 的原样输出。**后端算好的最终字符串**——前端不做任何拼接，
     # 否则「附近」加给谁、什么时候加就成了两套规则。
     place: str
+
+
+class TimelineDocumentParticipant(BaseModel):
+    person_id: str
+    display_label: str
+    verified_name: str = ""
+    pending: bool = True
+    identity_states: list[str] = Field(default_factory=list)
+    descriptions: list[str] = Field(default_factory=list)
+    face_instance_ids: list[str] = Field(default_factory=list)
+
+
+class TimelineDocumentContentItem(BaseModel):
+    item_id: str
+    text: str
+    observation_id: str
+    asset_id: str
+    observation_revision: int = 0
+    source: str = "observation"
+    state: str = "effective"
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class TimelineDocument(BaseModel):
+    """active 事件文档的展示投影；legacy 事件没有这一段。"""
+
+    document_id: str
+    revision: int
+    doc_version: str
+    title: str
+    short_summary: str
+    summary_source: str
+    summary_state: str
+    source_modalities: list[str] = Field(default_factory=list)
+    time_basis: str = "capture"
+    display_time: str = ""
+    capture_start: str | None = None
+    capture_end: str | None = None
+    precision: str = "unknown"
+    timezone_state: str = "unknown"
+    member_dates: list[str] = Field(default_factory=list)
+    occurrence_time: str | None = None
+    occurrence_time_state: str = "unknown"
+    scene: list[str] = Field(default_factory=list)
+    physical_locations: list[str] = Field(default_factory=list)
+    display_place: str = ""
+    place_conflict: bool = False
+    participants: list[TimelineDocumentParticipant] = Field(default_factory=list)
+    content_items: list[TimelineDocumentContentItem] = Field(default_factory=list)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class TimelineEvent(BaseModel):
@@ -32,6 +85,7 @@ class TimelineEvent(BaseModel):
     # 服务端算好的归属日期与相册；浏览器不从时间戳重新推断。
     timeline_date: str = ""
     scope_id: str = ""
+    document: TimelineDocument | None = None
 
 
 class TimelineEventSummary(BaseModel):
@@ -47,6 +101,7 @@ class TimelineEventSummary(BaseModel):
     representative_asset_id: str | None = None
     representative_media_type: str | None = None
     asset_count: int = 0
+    document: TimelineDocument | None = None
 
 
 class TimelineDay(BaseModel):

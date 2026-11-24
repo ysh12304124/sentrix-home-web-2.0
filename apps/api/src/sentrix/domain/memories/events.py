@@ -30,7 +30,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -144,6 +144,116 @@ class EventRecord:
     # 视频场景事件的辅助来源数据（迁移 0010 的 JSON 列）。语音转写按场景区间
     # 存在这里，保证后续事件摘要刷新不会丢掉音频证据。
     source_metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class EventContentItem:
+    """事件正文的一条可定位内容；引用必须属于当前成员和 scope。"""
+
+    item_id: str
+    text: str
+    observation_id: str
+    asset_id: str
+    observation_revision: int = 0
+    source: str = "observation"
+    state: str = "effective"
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EventPersonRef:
+    """事件里的一次人物投影；姓名只在身份可信时给出。"""
+
+    person_id: str
+    display_label: str
+    verified_name: str = ""
+    identity_states: tuple[str, ...] = ()
+    descriptions: tuple[str, ...] = ()
+    face_instance_ids: tuple[str, ...] = ()
+    occurrence_count: int = 0
+    pending: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class EventDocumentMember:
+    observation_id: str
+    asset_id: str
+    media_type: str
+    observation_revision: int = 0
+    captured_at: datetime | None = None
+    capture_precision: str = "unknown"
+    timezone_state: str = "unknown"
+    scene: str = ""
+    admin_district: str = ""
+    physical_place: str = ""
+    text: str = ""
+    text_state: str = "not_provided"
+    person_refs: tuple[EventPersonRef, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EventTimeProjection:
+    capture_start: datetime | None = None
+    capture_end: datetime | None = None
+    precision: str = "unknown"
+    timezone_state: str = "unknown"
+    comparable: bool = False
+    member_dates: tuple[str, ...] = ()
+    occurrence_time: datetime | None = None
+    occurrence_time_state: str = "unknown"
+    display_time: str = ""
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EventPlaceProjection:
+    scene: tuple[str, ...] = ()
+    physical_locations: tuple[str, ...] = ()
+    candidates: tuple[Mapping[str, object], ...] = ()
+    display_place: str = ""
+    admin_district: str = ""
+    conflict: bool = False
+    evidence_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EventCoverage:
+    included_members: int = 0
+    excluded_members: int = 0
+    missing_description: int = 0
+    missing_people: int = 0
+    missing_source: int = 0
+    fields: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EventDocument:
+    """一次事件发布版本；``active`` 才可被读取。"""
+
+    id: str
+    scope_id: str
+    event_id: str
+    revision: int
+    status: str
+    doc_version: str
+    title: str
+    short_summary: str
+    summary: str
+    summary_source: str
+    summary_state: str
+    source_modalities: tuple[str, ...]
+    content_items: tuple[EventContentItem, ...]
+    members: tuple[EventDocumentMember, ...]
+    participants: tuple[EventPersonRef, ...]
+    time: EventTimeProjection
+    place: EventPlaceProjection
+    coverage: EventCoverage
+    dependencies: Mapping[str, str]
+    input_hash: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

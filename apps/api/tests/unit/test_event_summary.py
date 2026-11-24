@@ -120,7 +120,7 @@ def test_fallback_is_deterministic():
     assert fallback_projection(event(), [observation()]) == fallback_projection(event(), [observation()])
 
 
-def test_fallback_truncates_the_long_fields():
+def test_fallback_truncates_titles_but_keeps_the_full_summary():
     observations = [observation(activity="活" * 60, event_type="类" * 60, caption="字" * 400)]
 
     projection = fallback_projection(event(), observations)
@@ -128,7 +128,8 @@ def test_fallback_truncates_the_long_fields():
     assert len(projection.title) == 20
     assert len(projection.activity) == 20
     assert len(projection.event_type) == 20
-    assert len(projection.summary) == 240
+    assert len(projection.summary) > 240
+    assert projection.summary.endswith("字" * 400)
 
 
 # ---- 模型那条路的收口 ------------------------------------------------------------

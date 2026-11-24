@@ -1486,10 +1486,20 @@ paths:
         schema:
           type: string
           maxLength: 60
-          description: 地点筛选，服务端按地点/行政区匹配
+          description: 真实地点筛选（默认 physical_location）
           default: ''
           title: Place
-        description: 地点筛选，服务端按地点/行政区匹配
+        description: 真实地点筛选（默认 physical_location）
+      - name: scene
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 60
+          description: 画面场景筛选，与真实地点分开
+          default: ''
+          title: Scene
+        description: 画面场景筛选，与真实地点分开
       - name: has_place
         in: query
         required: false
@@ -1505,6 +1515,14 @@ paths:
           pattern: ^$|^unknown$|^\d{4}-\d{2}-\d{2}$
           default: ''
           title: Date
+      - name: date_filter_mode
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(any_capture|first_capture)$
+          default: any_capture
+          title: Date Filter Mode
       responses:
         '200':
           description: Successful Response
@@ -1540,6 +1558,14 @@ paths:
           maxLength: 60
           default: ''
           title: Place
+      - name: scene
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 60
+          default: ''
+          title: Scene
       - name: has_place
         in: query
         required: false
@@ -1547,6 +1573,14 @@ paths:
           type: boolean
           default: false
           title: Has Place
+      - name: date_filter_mode
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(any_capture|first_capture)$
+          default: any_capture
+          title: Date Filter Mode
       responses:
         '200':
           description: Successful Response
@@ -9273,6 +9307,196 @@ components:
       - date
       - events
       title: TimelineDay
+    TimelineDocument:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+        revision:
+          type: integer
+          title: Revision
+        doc_version:
+          type: string
+          title: Doc Version
+        title:
+          type: string
+          title: Title
+        short_summary:
+          type: string
+          title: Short Summary
+        summary_source:
+          type: string
+          title: Summary Source
+        summary_state:
+          type: string
+          title: Summary State
+        source_modalities:
+          items:
+            type: string
+          type: array
+          title: Source Modalities
+        time_basis:
+          type: string
+          title: Time Basis
+          default: capture
+        display_time:
+          type: string
+          title: Display Time
+          default: ''
+        capture_start:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Capture Start
+        capture_end:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Capture End
+        precision:
+          type: string
+          title: Precision
+          default: unknown
+        timezone_state:
+          type: string
+          title: Timezone State
+          default: unknown
+        member_dates:
+          items:
+            type: string
+          type: array
+          title: Member Dates
+        occurrence_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Occurrence Time
+        occurrence_time_state:
+          type: string
+          title: Occurrence Time State
+          default: unknown
+        scene:
+          items:
+            type: string
+          type: array
+          title: Scene
+        physical_locations:
+          items:
+            type: string
+          type: array
+          title: Physical Locations
+        display_place:
+          type: string
+          title: Display Place
+          default: ''
+        place_conflict:
+          type: boolean
+          title: Place Conflict
+          default: false
+        participants:
+          items:
+            $ref: '#/components/schemas/TimelineDocumentParticipant'
+          type: array
+          title: Participants
+        content_items:
+          items:
+            $ref: '#/components/schemas/TimelineDocumentContentItem'
+          type: array
+          title: Content Items
+        coverage:
+          additionalProperties: true
+          type: object
+          title: Coverage
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+      type: object
+      required:
+      - document_id
+      - revision
+      - doc_version
+      - title
+      - short_summary
+      - summary_source
+      - summary_state
+      title: TimelineDocument
+      description: active 事件文档的展示投影；legacy 事件没有这一段。
+    TimelineDocumentContentItem:
+      properties:
+        item_id:
+          type: string
+          title: Item Id
+        text:
+          type: string
+          title: Text
+        observation_id:
+          type: string
+          title: Observation Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_revision:
+          type: integer
+          title: Observation Revision
+          default: 0
+        source:
+          type: string
+          title: Source
+          default: observation
+        state:
+          type: string
+          title: State
+          default: effective
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+      type: object
+      required:
+      - item_id
+      - text
+      - observation_id
+      - asset_id
+      title: TimelineDocumentContentItem
+    TimelineDocumentParticipant:
+      properties:
+        person_id:
+          type: string
+          title: Person Id
+        display_label:
+          type: string
+          title: Display Label
+        verified_name:
+          type: string
+          title: Verified Name
+          default: ''
+        pending:
+          type: boolean
+          title: Pending
+          default: true
+        identity_states:
+          items:
+            type: string
+          type: array
+          title: Identity States
+        descriptions:
+          items:
+            type: string
+          type: array
+          title: Descriptions
+        face_instance_ids:
+          items:
+            type: string
+          type: array
+          title: Face Instance Ids
+      type: object
+      required:
+      - person_id
+      - display_label
+      title: TimelineDocumentParticipant
     TimelineEvent:
       properties:
         id:
@@ -9322,6 +9546,10 @@ components:
           type: string
           title: Scope Id
           default: ''
+        document:
+          anyOf:
+          - $ref: '#/components/schemas/TimelineDocument'
+          - type: 'null'
       type: object
       required:
       - id
@@ -9377,6 +9605,10 @@ components:
           type: integer
           title: Asset Count
           default: 0
+        document:
+          anyOf:
+          - $ref: '#/components/schemas/TimelineDocument'
+          - type: 'null'
       type: object
       required:
       - id

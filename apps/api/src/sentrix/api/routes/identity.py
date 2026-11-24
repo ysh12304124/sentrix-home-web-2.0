@@ -105,7 +105,7 @@ from sentrix.application.identity.seed_identity import (
 from sentrix.application.memories.assign_events import ConfirmedPersonEvents, EventVisualSimilarity
 from sentrix.application.memories.sync_corrections import wake_correction_sync
 from sentrix.bootstrap.container import Container
-from sentrix.bootstrap.import_wiring import refresh_memory_graph
+from sentrix.bootstrap.import_wiring import _event_document_publisher, refresh_memory_graph
 from sentrix.domain.identity.decoration import is_reviewable, is_single_sample, private_place
 from sentrix.domain.identity.models import (
     ALIAS_PROPERTY_KEY,
@@ -176,6 +176,7 @@ def _confirmed_person_events(container: Container) -> ConfirmedPersonEvents:
         ),
         confirmed_people=container.entity_repository.confirmed_people_for_observation,
         confirmed_event_people=container.entity_repository.confirmed_people_for_event,
+        after_event_update=_event_document_publisher(container),
     )
 
 

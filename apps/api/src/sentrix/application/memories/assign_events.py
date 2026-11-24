@@ -408,6 +408,7 @@ class ConfirmedPersonEvents:
         visual_similarity: EventVisualSimilarity,
         confirmed_people: Callable[[str], frozenset[str]],
         confirmed_event_people: Callable[[str], frozenset[str]],
+        after_event_update: Callable[[str], object] | None = None,
     ) -> None:
         self._events = events
         self._participants = participants
@@ -418,6 +419,8 @@ class ConfirmedPersonEvents:
         self._visual = visual_similarity
         self._confirmed_people = confirmed_people
         self._confirmed_event_people = confirmed_event_people
+        # 参与者/摘要变化后重发事件文档；失败不阻断身份确认本身。
+        self._after_event_update = after_event_update
 
     # ---- 参与者投影 ------------------------------------------------------------
 
@@ -467,6 +470,12 @@ class ConfirmedPersonEvents:
                 summary=participant_summary(event, self._participants.list_participants(event_id)),
             )
             affected.append(event_id)
+        if self._after_event_update is not None:
+            for event_id in affected:
+                try:
+                    self._after_event_update(event_id)
+                except Exception:  # noqa: BLE001 - 文档失败不回溯身份确认
+                    continue
         return tuple(affected)
 
     def _suggest_cooccurrence(self, event_id: str) -> None:

@@ -36,6 +36,9 @@ from sentrix.api.schemas.timeline import (
     PipelineStageSpan,
     TimelineCalendarResponse,
     TimelineDay,
+    TimelineDocument,
+    TimelineDocumentContentItem,
+    TimelineDocumentParticipant,
     TimelineEvent,
     TimelineEventSummary,
     TimelinePhoto,
@@ -53,6 +56,7 @@ from sentrix.application.memories.read_timeline import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
     ReadTimeline,
+    TimelineDocumentProjection,
 )
 from sentrix.application.memories.read_timeline import (
     TimelineEvent as TimelineEventResult,
@@ -62,12 +66,73 @@ from sentrix.application.memories.read_timeline import (
 )
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.bootstrap.container import Container
-from sentrix.bootstrap.import_wiring import build_import_assets, refresh_memory_graph
+from sentrix.bootstrap.import_wiring import (
+    _event_document_publisher,
+    build_import_assets,
+    refresh_memory_graph,
+)
 from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.api.timeline")
 
 router = APIRouter(tags=["timeline"])
+
+
+def _document_payload(
+    document: TimelineDocumentProjection | None,
+) -> TimelineDocument | None:
+    if document is None:
+        return None
+    return TimelineDocument(
+        document_id=document.document_id,
+        revision=document.revision,
+        doc_version=document.doc_version,
+        title=document.title,
+        short_summary=document.short_summary,
+        summary_source=document.summary_source,
+        summary_state=document.summary_state,
+        source_modalities=list(document.source_modalities),
+        time_basis=document.time_basis,
+        display_time=document.display_time,
+        capture_start=document.capture_start.isoformat() if document.capture_start else None,
+        capture_end=document.capture_end.isoformat() if document.capture_end else None,
+        precision=document.precision,
+        timezone_state=document.timezone_state,
+        member_dates=list(document.member_dates),
+        occurrence_time=document.occurrence_time.isoformat() if document.occurrence_time else None,
+        occurrence_time_state=document.occurrence_time_state,
+        scene=list(document.scene),
+        physical_locations=list(document.physical_locations),
+        display_place=document.display_place,
+        place_conflict=document.place_conflict,
+        participants=[
+            TimelineDocumentParticipant(
+                person_id=str(item.get("person_id") or ""),
+                display_label=str(item.get("display_label") or ""),
+                verified_name=str(item.get("verified_name") or ""),
+                pending=bool(item.get("pending", True)),
+                identity_states=[str(v) for v in item.get("identity_states") or ()],
+                descriptions=[str(v) for v in item.get("descriptions") or ()],
+                face_instance_ids=[str(v) for v in item.get("face_instance_ids") or ()],
+            )
+            for item in document.participants
+        ],
+        content_items=[
+            TimelineDocumentContentItem(
+                item_id=str(item.get("item_id") or ""),
+                text=str(item.get("text") or ""),
+                observation_id=str(item.get("observation_id") or ""),
+                asset_id=str(item.get("asset_id") or ""),
+                observation_revision=int(item.get("observation_revision") or 0),
+                source=str(item.get("source") or "observation"),
+                state=str(item.get("state") or "effective"),
+                evidence_refs=[str(v) for v in item.get("evidence_refs") or ()],
+            )
+            for item in document.content_items
+        ],
+        coverage=dict(document.coverage),
+        evidence_refs=list(document.evidence_refs),
+    )
 
 
 def _event_payload(event: TimelineEventResult) -> TimelineEvent:
@@ -93,6 +158,7 @@ def _event_payload(event: TimelineEventResult) -> TimelineEvent:
         ],
         timeline_date=event.timeline_date,
         scope_id=event.scope_id,
+        document=_document_payload(event.document),
     )
 
 
@@ -108,6 +174,7 @@ def _summary_payload(event: TimelineEventSummaryResult) -> TimelineEventSummary:
         representative_asset_id=event.representative_asset_id,
         representative_media_type=event.representative_media_type,
         asset_count=event.asset_count,
+        document=_document_payload(event.document),
     )
 
 
@@ -130,6 +197,7 @@ def _read_timeline(container: Container) -> ReadTimeline:
         observations=container.observation_repository,
         assets=container.asset_repository,
         places=container.asset_place_repository,
+        documents=container.event_documents,
     )
 
 
@@ -148,6 +216,7 @@ def _summarize_event(container: Container) -> SummarizeEvent:
         # 已确认的人物档案：摘要里能写出「王建国和张晓莉」，而不是「一名男子」。
         participants=container.event_participant_repository,
         model=container.chat_model,
+        documents=_event_document_publisher(container),
     )
 
 
@@ -158,9 +227,11 @@ def read_timeline(
     scope_id: str = "",
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(0, ge=0),
-    place: str = Query("", max_length=60, description="地点筛选，服务端按地点/行政区匹配"),
+    place: str = Query("", max_length=60, description="真实地点筛选（默认 physical_location）"),
+    scene: str = Query("", max_length=60, description="画面场景筛选，与真实地点分开"),
     has_place: bool = False,
     date_value: str = Query("", alias="date", pattern=r"^$|^unknown$|^\d{4}-\d{2}-\d{2}$"),
+    date_filter_mode: str = Query("any_capture", pattern=r"^(any_capture|first_capture)$"),
     container: Container = Depends(get_container),
 ) -> TimelineResponse:
     result = _read_timeline(container).execute(
@@ -168,8 +239,10 @@ def read_timeline(
         limit=limit,
         offset=offset,
         place=place.strip(),
+        scene=scene.strip(),
         has_place=has_place,
         date=_validate_date(date_value),
+        date_filter_mode=date_filter_mode,
     )
     return TimelineResponse(
         scope_id=result.scope_id,
@@ -187,10 +260,18 @@ def read_timeline(
 def timeline_calendar(
     scope_id: str = "",
     place: str = Query("", max_length=60),
+    scene: str = Query("", max_length=60),
     has_place: bool = False,
+    date_filter_mode: str = Query("any_capture", pattern=r"^(any_capture|first_capture)$"),
     container: Container = Depends(get_container),
 ) -> TimelineCalendarResponse:
-    index = _read_timeline(container).calendar(scope_id or None, place=place.strip(), has_place=has_place)
+    index = _read_timeline(container).calendar(
+        scope_id or None,
+        place=place.strip(),
+        scene=scene.strip(),
+        has_place=has_place,
+        date_filter_mode=date_filter_mode,
+    )
     years = index.years
     return TimelineCalendarResponse(
         scope_id=scope_id,

@@ -190,6 +190,10 @@ PENDING_METHODS: dict[str, str] = {
     # S3 落地人物出现词法投影；增量写入走事务内的 ``refresh_occurrence_terms``，重建入口
     # 留给 S8 的 H1 历史回填/维护端点接线，届时由反向规则删掉这条。
     "PersonOccurrenceIndex.rebuild": "S8 H1 历史回填/维护端点会调用；当前由测试直接调用",
+    "EventDocumentRepository.redirect": (
+        "events.merge 在同一事务内直接写 redirect 表；端口方法留给 S7 生命周期统一入口"
+    ),
+    "EventDocumentRepository.redirect_target": "S5 事件搜索/成员展开解析 merge 重定向时接线",
     # —— S9b-3（2026-10-04）：`request_bytes` 被它自己的反向规则删掉了 ——
     #
     # 证据判分（`application/run_execution/judge.py::_inline_images`）要按 asset_id

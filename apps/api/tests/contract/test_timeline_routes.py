@@ -104,20 +104,34 @@ def test_finalize_requires_processed_sources_and_never_prepares_media(client, tm
 
 
 def test_recover_processes_only_unfinished_sources_and_receipt_survives_tracker_restart(
-    client, isolated_app, tmp_path, monkeypatch,
+    client,
+    isolated_app,
+    tmp_path,
+    monkeypatch,
 ):
     from sentrix.application.media.import_assets import ImportAssets
     from sentrix.application.media.track_pipeline import TrackPipeline
     from sentrix.domain.media.models import AssetStatus
     from sentrix.infrastructure.persistence.pipeline_receipts import SqlitePipelineReceipts
 
-    staged = client.post("/api/v1/imports/assets", json={
-        "directory": str(album(tmp_path, count=3)), "scope_id": "resume-scope",
-    }).json()
+    staged = client.post(
+        "/api/v1/imports/assets",
+        json={
+            "directory": str(album(tmp_path, count=3)),
+            "scope_id": "resume-scope",
+        },
+    ).json()
     ids = staged["asset_ids"]
-    assert client.post("/api/v1/pipeline/process", json={
-        "scope_id": "resume-scope", "asset_ids": ids[:1],
-    }).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/pipeline/process",
+            json={
+                "scope_id": "resume-scope",
+                "asset_ids": ids[:1],
+            },
+        ).status_code
+        == 200
+    )
     container = isolated_app.state.container
     before = container.observation_repository.list_by_asset(ids[0])
     container.asset_repository.update_status(ids[1], AssetStatus.PROCESSING)
@@ -129,9 +143,14 @@ def test_recover_processes_only_unfinished_sources_and_receipt_survives_tracker_
         return prepare(self, asset)
 
     monkeypatch.setattr(ImportAssets, "prepare_image", record_prepare)
-    response = client.post("/api/v1/pipeline/recover", json={
-        "scope_id": "resume-scope", "asset_ids": ids, "operation_id": "recover-checkpoint",
-    })
+    response = client.post(
+        "/api/v1/pipeline/recover",
+        json={
+            "scope_id": "resume-scope",
+            "asset_ids": ids,
+            "operation_id": "recover-checkpoint",
+        },
+    )
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["processed"] == 2 and result["skipped"] == 1 and not result["failures"]
@@ -140,9 +159,16 @@ def test_recover_processes_only_unfinished_sources_and_receipt_survives_tracker_
     assert container.observation_repository.list_by_asset(ids[0]) == before
     restarted = TrackPipeline(SqlitePipelineReceipts(container.database))
     assert restarted.get("recover-checkpoint")["result"] == result
-    assert restarted.execute(
-        "recover-checkpoint", "resume-scope", ids, "recover", lambda: pytest.fail("replayed after restart"),
-    ) == result
+    assert (
+        restarted.execute(
+            "recover-checkpoint",
+            "resume-scope",
+            ids,
+            "recover",
+            lambda: pytest.fail("replayed after restart"),
+        )
+        == result
+    )
 
 
 def test_import_batch_then_timeline_has_every_photo(client: TestClient, tmp_path: Path):
@@ -361,24 +387,54 @@ def test_place_filter_is_applied_by_the_backend(client: TestClient, tmp_path: Pa
     client.post("/api/v1/imports", json={"directory": str(album(tmp_path)), "scope_id": "album1"})
     container = client.app.state.container  # type: ignore[attr-defined]
     event = container.event_repository.list_by_scope("album1", limit=10)[0]
-    container.event_repository.fold_observation(
-        event.id,
-        time_start=event.time_start,
-        time_end=event.time_end,
-        place="浙江省杭州市萧山区",
-        admin_district="萧山区",
-        activity="",
-        summary="",
-        confidence=event.confidence,
-        aggregation_score=0.0,
-        aggregation_breakdown={},
+    # v3：place 默认筛真实地点；场景走 scene。这里给成员补真实地点并重发文档。
+    from sentrix.application.memories.publish_event_document import PublishEventDocument
+    from sentrix.domain.media.models import GpsPoint
+    from sentrix.domain.places.models import (
+        AdminArea,
+        NearestPlace,
+        Place,
+        PlacePrecision,
+        PlaceSource,
     )
+
+    observation_id = container.event_repository.observation_ids(event.id)[0]
+    observation = container.observation_repository.get(observation_id)
+    assert observation is not None
+    container.asset_place_repository.save(
+        asset_id=observation.asset_id,
+        scope_id="album1",
+        gps=GpsPoint(30.2, 120.2),
+        place=Place(
+            admin=AdminArea(province="浙江省", city="杭州市", district="萧山区"),
+            nearest=NearestPlace(),
+            precision=PlacePrecision.DISTRICT,
+            source=PlaceSource.PYGEOCN,
+        ),
+    )
+    saved_place = container.asset_place_repository.get(observation.asset_id)
+    assert saved_place is not None and saved_place.display() == "浙江省杭州市萧山区"
+    PublishEventDocument(
+        events=container.event_repository,
+        observations=container.observation_repository,
+        assets=container.asset_repository,
+        places=container.asset_place_repository,
+        faces=container.face_repository,
+        participants=container.event_participant_repository,
+        evidence=container.memory_evidence,
+        documents=container.event_documents,
+    ).execute(event.id)
+    document = container.event_documents.active_for_event(event.id)
+    assert document is not None
+    assert [member.asset_id for member in document.members] == [observation.asset_id], document.members
+    assert document.place.physical_locations == ("浙江省杭州市萧山区",), document.place
 
     hit = client.get("/api/v1/timeline", params={"scope_id": "album1", "place": "萧山"})
     miss = client.get("/api/v1/timeline", params={"scope_id": "album1", "place": "清迈"})
 
     assert hit.status_code == 200 and miss.status_code == 200
     assert [item["id"] for day in hit.json()["days"] for item in day["events"]] == [event.id]
+    assert hit.json()["days"][0]["events"][0]["document"]["display_place"] == "浙江省杭州市萧山区"
     assert miss.json()["days"] == []
     assert miss.json()["total"] == 0
 

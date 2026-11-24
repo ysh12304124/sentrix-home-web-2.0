@@ -33,6 +33,7 @@ from sentrix.application.memories.assign_events import (
 )
 from sentrix.application.memories.build_graph import BuildMemoryGraph
 from sentrix.application.memories.maintain_facts import MaintainFacts
+from sentrix.application.memories.publish_event_document import PublishEventDocument
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.application.memories.sync_corrections import ReindexCorrectedMemories, SyncCorrections
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
@@ -180,6 +181,7 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
             assets=container.asset_repository,
             participants=container.event_participant_repository,
             model=container.chat_model,
+            documents=_event_document_publisher(container),
         )
         # 事件之间彼此独立，模型调用可以并行；数据库写入由 30s busy_timeout + WAL 串行化。
         pending = [
@@ -242,7 +244,26 @@ def _confirmed_person_events(container: Container) -> ConfirmedPersonEvents:
         ),
         confirmed_people=container.entity_repository.confirmed_people_for_observation,
         confirmed_event_people=container.entity_repository.confirmed_people_for_event,
+        after_event_update=_event_document_publisher(container),
     )
+
+
+def _event_document_publisher(container: Container) -> Callable[..., object]:
+    use_case = PublishEventDocument(
+        events=container.event_repository,
+        observations=container.observation_repository,
+        assets=container.asset_repository,
+        places=container.asset_place_repository,
+        faces=container.face_repository,
+        participants=container.event_participant_repository,
+        evidence=container.memory_evidence,
+        documents=container.event_documents,
+    )
+
+    def run(event_id: str, *, summary_source: str = "auto", summary_state: str = "") -> object:
+        return use_case.execute(event_id, summary_source=summary_source, summary_state=summary_state)
+
+    return run
 
 
 def _run_family_graph(container: Container, scope_id: str) -> bool:
@@ -454,6 +475,7 @@ def _build_importer(
         appearance_repository=container.appearance_repository,
         occurrence_index=container.person_occurrence_index,
         evidence_repository=container.memory_evidence,
+        event_document_publisher=_event_document_publisher(container),
         fact_maintainer=_fact_maintainer(container),
         text_indexer=_text_indexer(container),
         entity_extractor=_entity_extractor(container),

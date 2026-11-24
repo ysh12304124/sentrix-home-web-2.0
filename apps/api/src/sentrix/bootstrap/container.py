@@ -82,6 +82,7 @@ from sentrix.domain.media.ports import (
 from sentrix.domain.media.progress import ImportProgressStore
 from sentrix.domain.memories.ports import (
     CausalJudge,
+    EventDocumentRepository,
     EventParticipantRepository,
     EventRepository,
     FactRepository,
@@ -163,6 +164,9 @@ from sentrix.infrastructure.persistence.repositories.conversations import (
 )
 from sentrix.infrastructure.persistence.repositories.corrections import SqliteMemoryCorrections
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
+from sentrix.infrastructure.persistence.repositories.event_documents import (
+    SqliteEventDocumentRepository,
+)
 from sentrix.infrastructure.persistence.repositories.events import SqliteEventRepository
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
 from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepository
@@ -346,6 +350,7 @@ class Container:
     # 包内数据文件读进来（那是唯一的 IO 边界），而读文件这件事不能发生在 api 层。
     place_aliases: PlaceAliases
     event_repository: EventRepository
+    event_documents: EventDocumentRepository
     # 事件参与者投影（S5b）。与 ``event_repository`` 分开的理由写在
     # ``domain/memories/ports.py``：写这张表的是身份侧的确认动作，不是事件本身。
     event_participant_repository: EventParticipantRepository
@@ -707,6 +712,7 @@ class Container:
             asset_place_repository=asset_places,
             place_aliases=place_aliases,
             event_repository=SqliteEventRepository(database),
+            event_documents=SqliteEventDocumentRepository(database),
             event_participant_repository=SqliteEventParticipantRepository(database),
             fact_repository=SqliteFactRepository(database),
             memory_graph=SqliteMemoryGraphRepository(database),

@@ -414,6 +414,19 @@ class SqliteEventRepository:
                 "UPDATE person_moments SET event_id = ? WHERE event_id = ?",
                 (target_event_id, source_event_id),
             )
+            # 文档按 event_id 保留历史，但旧 active 不能再被读到；redirect 供检索/旧链接解析。
+            connection.execute(
+                "UPDATE event_documents SET status = 'retracted', updated_at = ?"
+                " WHERE event_id = ? AND status = 'active'",
+                (datetime.now(UTC).isoformat(), source_event_id),
+            )
+            connection.execute(
+                "INSERT INTO event_redirects(scope_id, old_event_id, new_event_id, revision, created_at)"
+                " VALUES (?, ?, ?, 1, ?) ON CONFLICT(scope_id, old_event_id) DO UPDATE SET"
+                " new_event_id = excluded.new_event_id,"
+                " revision = event_redirects.revision + 1, created_at = excluded.created_at",
+                (source.scope_id, source_event_id, target_event_id, datetime.now(UTC).isoformat()),
+            )
             connection.execute("DELETE FROM events WHERE id = ?", (source_event_id,))
             starts = [value for value in (target.time_start, source.time_start) if value is not None]
             ends = [value for value in (target.time_end, source.time_end) if value is not None]
@@ -432,6 +445,11 @@ class SqliteEventRepository:
 
     def dissolve(self, event_id: str) -> None:
         with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE event_documents SET status = 'retracted', updated_at = ?"
+                " WHERE event_id = ? AND status = 'active'",
+                (datetime.now(UTC).isoformat(), event_id),
+            )
             connection.execute("DELETE FROM event_observations WHERE event_id = ?", (event_id,))
             connection.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
