@@ -1,6 +1,6 @@
 # Sentrix 与 PhotoBench 开发约定
 
-- 11/24原3题84baa3终态已验994分/19失败null；3新turn终止于502传输失败，压缩后可继续调用。100连接恢复，新wake0f0bccc3/worker25868验完整双流；全1013缺分计错73.0141%，不再Agent。见audit/20261124-doubao-context-terminal，接T006。
+- 11/24豆包84baa3完整双流和最终统计已验收：994/1013有效分，19缺分计错总分73.0141%；共同992题保持。3新turn终止于传输失败，原分/历史/GT保持，无后续自动任务。见audit/20261124-doubao-context-comparison，接T006。
 
 - 11/23豆包161补做及双流验收、重统计完成：964/1013有效分（74.91%，覆盖95.16%），49失败空分保留；共同962题Plus67.23%/Q4 46.04%/豆包74.86%。原852分和各历史保持；随后49题新补跑见上条；见T006及audit/20261123-doubao-supplement-comparison。
 
@@ -45,4 +45,4 @@
 
 | ID | 任务方向 | 状态 | 最近更新 | 一句话范围 | 记录文档 |
 |---|---|---|---|---|---|
-| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 3题终态994分保持；完整双流验收中，失败计入全量 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |
+| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 豆包994分/最终双流已验；全1013计错73.0141%，无自动任务 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |

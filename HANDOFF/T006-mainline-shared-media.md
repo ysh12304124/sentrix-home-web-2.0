@@ -2,11 +2,15 @@
 
 ## 当前状态
 
-2026-11-24 09:36连接恢复后已只读核实：原84baa3在04:29:43已终态，早于09:36:41主机重启。3新turn各一提交/内部attempt1，均04:29:22以502 cloud transport error失败，04:29:06内核已有igc PCIe断链；网卡和重启底层根因未唯一确认。本轮没有Agent/Judge、手工重启、部署或网络改动。
+2026-11-24，豆包84baa3完整在线trace/SFT与最终统计均已验收。1013项、994有效分、19失败null保持；按全1013缺分计错总分73.014071%，有效均分74.409712%，覆盖98.124383%。共同992题Plus66.708848%、Q445.299059%、豆包74.358119%。compare_context.py单次执行，本机Decimal独立复算通过，1013行CSV全部字段与旧994分基线一致。报告：产品项目audit/20261124-doubao-context-comparison/README.md。
 
-终态逐项验收1013项/994有效分/19失败null，原1010继承项、994回执、16原时限失败及全部source/seed manifest保持，_index差异0，无缺Judge。此前上下文保护分别触发8/11/13次，但压缩后有成功调用，最终均为传输错误；不能据此称修复失败或把这些失败归为模型智能问题，完整答题成功效果尚未验证。详见audit/20261124-doubao-context-terminal/failure-analysis.md。
+trace为46,193,864字节、SFT为1,024,281,032字节，各与同版独立流SHA一致，1013逐题合同通过；全部答卷attempt/评分history、1010继承项/994回执、16旧失败及source/seed manifest保持。worker25868与watcher74959已退出，wake0f0bccc3已处理，无待自动Agent/Judge/导出。
 
-新只读完整在线trace/SFT验收先wake `0f0bccc3-d0d8-4f1f-9735-c0ec144a7222` 再单次launch，worker25868/watcher74959，绑定当前8874PID1537/原app-dir/exports源码3adba6e1和read_revision `dc64f4aa2d3d410c866d9e171cf7804b`。launch/verify已消费，不重放；accept_context/review_errors/review_compaction亦已消费，probe只读。两流验收后仅执行尚未消费的compare_context.py一次，保存独立新报告并Decimal复算；原994分/992共同题报告保持，不再自动Agent/Judge。当前全1013缺分计错73.0141%、有效均值74.4097%，最终新报告待双流验收。
+本次3题各一提交/内部attempt1，04:29:22终止于502 cloud transport error，与04:29:06 igc PCIe断链时间吻合；04:29:43测评已结束，早于09:36:41重启。上下文保护触发后可压缩并成功继续调用，完整答题成功效果尚待验证；底层硬件/重启及旧慢写原因未唯一确认。详见终态审计failure-analysis.md和compaction-review.json。
+
+最终19缺分含16原时限失败及3新传输失败，原始null保持，仅离线全量统计计错；草莓c2d9d893 GT歧义及有效0保持。阶段摘要985/19及58失败与逐项回执不符，报告按逐项数据。条件为历史媒体记忆复用+新版邮件增量、161/49授权补做及局部修复后3题，不混称全程相同条件。
+
+当前8294PID10256、8874PID1537与实际目录/SHA、16K、100/600/100/500、QA4/3660、reasoning/graph、独立库和冻结ATM v5/豆包Judge保持。本轮没有业务部署、手动重启或网络改动；Qwen/Q4仅只读比较，其既有双流/失败/隔离保持。后续只读引用新报告；任何新增补跑须另有明确授权，不重放已消费操作。
 
 以下为已处理的连接中断及此前阶段记录，当前入口以上述终态审计为准。
 
@@ -45,6 +49,13 @@ f3e08d83导出回调已处理，1013逐题合同通过，完整trace46,754,257�
 实验条件为历史豆包媒体记忆复用+新版邮件增量；161题授权补做。8294PID12370/独立库/18107真实豆包/16K、100-600-100-500/QA4-3660/reasoning-graph/冻结ATM v5及豆包Judge保持。14turn多次内部认领的真实代次保留；具体依赖/租约原因未唯一确认。慢写及网卡断链后重启原因仍未唯一确认。Q4源18/当前14隔离及产品model_error已有自动0、唯一Judge failed/null保持。运行器原阶段摘要87失败/955 Judge与逐题统计不一致已在新报告注明，原记录不改写。
 
 上一轮161题已完成用户授权范围；本轮49题以新审计和新wake接续。后续读取新比较报告和补做审计的terminal-acceptance、exports-acceptance/复核、attempt-review及主实验state/checkpoint-watchers。不重放已消费的比较/导出/恢复/评分/压缩操作；不改网络、8772/8191/153或其他服务器，不启Hard/16题包。只读取证曾先传后提交的顺序错误及修正AST一致性证据保留在attempt-review-sync-sequence-note，未重执行或修改答卷。
+
+## 2026-11-24 09:59｜最终双流与992共同题统计验收完成
+
+- 结果：994有效分/19失败null保持，全1013计错73.014071%，共同992题及全部CSV字段与旧基线一致。
+- 证据：产品项目audit/20261124-doubao-context-comparison/{README.md,comparison-acceptance.json,independent-verification.json}与context-terminal/exports-acceptance-review.json。
+- 影响：全部本轮回调已处理，无自动Agent/Judge/导出任务，旧报告及失败/GT保持。
+- 后续：仅引用最终报告；服务/网卡底层问题与完整答题成功效果仍按现有证据范围陈述。
 
 ## 2026-11-24｜49题终态对账与3题上下文修复候选
 
