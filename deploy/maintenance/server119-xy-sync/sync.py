@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 
@@ -81,7 +80,9 @@ def plan():
                   obsolete=obsolete, historical_deviations=deviations,
                   protected=protected(), services=services())
     save('plan.json', result)
-    print(json.dumps({key: value for key, value in result.items() if key != 'existing'}, ensure_ascii=False))
+    print(json.dumps({'revision': result['revision'], 'changed': len(changed),
+                      'obsolete': len(obsolete), 'historical_deviations': deviations,
+                      'protected': result['protected']}, ensure_ascii=False))
 
 
 def apply():
