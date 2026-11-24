@@ -1,0 +1,11 @@
+{
+  "deployment_profile": "server",
+  "llm_profile": "local",
+  "vlm_base_url": "http://127.0.0.1:8081/v1",
+  "vlm_model": "qwen3.8-flash-next-iq3_xxs",
+  "vlm_generation_profile": "legacy",
+  "vlm_context_tokens": 131072,
+  "vlm_exact_output_budget": false,
+  "image_max_side": 1280,
+  "embedding_scheme": "wemm"
+}
