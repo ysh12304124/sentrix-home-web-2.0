@@ -228,6 +228,35 @@ class PersonOccurrenceRecord:
     match_score: float = 0.0
 
 
+def merge_pair_key(left: str, right: str) -> str:
+    """无向簇对键：两个 ID 排序后拼接，写入与读取用同一口径。"""
+    first, second = sorted((left, right))
+    return f"{first}|{second}"
+
+
+@dataclass(frozen=True, slots=True)
+class MergeCandidateCluster:
+    """相似簇建议的候选特征；只用于人工比较，不代表系统判定同人。"""
+
+    cluster_id: str
+    person_id: str
+    display_label: str
+    member_count: int
+    avatar_face_instance_id: str
+    embedding: tuple[float, ...]
+    revision: int
+    model_name: str
+    model_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class MergeSuggestion:
+    left: MergeCandidateCluster
+    right: MergeCandidateCluster
+    score: float
+    feature_version: str
+
+
 @dataclass(frozen=True, slots=True)
 class FaceEnrollmentResult:
     """一次检测项登记后的可回查结果：检测项 → face_instance / cluster / 可信状态。"""

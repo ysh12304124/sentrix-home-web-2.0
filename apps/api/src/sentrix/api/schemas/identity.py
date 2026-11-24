@@ -549,6 +549,39 @@ class PersonOccurrenceListResponse(BaseModel):
     occurrences: list[PersonOccurrencePayload]
 
 
+class MergeSuggestionClusterPayload(BaseModel):
+    cluster_id: str
+    person_id: str
+    display_label: str
+    member_count: int
+    avatar_face_instance_id: str
+
+
+class MergeSuggestionPayload(BaseModel):
+    left: MergeSuggestionClusterPayload
+    right: MergeSuggestionClusterPayload
+    score: float
+    feature_version: str
+    kind: str = "manual_review"
+
+
+class MergeSuggestionListResponse(BaseModel):
+    scope_id: str
+    suggestions: list[MergeSuggestionPayload]
+    truncated: bool = False
+
+
+class RejectMergeSuggestionRequest(BaseModel):
+    scope_id: str
+    left_cluster_id: str
+    right_cluster_id: str
+    feature_version: str
+
+
+class RejectMergeSuggestionResponse(BaseModel):
+    status: str = "rejected"
+
+
 class RejectFaceAssignmentRequest(BaseModel):
     expected_cluster_id: str
 

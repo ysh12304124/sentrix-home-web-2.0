@@ -44,6 +44,7 @@ from sentrix.domain.identity.models import (
     FaceInstanceRecord,
     FaceManifestRecord,
     FacePrototypeRecord,
+    MergeCandidateCluster,
     PersonMomentRecord,
     PersonNameMatch,
     PersonOccurrenceRecord,
@@ -116,6 +117,26 @@ class PersonOccurrenceIndex(Protocol):
     def refresh(self, face_instance_id: str) -> int: ...
 
     def rebuild(self, scope_id: str | None = None) -> int: ...
+
+
+class PersonMergeSuggestionRepository(Protocol):
+    """相似簇建议的特征与负向决策。不提供自动合并。"""
+
+    def features(self, scope_id: str, *, limit: int = 500) -> Sequence[MergeCandidateCluster]: ...
+
+    def decisions(self, scope_id: str) -> Mapping[str, tuple[str, str]]:
+        """``left|right``（按 id 排序）→ ``(decision, feature_version)``。"""
+        ...
+
+    def record_decision(
+        self,
+        *,
+        scope_id: str,
+        left_cluster_id: str,
+        right_cluster_id: str,
+        decision: str,
+        feature_version: str,
+    ) -> None: ...
 
 
 class FaceRepository(Protocol):

@@ -46,7 +46,22 @@
 - `make arch`、`make check-docs` 通过；改动文件 ruff check/format、mypy 0 错误。
 - 全仓 mypy 仍有基线既有错误；未运行完整 test 套件。
 
-未完成（S3b）：
-- `GET /api/v1/people/merge-suggestions`、拒绝建议与前端选择合并；
-- 相似簇候选生成（校准门槛；未校准时只做人工建议，不发布“系统判断同人”）。
+## S3b 相似簇建议
+
+- `person_merge_suggestion_decisions`（0040 已建）存负向/接受决策与特征版本；唯一键
+  `(scope, left_cluster, right_cluster)`，重复操作是 UPSERT。
+- `SqlitePersonMergeSuggestionRepository`：按 scope 取未拒绝簇的代表向量/原型向量、
+  头像、成员数；候选上限 500 簇，不做全库两两比较。
+- `ReadMergeSuggestions`：复用现有匹配余弦阈值（0.30），比较前各自归一化；同人簇、
+  跨模型版本不比较；每簇最多 5 条，默认一页 20 条；`kind=manual_review`，没有自动合并。
+- 拒绝后同一特征版本不再提示；簇 revision 或模型版本变化后重新提示。
+- `GET /api/v1/people/merge-suggestions`、`POST /api/v1/people/merge-suggestions/reject`；
+  静态路径注册在 `/people/{person_id}` 之前。
+
+验证补充：`test_merge_suggestions.py`（同 scope、版本失效、每簇上限）与
+`test_merge_suggestion_routes.py`（读取、拒绝、路由不被动态路径截获）通过；
+`make arch`、`make check-docs`、openapi 契约一致；改动文件 ruff/mypy 0 错误。
+
+未完成：
+- 未校准时只提供人工建议，不发布“系统判断同人”；校准金标仍需用户决定。
 - S1b 时地详情仍未做，已登记在第 11 项任务。

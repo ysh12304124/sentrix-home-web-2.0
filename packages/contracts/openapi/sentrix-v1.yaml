@@ -2618,6 +2618,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/merge-suggestions:
+    get:
+      tags:
+      - identity
+      summary: List Merge Suggestions
+      operationId: list_merge_suggestions_api_v1_people_merge_suggestions_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergeSuggestionListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/merge-suggestions/reject:
+    post:
+      tags:
+      - identity
+      summary: Reject Merge Suggestion
+      operationId: reject_merge_suggestion_api_v1_people_merge_suggestions_reject_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectMergeSuggestionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectMergeSuggestionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/people/{person_id}:
     get:
       tags:
@@ -7324,6 +7385,73 @@ components:
       description: '合并后的目标人物与这次搬动的规模。计数供界面提示，不是审计——审计在
 
         ``entity_revisions``。'
+    MergeSuggestionClusterPayload:
+      properties:
+        cluster_id:
+          type: string
+          title: Cluster Id
+        person_id:
+          type: string
+          title: Person Id
+        display_label:
+          type: string
+          title: Display Label
+        member_count:
+          type: integer
+          title: Member Count
+        avatar_face_instance_id:
+          type: string
+          title: Avatar Face Instance Id
+      type: object
+      required:
+      - cluster_id
+      - person_id
+      - display_label
+      - member_count
+      - avatar_face_instance_id
+      title: MergeSuggestionClusterPayload
+    MergeSuggestionListResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        suggestions:
+          items:
+            $ref: '#/components/schemas/MergeSuggestionPayload'
+          type: array
+          title: Suggestions
+        truncated:
+          type: boolean
+          title: Truncated
+          default: false
+      type: object
+      required:
+      - scope_id
+      - suggestions
+      title: MergeSuggestionListResponse
+    MergeSuggestionPayload:
+      properties:
+        left:
+          $ref: '#/components/schemas/MergeSuggestionClusterPayload'
+        right:
+          $ref: '#/components/schemas/MergeSuggestionClusterPayload'
+        score:
+          type: number
+          title: Score
+        feature_version:
+          type: string
+          title: Feature Version
+        kind:
+          type: string
+          title: Kind
+          default: manual_review
+      type: object
+      required:
+      - left
+      - right
+      - score
+      - feature_version
+      title: MergeSuggestionPayload
     MessageSummary:
       properties:
         id:
@@ -7972,6 +8100,35 @@ components:
       - identity_state
       - rejected_entity_id
       title: RejectFaceAssignmentResponse
+    RejectMergeSuggestionRequest:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        left_cluster_id:
+          type: string
+          title: Left Cluster Id
+        right_cluster_id:
+          type: string
+          title: Right Cluster Id
+        feature_version:
+          type: string
+          title: Feature Version
+      type: object
+      required:
+      - scope_id
+      - left_cluster_id
+      - right_cluster_id
+      - feature_version
+      title: RejectMergeSuggestionRequest
+    RejectMergeSuggestionResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+          default: rejected
+      type: object
+      title: RejectMergeSuggestionResponse
     RelationshipBatchItem:
       properties:
         subject:

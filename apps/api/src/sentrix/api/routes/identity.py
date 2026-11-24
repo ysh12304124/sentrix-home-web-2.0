@@ -59,6 +59,9 @@ from sentrix.api.schemas.identity import (
     MergeClustersRequest,
     MergePeopleRequest,
     MergePeopleResponse,
+    MergeSuggestionClusterPayload,
+    MergeSuggestionListResponse,
+    MergeSuggestionPayload,
     PersonDetailResponse,
     PersonListResponse,
     PersonOccurrenceListResponse,
@@ -67,6 +70,8 @@ from sentrix.api.schemas.identity import (
     RejectClusterResponse,
     RejectFaceAssignmentRequest,
     RejectFaceAssignmentResponse,
+    RejectMergeSuggestionRequest,
+    RejectMergeSuggestionResponse,
     RenamePersonRequest,
     RenamePersonResponse,
     SeedIdentityResponse,
@@ -74,6 +79,10 @@ from sentrix.api.schemas.identity import (
 )
 from sentrix.application.identity.appearance_sampling import QueueAppearance
 from sentrix.application.identity.merge_people import MergePeople
+from sentrix.application.identity.merge_suggestions import (
+    ReadMergeSuggestions,
+    RejectMergeSuggestion,
+)
 from sentrix.application.identity.name_person import NamePerson
 from sentrix.application.identity.person_occurrences import (
     ConfirmFaceAssignment,
@@ -113,6 +122,8 @@ from sentrix.domain.identity.models import (
     EntityRecord,
     FaceClusterRecord,
     FaceInstanceRecord,
+    MergeCandidateCluster,
+    MergeSuggestion,
     PersonOccurrenceRecord,
     entity_display_name,
 )
@@ -893,6 +904,54 @@ def list_person_occurrences(
         offset=offset,
         occurrences=[_occurrence_payload(item) for item in result.items],
     )
+
+
+def _merge_cluster_payload(item: MergeCandidateCluster) -> MergeSuggestionClusterPayload:
+    return MergeSuggestionClusterPayload(
+        cluster_id=item.cluster_id,
+        person_id=item.person_id,
+        display_label=item.display_label,
+        member_count=item.member_count,
+        avatar_face_instance_id=item.avatar_face_instance_id,
+    )
+
+
+def _merge_suggestion_payload(item: MergeSuggestion) -> MergeSuggestionPayload:
+    return MergeSuggestionPayload(
+        left=_merge_cluster_payload(item.left),
+        right=_merge_cluster_payload(item.right),
+        score=item.score,
+        feature_version=item.feature_version,
+    )
+
+
+@router.get("/people/merge-suggestions", response_model=MergeSuggestionListResponse)
+def list_merge_suggestions(
+    scope_id: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=100),
+    container: Container = Depends(get_container),
+) -> MergeSuggestionListResponse:
+    result = ReadMergeSuggestions(suggestions=container.merge_suggestions).execute(
+        scope_id=scope_id, limit=limit
+    )
+    return MergeSuggestionListResponse(
+        scope_id=result.scope_id,
+        suggestions=[_merge_suggestion_payload(item) for item in result.suggestions],
+    )
+
+
+@router.post("/people/merge-suggestions/reject", response_model=RejectMergeSuggestionResponse)
+def reject_merge_suggestion(
+    payload: RejectMergeSuggestionRequest,
+    container: Container = Depends(get_container),
+) -> RejectMergeSuggestionResponse:
+    RejectMergeSuggestion(suggestions=container.merge_suggestions).execute(
+        scope_id=payload.scope_id,
+        left_cluster_id=payload.left_cluster_id,
+        right_cluster_id=payload.right_cluster_id,
+        feature_version=payload.feature_version,
+    )
+    return RejectMergeSuggestionResponse()
 
 
 @router.get("/people/{person_id}")
