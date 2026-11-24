@@ -2,6 +2,14 @@
 
 ## 当前状态
 
+2026-11-24 09:36连接恢复后已只读核实：原84baa3在04:29:43已终态，早于09:36:41主机重启。3新turn各一提交/内部attempt1，均04:29:22以502 cloud transport error失败，04:29:06内核已有igc PCIe断链；网卡和重启底层根因未唯一确认。本轮没有Agent/Judge、手工重启、部署或网络改动。
+
+终态逐项验收1013项/994有效分/19失败null，原1010继承项、994回执、16原时限失败及全部source/seed manifest保持，_index差异0，无缺Judge。此前上下文保护分别触发8/11/13次，但压缩后有成功调用，最终均为传输错误；不能据此称修复失败或把这些失败归为模型智能问题，完整答题成功效果尚未验证。详见audit/20261124-doubao-context-terminal/failure-analysis.md。
+
+新只读完整在线trace/SFT验收先wake `0f0bccc3-d0d8-4f1f-9735-c0ec144a7222` 再单次launch，worker25868/watcher74959，绑定当前8874PID1537/原app-dir/exports源码3adba6e1和read_revision `dc64f4aa2d3d410c866d9e171cf7804b`。launch/verify已消费，不重放；accept_context/review_errors/review_compaction亦已消费，probe只读。两流验收后仅执行尚未消费的compare_context.py一次，保存独立新报告并Decimal复算；原994分/992共同题报告保持，不再自动Agent/Judge。当前全1013缺分计错73.0141%、有效均值74.4097%，最终新报告待双流验收。
+
+以下为已处理的连接中断及此前阶段记录，当前入口以上述终态审计为准。
+
 2026-11-24 04:34，原84baa3监控因3次SSH失败退出；本轮实测100的22/8294/8874不可达，SSH返回Host is down。本机en1为192.168.0.51，目标路由出现REJECT。远端任务、进程和内核证据暂不可读，3道题是否完成待连接恢复后核实，故不归因为模型错误、OOM或主机重启。
 
 仅在本机挂只读连接恢复监控，wake `5ecee024-cef9-4cf0-a69e-58d51f4bba3d` / watcher95083，60秒一次，恢复或24小时后回调。旧fb82f707已登记处理；无远端写入、重启、网络修改、新Agent/Judge或resume。当前审计入口为产品项目audit/20261124-doubao-context-connection-loss，上一轮3题计划/发布/seed/resume和原994分基线均保持。
