@@ -47,6 +47,27 @@ def identity(path):
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(chunk)
             value['sha256'] = digest.hexdigest()
+    elif stat.S_ISDIR(st.st_mode):
+        digest = hashlib.sha256()
+        count = 0
+        total_bytes = 0
+        for folder, dirs, files in os.walk(path, followlinks=False):
+            for name in sorted(dirs + files):
+                child = Path(folder) / name
+                item = child.lstat()
+                record = [str(child.relative_to(path)), item.st_dev, item.st_ino,
+                          item.st_mode, item.st_size, item.st_mtime_ns]
+                if child.is_symlink():
+                    target = os.readlink(child)
+                    assert os.path.isabs(target), 'Inspect relative symlink before move: ' + str(child)
+                    record.append(target)
+                elif child.is_file():
+                    total_bytes += item.st_size
+                digest.update(json.dumps(record).encode())
+                count += 1
+            dirs.sort()
+        value.update(tree_entries=count, tree_bytes=total_bytes,
+                     tree_identity_sha256=digest.hexdigest())
     return value
 
 
