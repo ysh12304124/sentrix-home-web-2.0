@@ -46,6 +46,7 @@ from sentrix.domain.identity.ports import (
     PersonAppearanceJobRepository,
     PersonCropRenderer,
     PersonMergeRepository,
+    PersonOccurrenceIndex,
     PersonPreviewRenderer,
     PersonVision,
     PortraitRepository,
@@ -176,6 +177,9 @@ from sentrix.infrastructure.persistence.repositories.memory_evidence import (
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
 from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
+from sentrix.infrastructure.persistence.repositories.occurrence_terms import (
+    SqlitePersonOccurrenceIndex,
+)
 from sentrix.infrastructure.persistence.repositories.participants import (
     SqliteEventParticipantRepository,
 )
@@ -358,6 +362,7 @@ class Container:
     # 身份层（S5a）。两个仓储分家的理由写在 domain/identity/ports.py 的模块注释里：
     # 人脸侧的写入者是在线匹配与簇审阅，实体侧的写入者是命名与属性维护。
     face_repository: FaceRepository
+    person_occurrence_index: PersonOccurrenceIndex
     entity_repository: EntityRepository
     # 语义画像与声明（S6 T130）。这两张表从 T127 建起来后一直没有读者，是 T130
     # 给它们的第一个——**只读**：写入侧的人像流水线在 2.0 走的是
@@ -712,6 +717,7 @@ class Container:
             lexical_search=lexical,
             structured_query_repository=SqliteStructuredQueryRepository(database, place_aliases),
             face_repository=SqliteFaceRepository(database),
+            person_occurrence_index=SqlitePersonOccurrenceIndex(database),
             entity_repository=entities,
             semantic_repository=SqliteSemanticRepository(database),
             face_detector=FaceAdapter(

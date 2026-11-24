@@ -1,8 +1,24 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sentrix.api.schemas.media import AssetSummary
+
+
+class OccurrenceMatch(BaseModel):
+    """一次落到具体脸的命中；语义图片命中不会被摊派成人物识别分。"""
+
+    face_instance_id: str
+    asset_id: str
+    observation_id: str
+    person_id: str | None
+    display_label: str
+    identity_state: str
+    bbox: list[float]
+    description: str
+    matched_fields: list[str]
+    evidence_refs: list[str]
+    source_revision: int
 
 
 class SearchHit(BaseModel):
@@ -13,6 +29,10 @@ class SearchHit(BaseModel):
     # 通道 -> 该通道里的名次。S2 只有 visual_ann 一条，结构先按六路留好。
     channels: dict[str, int]
     raw_scores: dict[str, float]
+    matched_fields: list[str] = Field(default_factory=list)
+    matched_occurrences: list[OccurrenceMatch] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_revision: int = 0
 
 
 class ChannelTrace(BaseModel):

@@ -95,6 +95,7 @@ from sentrix.domain.identity.ports import (
     AppearanceRepository,
     FaceEnroller,
     FaceRepository,
+    PersonOccurrenceIndex,
     PreparedFaces,
 )
 from sentrix.domain.media.capture_time import CaptureTime
@@ -299,6 +300,7 @@ class ImportAssets:
         face_enroller: FaceEnroller | None = None,
         face_repository: FaceRepository | None = None,
         appearance_repository: AppearanceRepository | None = None,
+        occurrence_index: PersonOccurrenceIndex | None = None,
         evidence_repository: MemoryEvidenceRepository | None = None,
         fact_maintainer: Callable[[Observation], tuple[str, ...]] | None = None,
         text_indexer: Callable[[Observation, str | None], int] | None = None,
@@ -353,6 +355,7 @@ class ImportAssets:
         self._face_enroller = face_enroller
         self._face_repository = face_repository
         self._appearance_repository = appearance_repository
+        self._occurrence_index = occurrence_index
         self._evidence_repository = evidence_repository
         self._fact_maintainer = fact_maintainer
         self._text_indexer = text_indexer
@@ -1041,6 +1044,9 @@ class ImportAssets:
                         status="effective",
                     )
                 )
+        if self._occurrence_index is not None:
+            for enrollment in enrollments:
+                self._occurrence_index.refresh(enrollment.instance_id)
 
     def _assign_event(self, observation: Observation, forced_event_id: str | None) -> str | None:
         if forced_event_id is not None:

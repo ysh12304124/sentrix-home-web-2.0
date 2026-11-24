@@ -129,6 +129,32 @@ def test_the_person_graph_only_shows_people_and_drops_retracted(relationship_cli
 # ---- 建关系 ----------------------------------------------------------------------
 
 
+def test_a_pending_person_can_be_an_endpoint(relationship_client):
+    """S3：未命名人物也能在人物页维护关系；pending 不是关系的排除条件。"""
+    with _db(relationship_client).connect() as connection, connection:
+        connection.execute(
+            "INSERT INTO entities (id, scope_id, entity_type, canonical_name, status,"
+            " summary, confidence, created_at, updated_at)"
+            " VALUES ('ent_stranger', ?, 'person', '待确认人物簇 · cluster-x', 'pending',"
+            " '', 0.0, ?, ?)",
+            (HOME, NOW, NOW),
+        )
+
+    response = relationship_client.post(
+        "/api/v1/relationships",
+        json={
+            "subject_entity_id": "ent_stranger",
+            "predicate": "朋友",
+            "object_entity_id": "ent_mom",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    body = relationship_client.get("/api/v1/relationships", params={"kind": "person"}).json()
+    assert "ent_stranger" in {node["id"] for node in body["nodes"]}
+
+
 def test_creating_without_a_required_field_is_a_400_with_the_literal_message(relationship_client):
     """1.0 ``app.py:2113-2114`` 的原话，逐字。
 

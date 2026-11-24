@@ -451,6 +451,7 @@ def _build_importer(
         face_enroller=_face_enroller(container),
         face_repository=container.face_repository,
         appearance_repository=container.appearance_repository,
+        occurrence_index=container.person_occurrence_index,
         evidence_repository=container.memory_evidence,
         fact_maintainer=_fact_maintainer(container),
         text_indexer=_text_indexer(container),
@@ -494,7 +495,8 @@ def _text_indexer(container: Container) -> Callable[[Observation, str | None], i
                 else container.settings.document_chunk_tokens,
             )
             return index.index_document(observation, chunks).rows
-        return index.index(observation, event_id).rows
+        person_text = "\n".join(container.face_repository.occurrence_descriptions(observation.id))
+        return index.index(observation, event_id, person_text=person_text).rows
 
     return run
 

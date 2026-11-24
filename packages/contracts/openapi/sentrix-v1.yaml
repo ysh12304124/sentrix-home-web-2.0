@@ -879,12 +879,12 @@ paths:
       parameters:
       - name: q
         in: query
-        required: true
+        required: false
         schema:
           type: string
-          minLength: 1
           maxLength: 200
           description: 内容词，例如 桥 / 海边 / 红色
+          default: ''
           title: Q
         description: 内容词，例如 桥 / 海边 / 红色
       - name: scope_id
@@ -924,6 +924,27 @@ paths:
           default: []
           title: Person
         description: 人物条件，可重复：已确认人物的本名或别名
+      - name: person_id
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: 显式人物 ID，可重复；未命名人物也可查
+          default: []
+          title: Person Id
+        description: 显式人物 ID，可重复；未命名人物也可查
+      - name: description
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 200
+          description: 人物描述，例如 灰色上衣
+          default: ''
+          title: Description
+        description: 人物描述，例如 灰色上衣
       - name: place
         in: query
         required: false
@@ -2550,6 +2571,23 @@ paths:
           type: string
           default: ''
           title: Asset Id
+      - name: description_query
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 200
+          description: 描述、稳定标签或 ID
+          default: ''
+          title: Description Query
+        description: 描述、稳定标签或 ID
+      - name: identity_state
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Identity State
       - name: limit
         in: query
         required: false
@@ -2559,6 +2597,14 @@ paths:
           minimum: 1
           default: 200
           title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
       responses:
         '200':
           description: Successful Response
@@ -7324,6 +7370,64 @@ components:
       - status
       - error
       title: NameSyncStatus
+    OccurrenceMatch:
+      properties:
+        face_instance_id:
+          type: string
+          title: Face Instance Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_id:
+          type: string
+          title: Observation Id
+        person_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Person Id
+        display_label:
+          type: string
+          title: Display Label
+        identity_state:
+          type: string
+          title: Identity State
+        bbox:
+          items:
+            type: number
+          type: array
+          title: Bbox
+        description:
+          type: string
+          title: Description
+        matched_fields:
+          items:
+            type: string
+          type: array
+          title: Matched Fields
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+        source_revision:
+          type: integer
+          title: Source Revision
+      type: object
+      required:
+      - face_instance_id
+      - asset_id
+      - observation_id
+      - person_id
+      - display_label
+      - identity_state
+      - bbox
+      - description
+      - matched_fields
+      - evidence_refs
+      - source_revision
+      title: OccurrenceMatch
+      description: 一次落到具体脸的命中；语义图片命中不会被摊派成人物识别分。
     OperationCancellationResponse:
       properties:
         operation_id:
@@ -7380,6 +7484,10 @@ components:
         scope_id:
           type: string
           title: Scope Id
+        offset:
+          type: integer
+          title: Offset
+          default: 0
         occurrences:
           items:
             $ref: '#/components/schemas/PersonOccurrencePayload'
@@ -7440,6 +7548,20 @@ components:
         description_revision:
           type: integer
           title: Description Revision
+        matched_fields:
+          items:
+            type: string
+          type: array
+          title: Matched Fields
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+        match_score:
+          type: number
+          title: Match Score
+          default: 0.0
       type: object
       required:
       - face_instance_id
@@ -8332,6 +8454,25 @@ components:
             type: number
           type: object
           title: Raw Scores
+        matched_fields:
+          items:
+            type: string
+          type: array
+          title: Matched Fields
+        matched_occurrences:
+          items:
+            $ref: '#/components/schemas/OccurrenceMatch'
+          type: array
+          title: Matched Occurrences
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+        source_revision:
+          type: integer
+          title: Source Revision
+          default: 0
       type: object
       required:
       - asset

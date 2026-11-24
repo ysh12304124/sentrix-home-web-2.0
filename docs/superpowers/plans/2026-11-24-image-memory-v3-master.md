@@ -37,10 +37,10 @@
 | S0 基础 | — | M1 0037 | 构建/证据/阶段任务表与端口；legacy 盘点；profile matrix；基线记录 | 依赖可装配；原生图片/关键帧盘点准确；legacy 状态可读；S0 单测通过 |
 | S1 单图字段 | S0 | M2 0038 | observations 增 short/detail/tags/entities/field_states/有效 build；观察端口兼容；OCR 保护；媒体详情 | 新图详情可读 detail/tags/entities/精度/来源；旧图明确缺 detail；中文化不改 OCR |
 | S2 人物出现 | S1 | M3 0039 | 检测前置、编号图、enroll 明细、质量隔离、可信档、描述 selector、单次纠错 | 未命名每张脸有稳定 ID/描述/框；低质量不膨胀成簇；候选不报姓名；原评分桥未混 pending |
-| S3 人物检索/关系 | S2 | — | 出现 FTS、结构化 ID、观察语义组合、pending 关系、相似簇建议 | “灰色上衣”可定位到脸；local_only 可查；跨 scope 不漏 |
-| S4 事件文档/时间线 | S1/S2 | M4 0040 | 事件参与者/时地/覆盖/总结证据；时间线展示投影 | 时间线可核对采集范围/活动时间、场景/地址、人物 ID、每条来源 |
+| S3 人物检索/关系 | S2 | M3b 0040 | 出现 FTS、结构化 ID、观察语义组合、pending 关系、相似簇建议 | “灰色上衣”可定位到脸；local_only 可查；跨 scope 不漏 |
+| S4 事件文档/时间线 | S1/S2 | M4 0041 | 事件参与者/时地/覆盖/总结证据；时间线展示投影 | 时间线可核对采集范围/活动时间、场景/地址、人物 ID、每条来源 |
 | S5 事件索引 | S4 | M4 | event_document 空间、事件 FTS、成员展开、清理 | 事件命中可展开真实成员；新旧 event 不覆盖；单图事件额外嵌入=0 |
-| S6 导出 | S1/S3/S4/S5 | M5 0041 | image_memories.jsonl + provenance + manifest；PhotoBench 适配 | compat/strict_v3 fixture 可被消费；字段状态/来源可核对 |
+| S6 导出 | S1/S3/S4/S5 | M5 0042 | image_memories.jsonl + provenance + manifest；PhotoBench 适配 | compat/strict_v3 fixture 可被消费；字段状态/来源可核对 |
 | S7 生命周期闭环 | S2–S6 | — | 命名/合并/拆分/reject/recluster/内部 merge/删除/迟到写入/raw 清理 | 各出口一致、无孤儿；普通操作零新增生成/检测调用 |
 | S8 历史与灰度 | S1–S7 | — | H0 盘点、H1 确定性回填、可选 H2 重建；按 scope/profile 开关 | 新旧比例可见；H1 零模型；H2 只处理所选阶段 |
 | S9 验收/交接 | S8 | — | 用户验收、profile/样本/预算归档、Agent schema 交接 | 22 项覆盖矩阵有证据；未通过 profile 不启用 |

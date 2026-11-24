@@ -92,6 +92,16 @@ def test_compose_text_follows_the_1_0_field_order():
     assert text == "海边 散步 青岛 门票 蓝外套 白鞋 爸爸 去过的城市 青岛 海鸥 沙滩"
 
 
+def test_compose_text_appends_detail_tags_and_deduped_person_text():
+    text = compose_text(
+        make_observation(detail_caption="一家人在海边合影", tags=("旅行", "夏天")),
+        "穿灰色上衣的人\n穿蓝色外套的人\n穿灰色上衣的人",
+    )
+
+    assert text.endswith("一家人在海边合影 旅行 夏天 穿灰色上衣的人 穿蓝色外套的人")
+    assert text.count("穿灰色上衣的人") == 1
+
+
 def test_compose_text_skips_empty_fields():
     text = compose_text(
         make_observation(caption="", activity="", ocr_text="", clothing=(), objects=(), facts=())

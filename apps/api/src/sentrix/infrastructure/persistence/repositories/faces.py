@@ -31,6 +31,12 @@ from sentrix.domain.identity.models import (
     PhotoIdentityRecord,
 )
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.repositories.occurrence_terms import (
+    occurrence_descriptions,
+    refresh_occurrence_terms,
+    search_occurrence_terms,
+    validate_hit,
+)
 
 _CLUSTER_COLUMNS = (
     "fc.id, fc.scope_id, fc.status, fc.entity_id, fc.representative_embedding_json,"
@@ -350,6 +356,7 @@ class SqliteFaceRepository:
                     rejected_entity_id,
                 ),
             )
+            refresh_occurrence_terms(connection, instance_id)
         instance = self.get_instance(instance_id)
         assert instance is not None
         return instance
@@ -364,11 +371,23 @@ class SqliteFaceRepository:
         person_id: str = "",
         face_instance_id: str = "",
         asset_id: str = "",
+        description_query: str = "",
+        identity_state: str = "",
         limit: int = 200,
+        offset: int = 0,
     ) -> Sequence[PersonOccurrenceRecord]:
-        """本图出现读取：描述优先当前有效 appearance，其次 face 级 evidence。"""
-        clauses = ["a.scope_id = ?", "fi.identity_state != 'rejected'"]
-        params: list[object] = [scope_id]
+        """本图出现读取：描述优先当前有效 appearance，其次 face 级 evidence。
+
+        ``description_query`` 走人物出现 FTS，命中后在同一个读取里按**当前**描述/标签/
+        姓名复核；投影晚清理不会继续交无效绑定。分页在有词法条件时按命中分数排序后切片。
+        """
+        clauses = ["fi.identity_state != 'rejected'"]
+        params: list[object] = []
+        if scope_id:
+            clauses.append("a.scope_id = ?")
+            params.append(scope_id)
+        else:
+            clauses.append("a.scope_id NOT IN (SELECT id FROM memory_spaces WHERE include_in_people = 0)")
         if person_id:
             clauses.append("fc.entity_id = ?")
             params.append(person_id)
@@ -378,6 +397,24 @@ class SqliteFaceRepository:
         if asset_id:
             clauses.append("fi.asset_id = ?")
             params.append(asset_id)
+        if identity_state:
+            clauses.append("fi.identity_state = ?")
+            params.append(identity_state)
+        hits = None
+        trailing = " LIMIT ? OFFSET ?"
+        if description_query.strip():
+            with self._database.connect() as connection:
+                hits = search_occurrence_terms(
+                    connection,
+                    description_query,
+                    scope_id=scope_id,
+                    limit_faces=max(2000, (max(1, offset) + max(1, limit)) * 4),
+                )
+            if not hits.ranked_face_ids:
+                return ()
+            clauses.append("fi.id IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(list(hits.ranked_face_ids)))
+            trailing = ""
         sql = f"""
             SELECT fi.id AS face_instance_id, fi.asset_id, fi.observation_id, a.scope_id,
                    fi.cluster_id, fc.entity_id, fi.identity_state, fi.bbox_json,
@@ -407,10 +444,11 @@ class SqliteFaceRepository:
                 ORDER BY me2.observation_revision DESC, me2.created_at DESC, me2.id DESC LIMIT 1
             )
             WHERE {" AND ".join(clauses)}
-            ORDER BY fi.created_at DESC, fi.id DESC LIMIT ?
+            ORDER BY fi.created_at DESC, fi.id DESC{trailing}
         """
+        arguments = (*params, max(1, int(limit)), max(0, int(offset))) if trailing else tuple(params)
         with self._database.connect() as connection:
-            rows = connection.execute(sql, (*params, max(1, int(limit)))).fetchall()
+            rows = connection.execute(sql, arguments).fetchall()
         occurrences: list[PersonOccurrenceRecord] = []
         for row in rows:
             verified_name = ""
@@ -445,6 +483,20 @@ class SqliteFaceRepository:
                 label = f"人物…{person_id_value[-8:]}"
             else:
                 label = f"本图…{str(row['face_instance_id'])[-8:]}"
+            matched_fields: tuple[str, ...] = ()
+            evidence_refs: tuple[str, ...] = ()
+            match_score = 0.0
+            if hits is not None:
+                term_hit = hits.by_face.get(str(row["face_instance_id"]))
+                if term_hit is not None:
+                    matched_fields, evidence_refs, evidence_revision = validate_hit(
+                        term_hit,
+                        description=description,
+                        display_label=label,
+                        verified_name=verified_name,
+                    )
+                    match_score = term_hit.score if matched_fields else 0.0
+                    revision = max(revision, evidence_revision)
             occurrences.append(
                 PersonOccurrenceRecord(
                     face_instance_id=str(row["face_instance_id"]),
@@ -461,9 +513,43 @@ class SqliteFaceRepository:
                     description_state=state,
                     description_build_id=build_id,
                     description_revision=revision,
+                    matched_fields=matched_fields,
+                    evidence_refs=evidence_refs,
+                    match_score=match_score,
                 )
             )
+        if hits is not None:
+            occurrences = [item for item in occurrences if item.matched_fields]
+            rank = {face_id: index for index, face_id in enumerate(hits.ranked_face_ids)}
+            occurrences.sort(key=lambda item: (rank.get(item.face_instance_id, len(rank)), -item.match_score))
+            start = max(0, int(offset))
+            occurrences = occurrences[start : start + max(1, int(limit))]
         return tuple(occurrences)
+
+    def asset_ids_for_person(self, person_id: str, *, scope_id: str = "") -> tuple[str, ...]:
+        """当前归属这个人的可打开图片；scope 为空时排除评测空间。"""
+        clause = " AND a.scope_id = ?"
+        params: list[object] = [person_id]
+        if scope_id:
+            params.append(scope_id)
+        else:
+            clause = " AND a.scope_id NOT IN (SELECT id FROM memory_spaces WHERE include_in_people = 0)"
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT a.id, a.captured_at FROM face_instances fi"
+                " JOIN face_clusters fc ON fc.id = fi.cluster_id"
+                " JOIN assets a ON a.id = fi.asset_id"
+                " WHERE fc.entity_id = ? AND fi.identity_state != 'rejected'"
+                " AND a.status = 'processed'"
+                + clause
+                + " ORDER BY capture_sort_key(a.captured_at) DESC, a.id",
+                tuple(params),
+            ).fetchall()
+        return tuple(str(row["id"]) for row in rows)
+
+    def occurrence_descriptions(self, observation_id: str) -> tuple[str, ...]:
+        with self._database.connect() as connection:
+            return occurrence_descriptions(connection, observation_id)
 
     def confirm_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord:
         """用户明确确认这一次出现；只提升该 face 的可信状态，不批量确认簇内其他脸。"""
@@ -484,6 +570,7 @@ class SqliteFaceRepository:
                 " WHERE id = ?",
                 (face_instance_id,),
             )
+            refresh_occurrence_terms(connection, face_instance_id)
         instance = self.get_instance(face_instance_id)
         assert instance is not None
         return instance
@@ -518,6 +605,7 @@ class SqliteFaceRepository:
                 " revision = revision + 1, updated_at = ? WHERE id = ?",
                 (cluster_id, now, cluster_id),
             )
+            refresh_occurrence_terms(connection, face_instance_id)
         instance = self.get_instance(face_instance_id)
         assert instance is not None
         return instance

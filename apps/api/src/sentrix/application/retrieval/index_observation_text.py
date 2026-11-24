@@ -70,14 +70,16 @@ class TextIndexOutcome:
     reason: str = ""
 
 
-def compose_text(observation: Observation) -> str:
-    """观察 → 一段可嵌入的文本。**字段顺序是 1.0 的顺序**（见模块注释）。
+def compose_text(observation: Observation, person_text: str = "") -> str:
+    """观察 → 一段可嵌入的文本。**原有字段顺序不变**，新字段只追加在尾部。
 
     顺序本身不影响向量质量，但它决定了「同一份数据两次跑出来的文本是否逐字相同」——
-    而幂等判据（``has_vector``）判的是 model_name，不是文本；文本变了而 model_name
-    没变的话，第二次跑会被当成「已经有了」跳过。所以顺序要固定，改它就是一次迁移。
+    而幂等判据（``has_vector``）判的是 model_name，不是文本；所以新增字段只能追加，
+    不能插进旧顺序中间。``person_text`` 是同一张图里当前有效的脸级描述，去重后并入
+    这一次图片文本嵌入；不产生 per-face 向量。
     """
     facts_text = " ".join(f"{fact.subject} {fact.predicate} {fact.object}" for fact in observation.facts)
+    person_parts = tuple(dict.fromkeys(part.strip() for part in person_text.split("\n") if part.strip()))
     return " ".join(
         part
         for part in (
@@ -89,6 +91,9 @@ def compose_text(observation: Observation) -> str:
             " ".join(observation.clothing),
             facts_text,
             " ".join(observation.objects),
+            observation.detail_caption,
+            " ".join(observation.tags),
+            " ".join(person_parts),
         )
         if part
     ).strip()
@@ -139,9 +144,14 @@ class IndexObservationText:
         return TextIndexOutcome(indexed=True, rows=rows)
 
     def index(
-        self, observation: Observation, event_id: str | None, *, force: bool = False
+        self,
+        observation: Observation,
+        event_id: str | None,
+        *,
+        person_text: str = "",
+        force: bool = False,
     ) -> TextIndexOutcome:
-        text = compose_text(observation)
+        text = compose_text(observation, person_text)
         if not text:
             # 1.0 拼完可能得到空串（一条什么都没观察到的观察）。空串不该去打一次
             # sidecar——那是一次注定拿到零向量的往返。

@@ -29,7 +29,10 @@ class ReadPersonOccurrences:
         person_id: str = "",
         face_instance_id: str = "",
         asset_id: str = "",
+        description_query: str = "",
+        identity_state: str = "",
         limit: int = 200,
+        offset: int = 0,
     ) -> PersonOccurrenceList:
         if not scope_id.strip():
             raise ValueError("scope_id is required")
@@ -41,7 +44,10 @@ class ReadPersonOccurrences:
                     person_id=person_id,
                     face_instance_id=face_instance_id,
                     asset_id=asset_id,
+                    description_query=description_query,
+                    identity_state=identity_state,
                     limit=limit,
+                    offset=offset,
                 )
             ),
         )

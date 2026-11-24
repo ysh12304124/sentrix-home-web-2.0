@@ -188,6 +188,9 @@ PENDING_METHODS: dict[str, str] = {
     # `request_bytes` 是另一半：端口落地了、调用者还没到（资产代理那条路由要改成 2.0 的
     # `/api/v1/assets`，属 S9c 的端点适配）。照纪律登记，等 S9c 接上时由反向规则删。
     #
+    # S3 落地人物出现词法投影；增量写入走事务内的 ``refresh_occurrence_terms``，重建入口
+    # 留给 S8 的 H1 历史回填/维护端点接线，届时由反向规则删掉这条。
+    "PersonOccurrenceIndex.rebuild": "S8 H1 历史回填/维护端点会调用；当前由测试直接调用",
     # —— S9b-3（2026-10-04）：`request_bytes` 被它自己的反向规则删掉了 ——
     #
     # 证据判分（`application/run_execution/judge.py::_inline_images`）要按 asset_id

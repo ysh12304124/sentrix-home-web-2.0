@@ -110,6 +110,14 @@ class FaceEnroller(Protocol):
     ) -> Sequence[FaceEnrollmentResult]: ...
 
 
+class PersonOccurrenceIndex(Protocol):
+    """人物出现词法投影的刷新入口；由写描述/改归属的事务调用。"""
+
+    def refresh(self, face_instance_id: str) -> int: ...
+
+    def rebuild(self, scope_id: str | None = None) -> int: ...
+
+
 class FaceRepository(Protocol):
     """人脸簇 / 实例 / 原型。
 
@@ -158,8 +166,15 @@ class FaceRepository(Protocol):
         person_id: str = "",
         face_instance_id: str = "",
         asset_id: str = "",
+        description_query: str = "",
+        identity_state: str = "",
         limit: int = 200,
+        offset: int = 0,
     ) -> Sequence[PersonOccurrenceRecord]: ...
+
+    def asset_ids_for_person(self, person_id: str, *, scope_id: str = "") -> tuple[str, ...]: ...
+
+    def occurrence_descriptions(self, observation_id: str) -> tuple[str, ...]: ...
 
     def reject_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord: ...
 

@@ -222,6 +222,10 @@ class PersonOccurrenceRecord:
     description_state: str
     description_build_id: str
     description_revision: int
+    # 词法定位命中时的可核对信息；普通列举为空。
+    matched_fields: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    match_score: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

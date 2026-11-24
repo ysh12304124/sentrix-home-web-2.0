@@ -538,10 +538,14 @@ class PersonOccurrencePayload(BaseModel):
     description_state: str
     description_build_id: str
     description_revision: int
+    matched_fields: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    match_score: float = 0.0
 
 
 class PersonOccurrenceListResponse(BaseModel):
     scope_id: str
+    offset: int = 0
     occurrences: list[PersonOccurrencePayload]
 
 

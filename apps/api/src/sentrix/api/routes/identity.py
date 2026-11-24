@@ -853,7 +853,15 @@ def _occurrence_payload(item: PersonOccurrenceRecord) -> PersonOccurrencePayload
         description_state=item.description_state,
         description_build_id=item.description_build_id,
         description_revision=item.description_revision,
+        matched_fields=list(item.matched_fields),
+        evidence_refs=list(item.evidence_refs),
+        match_score=item.match_score,
     )
+
+
+_OCCURRENCE_IDENTITY_STATES = frozenset(
+    {"user_verified", "auto_trusted", "candidate", "local_only", "rejected"}
+)
 
 
 @router.get("/people/occurrences", response_model=PersonOccurrenceListResponse)
@@ -862,18 +870,27 @@ def list_person_occurrences(
     person_id: str = "",
     face_instance_id: str = "",
     asset_id: str = "",
+    description_query: str = Query("", max_length=200, description="描述、稳定标签或 ID"),
+    identity_state: str = "",
     limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     container: Container = Depends(get_container),
 ) -> PersonOccurrenceListResponse:
+    if identity_state and identity_state not in _OCCURRENCE_IDENTITY_STATES:
+        raise InvalidRequestError(f"未知的人物身份状态: {identity_state}")
     result = ReadPersonOccurrences(faces=container.face_repository).execute(
         scope_id=scope_id,
         person_id=person_id,
         face_instance_id=face_instance_id,
         asset_id=asset_id,
+        description_query=description_query,
+        identity_state=identity_state,
         limit=limit,
+        offset=offset,
     )
     return PersonOccurrenceListResponse(
         scope_id=result.scope_id,
+        offset=offset,
         occurrences=[_occurrence_payload(item) for item in result.items],
     )
 
