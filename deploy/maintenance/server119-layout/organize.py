@@ -128,11 +128,13 @@ def dependencies():
     return refs
 
 
-def service_snapshot():
+def service_snapshot(unit_names=None):
     names = run('systemctl', '--user', 'list-units', '--type=service', '--state=running',
                 '--no-legend', '--plain').splitlines()
     units = [line.split()[0] for line in names
              if line.split()[0].startswith(('sentrix', 'strata', 'octopus'))]
+    if unit_names is not None:
+        units = list(unit_names)
     return {unit: run('systemctl', '--user', 'show', unit, '-p', 'MainPID',
                      '-p', 'ActiveState', '-p', 'NRestarts').strip() for unit in units}
 
@@ -211,7 +213,8 @@ def verify(plan):
                 failures.append({'alias_mismatch': str(src)})
         elif src.exists() or src.is_symlink():
             failures.append({'old_path_remains': str(src)})
-    services_after, http_after = service_snapshot(), http_snapshot()
+    services_after = service_snapshot(plan['services_before'])
+    http_after = http_snapshot()
     if services_after != plan['services_before']:
         failures.append({'services_changed': True})
     if http_after != plan['http_before']:
@@ -238,7 +241,7 @@ def apply(plan):
         if not row['alias']:
             assert not any(p == str(src) or p.startswith(str(src) + '/')
                            for paths in current.values() for p in paths), src
-    assert service_snapshot() == plan['services_before']
+    assert service_snapshot(plan['services_before']) == plan['services_before']
     write_json(STATE / 'apply-started.json', {'time': time.time()})
     with (STATE / 'moves.jsonl').open('x') as journal:
         for row in plan['moves']:
