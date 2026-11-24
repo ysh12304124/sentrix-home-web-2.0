@@ -40,7 +40,13 @@ def test_inventory_lists_legacy_partial(client: TestClient) -> None:
     body = response.json()
     assert body["counts"]["total"] == 1
     assert body["assets"][0]["status"] == "legacy_partial"
-    assert body["assets"][0]["available_fields"] == ["caption"]
+    assert body["assets"][0]["available_fields"] == [
+        "caption",
+        "short_caption",
+        "detail_caption",
+        "tags",
+        "entities",
+    ]
 
 
 def test_unknown_build_is_404(client: TestClient) -> None:

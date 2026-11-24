@@ -401,7 +401,7 @@ BUILD_STAGES = (
     "export_readiness",
 )
 BUILD_STATUSES = ("queued", "running", "succeeded", "partial", "failed")
-TASK_STATUSES = ("queued", "running", "done", "failed")
+TASK_STATUSES = ("queued", "running", "done", "failed", "canceled")
 EVIDENCE_OWNER_KINDS = ("asset", "observation", "event", "entity", "face_instance")
 EVIDENCE_STATUSES = ("effective", "superseded", "retracted", "legacy", "conflict")
 

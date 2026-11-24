@@ -84,6 +84,17 @@ class ManageMemoryBuilds:
         counts["image"] = sum(1 for state in states if state.media_kind == "image")
         counts["video_keyframe"] = sum(1 for state in states if state.media_kind == "video_keyframe")
         counts["unknown_derived"] = sum(1 for state in states if state.media_kind == "unknown_derived")
+        for field in (
+            "caption",
+            "short_caption",
+            "detail_caption",
+            "ocr_text",
+            "tags",
+            "entities",
+        ):
+            counts[f"has_{field}"] = sum(1 for state in states if field in state.available_fields)
+        counts["has_semantics"] = sum(1 for state in states if state.available_fields)
+        counts["with_pending_tasks"] = sum(1 for state in states if state.pending_tasks)
         return MemoryBuildInventory(scope_id=scope_id, counts=dict(counts), assets=states)
 
     def get(self, build_id: str) -> MemoryBuildDetail | None:
@@ -134,6 +145,10 @@ class ManageMemoryBuilds:
             return ()
         candidates = (
             ("caption", observation.caption),
+            ("short_caption", observation.short_caption),
+            ("detail_caption", observation.detail_caption),
+            ("tags", observation.tags),
+            ("entities", observation.entities),
             ("place", observation.place),
             ("activity", observation.activity),
             ("event_type", observation.event_type),

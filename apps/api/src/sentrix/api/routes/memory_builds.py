@@ -6,18 +6,35 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sentrix.api.deps import get_container
 from sentrix.api.schemas.memory_builds import (
+    BackfillRequest,
+    BackfillResponse,
+    BuildTaskListResponse,
+    CancelRebuildRequest,
+    CancelRebuildResponse,
     MemoryBuildAssetPayload,
     MemoryBuildDetailResponse,
     MemoryBuildInventoryResponse,
     MemoryBuildPayload,
     MemoryBuildStageState,
     MemoryEvidencePayload,
+    RebuildRequest,
+    RebuildResponse,
+    RebuildRunRequest,
+    RebuildRunResponse,
+    RebuildTaskPayload,
+)
+from sentrix.application.media.backfill_memories import (
+    BackfillMemories,
+    QueueMemoryRebuild,
+    RunMemoryRebuildTasks,
+    build_task_progress,
 )
 from sentrix.application.media.manage_memory_builds import (
     ManageMemoryBuilds,
     MemoryBuildAssetState,
     MemoryBuildDetail,
 )
+from sentrix.application.memories.publish_event_document import PublishEventDocument
 from sentrix.bootstrap.container import Container
 from sentrix.domain.media.models import MemoryEvidence, ObservationBuild
 
@@ -31,6 +48,133 @@ def _use_case(container: Container) -> ManageMemoryBuilds:
         builds=container.memory_builds,
         evidence=container.memory_evidence,
         tasks=container.memory_build_tasks,
+    )
+
+
+def _publisher(container: Container) -> PublishEventDocument:
+    return PublishEventDocument(
+        events=container.event_repository,
+        observations=container.observation_repository,
+        assets=container.asset_repository,
+        places=container.asset_place_repository,
+        faces=container.face_repository,
+        participants=container.event_participant_repository,
+        evidence=container.memory_evidence,
+        documents=container.event_documents,
+    )
+
+
+@router.post("/memory-builds/backfill", response_model=BackfillResponse)
+def backfill_memories(
+    payload: BackfillRequest, container: Container = Depends(get_container)
+) -> BackfillResponse:
+    result = BackfillMemories(
+        assets=container.asset_repository,
+        observations=container.observation_repository,
+        events=container.event_repository,
+        lexical=container.lexical_index,
+        occurrences=container.person_occurrence_index,
+        publisher=_publisher(container),
+    ).execute(payload.scope_id, dry_run=payload.dry_run)
+    return BackfillResponse(
+        scope_id=result.scope_id,
+        dry_run=result.dry_run,
+        counts=dict(result.counts),
+        stages=list(result.stages),
+    )
+
+
+def _queue(container: Container) -> QueueMemoryRebuild:
+    return QueueMemoryRebuild(
+        assets=container.asset_repository,
+        observations=container.observation_repository,
+        events=container.event_repository,
+        documents=container.event_documents,
+        tasks=container.memory_build_tasks,
+    )
+
+
+@router.post("/memory-builds/rebuild", response_model=RebuildResponse)
+def submit_memory_rebuild(
+    payload: RebuildRequest, container: Container = Depends(get_container)
+) -> RebuildResponse:
+    result = _queue(container).submit(
+        payload.scope_id,
+        asset_ids=payload.asset_ids,
+        stages=payload.stages,
+        dry_run=payload.dry_run,
+    )
+    return RebuildResponse(
+        scope_id=result.scope_id,
+        dry_run=result.dry_run,
+        tasks=[
+            RebuildTaskPayload(
+                id=task.id,
+                asset_id=task.asset_id,
+                stage=task.stage,
+                status=task.status,
+                attempts=task.attempts,
+                last_error=task.last_error,
+            )
+            for task in result.tasks
+        ],
+        missing=dict(result.missing),
+        estimated_model_calls=result.estimated_model_calls,
+    )
+
+
+@router.post("/memory-builds/run", response_model=RebuildRunResponse)
+def run_memory_rebuild(
+    payload: RebuildRunRequest, container: Container = Depends(get_container)
+) -> RebuildRunResponse:
+    result = RunMemoryRebuildTasks(
+        tasks=container.memory_build_tasks,
+        assets=container.asset_repository,
+        observations=container.observation_repository,
+        events=container.event_repository,
+        observer=container.vlm_observer,
+        storage=container.media_storage,
+        builds=container.memory_builds,
+        evidence=container.memory_evidence,
+        lexical=container.lexical_index,
+        embedder=container.text_embedder,
+        vectors=container.vector_repository,
+        publisher=_publisher(container),
+        occurrences=container.face_repository,
+    ).execute(limit=payload.limit)
+    return RebuildRunResponse(claimed=result.claimed, done=result.done, failed=result.failed)
+
+
+@router.post("/memory-builds/cancel", response_model=CancelRebuildResponse)
+def cancel_memory_rebuild(
+    payload: CancelRebuildRequest, container: Container = Depends(get_container)
+) -> CancelRebuildResponse:
+    canceled = container.memory_build_tasks.cancel_scope(payload.scope_id)
+    return CancelRebuildResponse(scope_id=payload.scope_id, canceled=canceled)
+
+
+@router.get("/memory-builds/tasks", response_model=BuildTaskListResponse)
+def list_memory_build_tasks(
+    scope_id: str = Query(..., min_length=1),
+    limit: int = Query(200, ge=1, le=1000),
+    container: Container = Depends(get_container),
+) -> BuildTaskListResponse:
+    tasks = container.memory_build_tasks.list_for_scope(scope_id, limit=limit)
+    counts, payloads = build_task_progress(tasks)
+    return BuildTaskListResponse(
+        scope_id=scope_id,
+        counts=counts,
+        tasks=[
+            RebuildTaskPayload(
+                id=str(item["id"]),
+                asset_id=str(item["asset_id"]),
+                stage=str(item["stage"]),
+                status=str(item["status"]),
+                attempts=int(str(item["attempts"])),
+                last_error=str(item["last_error"]),
+            )
+            for item in payloads
+        ],
     )
 
 

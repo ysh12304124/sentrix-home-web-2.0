@@ -1957,6 +1957,142 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/backfill:
+    post:
+      tags:
+      - memory-builds
+      summary: Backfill Memories
+      operationId: backfill_memories_api_v1_memory_builds_backfill_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackfillRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackfillResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/rebuild:
+    post:
+      tags:
+      - memory-builds
+      summary: Submit Memory Rebuild
+      operationId: submit_memory_rebuild_api_v1_memory_builds_rebuild_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuildRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RebuildResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/run:
+    post:
+      tags:
+      - memory-builds
+      summary: Run Memory Rebuild
+      operationId: run_memory_rebuild_api_v1_memory_builds_run_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebuildRunRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RebuildRunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/cancel:
+    post:
+      tags:
+      - memory-builds
+      summary: Cancel Memory Rebuild
+      operationId: cancel_memory_rebuild_api_v1_memory_builds_cancel_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelRebuildRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelRebuildResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/tasks:
+    get:
+      tags:
+      - memory-builds
+      summary: List Memory Build Tasks
+      operationId: list_memory_build_tasks_api_v1_memory_builds_tasks_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildTaskListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/memory-builds:
     get:
       tags:
@@ -4280,6 +4416,43 @@ components:
       - asset_id
       - file_name
       title: AttachmentSummary
+    BackfillRequest:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+      type: object
+      required:
+      - scope_id
+      title: BackfillRequest
+    BackfillResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+        counts:
+          additionalProperties: true
+          type: object
+          title: Counts
+        stages:
+          items:
+            type: string
+          type: array
+          title: Stages
+      type: object
+      required:
+      - scope_id
+      - dry_run
+      - counts
+      - stages
+      title: BackfillResponse
     BatchConfirmFailure:
       properties:
         person_id:
@@ -4491,6 +4664,27 @@ components:
       required:
       - file
       title: Body_upload_media_api_v1_media_uploads_post
+    BuildTaskListResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        tasks:
+          items:
+            $ref: '#/components/schemas/RebuildTaskPayload'
+          type: array
+          title: Tasks
+      type: object
+      required:
+      - scope_id
+      - counts
+      - tasks
+      title: BuildTaskListResponse
     CalendarDay:
       properties:
         date:
@@ -4542,6 +4736,28 @@ components:
       - count
       - months
       title: CalendarYear
+    CancelRebuildRequest:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+      type: object
+      required:
+      - scope_id
+      title: CancelRebuildRequest
+    CancelRebuildResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        canceled:
+          type: integer
+          title: Canceled
+      type: object
+      required:
+      - scope_id
+      - canceled
+      title: CancelRebuildResponse
     ChannelTrace:
       properties:
         channel:
@@ -8616,6 +8832,114 @@ components:
         字段集沿用 1.0（``runtime.py:1664-1687``），并补上 ``kind`` 与 ``payload``。
 
         ``step_index`` 同时是 SSE 的 ``id:`` 值，于是 ``Last-Event-ID`` 断线续传天然可用。'
+    RebuildRequest:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        asset_ids:
+          items:
+            type: string
+          type: array
+          title: Asset Ids
+          default: []
+        stages:
+          items:
+            type: string
+          type: array
+          title: Stages
+          default: []
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+      type: object
+      required:
+      - scope_id
+      title: RebuildRequest
+    RebuildResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        dry_run:
+          type: boolean
+          title: Dry Run
+        tasks:
+          items:
+            $ref: '#/components/schemas/RebuildTaskPayload'
+          type: array
+          title: Tasks
+        missing:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Missing
+        estimated_model_calls:
+          type: integer
+          title: Estimated Model Calls
+      type: object
+      required:
+      - scope_id
+      - dry_run
+      - tasks
+      - missing
+      - estimated_model_calls
+      title: RebuildResponse
+    RebuildRunRequest:
+      properties:
+        limit:
+          type: integer
+          title: Limit
+          default: 5
+      type: object
+      title: RebuildRunRequest
+    RebuildRunResponse:
+      properties:
+        claimed:
+          type: integer
+          title: Claimed
+        done:
+          type: integer
+          title: Done
+        failed:
+          type: integer
+          title: Failed
+      type: object
+      required:
+      - claimed
+      - done
+      - failed
+      title: RebuildRunResponse
+    RebuildTaskPayload:
+      properties:
+        id:
+          type: string
+          title: Id
+        asset_id:
+          type: string
+          title: Asset Id
+        stage:
+          type: string
+          title: Stage
+        status:
+          type: string
+          title: Status
+        attempts:
+          type: integer
+          title: Attempts
+        last_error:
+          type: string
+          title: Last Error
+          default: ''
+      type: object
+      required:
+      - id
+      - asset_id
+      - stage
+      - status
+      - attempts
+      title: RebuildTaskPayload
     ReclusterFacesRequest:
       properties:
         scope_id:

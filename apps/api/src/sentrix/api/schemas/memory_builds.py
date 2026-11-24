@@ -82,3 +82,64 @@ class MemoryEvidencePayload(BaseModel):
 class MemoryBuildDetailResponse(BaseModel):
     build: MemoryBuildPayload
     evidence: list[MemoryEvidencePayload]
+
+
+class BackfillRequest(BaseModel):
+    scope_id: str
+    dry_run: bool = True
+
+
+class BackfillResponse(BaseModel):
+    scope_id: str
+    dry_run: bool
+    counts: dict[str, Any]
+    stages: list[str]
+
+
+class RebuildRequest(BaseModel):
+    scope_id: str
+    asset_ids: list[str] = []
+    stages: list[str] = []
+    dry_run: bool = True
+
+
+class RebuildTaskPayload(BaseModel):
+    id: str
+    asset_id: str
+    stage: str
+    status: str
+    attempts: int
+    last_error: str = ""
+
+
+class RebuildResponse(BaseModel):
+    scope_id: str
+    dry_run: bool
+    tasks: list[RebuildTaskPayload]
+    missing: dict[str, int]
+    estimated_model_calls: int
+
+
+class RebuildRunRequest(BaseModel):
+    limit: int = 5
+
+
+class RebuildRunResponse(BaseModel):
+    claimed: int
+    done: int
+    failed: int
+
+
+class CancelRebuildRequest(BaseModel):
+    scope_id: str
+
+
+class CancelRebuildResponse(BaseModel):
+    scope_id: str
+    canceled: int
+
+
+class BuildTaskListResponse(BaseModel):
+    scope_id: str
+    counts: dict[str, int]
+    tasks: list[RebuildTaskPayload]

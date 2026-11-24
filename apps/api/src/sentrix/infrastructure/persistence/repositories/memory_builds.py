@@ -10,7 +10,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sentrix.domain.media.models import MemoryBuildTask, ObservationBuild
 from sentrix.infrastructure.persistence.database import Database
@@ -272,6 +272,80 @@ class SqliteMemoryBuildTaskRepository:
                 (cutoff, max(0, int(limit))),
             ).fetchall()
         return tuple(_row_to_task(row) for row in rows)
+
+    def list_for_scope(
+        self, scope_id: str, *, statuses: Sequence[str] = (), limit: int = 200
+    ) -> Sequence[MemoryBuildTask]:
+        params: list[object] = [scope_id]
+        clause = "scope_id = ?"
+        if statuses:
+            clause += f" AND status IN ({','.join('?' for _ in statuses)})"
+            params.extend(statuses)
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT {_TASK_COLUMNS} FROM memory_build_tasks WHERE {clause}"
+                " ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*params, max(1, int(limit))),
+            ).fetchall()
+        return tuple(_row_to_task(row) for row in rows)
+
+    def claim_due(
+        self, *, limit: int, now: datetime | None = None, lease_seconds: int = 300
+    ) -> Sequence[MemoryBuildTask]:
+        moment = now or datetime.now(UTC)
+        cutoff = moment.isoformat()
+        lease = (moment + timedelta(seconds=max(30, int(lease_seconds)))).isoformat()
+        claimed: list[MemoryBuildTask] = []
+        with self._database.connect() as connection, connection:
+            rows = connection.execute(
+                f"SELECT {_TASK_COLUMNS} FROM memory_build_tasks"
+                " WHERE status = 'queued' AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?",
+                (cutoff, max(1, int(limit))),
+            ).fetchall()
+            for row in rows:
+                cursor = connection.execute(
+                    "UPDATE memory_build_tasks SET status = 'running', lease_until = ?,"
+                    " attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'queued'",
+                    (lease, cutoff, row["id"]),
+                )
+                if cursor.rowcount:
+                    claimed.append(_row_to_task(row))
+        return tuple(claimed)
+
+    def complete(self, task_id: str, *, status: str, error: str = "") -> MemoryBuildTask | None:
+        if status not in {"done", "failed", "canceled"}:
+            raise ValueError(f"unknown task completion status: {status}")
+        current = self.get(task_id)
+        if current is None:
+            return None
+        moment = datetime.now(UTC)
+        next_status = status
+        next_attempt = moment
+        if status == "failed" and current.attempts < 3:
+            next_status = "queued"
+            next_attempt = moment + timedelta(seconds=60 * current.attempts)
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE memory_build_tasks SET status = ?, last_error = ?, lease_until = NULL,"
+                " next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                (
+                    next_status,
+                    error[:1000],
+                    next_attempt.isoformat(),
+                    moment.isoformat(),
+                    task_id,
+                ),
+            )
+        return self.get(task_id)
+
+    def cancel_scope(self, scope_id: str) -> int:
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE memory_build_tasks SET status = 'canceled', lease_until = NULL,"
+                " updated_at = ? WHERE scope_id = ? AND status IN ('queued', 'running')",
+                (datetime.now(UTC).isoformat(), scope_id),
+            )
+            return int(cursor.rowcount)
 
     def list_for_asset(self, asset_id: str, *, statuses: Sequence[str] = ()) -> Sequence[MemoryBuildTask]:
         params: list[object] = [asset_id]
