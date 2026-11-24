@@ -529,7 +529,13 @@ class Container:
             vision_json_mode = bool(vision_payload.get("supports_json_object", True))
             vision_generation = {
                 key: vision_payload[key]
-                for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty")
+                for key in (
+                    "temperature",
+                    "top_p",
+                    "presence_penalty",
+                    "frequency_penalty",
+                    "thinking",
+                )
                 if key in vision_payload
             }
         else:
