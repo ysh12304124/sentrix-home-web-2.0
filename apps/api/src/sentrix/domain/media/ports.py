@@ -19,6 +19,7 @@ from sentrix.domain.media.models import (
     AudioMetadata,
     DerivedAsset,
     GpsPoint,
+    MediaDetails,
     MediaType,
     MemoryBuildTask,
     MemoryEvidence,
@@ -378,6 +379,12 @@ class MetadataReader(Protocol):
     """从原始文件中抽取拍摄时间、GPS 与设备。"""
 
     def read(self, path: Path) -> tuple[datetime | None, GpsPoint | None, str | None]: ...
+
+
+class DetailedMetadataReader(Protocol):
+    """共享一次解析的详细元数据；``read`` 仍是兼容三元组入口。"""
+
+    def read_details(self, path: Path) -> MediaDetails: ...
 
 
 class PreviewEncoder(Protocol):

@@ -61,6 +61,7 @@ from sentrix.domain.media.ports import (
     AudioRepository,
     AudioTranscriber,
     CaptureTimeResolver,
+    DetailedMetadataReader,
     MediaDeletionRepository,
     MediaStorage,
     MemoryBuildRepository,
@@ -300,6 +301,7 @@ class Container:
     memory_build_tasks: MemoryBuildTaskRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
+    detailed_metadata_reader: DetailedMetadataReader
     capture_time_resolver: CaptureTimeResolver
     preview_encoder: PreviewEncoder
     # 视频三件（S8a）：ffprobe 探测、浏览器预览转码、血缘仓储。三者都是端口声明——
@@ -650,6 +652,7 @@ class Container:
             memory_build_tasks=memory_build_tasks,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
+            detailed_metadata_reader=PillowMetadataReader(),
             capture_time_resolver=ResolveCaptureTime(),
             preview_encoder=PillowPreviewEncoder(),
             video_metadata_reader=FfprobeVideoMetadataReader(),

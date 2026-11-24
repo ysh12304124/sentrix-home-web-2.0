@@ -80,6 +80,7 @@ S8c 追加一条：**音频走同一条链，但不转码、不转写**（用户
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -103,6 +104,7 @@ from sentrix.domain.media.models import (
     TEXT_IMPORT_SOURCE,
     Asset,
     AssetStatus,
+    MediaDetails,
     MediaType,
     MemoryEvidence,
     Observation,
@@ -114,6 +116,7 @@ from sentrix.domain.media.ports import (
     AudioProbe,
     AudioRepository,
     CaptureTimeResolver,
+    DetailedMetadataReader,
     MediaStorage,
     MemoryEvidenceRepository,
     MetadataReader,
@@ -291,6 +294,7 @@ class ImportAssets:
         observations: ObservationRepository,
         storage: MediaStorage,
         metadata: MetadataReader,
+        details_reader: DetailedMetadataReader | None = None,
         address_reader: Callable[[Path], SourceMetadata] | None = None,
         resolve_capture_time: CaptureTimeResolver | None = None,
         visual_indexer: AssetVisualIndexer | None = None,
@@ -337,6 +341,7 @@ class ImportAssets:
         self._observations = observations
         self._storage = storage
         self._metadata = metadata
+        self._details_reader = details_reader
         self._resolve_capture_time = resolve_capture_time
         self._video_metadata = video_metadata
         self._video_transcoder = video_transcoder
@@ -429,8 +434,13 @@ class ImportAssets:
             stored_path = self._storage.copy_from_path(asset_id, request.file_name, request.source_path)
 
         captured_at, gps, device = (source_time, None, None)
+        details = MediaDetails()
         if media_type is MediaType.IMAGE:
-            captured_at, gps, device = self._metadata.read(stored_path)
+            if self._details_reader is not None:
+                details = self._details_reader.read_details(stored_path)
+                captured_at, gps, device = details.captured_at, details.gps, details.device
+            else:
+                captured_at, gps, device = self._metadata.read(stored_path)
 
         # 视频：探测 + 转码（S8a T505）。**排在这里、而不是排到资产落库之后**，
         # 因为拍摄时间/GPS 要跟 EXIF 一样在**建资产之前**拿到——否则视频的
@@ -488,11 +498,17 @@ class ImportAssets:
         if audio_probe is not None and audio_probe.metadata is not None:
             source = audio_probe.metadata.creation_source or "audio_metadata"
         provenance = CaptureTime(
-            request.source_timestamp or (captured_at.isoformat() if captured_at else ""),
-            source if captured_at else "unknown",
+            raw=details.captured_at_raw
+            or request.source_timestamp
+            or (captured_at.isoformat() if captured_at else ""),
+            source=source if captured_at else "unknown",
             status=("offset_only" if captured_at.utcoffset() is not None else "timezone_unknown")
             if captured_at
             else "unknown",
+            precision=details.time_precision
+            if details.time_precision != "unknown"
+            else ("datetime" if captured_at else "unknown"),
+            timezone_source=details.timezone_source,
         )
         if self._resolve_capture_time is not None and source_time is None:
             captured_at, provenance = self._resolve_capture_time(captured_at, gps, source)
@@ -500,15 +516,10 @@ class ImportAssets:
         # 拍摄时间读不出来就保持 None，不能拿导入时刻冒充。main 的
         # ``ResolveCaptureTime`` 已负责保留原始偏移/未知时区语义，这里不再二次归一化。
         source_metadata = request.source_metadata
+        embedded = SourceMetadata()
         if media_type in {MediaType.IMAGE, MediaType.VIDEO} and self._address_reader is not None:
             embedded = self._address_reader(stored_path)
-            if (
-                embedded.precise_address
-                and source_metadata.precise_address
-                and embedded.precise_address != source_metadata.precise_address
-            ):
-                self._storage.delete_assets((), (str(stored_path),))
-                raise ValueError("嵌入地址与导入清单地址不一致")
+            # 地址冲突不再删文件/报错：合法资产照常入库，两个候选各自留证据，详情页待裁决。
             if not source_metadata.precise_address:
                 source_metadata = embedded
         asset = Asset(
@@ -541,6 +552,12 @@ class ImportAssets:
                 return self._deduplicate(registered, request, content_sha256)
         else:
             self._assets.add(asset)
+            self._record_asset_source_evidence(
+                asset,
+                details=details,
+                provided=request.source_metadata,
+                embedded=embedded,
+            )
 
         # 探测结果落库**必须在资产行之后**：它写的是 ``assets.metadata_json``。
         if video_probe is not None and self._video_repository is not None:
@@ -986,6 +1003,119 @@ class ImportAssets:
             return tuple(detailed(asset.id, observation.id, prepared.faces))
         self._face_enroller.commit(asset.id, observation.id, prepared.faces)
         return ()
+
+    @staticmethod
+    def _value_hash(value: object) -> str:
+        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    def _record_asset_source_evidence(
+        self,
+        asset: Asset,
+        *,
+        details: MediaDetails,
+        provided: SourceMetadata,
+        embedded: SourceMetadata,
+    ) -> None:
+        """时/地候选各自留证据；冲突不阻断导入，也不在这里强选。
+
+        ID 是确定性的，重试导入时按现有 owner 证据跳过，避免同一资产堆重复行。
+        """
+        if self._evidence_repository is None:
+            return
+        rows: list[MemoryEvidence] = []
+        provenance = asset.capture_time
+        if asset.captured_at is not None or provenance.raw.strip():
+            value: dict[str, object] = {
+                "captured_at": asset.captured_at.isoformat() if asset.captured_at else None,
+                "raw": provenance.raw,
+                "precision": provenance.precision,
+                "timezone": provenance.timezone,
+                "timezone_state": provenance.status,
+                "timezone_source": provenance.timezone_source,
+                "source": provenance.source,
+                "exif": dict(details.exif),
+            }
+            rows.append(
+                MemoryEvidence(
+                    id=f"ev_time_{asset.id}",
+                    scope_id=asset.scope_id,
+                    owner_kind="asset",
+                    owner_id=asset.id,
+                    field_path="asset.capture_time",
+                    role="capture_time",
+                    value=value,
+                    value_hash=self._value_hash(value),
+                    source_kind="metadata",
+                    source_modality="file",
+                    source_channel=provenance.source,
+                    status="effective",
+                )
+            )
+        if asset.captured_location is not None:
+            value = {
+                "latitude": asset.captured_location.latitude,
+                "longitude": asset.captured_location.longitude,
+                "precision": "gps",
+            }
+            rows.append(
+                MemoryEvidence(
+                    id=f"ev_gps_{asset.id}",
+                    scope_id=asset.scope_id,
+                    owner_kind="asset",
+                    owner_id=asset.id,
+                    field_path="asset.place.coordinates",
+                    role="coordinates",
+                    value=value,
+                    value_hash=self._value_hash(value),
+                    source_kind="gps",
+                    source_modality="file",
+                    source_channel="exif_gps",
+                )
+            )
+        conflict = bool(
+            provided.precise_address.strip()
+            and embedded.precise_address.strip()
+            and provided.precise_address.strip() != embedded.precise_address.strip()
+        )
+        for kind, address, source in (
+            ("provided", provided, "import_manifest"),
+            ("embedded", embedded, "file_metadata"),
+        ):
+            if not address.precise_address.strip():
+                continue
+            value = {
+                "address": address.precise_address.strip(),
+                "precision": "address",
+                "source": address.address_source,
+            }
+            rows.append(
+                MemoryEvidence(
+                    id=f"ev_addr_{kind}_{asset.id}",
+                    scope_id=asset.scope_id,
+                    owner_kind="asset",
+                    owner_id=asset.id,
+                    field_path="asset.place.address",
+                    role="address",
+                    value=value,
+                    value_hash=self._value_hash(value),
+                    source_kind=kind,
+                    source_modality="file",
+                    source_channel=source,
+                    status="conflict" if kind == "embedded" and conflict else "effective",
+                )
+            )
+        existing = {
+            item.id
+            for item in self._evidence_repository.list_for_owner(
+                scope_id=asset.scope_id,
+                owner_kind="asset",
+                owner_id=asset.id,
+            )
+        }
+        for row in rows:
+            if row.id not in existing:
+                self._evidence_repository.add(row)
 
     def _bind_face_descriptions(
         self,

@@ -109,6 +109,46 @@ def test_nested_capture_ifd_preserves_original_offset_across_midnight(tmp_path):
     assert captured_at.utcoffset() == timedelta(hours=-5)
 
 
+def test_read_details_reports_raw_tags_precision_and_timezone_source(tmp_path):
+    path = tmp_path / "details.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[34665] = {36867: "2024:01:01 23:30:00", 36881: "-05:00"}
+    exif[271] = "Apple"
+    exif[272] = "iPhone 12"
+    exif[34853] = {
+        1: "N",
+        2: (IFDRational(18, 1), IFDRational(47, 1), IFDRational(1788, 100)),
+        3: "E",
+        4: (IFDRational(98, 1), IFDRational(59, 1), IFDRational(700, 100)),
+    }
+    image.save(path, format="JPEG", exif=exif)
+
+    details = PillowMetadataReader().read_details(path)
+
+    assert details.captured_at is not None
+    assert details.captured_at_raw == "2024:01:01 23:30:00"
+    assert details.time_precision == "datetime"
+    assert details.timezone_source == "exif_offset"
+    assert details.device == "iPhone 12"
+    assert details.gps is not None
+    assert details.exif["DateTimeOriginalRaw"] == "2024:01:01 23:30:00"
+
+
+def test_read_details_keeps_date_precision_without_inventing_midnight(tmp_path):
+    path = tmp_path / "date-only.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[36867] = "2024:04:01"
+    image.save(path, format="JPEG", exif=exif)
+
+    details = PillowMetadataReader().read_details(path)
+
+    assert details.captured_at is None
+    assert details.captured_at_raw == "2024:04:01"
+    assert details.time_precision == "date"
+
+
 def test_original_without_offset_does_not_borrow_modified_timezone(tmp_path):
     path = tmp_path / "unknown-zone.jpg"
     image = Image.new("RGB", (16, 16), "white")

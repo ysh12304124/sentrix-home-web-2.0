@@ -201,6 +201,67 @@ def test_explicit_query_timezone_uses_same_rules_as_metadata():
     assert _within(bounds, datetime.fromisoformat("2018-03-31T23:30:00+07:00"))
 
 
+def test_address_conflict_is_evidenced_instead_of_rejected(migrations_ready_db, tmp_path):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from sentrix.application.media.import_assets import ImportAssets, ImportRequest
+    from sentrix.domain.media.source_metadata import SourceMetadata
+    from sentrix.infrastructure.media.metadata import PillowMetadataReader
+    from sentrix.infrastructure.media.storage import FileSystemMediaStorage
+    from sentrix.infrastructure.persistence.repositories.assets import SqliteObservationRepository
+    from sentrix.infrastructure.persistence.repositories.memory_evidence import (
+        SqliteMemoryEvidenceRepository,
+    )
+
+    with migrations_ready_db.connect() as connection, connection:
+        connection.execute(
+            "INSERT INTO memory_spaces (id, name, include_in_people, created_at, updated_at)"
+            " VALUES ('album1', 'album1', 1, ?, ?)",
+            ("2026-11-24T00:00:00+00:00", "2026-11-24T00:00:00+00:00"),
+        )
+
+    content = BytesIO()
+    image = Image.new("RGB", (8, 8))
+    exif = image.getexif()
+    exif[34665] = {36867: "2024:01:01 23:30:00", 36881: "+08:00"}
+    image.save(content, format="JPEG", exif=exif)
+    evidence = SqliteMemoryEvidenceRepository(migrations_ready_db)
+    assets = SqliteAssetRepository(migrations_ready_db)
+    importer = ImportAssets(
+        assets=assets,
+        observations=SqliteObservationRepository(migrations_ready_db),
+        storage=FileSystemMediaStorage(tmp_path / "media"),
+        metadata=PillowMetadataReader(),
+        details_reader=PillowMetadataReader(),
+        address_reader=lambda path: SourceMetadata(
+            precise_address="嵌入地址",
+            address_source="xmp",
+        ),
+        evidence_repository=evidence,
+    )
+    request = ImportRequest(
+        "album1",
+        "conflict.jpg",
+        "image/jpeg",
+        content.getvalue(),
+        source_metadata=SourceMetadata(precise_address="清单地址", address_source="manifest"),
+    )
+
+    result = importer.execute(request)
+
+    stored = assets.get(result.asset_id)
+    assert stored is not None
+    assert stored.capture_time.precision == "datetime"
+    assert stored.capture_time.timezone_source == "exif_offset"
+    rows = evidence.list_for_owner(scope_id="album1", owner_kind="asset", owner_id=result.asset_id)
+    by_path = {(row.field_path, row.source_kind): row for row in rows}
+    assert by_path[("asset.place.address", "provided")].status == "effective"
+    assert by_path[("asset.place.address", "embedded")].status == "conflict"
+    assert by_path[("asset.capture_time", "metadata")].value["timezone_source"] == "exif_offset"
+
+
 def test_unknown_capture_is_not_replaced_by_import_time(migrations_ready_db, tmp_path):
     from io import BytesIO
 

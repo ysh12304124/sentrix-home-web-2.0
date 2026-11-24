@@ -29,8 +29,12 @@ class IndexAssetPlace(AssetPlaceIndex):
     def index(self, asset: Asset) -> bool:
         gps = asset.captured_location
         supplied = asset.source_metadata
-        place: Place | None
-        if supplied.precise_address.strip():
+        place: Place | None = None
+        # 有 GPS 就先按坐标解析；provided 地址不再是短路。两边都在时，候选证据由导入
+        # 用例分别写入 memory_evidence，这里只维护 asset_places 的兼容投影。
+        if gps is not None:
+            place = self._resolver.resolve(gps)
+        if place is None and supplied.precise_address.strip():
             place = Place(
                 admin=AdminArea(),
                 nearest=NearestPlace(),
@@ -41,10 +45,6 @@ class IndexAssetPlace(AssetPlaceIndex):
                 address_source=supplied.address_source,
                 address_source_sha256=supplied.address_source_sha256,
             )
-        elif gps is not None:
-            place = self._resolver.resolve(gps)
-        else:
-            return False
         if place is None:
             return False
         self._places.save(asset_id=asset.id, scope_id=asset.scope_id, gps=gps, place=place)

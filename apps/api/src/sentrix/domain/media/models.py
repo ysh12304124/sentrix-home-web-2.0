@@ -86,6 +86,23 @@ class GpsPoint:
         return 6371.0088 * 2 * math.asin(math.sqrt(a))
 
 
+@dataclass(frozen=True, slots=True)
+class MediaDetails:
+    """一次元数据解析的完整结果；``read`` 三元组是它的兼容投影。
+
+    ``exif`` 保留实际读到的标签与原串（只收有意义的标量标签），用于详情页解释
+    “这个时间/坐标从哪来”。``time_precision`` 只描述已知粒度，不补午夜或当前时刻。
+    """
+
+    captured_at: datetime | None = None
+    gps: GpsPoint | None = None
+    device: str | None = None
+    exif: Mapping[str, str] = field(default_factory=dict)
+    captured_at_raw: str = ""
+    time_precision: str = "unknown"
+    timezone_source: str = "unknown"
+
+
 def _gps_point(latitude: float | None, longitude: float | None) -> GpsPoint | None:
     """经纬度 -> ``GpsPoint``。**两个都解析出来才算**——与 ``PillowMetadataReader``
     同一口径：EXIF/容器标签都允许只标一半，那半边不该冒充一个完整坐标。

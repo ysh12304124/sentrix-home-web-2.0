@@ -89,3 +89,47 @@ class MediaDeletionHistoryResponse(BaseModel):
 
 class MediaCleanupRetryResponse(BaseModel):
     warnings: list[str]
+
+
+class SourceEvidencePayload(BaseModel):
+    id: str
+    field_path: str
+    role: str
+    source_kind: str
+    source_channel: str
+    status: str
+    value: Any = None
+
+
+class AssetTimeProjection(BaseModel):
+    captured_at: str | None
+    precision: str
+    timezone_state: str
+    timezone_source: str
+    source: str
+    raw: str
+    evidence_refs: list[str] = []
+
+
+class AssetPlaceProjection(BaseModel):
+    latitude: float | None
+    longitude: float | None
+    precise_address: str
+    admin_province: str
+    admin_city: str
+    admin_district: str
+    nearest_township: str
+    nearest_locality: str
+    precision: str
+    source: str
+    evidence_refs: list[str] = []
+
+
+class AssetTimePlaceResponse(BaseModel):
+    asset_id: str
+    scope_id: str
+    time: AssetTimeProjection
+    place: AssetPlaceProjection
+    conflict: bool
+    conflicts: list[str] = []
+    evidence: list[SourceEvidencePayload] = []

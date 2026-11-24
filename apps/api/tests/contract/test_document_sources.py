@@ -135,11 +135,19 @@ def test_citation_binds_scope_source_and_read_offsets(client):
 
 
 @pytest.mark.parametrize("gps", [None, "keep"])
-def test_provided_address_avoids_geocoding_and_survives_sqlite(client, gps):
+def test_provided_address_is_fallback_while_gps_is_resolved_first(client, gps):
+    """S1b：provided 地址不再短路 GPS 解析；无 GPS 时才回退到 provided。"""
     identifier = upload(client).json()["items"][0]["asset_id"]
     container = client.app.state.container
     asset = container.asset_repository.get(identifier)
     from sentrix.domain.media.models import GpsPoint
+    from sentrix.domain.places.models import (
+        AdminArea,
+        NearestPlace,
+        Place,
+        PlacePrecision,
+        PlaceSource,
+    )
 
     asset = replace(
         asset,
@@ -151,15 +159,31 @@ def test_provided_address_avoids_geocoding_and_survives_sqlite(client, gps):
         ),
     )
 
-    class NoGeocoder:
-        def resolve(self, gps):
-            raise AssertionError("provided address must bypass reverse geocoding")
+    class Geocoder:
+        calls = 0
 
-    assert IndexAssetPlace(resolver=NoGeocoder(), places=container.asset_place_repository).index(asset)
+        def resolve(self, point):
+            self.calls += 1
+            return Place(
+                admin=AdminArea(province="浙江省", city="杭州市"),
+                nearest=NearestPlace(),
+                precision=PlacePrecision.CITY,
+                source=PlaceSource.PYGEOCN,
+                gps=point,
+            )
+
+    geocoder = Geocoder()
+    assert IndexAssetPlace(resolver=geocoder, places=container.asset_place_repository).index(asset)
     place = container.asset_place_repository.get(identifier)
-    assert place.display() == "杭州市湖滨路 1 号"
-    assert place.searchable_text() == "杭州市湖滨路 1 号"
-    assert place.address_source_sha256 == "a" * 64
+    if gps:
+        assert geocoder.calls == 1
+        assert place.display() == "浙江省杭州市"
+        assert place.precise_address == ""
+    else:
+        assert geocoder.calls == 0
+        assert place.display() == "杭州市湖滨路 1 号"
+        assert place.searchable_text() == "杭州市湖滨路 1 号"
+        assert place.address_source_sha256 == "a" * 64
 
 
 def test_xmp_is_read_from_image_and_mp4_packets(tmp_path):

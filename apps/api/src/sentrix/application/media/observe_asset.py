@@ -62,9 +62,7 @@ class ObserveAsset(AssetObserver):
         """读取文本原件或准备视觉语义，供串行提交阶段写库。"""
         return self.prepare_with_faces(asset, None)
 
-    def prepare_with_faces(
-        self, asset: Asset, faces: Sequence[object] | None
-    ) -> ObservationSemantics | None:
+    def prepare_with_faces(self, asset: Asset, faces: Sequence[object] | None) -> ObservationSemantics | None:
         """带检测项的观察；faces 为 None 时保持旧行为。"""
         if asset.media_type is MediaType.TEXT and self._storage is not None:
             try:
@@ -93,7 +91,13 @@ class ObserveAsset(AssetObserver):
         if semantics is None:
             return None
         observed = semantics
-        if self._builds is not None and observation.source_type != TEXT_IMPORT_SOURCE:
+        # 没有模型观察者就没有可记录的模型构建：文本原件导入会带 semantics，
+        # 但它的 source_type 不是 TEXT_IMPORT_SOURCE（旧资产按 import 存），不能因此断言模型存在。
+        if (
+            self._builds is not None
+            and self._observer is not None
+            and observation.source_type != TEXT_IMPORT_SOURCE
+        ):
             build = self._record_build(observation, semantics)
             if self._evidence is not None:
                 self._record_evidence(observation, semantics, build)

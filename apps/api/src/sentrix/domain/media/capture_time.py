@@ -14,6 +14,9 @@ class CaptureTime:
     source: str = "unknown"
     timezone: str = ""
     status: str = "unknown"
+    # 已知粒度：datetime / date / year_month / year / unknown。旧 JSON 没有这两列时用默认值。
+    precision: str = "unknown"
+    timezone_source: str = "unknown"
 
 
 class CoordinateTimezone(Protocol):

@@ -426,6 +426,7 @@ def _build_importer(
         observations=container.observation_repository,
         storage=container.media_storage,
         metadata=container.metadata_reader,
+        details_reader=container.detailed_metadata_reader,
         address_reader=read_source_address,
         visual_indexer=IndexAssetVisual(
             embedder=container.visual_embedder,

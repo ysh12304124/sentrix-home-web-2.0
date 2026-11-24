@@ -577,6 +577,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/assets/{asset_id}/time-place:
+    get:
+      tags:
+      - media
+      summary: Get Asset Time Place
+      description: 时间/地点的展示投影与候选证据；冲突不在这里裁决。
+      operationId: get_asset_time_place_api_v1_assets__asset_id__time_place_get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetTimePlaceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/assets/{asset_id}/poster:
     get:
       tags:
@@ -3775,6 +3802,61 @@ components:
       required:
       - items
       title: AssetListResponse
+    AssetPlaceProjection:
+      properties:
+        latitude:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Latitude
+        longitude:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Longitude
+        precise_address:
+          type: string
+          title: Precise Address
+        admin_province:
+          type: string
+          title: Admin Province
+        admin_city:
+          type: string
+          title: Admin City
+        admin_district:
+          type: string
+          title: Admin District
+        nearest_township:
+          type: string
+          title: Nearest Township
+        nearest_locality:
+          type: string
+          title: Nearest Locality
+        precision:
+          type: string
+          title: Precision
+        source:
+          type: string
+          title: Source
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+          default: []
+      type: object
+      required:
+      - latitude
+      - longitude
+      - precise_address
+      - admin_province
+      - admin_city
+      - admin_district
+      - nearest_township
+      - nearest_locality
+      - precision
+      - source
+      title: AssetPlaceProjection
     AssetSummary:
       properties:
         id:
@@ -3849,6 +3931,78 @@ components:
       - captured_at
       - gps
       title: AssetSummary
+    AssetTimePlaceResponse:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        scope_id:
+          type: string
+          title: Scope Id
+        time:
+          $ref: '#/components/schemas/AssetTimeProjection'
+        place:
+          $ref: '#/components/schemas/AssetPlaceProjection'
+        conflict:
+          type: boolean
+          title: Conflict
+        conflicts:
+          items:
+            type: string
+          type: array
+          title: Conflicts
+          default: []
+        evidence:
+          items:
+            $ref: '#/components/schemas/SourceEvidencePayload'
+          type: array
+          title: Evidence
+          default: []
+      type: object
+      required:
+      - asset_id
+      - scope_id
+      - time
+      - place
+      - conflict
+      title: AssetTimePlaceResponse
+    AssetTimeProjection:
+      properties:
+        captured_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Captured At
+        precision:
+          type: string
+          title: Precision
+        timezone_state:
+          type: string
+          title: Timezone State
+        timezone_source:
+          type: string
+          title: Timezone Source
+        source:
+          type: string
+          title: Source
+        raw:
+          type: string
+          title: Raw
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+          default: []
+      type: object
+      required:
+      - captured_at
+      - precision
+      - timezone_state
+      - timezone_source
+      - source
+      - raw
+      title: AssetTimeProjection
     AttachmentSummary:
       properties:
         handle:
@@ -8903,6 +9057,37 @@ components:
         换值、保留键名的（``event_memory_json`` 仍是这个名字），**这是一处偏离**：
 
         2.0 的模型层把「解过了」这件事表达在类型与名字上。'
+    SourceEvidencePayload:
+      properties:
+        id:
+          type: string
+          title: Id
+        field_path:
+          type: string
+          title: Field Path
+        role:
+          type: string
+          title: Role
+        source_kind:
+          type: string
+          title: Source Kind
+        source_channel:
+          type: string
+          title: Source Channel
+        status:
+          type: string
+          title: Status
+        value:
+          title: Value
+      type: object
+      required:
+      - id
+      - field_path
+      - role
+      - source_kind
+      - source_channel
+      - status
+      title: SourceEvidencePayload
     SourceVideoPayload:
       properties:
         id:

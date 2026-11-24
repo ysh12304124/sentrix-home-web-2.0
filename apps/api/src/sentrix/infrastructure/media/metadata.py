@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sentrix.domain.media.models import GpsPoint
+from sentrix.domain.media.models import GpsPoint, MediaDetails
 from sentrix.infrastructure.media.image_io import ensure_heif_support
 
 log = logging.getLogger(__name__)
@@ -84,9 +85,40 @@ def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
     return None
 
 
+def _time_precision(raw: str) -> str:
+    text = str(raw or "").strip()
+    if re.match(r"^\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}", text):
+        return "datetime"
+    if re.match(r"^\d{4}:\d{2}:\d{2}$", text):
+        return "date"
+    if re.match(r"^\d{4}:\d{2}$", text):
+        return "year_month"
+    if re.match(r"^\d{4}$", text):
+        return "year"
+    return "unknown"
+
+
+_EXIF_DETAIL_TAGS = {
+    DATETIME_ORIGINAL_TAG,
+    DATETIME_DIGITIZED_TAG,
+    DATETIME_TAG,
+    OFFSET_TIME_ORIGINAL_TAG,
+    OFFSET_TIME_TAG,
+    MAKE_TAG,
+    MODEL_TAG,
+    274,  # Orientation
+    37386,  # FocalLength
+}
+
+
 class PillowMetadataReader:
     def read(self, path: Path) -> tuple[datetime | None, GpsPoint | None, str | None]:
         """返回 (拍摄时间, GPS, 设备型号)；任何一步失败都降级为 None。"""
+        details = self.read_details(path)
+        return details.captured_at, details.gps, details.device
+
+    def read_details(self, path: Path) -> MediaDetails:
+        """共享一次解析：兼容三元组 + 实际 EXIF 标签、时间精度与时区来源。"""
         try:
             from PIL import ExifTags, Image
 
@@ -118,7 +150,7 @@ class PillowMetadataReader:
                     gps_tags = {}
         except Exception:
             log.warning("exif_read_failed path=%s", path, exc_info=True)
-            return None, None, None
+            return MediaDetails()
 
         captured_at = _parse_exif_datetime(tags)
 
@@ -147,4 +179,34 @@ class PillowMetadataReader:
         model = _text(tags.get(MODEL_TAG) or "")
         device = model or make or None
 
-        return captured_at, point, device
+        raw_datetime = _text(
+            tags.get(DATETIME_ORIGINAL_TAG)
+            or tags.get(DATETIME_DIGITIZED_TAG)
+            or tags.get(DATETIME_TAG)
+            or ""
+        )
+        exif = {
+            str(key): _text(value)
+            for key, value in tags.items()
+            if key in _EXIF_DETAIL_TAGS and not isinstance(value, (bytes, list, tuple, dict))
+        }
+        if raw_datetime:
+            exif["DateTimeOriginalRaw"] = raw_datetime
+        if gps_tags:
+            exif["GpsRaw"] = ",".join(
+                f"{key}={_text(gps_tags.get(key))}" for key in sorted(gps_tags) if key in {1, 2, 3, 4}
+            )
+        timezone_source = (
+            "exif_offset"
+            if _text(tags.get(OFFSET_TIME_ORIGINAL_TAG) or tags.get(OFFSET_TIME_TAG))
+            else "unknown"
+        )
+        return MediaDetails(
+            captured_at=captured_at,
+            gps=point,
+            device=device,
+            exif=exif,
+            captured_at_raw=raw_datetime,
+            time_precision=_time_precision(raw_datetime),
+            timezone_source=timezone_source,
+        )

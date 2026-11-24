@@ -27,12 +27,16 @@ from sentrix.api.errors import ConflictError, NotFoundError
 from sentrix.api.schemas.import_jobs import UploadAcceptedResponse
 from sentrix.api.schemas.media import (
     AssetListResponse,
+    AssetPlaceProjection,
     AssetSummary,
+    AssetTimePlaceResponse,
+    AssetTimeProjection,
     DeleteAssetResponse,
     ImportResponse,
     MediaCleanupRetryResponse,
     MediaDeletionHistoryResponse,
     MediaDeletionRecordResponse,
+    SourceEvidencePayload,
 )
 from sentrix.application.media.delete_asset import DeleteAsset
 from sentrix.application.media.documents import parse_document_package
@@ -1037,6 +1041,66 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
         raise HTTPException(status_code=404, detail="asset not found")
     place = container.asset_place_repository.get(asset_id)
     return to_summary(asset, place.display() if place else "")
+
+
+@router.get("/assets/{asset_id}/time-place", response_model=AssetTimePlaceResponse)
+def get_asset_time_place(
+    asset_id: str, container: Container = Depends(get_container)
+) -> AssetTimePlaceResponse:
+    """时间/地点的展示投影与候选证据；冲突不在这里裁决。"""
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    place = container.asset_place_repository.get(asset_id)
+    evidence = container.memory_evidence.list_for_owner(
+        scope_id=asset.scope_id,
+        owner_kind="asset",
+        owner_id=asset.id,
+    )
+    time_refs = [item.id for item in evidence if item.field_path == "asset.capture_time"]
+    place_refs = [item.id for item in evidence if item.field_path.startswith("asset.place")]
+    conflicts = [item.field_path for item in evidence if item.status == "conflict"]
+    provenance = asset.capture_time
+    return AssetTimePlaceResponse(
+        asset_id=asset.id,
+        scope_id=asset.scope_id,
+        time=AssetTimeProjection(
+            captured_at=asset.captured_at.isoformat() if asset.captured_at else None,
+            precision=provenance.precision,
+            timezone_state=provenance.status,
+            timezone_source=provenance.timezone_source,
+            source=provenance.source,
+            raw=provenance.raw,
+            evidence_refs=time_refs,
+        ),
+        place=AssetPlaceProjection(
+            latitude=asset.captured_location.latitude if asset.captured_location else None,
+            longitude=asset.captured_location.longitude if asset.captured_location else None,
+            precise_address=place.precise_address if place is not None else "",
+            admin_province=place.admin.province if place is not None else "",
+            admin_city=place.admin.city if place is not None else "",
+            admin_district=place.admin.district if place is not None else "",
+            nearest_township=place.nearest.township if place is not None else "",
+            nearest_locality=place.nearest.locality if place is not None else "",
+            precision=place.precision.value if place is not None else "unknown",
+            source=place.source.value if place is not None else "",
+            evidence_refs=place_refs,
+        ),
+        conflict=bool(conflicts),
+        conflicts=conflicts,
+        evidence=[
+            SourceEvidencePayload(
+                id=item.id,
+                field_path=item.field_path,
+                role=item.role,
+                source_kind=item.source_kind,
+                source_channel=item.source_channel,
+                status=item.status,
+                value=item.value,
+            )
+            for item in evidence
+        ],
+    )
 
 
 @router.get("/assets/{asset_id}/poster")
