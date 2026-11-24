@@ -2,13 +2,13 @@
 
 ## 当前状态
 
-2026-11-24，新授权只重测3道上次传输失败题，每题已提交一个新turn；另16超时题只读审查完成，未新跑Agent/Judge。新run `20261124-110517-2026.11.17-atm-sources-addresses-current-resume-7cfe20`，独立seed继承1010项=994答卷/有效分+16原失败，只缺3项。wake `eb9817ad-dcb6-450e-a5dc-44a58ef9d0bc` / watcher1310接原精确run；plan/seed/resume/review_sixteen/collect_additional均已消费。
+2026-11-24 12:12，7cfe20终态单次验收通过：1013项/994有效分/17timeout/2failed，继承1010原项/994回执/16旧失败及source-seed manifest保持，_index差异0，无缺Judge。3新turn等待8102依赖3660秒后于12:06:33–35被测评器取消；产品cancelled、答卷空、无预算或答题事件，新增分0。每题一提交，内部attempt2为取消时重新认领，failure_count0；已检查实际部署超时取消代码，测评service.py与本机不同，精确副本及SHA保留。不能称本轮已实际答题或修复效果通过。
 
-3原turn在waiting_dependency，尚无实际答题进度：原WeMM8102于10:22:55退出，当前inactive/dead，GPU0仅1277MiB空闲；停止原因未知。已询问用户资源优先级，不停止其他GPU进程、不切CPU/其他GPU或改预算，也不重启产品。初始预检只证明主模型连通，未证明嵌入依赖可用，错误已记dependency-review。恢复依赖后先读原turn确认接回，不再重复提交。若等到测评时限，先核实际产品回合，不能自动再新Agent。
+原WeMM10:22:55退出且当前inactive/dead，停止原因未确认；原资源安排问题未获答复，未恢复依赖/停其他GPU任务/部署重启。原3turn已终止，不自动新提交。16题只读审查完成9充分/6限定候选/1GT日期缺证，原GT/分/历史保持，非盲测。
 
-16题原图/视频/邮件与原轨迹审查：9题证据较充分，6题能给限定候选，1题照片墙GT为2/2但指定照片为2/20、日期缺证。15题完整轨迹均见ANN index_empty后sqlite_exact，全部16题检索工具耗时累加47.80–57.77分钟；5段目标视频13关键帧无observations。4题8次目标inspect实际均传入Agent消息，不能把审计投影省略误判为证据丢失。多数题混有系统召回/耗时与模型取证/收敛问题，不能统称模型硬错误。已知指定证据后作答，非新盲测，原GT/分/失败历史保持。
+终态审计入口audit/20261124-doubao-transport-terminal。166fb39e本机验证提交→同步100四文件SHA/编译/import→push；新wake ae147985-1c46-4486-82a3-c4c652885958先注册再单次launch完整导出，worker470127/watcher21446。固定8874PID1537/原app-dir/exports SHA3adba6e1/read_revision cf20fe17966d42b49bbd28c31f563925，首探contracts和身份均匹配。accept_transport及launch/verify已消费，不重放；probe只读。两流验收后compare_transport一次（尚未消费），本机verify_statistics.py独立Decimal复算，新报告transport-comparison；旧994基线73.014071%全1013计错、74.409712%有效及992共同题保持。
 
-当前入口为产品项目audit/20261124-doubao-transport-three（含dependency-review）和audit/20261124-doubao-timeout16-review（README/review.json/review.csv/工具交付核验）。主实验state/checkpoint-watchers已更新；旧84baa3已验基线及双流/比较保持，source-stage-state.json留原指针。8294PID10256/8874PID1537、原app-dir/context-preview-d714c62a、16K/100-600-100-500/QA4-3660/独立库/冻结ATM v5豆包Judge保持，无业务部署/重启或网络改动。Qwen/Q4保持只读，不改8772/8191/153/其他服务器，不启Hard/16题包。
+8294PID10256/8874PID1537、原产品context-three-v1及测评projection-v2、型号/16K/100-600-100-500/QA4-3660/独立库/冻结ATMv5豆包Judge保持。Qwen/Q4只读，不再Agent/Judge/导出。不改网络和保护服务器，不启Hard/16题包。旧eb9817ad事件已处理；详细失败分析与只读16题报告均有独立审计。
 
 ### 09:59已验基线（历史，后续3题按以上新授权）
 

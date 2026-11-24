@@ -1,6 +1,6 @@
 # Sentrix 与 PhotoBench 开发约定
 
-- 11/24豆包3传输题按新授权各提交1个turn（7cfe20/wake eb9817ad），当前等待WeMM8102依赖，未开始答题；16超时题只读审查完成：9题证据较充分/6题有条件候选/1题GT日期缺证。原994分和GT保持，见audit/20261124-doubao-transport-three及audit/20261124-doubao-timeout16-review，接T006。
+- 11/24豆包3传输题7cfe20终态：等嵌入依赖3660秒后取消，未实际答题、新增分0；1013项/994分及16旧失败保持。完整双流新wake ae147985监控，见audit/20261124-doubao-transport-terminal；16题证据审查已完成9/6/1，接T006。
 
 - 11/24豆包84baa3完整双流和最终统计已验收：994/1013有效分，19缺分计错总分73.0141%；共同992题保持。3新turn终止于传输失败，原分/历史/GT保持，无后续自动任务。见audit/20261124-doubao-context-comparison，接T006。
 
@@ -47,4 +47,4 @@
 
 | ID | 任务方向 | 状态 | 最近更新 | 一句话范围 | 记录文档 |
 |---|---|---|---|---|---|
-| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 16题证据审查完成；3新turn等待嵌入依赖，994分基线保持 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |
+| T006 | PhotoBench 2.0 跨平台集成 | 进行中 | 2026-11-24 | 3传输题等待依赖超时终态、994分保持；新双流监控 | [HANDOFF/T006-mainline-shared-media.md](HANDOFF/T006-mainline-shared-media.md) |
