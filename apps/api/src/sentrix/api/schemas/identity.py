@@ -586,6 +586,23 @@ class RejectFaceAssignmentRequest(BaseModel):
     expected_cluster_id: str
 
 
+class CorrectFaceDescriptionRequest(BaseModel):
+    scope_id: str
+    expected_revision: int = 0
+    description: str = ""
+    retract: bool = False
+    reason: str = ""
+
+
+class CorrectFaceDescriptionResponse(BaseModel):
+    face_instance_id: str
+    scope_id: str
+    description: str
+    retracted: bool
+    source: str
+    revision: int
+
+
 class RejectFaceAssignmentResponse(BaseModel):
     face_instance_id: str
     asset_id: str

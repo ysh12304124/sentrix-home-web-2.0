@@ -100,7 +100,7 @@ class MergePeople:
         if not pending_sources:
             return MergePeopleResult(entity=target, merged_person_ids=tuple(replayed))
 
-        aliases_by_id = {
+        aliases_by_id: dict[str, Sequence[str]] = {
             entity.id: self._entities.person_aliases(entity.id) for entity in (target, *pending_sources)
         }
         try:
@@ -125,6 +125,9 @@ class MergePeople:
         outcome = self._merges.merge_people(plan)
 
         self._entities.set_person_aliases(target_id, plan.aliases)
+        self._faces.refresh_person_occurrences(target_id)
+        for source_id in plan.source_ids:
+            self._faces.refresh_person_occurrences(source_id)
         if outcome.target_cluster_id is not None:
             self._faces.refresh_prototypes(outcome.target_cluster_id)
             if plan.status == ENTITY_STATUS_CONFIRMED:

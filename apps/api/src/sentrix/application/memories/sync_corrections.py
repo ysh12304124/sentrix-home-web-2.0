@@ -8,10 +8,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
+from sentrix.domain.identity.ports import FaceRepository
 from sentrix.domain.media.ports import ObservationRepository
 from sentrix.domain.memories.ports import EventRepository, MemoryCorrectionRepository
-from sentrix.domain.retrieval import scheme
-from sentrix.domain.retrieval.ports import LexicalIndex, TextEmbedder, VectorRecord, VectorRepository
+from sentrix.domain.retrieval.ports import LexicalIndex, TextEmbedder, VectorRepository
 
 log = logging.getLogger(__name__)
 SYNC_LOCK = threading.RLock()
@@ -32,6 +32,8 @@ class ReindexCorrectedMemories:
         embedder: TextEmbedder,
         vectors: VectorRepository,
         corrections: MemoryCorrectionRepository,
+        faces: FaceRepository | None = None,
+        event_publisher: Callable[[str], object] | None = None,
     ) -> None:
         self.observations = observations
         self.events = events
@@ -39,6 +41,8 @@ class ReindexCorrectedMemories:
         self.embedder = embedder
         self.vectors = vectors
         self.corrections = corrections
+        self.faces = faces
+        self.event_publisher = event_publisher
 
     def reindex(self, scope: str) -> None:
         observations = [
@@ -50,6 +54,8 @@ class ReindexCorrectedMemories:
         events = self.events.events_for_observations([o.id for o in observations])
         for observation in observations:
             self.lexical.refresh_from_observation(observation)
+            if self.faces is not None:
+                self.faces.refresh_occurrences_for_observation(observation.id)
             event_ids = events.get(observation.id, ())
             outcome = index.index(observation, event_ids[0] if event_ids else None, force=True)
             if not outcome.indexed and outcome.reason != "empty_text":
@@ -57,27 +63,11 @@ class ReindexCorrectedMemories:
         affected_event_ids = set(self.corrections.affected_events(scope))
         affected_event_ids.update(eid for ids in events.values() for eid in ids)
         for event_id in sorted(affected_event_ids):
-            event = self.events.get(event_id)
-            if event is None:
+            if self.events.get(event_id) is None:
                 continue
-            text = " ".join((event.title, event.summary, event.place, event.activity)).strip()
-            if not text:
-                continue
-            vector = self.embedder.embed_query(text)
-            if len(vector) != self.embedder.dimension:
-                raise RuntimeError("event embedding unavailable or incompatible")
-            ids = self.events.observation_ids(event.id)
-            self.vectors.upsert(
-                VectorRecord(
-                    scope_id=scope,
-                    space=scheme.EPISODIC_SPACE,
-                    source_type="event",
-                    source_id=event.id,
-                    model_name=self.embedder.model_id,
-                    vector=tuple(vector),
-                    metadata={"observation_id": ids[0] if ids else ""},
-                )
-            )
+            # 事件正文/时间线/新索引统一从 active 文档重建；旧的 event 文本向量不再续写。
+            if self.event_publisher is not None:
+                self.event_publisher(event_id)
 
 
 class SyncCorrections:

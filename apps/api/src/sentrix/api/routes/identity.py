@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
 from sentrix.api.deps import get_container
-from sentrix.api.errors import InvalidRequestError, NotFoundError, UnprocessableError
+from sentrix.api.errors import ConflictError, InvalidRequestError, NotFoundError, UnprocessableError
 from sentrix.api.routes.corrections import memory_write
 from sentrix.api.schemas.identity import (
     BatchConfirmFailure,
@@ -36,6 +36,8 @@ from sentrix.api.schemas.identity import (
     ConfirmClusterResponse,
     ConfirmFaceAssignmentRequest,
     ConfirmFaceAssignmentResponse,
+    CorrectFaceDescriptionRequest,
+    CorrectFaceDescriptionResponse,
     EntityDetailAppearance,
     EntityDetailAsset,
     EntityDetailEntity,
@@ -77,13 +79,13 @@ from sentrix.api.schemas.identity import (
     SeedIdentityResponse,
     SplitClusterRequest,
 )
-from sentrix.application.identity.appearance_sampling import QueueAppearance
 from sentrix.application.identity.merge_people import MergePeople
 from sentrix.application.identity.merge_suggestions import (
     ReadMergeSuggestions,
     RejectMergeSuggestion,
 )
 from sentrix.application.identity.name_person import NamePerson
+from sentrix.application.identity.observe_appearance import RequestAppearance
 from sentrix.application.identity.person_occurrences import (
     ConfirmFaceAssignment,
     ReadPersonOccurrences,
@@ -180,10 +182,14 @@ def _confirmed_person_events(container: Container) -> ConfirmedPersonEvents:
     )
 
 
-def _request_appearance(container: Container) -> QueueAppearance:
-    """确认 / 合并之后的外观取样只入队：每个事件一次视觉模型调用（约 10 秒），
-    由 ``AppearanceSamplingExecutor`` 在请求之外跑（2026-11-20）。"""
-    return QueueAppearance(container.person_appearance_jobs)
+def _request_appearance(container: Container) -> RequestAppearance:
+    """v3：命名/确认/合并不再隐式入队外观 VLM。
+
+    已有脸级描述在导入时生成，普通身份操作必须是 0 新增模型调用。用户显式的
+    “重建外观”仍走独立入口；这里保留可注入回调只为兼容用例构造。
+    """
+    del container
+    return lambda person_id: None
 
 
 def _review_cluster(container: Container) -> ReviewCluster:
@@ -923,6 +929,40 @@ def _merge_suggestion_payload(item: MergeSuggestion) -> MergeSuggestionPayload:
         right=_merge_cluster_payload(item.right),
         score=item.score,
         feature_version=item.feature_version,
+    )
+
+
+@router.patch(
+    "/face-instances/{face_instance_id}/description",
+    response_model=CorrectFaceDescriptionResponse,
+)
+def correct_face_description(
+    face_instance_id: str,
+    payload: CorrectFaceDescriptionRequest,
+    container: Container = Depends(get_container),
+) -> CorrectFaceDescriptionResponse:
+    try:
+        result = container.appearance_repository.correct_description(
+            face_instance_id=face_instance_id,
+            scope_id=payload.scope_id,
+            expected_revision=payload.expected_revision,
+            description=payload.description,
+            retract=payload.retract,
+            reason=payload.reason,
+        )
+    except KeyError as error:
+        raise NotFoundError("face instance not found") from error
+    except ValueError as error:
+        if "changed" in str(error):
+            raise ConflictError(str(error)) from error
+        raise InvalidRequestError(str(error)) from error
+    return CorrectFaceDescriptionResponse(
+        face_instance_id=str(result["face_instance_id"]),
+        scope_id=str(result["scope_id"]),
+        description=str(result["description"]),
+        retracted=bool(result["retracted"]),
+        source=str(result["source"]),
+        revision=int(str(result["revision"])),
     )
 
 

@@ -2841,6 +2841,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/face-instances/{face_instance_id}/description:
+    patch:
+      tags:
+      - identity
+      summary: Correct Face Description
+      operationId: correct_face_description_api_v1_face_instances__face_instance_id__description_patch
+      parameters:
+      - name: face_instance_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Face Instance Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorrectFaceDescriptionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrectFaceDescriptionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/people/merge-suggestions:
     get:
       tags:
@@ -4749,6 +4781,60 @@ components:
       - updated_at
       - last_message_at
       title: ConversationSummary
+    CorrectFaceDescriptionRequest:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        expected_revision:
+          type: integer
+          title: Expected Revision
+          default: 0
+        description:
+          type: string
+          title: Description
+          default: ''
+        retract:
+          type: boolean
+          title: Retract
+          default: false
+        reason:
+          type: string
+          title: Reason
+          default: ''
+      type: object
+      required:
+      - scope_id
+      title: CorrectFaceDescriptionRequest
+    CorrectFaceDescriptionResponse:
+      properties:
+        face_instance_id:
+          type: string
+          title: Face Instance Id
+        scope_id:
+          type: string
+          title: Scope Id
+        description:
+          type: string
+          title: Description
+        retracted:
+          type: boolean
+          title: Retracted
+        source:
+          type: string
+          title: Source
+        revision:
+          type: integer
+          title: Revision
+      type: object
+      required:
+      - face_instance_id
+      - scope_id
+      - description
+      - retracted
+      - source
+      - revision
+      title: CorrectFaceDescriptionResponse
     CorrectionRecords:
       properties:
         items:

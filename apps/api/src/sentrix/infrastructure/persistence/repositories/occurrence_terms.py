@@ -30,7 +30,7 @@ _FACE_SQL = """
            e.canonical_name, e.status AS entity_status, e.name_state
     FROM face_instances fi
     JOIN assets a ON a.id = fi.asset_id
-    LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id
+    LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id AND fc.status != 'rejected'
     LEFT JOIN entities e ON e.id = fc.entity_id
     WHERE fi.id = ?
 """

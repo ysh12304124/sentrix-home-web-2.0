@@ -197,6 +197,10 @@ class FaceRepository(Protocol):
 
     def occurrence_descriptions(self, observation_id: str) -> tuple[str, ...]: ...
 
+    def refresh_person_occurrences(self, entity_id: str) -> int: ...
+
+    def refresh_occurrences_for_observation(self, observation_id: str) -> int: ...
+
     def reject_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord: ...
 
     def confirm_assignment(
@@ -1055,6 +1059,19 @@ class AppearanceRepository(Protocol):
         model_name: str,
     ) -> AppearanceEvidenceRecord:
         """记录本图脸级描述；允许 pending，但校验当前 face→cluster→entity 归属。"""
+        ...
+
+    def correct_description(
+        self,
+        *,
+        face_instance_id: str,
+        scope_id: str,
+        expected_revision: int,
+        description: str = "",
+        retract: bool = False,
+        reason: str = "",
+    ) -> Mapping[str, object]:
+        """用户修正/撤回脸级描述；返回来源、最终描述与 revision。"""
         ...
 
     def get(self, evidence_id: str) -> AppearanceEvidenceRecord | None: ...

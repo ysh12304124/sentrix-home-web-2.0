@@ -72,10 +72,14 @@ class NamePerson:
             raise InvalidReviewRequestError("person name is required")
         if self._corrections is not None:
             saved = self._corrections.rename_person(entity_id, new_name)
-            return RenameResult(*saved) if saved else None
+            if saved is None:
+                return None
+            self._faces.refresh_person_occurrences(entity_id)
+            return RenameResult(*saved)
         entity = self._entities.rename_person(entity_id, new_name)
         if entity is None:
             return None
+        self._faces.refresh_person_occurrences(entity.id)
         return RenameResult(entity=entity, aliases=self._entities.person_aliases(entity.id))
 
     def confirm_entity(
@@ -125,4 +129,5 @@ class NamePerson:
             family_role=role,
             summary=entity.summary,
         )
+        self._faces.refresh_person_occurrences(entity_id)
         return ConfirmResult(entity=confirmed, merged_into=None)

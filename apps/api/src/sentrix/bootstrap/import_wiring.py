@@ -82,6 +82,8 @@ def build_correction_sync(container: Container) -> SyncCorrections:
         container.text_embedder,
         container.text_vector_repository,
         container.memory_corrections,
+        faces=container.face_repository,
+        event_publisher=_event_document_publisher(container),
     ).reindex
 
     def graph(scope: str) -> None:

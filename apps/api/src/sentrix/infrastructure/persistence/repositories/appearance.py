@@ -25,11 +25,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from sentrix.domain.identity.models import AppearanceEvidenceRecord
 from sentrix.infrastructure.persistence.database import Database
+from sentrix.infrastructure.persistence.repositories.occurrence_terms import refresh_occurrence_terms
 
 # 1.0 ``db.py:4535-4546`` 的 ``list_person_appearance_evidence`` **内连 ``assets``** 并选出
 # ``a.file_name`` / ``a.media_type``。2.0 早先只搬了主表那几列，是同一段的不完整移植——
@@ -264,6 +265,152 @@ class SqliteAppearanceRepository:
         created = self.get(evidence_id)
         assert created is not None, "刚写入的脸级描述读不回来"
         return created
+
+    def correct_description(
+        self,
+        *,
+        face_instance_id: str,
+        scope_id: str,
+        expected_revision: int,
+        description: str = "",
+        retract: bool = False,
+        reason: str = "",
+    ) -> Mapping[str, object]:
+        """用户修正/撤回脸级描述：写证据、审计，并在同一事务刷新出现检索。
+
+        撤回把这条脸的所有有效描述置 retracted，**不自动回退到被否认的旧模型描述**。
+        """
+        with self._database.connect() as connection, connection:
+            instance = connection.execute(
+                "SELECT fi.observation_id, fi.asset_id, a.scope_id FROM face_instances fi"
+                " JOIN assets a ON a.id = fi.asset_id WHERE fi.id = ?",
+                (face_instance_id,),
+            ).fetchone()
+            if instance is None:
+                raise KeyError(face_instance_id)
+            if str(instance["scope_id"]) != scope_id:
+                raise ValueError("face instance is outside the scope")
+            appearance = connection.execute(
+                "SELECT * FROM person_appearance_evidence WHERE face_instance_id = ?"
+                " AND description_state = 'effective' AND description_text != ''"
+                " ORDER BY source_revision DESC, updated_at DESC, id DESC LIMIT 1",
+                (face_instance_id,),
+            ).fetchone()
+            evidence = connection.execute(
+                "SELECT * FROM memory_evidence WHERE owner_kind = 'face_instance'"
+                " AND owner_id = ? AND field_path = 'face.description' AND status = 'effective'"
+                " ORDER BY observation_revision DESC, created_at DESC, id DESC LIMIT 1",
+                (face_instance_id,),
+            ).fetchone()
+            source = (
+                "appearance" if appearance is not None else ("face_evidence" if evidence is not None else "")
+            )
+            current_revision = (
+                int(appearance["source_revision"] or 0)
+                if appearance is not None
+                else (int(evidence["observation_revision"] or 0) if evidence is not None else 0)
+            )
+            if current_revision != int(expected_revision):
+                raise ValueError("description changed; reload before saving")
+            before = {
+                "description": (
+                    str(appearance["description_text"] or "")
+                    if appearance is not None
+                    else str(evidence["value_json"] or "")
+                    if evidence is not None
+                    else ""
+                ),
+                "retracted": bool(evidence is not None and evidence["status"] == "retracted"),
+            }
+            now = datetime.now(UTC).isoformat()
+            revision = current_revision + 1
+            if retract:
+                connection.execute(
+                    "UPDATE person_appearance_evidence SET description_state = 'retracted',"
+                    " source_revision = ?, updated_at = ? WHERE face_instance_id = ?"
+                    " AND description_state = 'effective'",
+                    (revision, now, face_instance_id),
+                )
+                connection.execute(
+                    "UPDATE memory_evidence SET status = 'retracted', updated_at = ?"
+                    " WHERE owner_kind = 'face_instance' AND owner_id = ?"
+                    " AND field_path = 'face.description' AND status = 'effective'",
+                    (now, face_instance_id),
+                )
+                final_description = ""
+            else:
+                clean = str(description or "").strip()
+                if not clean:
+                    raise ValueError("description is required unless retracting")
+                if appearance is not None:
+                    connection.execute(
+                        "UPDATE person_appearance_evidence SET description_text = ?,"
+                        " source_revision = ?, input_kind = 'user', description_state = 'effective',"
+                        " status = 'observed', updated_at = ? WHERE id = ?",
+                        (clean, revision, now, appearance["id"]),
+                    )
+                elif evidence is not None:
+                    connection.execute(
+                        "UPDATE memory_evidence SET value_json = ?, source_kind = 'user',"
+                        " source_channel = 'user_correction', observation_revision = ?,"
+                        " status = 'effective', updated_at = ? WHERE id = ?",
+                        (
+                            json.dumps({"description": clean}, ensure_ascii=False),
+                            revision,
+                            now,
+                            evidence["id"],
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        "INSERT INTO memory_evidence(id, scope_id, owner_kind, owner_id,"
+                        " field_path, role, value_json, source_kind, source_modality,"
+                        " source_channel, observation_revision, status, created_at, updated_at)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?, 'effective', ?, ?)",
+                        (
+                            f"ev_{uuid.uuid4().hex[:12]}",
+                            scope_id,
+                            "face_instance",
+                            face_instance_id,
+                            "face.description",
+                            "single_image_face",
+                            json.dumps({"description": clean}, ensure_ascii=False),
+                            "user",
+                            "text",
+                            "user_correction",
+                            revision,
+                            now,
+                            now,
+                        ),
+                    )
+                final_description = clean
+            after = {"description": final_description, "retracted": retract}
+            connection.execute(
+                "INSERT INTO memory_corrections(id, scope_id, target_kind, target_id,"
+                " before_json, after_json, reason, status, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex,
+                    scope_id,
+                    "face_instance",
+                    face_instance_id,
+                    json.dumps(before, ensure_ascii=False),
+                    json.dumps(after, ensure_ascii=False),
+                    reason,
+                    "applied",
+                    now,
+                    now,
+                ),
+            )
+            refresh_occurrence_terms(connection, face_instance_id)
+            return {
+                "face_instance_id": face_instance_id,
+                "scope_id": scope_id,
+                "description": final_description,
+                "retracted": retract,
+                "source": source or "user",
+                "revision": revision,
+            }
 
     def is_sampled(self, person_id: str, face_instance_id: str, model_name: str) -> bool:
         with self._database.connect() as connection:

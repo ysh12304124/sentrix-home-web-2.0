@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from sentrix.domain.media.ports import MediaDeletionRecord
 from sentrix.infrastructure.persistence.database import Database
@@ -236,6 +237,14 @@ class SqliteMediaDeletionRepository:
                 )
             if faces:
                 db.execute(
+                    f"DELETE FROM person_occurrence_search_terms WHERE face_instance_id IN ({f})",
+                    faces,
+                )
+                db.execute(
+                    f"DELETE FROM person_occurrence_search_fts WHERE face_instance_id IN ({f})",
+                    faces,
+                )
+                db.execute(
                     f"DELETE FROM memory_vectors WHERE source_type='face_instance' AND source_id IN ({f})",
                     faces,
                 )
@@ -278,8 +287,28 @@ class SqliteMediaDeletionRepository:
                     f"DELETE FROM memory_vectors WHERE source_type='event' AND source_id IN ({e})",
                     real_events,
                 )
+                db.execute(f"DELETE FROM event_search_terms WHERE event_id IN ({e})", real_events)
+                db.execute(f"DELETE FROM event_search_fts WHERE event_id IN ({e})", real_events)
+                db.execute(f"DELETE FROM event_documents WHERE event_id IN ({e})", real_events)
+                db.execute(
+                    f"DELETE FROM memory_vectors WHERE source_type='event_document' AND source_id IN ({e})",
+                    real_events,
+                )
                 db.execute(f"DELETE FROM events WHERE id IN ({e})", real_events)
             surviving_events = tuple(affected_events - events)
+            if surviving_events:
+                se = _slots(surviving_events)
+                db.execute(
+                    f"UPDATE event_documents SET status='superseded', updated_at=? "
+                    f"WHERE event_id IN ({se}) AND status='active'",
+                    (datetime.now(UTC).isoformat(), *surviving_events),
+                )
+                db.execute(f"DELETE FROM event_search_terms WHERE event_id IN ({se})", surviving_events)
+                db.execute(f"DELETE FROM event_search_fts WHERE event_id IN ({se})", surviving_events)
+                db.execute(
+                    f"DELETE FROM memory_vectors WHERE source_type='event_document' AND source_id IN ({se})",
+                    surviving_events,
+                )
             for event_id in surviving_events:
                 db.execute(
                     "UPDATE events SET source_asset_id=NULL,source_type=NULL,source_scene_index=NULL,"

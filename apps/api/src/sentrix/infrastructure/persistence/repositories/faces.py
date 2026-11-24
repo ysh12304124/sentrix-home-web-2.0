@@ -142,6 +142,20 @@ def _row_to_prototype(row: sqlite3.Row) -> FacePrototypeRecord:
     )
 
 
+def _refresh_face_ids(connection: sqlite3.Connection, ids: Sequence[str]) -> int:
+    written = 0
+    for face_id in dict.fromkeys(ids):
+        written += refresh_occurrence_terms(connection, face_id)
+    return written
+
+
+def _refresh_cluster_occurrences(connection: sqlite3.Connection, cluster_id: str) -> int:
+    rows = connection.execute(
+        "SELECT id FROM face_instances WHERE cluster_id = ?", (cluster_id,)
+    ).fetchall()
+    return _refresh_face_ids(connection, [str(row["id"]) for row in rows])
+
+
 class SqliteFaceRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -223,6 +237,7 @@ class SqliteFaceRepository:
                 "UPDATE face_clusters SET entity_id = ?, updated_at = ? WHERE id = ?",
                 (entity_id, now, cluster_id),
             )
+            _refresh_cluster_occurrences(connection, cluster_id)
         cluster = self.get_cluster(cluster_id)
         assert cluster is not None
         return cluster
@@ -235,6 +250,7 @@ class SqliteFaceRepository:
                 " revision = revision + 1 WHERE id = ?",
                 (CLUSTER_STATUS_CONFIRMED, entity_id, now, cluster_id),
             )
+            _refresh_cluster_occurrences(connection, cluster_id)
         cluster = self.get_cluster(cluster_id)
         assert cluster is not None
         return cluster
@@ -254,16 +270,24 @@ class SqliteFaceRepository:
                     " updated_at = ?, revision = revision + 1 WHERE id = ?",
                     (CLUSTER_STATUS_REJECTED, entity_id, now, cluster_id),
                 )
+            _refresh_cluster_occurrences(connection, cluster_id)
         cluster = self.get_cluster(cluster_id)
         assert cluster is not None
         return cluster
 
     def move_instances(self, source_cluster_id: str, target_cluster_id: str) -> int:
         with self._database.connect() as connection, connection:
+            ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM face_instances WHERE cluster_id = ?", (source_cluster_id,)
+                ).fetchall()
+            ]
             cursor = connection.execute(
                 "UPDATE face_instances SET cluster_id = ? WHERE cluster_id = ?",
                 (target_cluster_id, source_cluster_id),
             )
+            _refresh_face_ids(connection, ids)
             return int(cursor.rowcount)
 
     def move_instance(self, instance_id: str, target_cluster_id: str) -> None:
@@ -272,6 +296,7 @@ class SqliteFaceRepository:
                 "UPDATE face_instances SET cluster_id = ? WHERE id = ?",
                 (target_cluster_id, instance_id),
             )
+            refresh_occurrence_terms(connection, instance_id)
 
     def active_cluster_for_entity(self, entity_id: str) -> FaceClusterRecord | None:
         with self._database.connect() as connection:
@@ -428,7 +453,7 @@ class SqliteFaceRepository:
                    me.observation_revision AS evidence_revision
             FROM face_instances fi
             JOIN assets a ON a.id = fi.asset_id
-            LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id
+            LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id AND fc.status != 'rejected'
             LEFT JOIN entities e ON e.id = fc.entity_id
             LEFT JOIN person_appearance_evidence pae ON pae.id = (
                 SELECT pae2.id FROM person_appearance_evidence pae2
@@ -550,6 +575,22 @@ class SqliteFaceRepository:
     def occurrence_descriptions(self, observation_id: str) -> tuple[str, ...]:
         with self._database.connect() as connection:
             return occurrence_descriptions(connection, observation_id)
+
+    def refresh_person_occurrences(self, entity_id: str) -> int:
+        with self._database.connect() as connection, connection:
+            rows = connection.execute(
+                "SELECT fi.id FROM face_instances fi JOIN face_clusters fc ON fc.id = fi.cluster_id"
+                " WHERE fc.entity_id = ?",
+                (entity_id,),
+            ).fetchall()
+            return _refresh_face_ids(connection, [str(row["id"]) for row in rows])
+
+    def refresh_occurrences_for_observation(self, observation_id: str) -> int:
+        with self._database.connect() as connection, connection:
+            rows = connection.execute(
+                "SELECT id FROM face_instances WHERE observation_id = ?", (observation_id,)
+            ).fetchall()
+            return _refresh_face_ids(connection, [str(row["id"]) for row in rows])
 
     def confirm_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord:
         """用户明确确认这一次出现；只提升该 face 的可信状态，不批量确认簇内其他脸。"""
@@ -854,6 +895,7 @@ class SqliteFaceRepository:
                 "UPDATE face_instances SET cluster_id = ? WHERE id = ?",
                 [(cluster_id, instance_id) for instance_id in ids],
             )
+            _refresh_face_ids(connection, ids)
         return len(ids)
 
     def set_cluster_state(self, cluster_id: str, *, status: str, member_count: int) -> None:
@@ -863,6 +905,7 @@ class SqliteFaceRepository:
                 " updated_at = ? WHERE id = ?",
                 (int(member_count), status, datetime.now(UTC).isoformat(), cluster_id),
             )
+            _refresh_cluster_occurrences(connection, cluster_id)
 
     def list_uncertain_unclustered(self, *, scope_id: str | None) -> Sequence[FaceInstanceRecord]:
         clause = "fi.validity = ? AND fi.embedding_json != '[]' AND fi.cluster_id IS NULL"
