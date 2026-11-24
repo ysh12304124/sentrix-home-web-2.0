@@ -2,6 +2,16 @@
 
 ## 当前状态
 
+2026-11-24，新授权只重测3道上次传输失败题，每题已提交一个新turn；另16超时题只读审查完成，未新跑Agent/Judge。新run `20261124-110517-2026.11.17-atm-sources-addresses-current-resume-7cfe20`，独立seed继承1010项=994答卷/有效分+16原失败，只缺3项。wake `eb9817ad-dcb6-450e-a5dc-44a58ef9d0bc` / watcher1310接原精确run；plan/seed/resume/review_sixteen/collect_additional均已消费。
+
+3原turn在waiting_dependency，尚无实际答题进度：原WeMM8102于10:22:55退出，当前inactive/dead，GPU0仅1277MiB空闲；停止原因未知。已询问用户资源优先级，不停止其他GPU进程、不切CPU/其他GPU或改预算，也不重启产品。初始预检只证明主模型连通，未证明嵌入依赖可用，错误已记dependency-review。恢复依赖后先读原turn确认接回，不再重复提交。若等到测评时限，先核实际产品回合，不能自动再新Agent。
+
+16题原图/视频/邮件与原轨迹审查：9题证据较充分，6题能给限定候选，1题照片墙GT为2/2但指定照片为2/20、日期缺证。15题完整轨迹均见ANN index_empty后sqlite_exact，全部16题检索工具耗时累加47.80–57.77分钟；5段目标视频13关键帧无observations。4题8次目标inspect实际均传入Agent消息，不能把审计投影省略误判为证据丢失。多数题混有系统召回/耗时与模型取证/收敛问题，不能统称模型硬错误。已知指定证据后作答，非新盲测，原GT/分/失败历史保持。
+
+当前入口为产品项目audit/20261124-doubao-transport-three（含dependency-review）和audit/20261124-doubao-timeout16-review（README/review.json/review.csv/工具交付核验）。主实验state/checkpoint-watchers已更新；旧84baa3已验基线及双流/比较保持，source-stage-state.json留原指针。8294PID10256/8874PID1537、原app-dir/context-preview-d714c62a、16K/100-600-100-500/QA4-3660/独立库/冻结ATM v5豆包Judge保持，无业务部署/重启或网络改动。Qwen/Q4保持只读，不改8772/8191/153/其他服务器，不启Hard/16题包。
+
+### 09:59已验基线（历史，后续3题按以上新授权）
+
 2026-11-24，豆包84baa3完整在线trace/SFT与最终统计均已验收。1013项、994有效分、19失败null保持；按全1013缺分计错总分73.014071%，有效均分74.409712%，覆盖98.124383%。共同992题Plus66.708848%、Q445.299059%、豆包74.358119%。compare_context.py单次执行，本机Decimal独立复算通过，1013行CSV全部字段与旧994分基线一致。报告：产品项目audit/20261124-doubao-context-comparison/README.md。
 
 trace为46,193,864字节、SFT为1,024,281,032字节，各与同版独立流SHA一致，1013逐题合同通过；全部答卷attempt/评分history、1010继承项/994回执、16旧失败及source/seed manifest保持。worker25868与watcher74959已退出，wake0f0bccc3已处理，无待自动Agent/Judge/导出。
