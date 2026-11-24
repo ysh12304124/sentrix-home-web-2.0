@@ -41,7 +41,8 @@ _INSTANCE_COLUMNS = (
     " fi.detection_confidence, fi.quality, fi.pose_json, fi.pose_bucket, fi.embedding_model,"
     " fi.embedding_version, fi.embedding_quality_signal, fi.validity, fi.area_ratio,"
     " fi.sharpness, fi.created_at, a.path AS asset_path, a.file_name, a.mime_type,"
-    " a.media_type, a.scope_id AS asset_scope_id"
+    " a.media_type, a.scope_id AS asset_scope_id, fi.identity_state, fi.identity_source,"
+    " fi.identity_score, fi.identity_margin, fi.rejected_entity_id"
 )
 _PROTOTYPE_COLUMNS = (
     "id, cluster_id, face_instance_id, pose_bucket, embedding_json, quality, model_name, model_version"
@@ -113,6 +114,11 @@ def _row_to_instance(row: sqlite3.Row) -> FaceInstanceRecord:
         file_name=row["file_name"],
         mime_type=row["mime_type"] or "",
         media_type=row["media_type"],
+        identity_state=str(row["identity_state"] or "candidate"),
+        identity_source=str(row["identity_source"] or "auto"),
+        identity_score=float(row["identity_score"] or 0),
+        identity_margin=float(row["identity_margin"] or 0),
+        rejected_entity_id=str(row["rejected_entity_id"] or ""),
     )
 
 
@@ -302,6 +308,11 @@ class SqliteFaceRepository:
         validity: str,
         area_ratio: float,
         sharpness: float,
+        identity_state: str = "candidate",
+        identity_source: str = "auto",
+        identity_score: float = 0.0,
+        identity_margin: float = 0.0,
+        rejected_entity_id: str = "",
     ) -> FaceInstanceRecord:
         instance_id = _new_id("face")
         with self._database.connect() as connection, connection:
@@ -310,8 +321,9 @@ class SqliteFaceRepository:
                 " (id, asset_id, observation_id, cluster_id, bbox_json, embedding_json,"
                 "  detection_confidence, quality, pose_json, area_ratio, sharpness,"
                 "  pose_bucket, embedding_model, embedding_version, embedding_quality_signal,"
-                "  validity, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "  validity, created_at, identity_state, identity_source, identity_score,"
+                "  identity_margin, rejected_entity_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     instance_id,
                     asset_id,
@@ -330,6 +342,11 @@ class SqliteFaceRepository:
                     float(embedding_quality_signal or 0),
                     validity,
                     datetime.now(UTC).isoformat(),
+                    identity_state,
+                    identity_source,
+                    float(identity_score or 0),
+                    float(identity_margin or 0),
+                    rejected_entity_id,
                 ),
             )
         instance = self.get_instance(instance_id)

@@ -43,6 +43,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ from sentrix.domain.media.models import (
     OBSERVATION_ENTITY_TYPES,
     ObservationEntity,
     ObservationFact,
+    ObservedFace,
 )
 from sentrix.domain.media.ports import ObservationSemantics
 from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
@@ -275,6 +277,20 @@ def entities_from_payload(value: object) -> tuple[ObservationEntity, ...]:
     return tuple(entities)
 
 
+def faces_from_payload(value: object) -> tuple[ObservedFace, ...]:
+    """解析 ``people`` / ``faces``；只保留有 label 与 description 的条目。"""
+    items = value if isinstance(value, (list, tuple)) else ([value] if value else [])
+    faces: list[ObservedFace] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = _text(item.get("label") or item.get("face_label"))
+        description = _text(item.get("description") or item.get("desc"))
+        if label and description:
+            faces.append(ObservedFace(label=label, description=description))
+    return tuple(faces)
+
+
 def field_states_from_payload(payload: dict[str, Any], values: dict[str, object]) -> dict[str, str]:
     """区分「模型没给这个键」与「给了但结果为空」。"""
     states: dict[str, str] = {}
@@ -301,6 +317,7 @@ def semantics_from_payload(payload: dict[str, Any]) -> ObservationSemantics:
     clothing = _as_text_tuple(payload.get("clothing"))
     tags = _as_text_tuple(payload.get("tags"))
     entities = entities_from_payload(payload.get("entities"))
+    faces = faces_from_payload(payload.get("people") or payload.get("faces"))
     facts = facts_from_payload(payload.get("facts"))
     field_states = field_states_from_payload(
         payload,
@@ -325,6 +342,7 @@ def semantics_from_payload(payload: dict[str, Any]) -> ObservationSemantics:
         detail_caption=detail_caption,
         tags=tags,
         entities=entities,
+        faces=faces,
         field_states=field_states,
         place=place,
         activity=activity,
@@ -485,8 +503,58 @@ class OpenAIVlmObserver:
         image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
             return None
+        return self._observe_encoded(image, _OBSERVE_PROMPT)
 
-        parsed = self._chat(_OBSERVE_PROMPT, image)
+    def observe_with_faces(
+        self, path: Path, faces: Sequence[object]
+    ) -> ObservationSemantics | None:
+        """编号图观察：faces 的顺序必须与检测项顺序一致，P1..Pn 由后端绘制。"""
+        if not faces:
+            return self.observe(path)
+        try:
+            from sentrix.infrastructure.media.image_io import ensure_heif_support
+            from sentrix.infrastructure.media.person_vision import render_numbered_preview
+
+            ensure_heif_support()
+            items = [
+                {"detection_ref": index, "bbox": list(getattr(face, "bbox", ()) or ())}
+                for index, face in enumerate(faces)
+            ]
+            preview_path, label_map = render_numbered_preview(str(path), items)
+        except Exception:  # noqa: BLE001 —— 编号图失败退化为普通观察，不能丢整次导入
+            log.warning("编号预览生成失败，回退无标签观察: %s", path, exc_info=True)
+            return self.observe(path)
+        try:
+            image = _encode_image(Path(preview_path), max_side=self._max_side)
+            if image is None:
+                return None
+            labels = "、".join(label_map)
+            prompt = _OBSERVE_PROMPT + (
+                f"\n本次图片已用红框和 {labels} 标出人脸。标签仅用于定位，不是画面文字，"
+                "不得写入 caption 或 ocr_text。额外返回 people 数组，每项仅含 label 和 description："
+                "label 只能取上述标签；description 是该人物本图可见衣着/位置/动作（≤40字）；"
+                "不猜姓名和身份。"
+            )
+            semantics = self._observe_encoded(image, prompt)
+            if semantics is None:
+                return None
+            mapped = tuple(
+                replace(
+                    face,
+                    detection_ref=(
+                        label_map.get(face.label, {}).get("detection_ref")
+                        if isinstance(label_map.get(face.label, {}).get("detection_ref"), int)
+                        else None
+                    ),
+                )
+                for face in semantics.faces
+            )
+            return replace(semantics, faces=mapped)
+        finally:
+            Path(preview_path).unlink(missing_ok=True)
+
+    def _observe_encoded(self, image: str, prompt: str) -> ObservationSemantics | None:
+        parsed = self._chat(prompt, image)
         calls = 1
         if parsed is None:
             return None

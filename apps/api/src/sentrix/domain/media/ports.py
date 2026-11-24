@@ -26,6 +26,7 @@ from sentrix.domain.media.models import (
     ObservationBuild,
     ObservationEntity,
     ObservationFact,
+    ObservedFace,
     VideoMetadata,
 )
 from sentrix.domain.media.scenes import SceneWindow
@@ -233,6 +234,7 @@ class ObservationSemantics:
     detail_caption: str = ""
     tags: tuple[str, ...] = ()
     entities: tuple[ObservationEntity, ...] = ()
+    faces: tuple[ObservedFace, ...] = ()
     field_states: Mapping[str, str] = field(default_factory=dict)
     active_build_id: str = ""
     place: str = ""

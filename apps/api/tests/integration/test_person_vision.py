@@ -97,12 +97,24 @@ def test_the_label_map_carries_every_identity_field(photo: Path, face: dict[str,
     preview, labels = render_numbered_preview(photo, [face])
     try:
         assert labels["P1"] == {
+            "detection_ref": None,
             "face_instance_id": "face_1",
             "person_id": "person_1",
             "cluster_id": "cluster_1",
             "observation_id": "obs_1",
             "event_id": "event_1",
         }
+    finally:
+        os.unlink(preview)
+
+
+def test_the_label_map_carries_the_frozen_detection_ref(photo: Path) -> None:
+    preview, labels = render_numbered_preview(
+        photo, [{"detection_ref": 7, "bbox": BOX}, {"detection_ref": 3, "bbox": BOX}]
+    )
+    try:
+        assert labels["P1"]["detection_ref"] == 7
+        assert labels["P2"]["detection_ref"] == 3
     finally:
         os.unlink(preview)
 

@@ -293,6 +293,15 @@ class ObservationEntity:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservedFace:
+    """模型对本次编号图里某张脸的描述；``detection_ref`` 由后端按 label_map 填。"""
+
+    label: str
+    description: str
+    detection_ref: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Observation:
     """一次导入对资产抽取出的观察结果。
 

@@ -205,6 +205,16 @@ class FaceManifestRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class FaceEnrollmentResult:
+    """一次检测项登记后的可回查结果：检测项 → face_instance / cluster / 可信状态。"""
+
+    instance_id: str
+    cluster_id: str | None
+    score: float = 0.0
+    identity_state: str = "candidate"
+
+
+@dataclass(frozen=True, slots=True)
 class FaceInstanceRecord:
     """``face_instances`` 一行 + 它所属 asset 的四个字段。
 
@@ -236,6 +246,13 @@ class FaceInstanceRecord:
     file_name: str = ""
     mime_type: str = ""
     media_type: str = ""
+    # 单次身份可信状态：user_verified / auto_trusted / candidate / local_only / rejected。
+    # 命名一个实体不等于确认它名下每张脸；自动匹配默认是 candidate。
+    identity_state: str = "candidate"
+    identity_source: str = "auto"
+    identity_score: float = 0.0
+    identity_margin: float = 0.0
+    rejected_entity_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -603,6 +620,11 @@ class AppearanceEvidenceRecord:
     # 有默认值是为了不动已有的构造点——它们是**联表带出来的**，不是这张表自己的列。
     file_name: str = ""
     media_type: str = ""
+    description_text: str = ""
+    source_build_id: str = ""
+    input_kind: str = "crop"
+    source_revision: int = 0
+    description_state: str = "effective"
 
 
 @dataclass(frozen=True, slots=True)

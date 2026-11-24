@@ -38,7 +38,8 @@ from sentrix.infrastructure.persistence.database import Database
 _COLUMNS = (
     "pae.id, pae.person_id, pae.face_instance_id, pae.observation_id, pae.asset_id,"
     " pae.crop_bbox_json, pae.clothing_json, pae.confidence, pae.model_name, pae.status,"
-    " pae.created_at, pae.updated_at, a.file_name, a.media_type"
+    " pae.created_at, pae.updated_at, a.file_name, a.media_type, pae.description_text,"
+    " pae.source_build_id, pae.input_kind, pae.source_revision, pae.description_state"
 )
 _ASSET_JOIN = " JOIN assets a ON a.id = pae.asset_id"
 
@@ -172,6 +173,98 @@ class SqliteAppearanceRepository:
         assert created is not None, "刚写进去的那条证据读不回来"
         return created
 
+    def record_description(
+        self,
+        *,
+        person_id: str,
+        face_instance_id: str,
+        description: str,
+        source_build_id: str,
+        input_kind: str,
+        source_revision: int,
+        model_name: str,
+    ) -> AppearanceEvidenceRecord:
+        """记录本图脸级描述；允许 pending 人物，但要求当前 face→cluster→entity 归属成立。"""
+        with self._database.connect() as connection, connection:
+            person = connection.execute(
+                "SELECT status, scope_id FROM entities WHERE id = ?", (person_id,)
+            ).fetchone()
+            instance = connection.execute(
+                "SELECT observation_id, asset_id, cluster_id,"
+                " (SELECT scope_id FROM assets WHERE assets.id = face_instances.asset_id) AS scope_id"
+                " FROM face_instances WHERE id = ?",
+                (face_instance_id,),
+            ).fetchone()
+            if person is None:
+                raise ValueError("appearance description requires an existing person")
+            if instance is None:
+                raise ValueError("face instance not found")
+            if str(person["scope_id"]) != str(instance["scope_id"]):
+                raise ValueError("person and face instance belong to different scopes")
+            cluster = (
+                connection.execute(
+                    "SELECT entity_id FROM face_clusters WHERE id = ?", (instance["cluster_id"],)
+                ).fetchone()
+                if instance["cluster_id"]
+                else None
+            )
+            if cluster is None or str(cluster["entity_id"] or "") != person_id:
+                raise ValueError("face instance does not currently belong to this person")
+
+            existing = connection.execute(
+                "SELECT id FROM person_appearance_evidence"
+                " WHERE person_id = ? AND face_instance_id = ? AND model_name = ?",
+                (person_id, face_instance_id, str(model_name or "unknown")),
+            ).fetchone()
+            now = datetime.now(UTC).isoformat()
+            if existing is not None:
+                connection.execute(
+                    "UPDATE person_appearance_evidence SET description_text = ?,"
+                    " source_build_id = ?, input_kind = ?, source_revision = ?,"
+                    " description_state = 'effective', status = 'observed', updated_at = ?"
+                    " WHERE id = ?",
+                    (
+                        str(description or "").strip(),
+                        source_build_id or None,
+                        input_kind,
+                        int(source_revision),
+                        now,
+                        existing["id"],
+                    ),
+                )
+                evidence_id = str(existing["id"])
+            else:
+                evidence_id = _new_id()
+                connection.execute(
+                    "INSERT INTO person_appearance_evidence("
+                    " id, person_id, face_instance_id, observation_id, asset_id, crop_bbox_json,"
+                    " clothing_json, confidence, model_name, status, created_at, updated_at,"
+                    " description_text, source_build_id, input_kind, source_revision, description_state"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence_id,
+                        person_id,
+                        face_instance_id,
+                        instance["observation_id"],
+                        instance["asset_id"],
+                        "[]",
+                        "[]",
+                        0.0,
+                        str(model_name or "unknown"),
+                        "observed",
+                        now,
+                        now,
+                        str(description or "").strip(),
+                        source_build_id or None,
+                        input_kind,
+                        int(source_revision),
+                        "effective",
+                    ),
+                )
+        created = self.get(evidence_id)
+        assert created is not None, "刚写入的脸级描述读不回来"
+        return created
+
     def is_sampled(self, person_id: str, face_instance_id: str, model_name: str) -> bool:
         with self._database.connect() as connection:
             row = connection.execute(
@@ -230,4 +323,9 @@ def _record(row: sqlite3.Row | None) -> AppearanceEvidenceRecord | None:
         updated_at=_timestamp(row["updated_at"]),
         file_name=row["file_name"],
         media_type=row["media_type"],
+        description_text=str(row["description_text"] or ""),
+        source_build_id=str(row["source_build_id"] or ""),
+        input_kind=str(row["input_kind"] or "crop"),
+        source_revision=int(row["source_revision"] or 0),
+        description_state=str(row["description_state"] or "effective"),
     )

@@ -15,9 +15,11 @@ import dataclasses
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from sentrix.domain.media.models import (
     TEXT_IMPORT_SOURCE,
@@ -58,6 +60,12 @@ class ObserveAsset(AssetObserver):
 
     def prepare(self, asset: Asset) -> ObservationSemantics | None:
         """读取文本原件或准备视觉语义，供串行提交阶段写库。"""
+        return self.prepare_with_faces(asset, None)
+
+    def prepare_with_faces(
+        self, asset: Asset, faces: Sequence[object] | None
+    ) -> ObservationSemantics | None:
+        """带检测项的观察；faces 为 None 时保持旧行为。"""
         if asset.media_type is MediaType.TEXT and self._storage is not None:
             try:
                 text = self._storage.path_for(asset).read_bytes().decode("utf-8")
@@ -73,11 +81,12 @@ class ObserveAsset(AssetObserver):
                     confidence=1.0,
                 )
             return None
-        return (
-            self._observer.observe(Path(asset.path))
-            if asset.media_type is MediaType.IMAGE and self._observer is not None
-            else None
-        )
+        if asset.media_type is not MediaType.IMAGE or self._observer is None:
+            return None
+        observe_with_faces = getattr(self._observer, "observe_with_faces", None)
+        if faces is not None and callable(observe_with_faces):
+            return cast(ObservationSemantics | None, observe_with_faces(Path(asset.path), faces))
+        return self._observer.observe(Path(asset.path))
 
     def commit(self, observation: Observation, semantics: ObservationSemantics | None) -> Observation | None:
         """第二段：写回。``semantics`` 为空就什么都不写。"""

@@ -90,9 +90,22 @@ from pathlib import Path
 from sentrix.application.media.extract_video_scenes import VideoSceneExtraction
 from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.errors import DomainError
-from sentrix.domain.identity.ports import FaceEnroller, PreparedFaces
+from sentrix.domain.identity.models import FaceEnrollmentResult
+from sentrix.domain.identity.ports import (
+    AppearanceRepository,
+    FaceEnroller,
+    FaceRepository,
+    PreparedFaces,
+)
 from sentrix.domain.media.capture_time import CaptureTime
-from sentrix.domain.media.models import TEXT_IMPORT_SOURCE, Asset, AssetStatus, MediaType, Observation
+from sentrix.domain.media.models import (
+    TEXT_IMPORT_SOURCE,
+    Asset,
+    AssetStatus,
+    MediaType,
+    MemoryEvidence,
+    Observation,
+)
 from sentrix.domain.media.ports import (
     AssetObserver,
     AssetRepository,
@@ -101,6 +114,7 @@ from sentrix.domain.media.ports import (
     AudioRepository,
     CaptureTimeResolver,
     MediaStorage,
+    MemoryEvidenceRepository,
     MetadataReader,
     ObservationRepository,
     ObservationSemantics,
@@ -283,6 +297,9 @@ class ImportAssets:
         observer: AssetObserver | None = None,
         event_assigner: Callable[[Observation], str] | None = None,
         face_enroller: FaceEnroller | None = None,
+        face_repository: FaceRepository | None = None,
+        appearance_repository: AppearanceRepository | None = None,
+        evidence_repository: MemoryEvidenceRepository | None = None,
         fact_maintainer: Callable[[Observation], tuple[str, ...]] | None = None,
         text_indexer: Callable[[Observation, str | None], int] | None = None,
         # 非人物实体抽取（S6 T127）。**入参带 event_id**：1.0 ``pipeline.py:336`` 在事件
@@ -334,6 +351,9 @@ class ImportAssets:
         self._observer = observer
         self._event_assigner = event_assigner
         self._face_enroller = face_enroller
+        self._face_repository = face_repository
+        self._appearance_repository = appearance_repository
+        self._evidence_repository = evidence_repository
         self._fact_maintainer = fact_maintainer
         self._text_indexer = text_indexer
         self._entity_extractor = entity_extractor
@@ -681,10 +701,18 @@ class ImportAssets:
             semantics = self._observer.prepare(asset) if self._observer is not None else None
             return PreparedImage(semantics=semantics)
         started = time.perf_counter()
+        faces = self._face_enroller.prepare(asset.path) if self._face_enroller is not None else None
+        semantics = None
+        if self._observer is not None:
+            prepare_with_faces = getattr(self._observer, "prepare_with_faces", None)
+            if callable(prepare_with_faces):
+                semantics = prepare_with_faces(asset, faces.detections if faces else None)
+            else:
+                semantics = self._observer.prepare(asset)
         prepared = PreparedImage(
             visual=self._visual_indexer.prepare(asset) if self._visual_indexer is not None else None,
-            semantics=self._observer.prepare(asset) if self._observer is not None else None,
-            faces=self._face_enroller.prepare(asset.path) if self._face_enroller is not None else None,
+            semantics=semantics,
+            faces=faces,
         )
         return PreparedImage(
             visual=prepared.visual,
@@ -712,7 +740,8 @@ class ImportAssets:
         indexed = self._index_visual(asset, prepared)
         observation = self._import_observation(asset)
         observation = self._observe(asset, observation, prepared) or observation
-        faces = self._enroll_faces(asset, observation, prepared)
+        enrollments = self._enroll_faces(asset, observation, prepared)
+        self._bind_face_descriptions(observation, prepared, enrollments)
         event_id = self._assign_event(observation, forced_event_id)
         # 文本向量**必须在事件归并之后**：1.0 ``pipeline.py:324`` 的注释
         # 「Update the same vector with its final event link after selection」。
@@ -731,7 +760,7 @@ class ImportAssets:
             lexical_terms=lexical_terms,
             entity_ids=entity_ids,
             fact_ids=fact_ids,
-            faces=faces,
+            faces=len(enrollments),
             text_rows=text_rows,
         )
 
@@ -936,18 +965,82 @@ class ImportAssets:
             return None
         return self._observer.commit(observation, prepared.semantics)
 
-    def _enroll_faces(self, asset: Asset, observation: Observation, prepared: PreparedImage) -> int:
+    def _enroll_faces(
+        self, asset: Asset, observation: Observation, prepared: PreparedImage
+    ) -> tuple[FaceEnrollmentResult, ...]:
         """登记这张图里检出的每一张脸。**必须排在事件归并之前**，理由见模块注释第 4 条。
 
         **匹配与建簇都在这一段**，不只是检测：它们读同 scope 的候选簇，而那些簇是
         同批前一张照片刚写进去的。能挪到并行侧的只有 ``prepare`` 里那一次 ``detect``。
         """
         if self._face_enroller is None or prepared.faces is None:
-            return 0
+            return ()
         if self._face_manifest is not None and self._face_manifest(asset.id):
             # 已登记过：重放不重复建实例与提及。
-            return 0
-        return self._face_enroller.commit(asset.id, observation.id, prepared.faces)
+            return ()
+        detailed = getattr(self._face_enroller, "commit_details", None)
+        if callable(detailed):
+            return tuple(detailed(asset.id, observation.id, prepared.faces))
+        self._face_enroller.commit(asset.id, observation.id, prepared.faces)
+        return ()
+
+    def _bind_face_descriptions(
+        self,
+        observation: Observation,
+        prepared: PreparedImage,
+        enrollments: tuple[FaceEnrollmentResult, ...],
+    ) -> None:
+        """把编号图里的 P 标签描述绑定到 face_instance；未归簇写 local evidence。"""
+        semantics = prepared.semantics
+        if semantics is None or not semantics.faces or not enrollments:
+            return
+        for face in semantics.faces:
+            ref = face.detection_ref
+            if ref is None or ref < 0 or ref >= len(enrollments):
+                continue
+            enrollment = enrollments[ref]
+            entity_id = ""
+            if enrollment.cluster_id and self._face_repository is not None:
+                cluster = self._face_repository.get_cluster(enrollment.cluster_id)
+                entity_id = (cluster.entity_id or "") if cluster is not None else ""
+            if entity_id and self._appearance_repository is not None:
+                try:
+                    self._appearance_repository.record_description(
+                        person_id=entity_id,
+                        face_instance_id=enrollment.instance_id,
+                        description=face.description,
+                        source_build_id=observation.active_build_id,
+                        input_kind="numbered_full_image",
+                        source_revision=observation.revision,
+                        model_name="vlm_face_description",
+                    )
+                    continue
+                except ValueError:
+                    log.warning(
+                        "脸级描述归属校验失败，写入 local evidence: face=%s person=%s",
+                        enrollment.instance_id,
+                        entity_id,
+                    )
+            if self._evidence_repository is not None:
+                self._evidence_repository.add(
+                    MemoryEvidence(
+                        id="",
+                        scope_id=observation.scope_id,
+                        owner_kind="face_instance",
+                        owner_id=enrollment.instance_id,
+                        field_path="face.description",
+                        role="single_image_face",
+                        value={"label": face.label, "description": face.description},
+                        value_hash=hashlib.sha256(face.description.encode()).hexdigest()[:16],
+                        source_kind="model",
+                        source_modality="image",
+                        source_channel="vlm_face_description",
+                        locator={"label": face.label, "detection_ref": ref},
+                        observation_revision=observation.revision,
+                        build_id=observation.active_build_id,
+                        status="effective",
+                    )
+                )
 
     def _assign_event(self, observation: Observation, forced_event_id: str | None) -> str | None:
         if forced_event_id is not None:

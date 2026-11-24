@@ -314,17 +314,17 @@ def test_an_empty_embedding_is_never_eligible_and_writes_no_vector(enroll: Enrol
 def test_the_quality_gate_is_not_the_cosine_threshold(enroll: EnrollFace, seeded_db: Database):
     """两个 0.30 的第一个：``quality >= 0.30``。
 
-    阈值压到 0.0（余弦门等于不存在），质量 0.0 的人脸**仍然**另起一簇——
-    阻止它匹配的是质量门，与阈值无关。把 ``MINIMUM_MATCH_QUALITY`` 改掉这条会红，
-    改 ``MATCH_THRESHOLD`` 不会。
+    阈值压到 0.0（余弦门等于不存在），质量 0.0 的人脸只留 local_only，不新建 pending 簇。
+    旧路径「质量门挡住匹配 → 仍建新簇」正是人物伪簇膨胀的来源，v3 S2 已修。
     """
     add_entity(seeded_db, "ent_1", name="妈妈", status="confirmed")
     add_cluster(seeded_db, "clu_home", entity_id="ent_1", representative=(1.0, 0.0))
 
     result = enroll.enroll("asset_1", "obs_1", face(quality=0.0), threshold=0.0)
 
-    assert result.cluster_id != "clu_home"
-    assert scalar(seeded_db, "SELECT COUNT(*) FROM face_clusters") == 2
+    assert result.cluster_id is None
+    assert result.identity_state == "local_only"
+    assert scalar(seeded_db, "SELECT COUNT(*) FROM face_clusters") == 1
 
 
 def test_the_cosine_threshold_is_not_the_quality_gate(enroll: EnrollFace, seeded_db: Database):

@@ -37,6 +37,7 @@ from sentrix.domain.identity.models import (
     ENTITY_STATUS_PENDING,
     PENDING_CLUSTER_SUMMARY,
     FaceDetection,
+    FaceEnrollmentResult,
     pending_cluster_name,
 )
 from sentrix.domain.identity.ports import (
@@ -75,6 +76,7 @@ class FaceEnrollment:
     cluster_id: str | None
     score: float
     embedding: tuple[float, ...]
+    identity_state: str = "candidate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +152,10 @@ class EnrollFace:
         scope_id = (asset.scope_id if asset else "") or DEFAULT_SCOPE_ID
         resolved = _resolved(face, model_name)
 
-        if not resolved.identity_eligible:
+        # 低质量/不合格脸只留本图 local_only 出现：既不进入匹配，也不新建 pending 簇。
+        # 旧路径在这里「质量门挡住匹配 → _best_cluster 返回 None → 仍建新簇」，
+        # 正是人物伪簇膨胀的来源之一。
+        if not resolved.identity_eligible or resolved.quality < MINIMUM_MATCH_QUALITY:
             return self._store(
                 asset_id,
                 observation_id,
@@ -159,7 +164,10 @@ class EnrollFace:
                 scope_id=scope_id,
                 cluster_id=None,
                 score=0.0,
-                metadata_extra={"identity_eligible": False},
+                metadata_extra={
+                    "identity_eligible": resolved.identity_eligible,
+                    "local_only": True,
+                },
             )
 
         cluster_id, score = self._best_cluster(scope_id, resolved, threshold)
@@ -257,6 +265,7 @@ class EnrollFace:
         score: float,
         metadata_extra: dict[str, object],
     ) -> FaceEnrollment:
+        identity_state = "local_only" if cluster_id is None else "candidate"
         instance = self._faces.add_instance(
             asset_id=asset_id,
             observation_id=observation_id,
@@ -273,6 +282,9 @@ class EnrollFace:
             validity=face.validity,
             area_ratio=face.area_ratio,
             sharpness=face.sharpness,
+            identity_state=identity_state,
+            identity_source="auto",
+            identity_score=score,
         )
         if cluster_id is not None:
             self._faces.refresh_prototypes(cluster_id)
@@ -286,6 +298,7 @@ class EnrollFace:
             cluster_id=cluster_id,
             score=score,
             embedding=resolved.embedding,
+            identity_state=identity_state,
         )
 
     def _write_vector(
@@ -365,6 +378,21 @@ class EnrollFaces(FaceEnroller):
 
     def commit(self, asset_id: str, observation_id: str, prepared: PreparedFaces) -> int:
         """匹配 + 建簇 + 实例 / 原型 / 向量 / 提及。**全部写库都在这里。**"""
+        return len(self.commit_details(asset_id, observation_id, prepared))
+
+    def commit_details(
+        self, asset_id: str, observation_id: str, prepared: PreparedFaces
+    ) -> Sequence[FaceEnrollmentResult]:
+        """逐检测项返回 instance/cluster/可信状态；顺序与 ``prepared.detections`` 一致。"""
+        results: list[FaceEnrollmentResult] = []
         for face in prepared.detections:
-            self._enroll.enroll(asset_id, observation_id, face)
-        return len(prepared.detections)
+            enrollment = self._enroll.enroll(asset_id, observation_id, face)
+            results.append(
+                FaceEnrollmentResult(
+                    instance_id=enrollment.instance_id,
+                    cluster_id=enrollment.cluster_id,
+                    score=enrollment.score,
+                    identity_state=enrollment.identity_state,
+                )
+            )
+        return tuple(results)

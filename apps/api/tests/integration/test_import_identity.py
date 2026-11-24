@@ -205,6 +205,10 @@ class RecordingFaceEnroller(EnrollFaces):
         self._order.append("faces")
         return super().commit(asset_id, observation_id, prepared)
 
+    def commit_details(self, asset_id, observation_id, prepared):  # noqa: ANN001, ANN201
+        self._order.append("faces")
+        return super().commit_details(asset_id, observation_id, prepared)
+
 
 def test_a_matching_face_is_already_a_mention_when_the_event_is_decided(
     tmp_path: Path, seeded_db: Database, repos: dict[str, Any]

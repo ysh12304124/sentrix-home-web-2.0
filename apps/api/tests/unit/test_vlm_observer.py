@@ -16,6 +16,7 @@ import json
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -179,6 +180,21 @@ def test_canonicalization_does_not_rewrite_ocr(image):
     assert semantics.ocr_text == "Starbucks 2024"
 
 
+def test_observe_with_faces_maps_labels_to_frozen_detection_refs(real_image):
+    observer = ScriptedObserver(
+        [{"caption": "家庭合影", "people": [{"label": "P1", "description": "穿灰衣的人"}]}]
+    )
+
+    semantics = observer.observe_with_faces(real_image, [SimpleNamespace(bbox=(10, 10, 50, 50))])
+
+    assert semantics is not None
+    assert len(semantics.faces) == 1
+    assert semantics.faces[0].label == "P1"
+    assert semantics.faces[0].description == "穿灰衣的人"
+    assert semantics.faces[0].detection_ref == 0
+    assert "P1" in observer.prompts[0]
+
+
 def test_a_fact_without_a_confidence_gets_the_model_default():
     """1.0 ``model_clients.py:1190``：``normalize_fact_confidences(facts, 0.65)``。
 
@@ -243,6 +259,13 @@ class ScriptedObserver(OpenAIVlmObserver):
 def image(tmp_path):
     path = tmp_path / "a.jpg"
     path.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+    return path
+
+
+@pytest.fixture
+def real_image(tmp_path):
+    path = tmp_path / "real.jpg"
+    Image.new("RGB", (120, 120), "white").save(path, format="JPEG", quality=95)
     return path
 
 

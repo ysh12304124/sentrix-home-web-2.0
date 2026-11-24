@@ -58,6 +58,9 @@ def render_numbered_preview(
     """
     from PIL import Image, ImageDraw, ImageOps
 
+    from sentrix.infrastructure.media.image_io import ensure_heif_support
+
+    ensure_heif_support()
     with Image.open(asset_path) as source:
         # EXIF 旋转必须在这一步做掉：手机照片的 bbox 是在**转正之后**的坐标系里算的，
         # 不转的话框会整体错位——而那种错看起来像「模型认错人」。
@@ -85,6 +88,7 @@ def render_numbered_preview(
         else:
             draw.text((LABEL_MARGIN, LABEL_MARGIN + index * LABEL_LINE_HEIGHT), label, fill=BOX_OUTLINE)
         label_map[label] = {
+            "detection_ref": face.get("detection_ref"),
             "face_instance_id": face.get("face_instance_id"),
             "person_id": face.get("person_id"),
             "cluster_id": face.get("cluster_id"),

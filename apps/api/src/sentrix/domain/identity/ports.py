@@ -40,6 +40,7 @@ from sentrix.domain.identity.models import (
     EntitySpec,
     FaceClusterRecord,
     FaceDetection,
+    FaceEnrollmentResult,
     FaceInstanceRecord,
     FaceManifestRecord,
     FacePrototypeRecord,
@@ -102,6 +103,10 @@ class FaceEnroller(Protocol):
     def prepare(self, path: str) -> PreparedFaces: ...
 
     def commit(self, asset_id: str, observation_id: str, prepared: PreparedFaces) -> int: ...
+
+    def commit_details(
+        self, asset_id: str, observation_id: str, prepared: PreparedFaces
+    ) -> Sequence[FaceEnrollmentResult]: ...
 
 
 class FaceRepository(Protocol):
@@ -246,6 +251,11 @@ class FaceRepository(Protocol):
         validity: str,
         area_ratio: float,
         sharpness: float,
+        identity_state: str = "candidate",
+        identity_source: str = "auto",
+        identity_score: float = 0.0,
+        identity_margin: float = 0.0,
+        rejected_entity_id: str = "",
     ) -> FaceInstanceRecord:
         """落一条人脸实例。``cluster_id`` 可空——那是「这张脸还算不上某个人」的表达。
 
@@ -978,6 +988,20 @@ class AppearanceRepository(Protocol):
         ``observation_id`` / ``asset_id`` **从人脸实例带出来**，不由调用方传——
         传进来的可能与实例对不上，而那种不一致事后从证据行上看不出来。
         """
+        ...
+
+    def record_description(
+        self,
+        *,
+        person_id: str,
+        face_instance_id: str,
+        description: str,
+        source_build_id: str,
+        input_kind: str,
+        source_revision: int,
+        model_name: str,
+    ) -> AppearanceEvidenceRecord:
+        """记录本图脸级描述；允许 pending，但校验当前 face→cluster→entity 归属。"""
         ...
 
     def get(self, evidence_id: str) -> AppearanceEvidenceRecord | None: ...
