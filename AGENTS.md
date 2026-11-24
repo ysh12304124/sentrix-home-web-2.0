@@ -1,5 +1,7 @@
 # Sentrix 与 PhotoBench 开发约定
 
+- 11/24 独立侧聊完成.119(asus)的xy目录整理，201项归类、顶层211→16；数据规范根datasets/ATM-Bench与datasets/photobench，3旧路径链接保留。7稳定服务/5HTTP页保持，8230既有重启循环未改；脚本deploy/maintenance/server119-layout，证据见产品项目audit/20261124-server119-layout，接T006。
+
 - 11/20 Agent时延修复ed268c61已上线1008872，270项及真实34题/979继承范围核验通过；启动状态扫描15历史仅0.267秒，原分/配置保持。8874豆包活动中保持旧版本，待空闲单独发布；见T006及产品项目audit/20261120-agent-latency-fix。
 
 - 11/20 Sentrix前端31项失败已逐项处理，全量191项/44文件通过、0跳过；TypeScript/构建通过，lint 0错误/45警告。修正旧测试上下文与界面断言，补时间线懒加载/定位和语音推理验证，修复无Fullscreen API时首页报错。继续PR #43，本轮不部署，见T006及产品项目audit/20261120-product-web-tests。

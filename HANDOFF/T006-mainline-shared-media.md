@@ -1,5 +1,11 @@
 # T006 主线集成与跨相册媒体共享
 
+## 2026-11-24｜.119 xy目录整理验收
+
+独立侧聊授权整理asus@192.168.1.119:/home/asus/xy，已信任主机密钥同原192.168.0.153。脚本本机独立分支验证提交后同步核SHA，201项同盘rename：178散文件分归archive/packages(28)/scripts(139)/logs(5)/evidence(6)，17历史验证目录归archive/experiments；23目录合计18079内部条目身份保持。PhotoBench三原根迁入datasets/photobench/{benchmark,packages,split80-v1}，3旧根保留链接服务冻结历史，next-data-package直指规范数据包；ATM-Bench原根保持。其他2审计目录归audit/legacy，deploy-tools归scripts。顶层211→16。
+
+7稳定服务PID/状态/重启数和8191/8772/8210/8220/19090五HTTP首页SHA保持，无服务重启、配置或业务数据修改。sentrix-exp-8230原自动重启循环单列，未停止/修复；首apply预检因集合动态变化在移动前中止，改为核计划的稳定服务后实际迁移一次完成。远端原暂存media.py及build-info.json保持。新增远端根/datasets/archive README与完整路径映射；证据在产品项目audit/20261124-server119-layout。原历史脚本/记录保留当时路径；新操作按规范路径。该侧聊没有改父对话代码工作树及.100。
+
 ## 2026-11-20 10:45｜修复Sentrix前端31项测试失败
 
 用户侧聊明确授权修复既有31项失败，并提交、push及更新原main PR #43。起点1a56385工作树干净；本机复现158通过/31失败。逐项根因与当前源码依据保存在产品项目audit/20261120-product-web-tests/failure-inventory.json。缺认证/上传Provider与matchMedia的测试已补齐运行上下文；导航与路由按现行六入口/七路由检查，旧相册切换/命令/QA入口保持隐藏；过程卡片、媒体标签和预览按当前界面核验。
