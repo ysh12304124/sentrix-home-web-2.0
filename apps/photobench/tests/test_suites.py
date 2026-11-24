@@ -306,6 +306,7 @@ def test_live_list_statistics_release_state_lock_before_scanning_traces(tmp_path
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     from types import SimpleNamespace
+
     from photobench.application.runs import suites as suites_module
 
     state = RunState({"run_id": "live-run", "status": "running", "items": []})
@@ -336,29 +337,47 @@ def test_live_list_statistics_release_state_lock_before_scanning_traces(tmp_path
 def test_live_list_uses_committed_scores_and_live_progress_without_trace_scan(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    state = RunState({'run_id': 'live-run', 'status': 'running', 'qa_count': 1013,
-                      'items': [{'qa_id': 'q1', 'execution_status': 'completed'}],
-                      'phases': {'qa_eval': {'status': 'running', 'progress': {'agent_completed': 1}}}})
+    state = RunState(
+        {
+            "run_id": "live-run",
+            "status": "running",
+            "qa_count": 1013,
+            "items": [{"qa_id": "q1", "execution_status": "completed"}],
+            "phases": {"qa_eval": {"status": "running", "progress": {"agent_completed": 1}}},
+        }
+    )
     suites = _suites(tmp_path)
     with suites._lock:
-        suites._register_active('live-run', SimpleNamespace(state=state))
-    monkeypatch.setattr(suites._store, 'load_entry', lambda run_id: {
-        'run_id': run_id, 'status': 'pending', 'item_count': 0,
-        'summary': {'judge_valid_count': 1002, 'answer_quality_mean': .65},
-    }, raising=False)
-    monkeypatch.setattr(state, 'snapshot', lambda: (_ for _ in ()).throw(AssertionError('full state snapshot')))
+        suites._register_active("live-run", SimpleNamespace(state=state))
+    monkeypatch.setattr(
+        suites._store,
+        "load_entry",
+        lambda run_id: {
+            "run_id": run_id,
+            "status": "pending",
+            "item_count": 0,
+            "summary": {"judge_valid_count": 1002, "answer_quality_mean": 0.65},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        state,
+        "snapshot",
+        lambda: (_ for _ in ()).throw(AssertionError("full state snapshot")),
+    )
     from photobench.application.runs import suites as module
+
     original = module.analysis.run_list_entry
 
     def without_items(data):
-        assert not data.get('items'), 'list request scanned live answers'
+        assert not data.get("items"), "list request scanned live answers"
         return original(data)
 
-    monkeypatch.setattr(module.analysis, 'run_list_entry', without_items)
-    entry = suites.active_states()['live-run']
-    assert entry['status'] == 'running' and entry['item_count'] == 1
-    assert entry['phases']['qa_eval']['progress']['agent_completed'] == 1
-    assert entry['summary'] == {'judge_valid_count': 1002, 'answer_quality_mean': .65}
+    monkeypatch.setattr(module.analysis, "run_list_entry", without_items)
+    entry = suites.active_states()["live-run"]
+    assert entry["status"] == "running" and entry["item_count"] == 1
+    assert entry["phases"]["qa_eval"]["progress"]["agent_completed"] == 1
+    assert entry["summary"] == {"judge_valid_count": 1002, "answer_quality_mean": 0.65}
 
 
 class _StrictAlbums:

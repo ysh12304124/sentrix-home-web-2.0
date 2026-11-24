@@ -445,6 +445,32 @@ class ObservationBuild:
 
 
 @dataclass(frozen=True, slots=True)
+class ExportFile:
+    name: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryExportSnapshot:
+    """一次只读导出快照；``blocked`` 时没有文件，冲突清单必须可读。"""
+
+    id: str
+    scope_id: str
+    status: str
+    schema_version: str
+    compat_mode: str
+    selection: Mapping[str, object] = field(default_factory=dict)
+    manifest: Mapping[str, object] = field(default_factory=dict)
+    directory: str = ""
+    files: tuple[ExportFile, ...] = ()
+    conflicts: tuple[str, ...] = ()
+    counts: Mapping[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryEvidence:
     """一条字段依据。多态 owner 由仓储做 scope/类型校验，不假装字符串有外键。"""
 

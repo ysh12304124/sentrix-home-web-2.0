@@ -2019,6 +2019,123 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-exports:
+    post:
+      tags:
+      - memory-exports
+      summary: Create Memory Export
+      operationId: create_memory_export_api_v1_memory_exports_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryExportCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryExportPayload'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - memory-exports
+      summary: List Memory Exports
+      operationId: list_memory_exports_api_v1_memory_exports_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryExportListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-exports/{snapshot_id}:
+    get:
+      tags:
+      - memory-exports
+      summary: Get Memory Export
+      operationId: get_memory_export_api_v1_memory_exports__snapshot_id__get
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Snapshot Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryExportPayload'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-exports/{snapshot_id}/files/{file_name}:
+    get:
+      tags:
+      - memory-exports
+      summary: Download Memory Export File
+      operationId: download_memory_export_file_api_v1_memory_exports__snapshot_id__files__file_name__get
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Snapshot Id
+      - name: file_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: File Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/videos/{asset_id}:
     get:
       tags:
@@ -5837,6 +5954,23 @@ components:
       - query
       - scope_id
       title: EventSearchResponse
+    ExportFilePayload:
+      properties:
+        name:
+          type: string
+          title: Name
+        sha256:
+          type: string
+          title: Sha256
+        size_bytes:
+          type: integer
+          title: Size Bytes
+      type: object
+      required:
+      - name
+      - sha256
+      - size_bytes
+      title: ExportFilePayload
     FaceClusterListResponse:
       properties:
         clusters:
@@ -7541,6 +7675,103 @@ components:
       - created_at
       - updated_at
       title: MemoryEvidencePayload
+    MemoryExportCreateRequest:
+      properties:
+        scope_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Scope Id
+        asset_ids:
+          items:
+            type: string
+          type: array
+          title: Asset Ids
+        compat_mode:
+          type: string
+          pattern: ^(compat|strict_v3)$
+          title: Compat Mode
+          default: strict_v3
+        id_map:
+          additionalProperties:
+            type: string
+          type: object
+          title: Id Map
+      type: object
+      required:
+      - scope_id
+      title: MemoryExportCreateRequest
+    MemoryExportListResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        items:
+          items:
+            $ref: '#/components/schemas/MemoryExportPayload'
+          type: array
+          title: Items
+      type: object
+      required:
+      - scope_id
+      title: MemoryExportListResponse
+    MemoryExportPayload:
+      properties:
+        id:
+          type: string
+          title: Id
+        scope_id:
+          type: string
+          title: Scope Id
+        status:
+          type: string
+          title: Status
+        schema_version:
+          type: string
+          title: Schema Version
+        compat_mode:
+          type: string
+          title: Compat Mode
+        selection:
+          additionalProperties: true
+          type: object
+          title: Selection
+        manifest:
+          additionalProperties: true
+          type: object
+          title: Manifest
+        files:
+          items:
+            $ref: '#/components/schemas/ExportFilePayload'
+          type: array
+          title: Files
+        conflicts:
+          items:
+            type: string
+          type: array
+          title: Conflicts
+        counts:
+          additionalProperties: true
+          type: object
+          title: Counts
+        created_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - id
+      - scope_id
+      - status
+      - schema_version
+      - compat_mode
+      title: MemoryExportPayload
     MemoryGraphBuildResponse:
       properties:
         scope_id:

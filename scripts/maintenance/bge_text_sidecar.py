@@ -19,7 +19,11 @@ from typing import cast
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.maintenance.embedding_identity import bge_identity, implementation_sha, runtime_versions  # noqa: E402
+from scripts.maintenance.embedding_identity import (  # noqa: E402
+    bge_identity,
+    implementation_sha,
+    runtime_versions,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_PATH = REPO_ROOT / "data" / "models" / "bge-m3"

@@ -47,7 +47,11 @@ if TYPE_CHECKING:
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.maintenance.embedding_identity import clip_identity, implementation_sha, runtime_versions  # noqa: E402
+from scripts.maintenance.embedding_identity import (  # noqa: E402
+    clip_identity,
+    implementation_sha,
+    runtime_versions,
+)
 
 DIMENSION = 768
 CONTEXT_LENGTH = 52

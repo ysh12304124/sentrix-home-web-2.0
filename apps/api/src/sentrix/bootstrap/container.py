@@ -67,6 +67,8 @@ from sentrix.domain.media.ports import (
     MemoryBuildRepository,
     MemoryBuildTaskRepository,
     MemoryEvidenceRepository,
+    MemoryExportRepository,
+    MemoryExportWriter,
     MetadataReader,
     ObservationRepository,
     OperationControl,
@@ -121,6 +123,7 @@ from sentrix.infrastructure.build import read_build_revision
 from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
 from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
 from sentrix.infrastructure.media.capture_time import ResolveCaptureTime
+from sentrix.infrastructure.media.export_writer import FileSystemMemoryExportWriter
 from sentrix.infrastructure.media.image_io import PillowPreviewEncoder
 from sentrix.infrastructure.media.import_progress import InProcessImportProgressStore
 from sentrix.infrastructure.media.metadata import PillowMetadataReader
@@ -179,6 +182,9 @@ from sentrix.infrastructure.persistence.repositories.memory_builds import (
 )
 from sentrix.infrastructure.persistence.repositories.memory_evidence import (
     SqliteMemoryEvidenceRepository,
+)
+from sentrix.infrastructure.persistence.repositories.memory_exports import (
+    SqliteMemoryExportRepository,
 )
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
 from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
@@ -303,6 +309,8 @@ class Container:
     memory_builds: MemoryBuildRepository
     memory_evidence: MemoryEvidenceRepository
     memory_build_tasks: MemoryBuildTaskRepository
+    memory_exports: MemoryExportRepository
+    memory_export_writer: MemoryExportWriter
     media_storage: MediaStorage
     metadata_reader: MetadataReader
     detailed_metadata_reader: DetailedMetadataReader
@@ -655,6 +663,8 @@ class Container:
             memory_builds=memory_builds,
             memory_evidence=memory_evidence,
             memory_build_tasks=memory_build_tasks,
+            memory_exports=SqliteMemoryExportRepository(database),
+            memory_export_writer=FileSystemMemoryExportWriter(settings.data_dir / "exports"),
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
             detailed_metadata_reader=PillowMetadataReader(),

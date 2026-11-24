@@ -18,11 +18,13 @@ from sentrix.domain.media.models import (
     AssetStatus,
     AudioMetadata,
     DerivedAsset,
+    ExportFile,
     GpsPoint,
     MediaDetails,
     MediaType,
     MemoryBuildTask,
     MemoryEvidence,
+    MemoryExportSnapshot,
     Observation,
     ObservationBuild,
     ObservationEntity,
@@ -746,6 +748,22 @@ class MemoryEvidenceRepository(Protocol):
     ) -> Sequence[MemoryEvidence]: ...
 
     def list_by_build(self, build_id: str) -> Sequence[MemoryEvidence]: ...
+
+
+class MemoryExportRepository(Protocol):
+    def create(self, snapshot: MemoryExportSnapshot) -> MemoryExportSnapshot: ...
+
+    def get(self, snapshot_id: str) -> MemoryExportSnapshot | None: ...
+
+    def list_for_scope(self, scope_id: str, *, limit: int = 50) -> Sequence[MemoryExportSnapshot]: ...
+
+
+class MemoryExportWriter(Protocol):
+    """把固定文件集写到快照目录；返回摘要，调用方写入 manifest。"""
+
+    def write(self, snapshot_id: str, files: Mapping[str, bytes]) -> tuple[ExportFile, ...]: ...
+
+    def path_for(self, snapshot_id: str, file_name: str) -> Path: ...
 
 
 class MemoryBuildTaskRepository(Protocol):
