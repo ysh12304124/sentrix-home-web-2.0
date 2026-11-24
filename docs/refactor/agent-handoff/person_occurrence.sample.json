@@ -1,0 +1,19 @@
+{
+  "face_instance_id": "face_sample",
+  "asset_id": "asset_sample_a",
+  "observation_id": "obs_sample_a",
+  "scope_id": "album_sample",
+  "cluster_id": "cluster_sample",
+  "person_id": "person_sample",
+  "display_label": "妈妈",
+  "identity_state": "user_verified",
+  "bbox": [120.0, 80.0, 280.0, 300.0],
+  "description": "穿灰色上衣的人",
+  "description_source": "appearance",
+  "description_state": "effective",
+  "description_build_id": "build_sample",
+  "description_revision": 3,
+  "matched_fields": ["face_description"],
+  "evidence_refs": ["pae_sample"],
+  "match_score": 3.0
+}

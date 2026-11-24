@@ -1,0 +1,90 @@
+{
+  "event_id": "event_sample",
+  "document_id": "edoc_sample",
+  "revision": 3,
+  "status": "active",
+  "doc_version": "event-doc-v1",
+  "title": "海边散步",
+  "short_summary": "一家人在海边散步",
+  "summary": "妈妈和孩子在海边散步，成员照片覆盖 2024-01-01 至 2024-01-02。",
+  "summary_source": "model",
+  "summary_state": "model_generated_unverified",
+  "source_modalities": ["image"],
+  "time": {
+    "time_basis": "capture",
+    "display_time": "2024-01-01 至 2024-01-02",
+    "capture_start": "2024-01-01T23:30:00+08:00",
+    "capture_end": "2024-01-02T08:00:00+08:00",
+    "precision": "datetime",
+    "timezone_state": "absolute",
+    "member_dates": ["2024-01-01", "2024-01-02"],
+    "occurrence_time": null,
+    "occurrence_time_state": "unknown",
+    "evidence_refs": ["asset:asset_sample_a", "asset:asset_sample_b"]
+  },
+  "place": {
+    "scene": ["海边"],
+    "physical_locations": ["浙江省杭州市"],
+    "display_place": "浙江省杭州市",
+    "admin_district": "杭州市",
+    "conflict": false,
+    "evidence_refs": ["asset_place:asset_sample_a"]
+  },
+  "participants": [
+    {
+      "person_id": "person_sample",
+      "display_label": "妈妈",
+      "verified_name": "妈妈",
+      "pending": false,
+      "identity_states": ["user_verified"],
+      "descriptions": ["穿灰色上衣的人"],
+      "face_instance_ids": ["face_sample"]
+    },
+    {
+      "person_id": "",
+      "display_label": "本图…ce_sample",
+      "verified_name": "",
+      "pending": true,
+      "identity_states": ["local_only"],
+      "descriptions": ["穿蓝色外套的人"],
+      "face_instance_ids": ["face_local_sample"]
+    }
+  ],
+  "content_items": [
+    {
+      "item_id": "obs_sample_a",
+      "text": "海边合影",
+      "observation_id": "obs_sample_a",
+      "asset_id": "asset_sample_a",
+      "observation_revision": 2,
+      "source": "observation",
+      "state": "effective",
+      "evidence_refs": ["observation:obs_sample_a"]
+    }
+  ],
+  "members": [
+    {
+      "observation_id": "obs_sample_a",
+      "asset_id": "asset_sample_a",
+      "media_type": "image",
+      "observation_revision": 2,
+      "captured_at": "2024-01-01T23:30:00+08:00",
+      "capture_precision": "datetime",
+      "timezone_state": "offset_only",
+      "scene": "海边",
+      "admin_district": "杭州市",
+      "physical_place": "浙江省杭州市",
+      "matched": true
+    }
+  ],
+  "coverage": {
+    "included_members": 1,
+    "excluded_members": 0,
+    "missing_description": 0,
+    "missing_people": 0,
+    "missing_source": 0,
+    "fields": ["members", "participants", "time", "place", "content_items", "summary"],
+    "notes": []
+  },
+  "evidence_refs": ["observation:obs_sample_a", "face:face_sample", "asset_place:asset_sample_a"]
+}

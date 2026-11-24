@@ -1,0 +1,48 @@
+{
+  "asset_id": "asset_sample_a",
+  "scope_id": "album_sample",
+  "time": {
+    "captured_at": "2024-01-01T23:30:00+08:00",
+    "precision": "datetime",
+    "timezone_state": "offset_only",
+    "timezone_source": "exif_offset",
+    "source": "exif",
+    "raw": "2024:01:01 23:30:00",
+    "evidence_refs": ["ev_time_sample"]
+  },
+  "place": {
+    "latitude": 30.2,
+    "longitude": 120.2,
+    "precise_address": "浙江省杭州市西湖区",
+    "admin_province": "浙江省",
+    "admin_city": "杭州市",
+    "admin_district": "西湖区",
+    "nearest_township": "",
+    "nearest_locality": "",
+    "precision": "address",
+    "source": "provided",
+    "evidence_refs": ["ev_addr_provided_sample"]
+  },
+  "conflict": false,
+  "conflicts": [],
+  "evidence": [
+    {
+      "id": "ev_time_sample",
+      "field_path": "asset.capture_time",
+      "role": "capture_time",
+      "source_kind": "metadata",
+      "source_channel": "exif",
+      "status": "effective",
+      "value": {"captured_at": "2024-01-01T23:30:00+08:00", "precision": "datetime"}
+    },
+    {
+      "id": "ev_addr_provided_sample",
+      "field_path": "asset.place.address",
+      "role": "address",
+      "source_kind": "provided",
+      "source_channel": "import_manifest",
+      "status": "effective",
+      "value": {"address": "浙江省杭州市西湖区", "precision": "address"}
+    }
+  ]
+}
