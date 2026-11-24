@@ -10,12 +10,14 @@ from datetime import datetime
 
 from sentrix.domain.media.capture_time import CaptureTime, restore_capture_timezone
 from sentrix.domain.media.models import (
+    OBSERVATION_ENTITY_TYPES,
     TEXT_IMPORT_SOURCE,
     Asset,
     AssetStatus,
     GpsPoint,
     MediaType,
     Observation,
+    ObservationEntity,
     ObservationFact,
 )
 from sentrix.domain.media.ports import ObservationSemantics, PeopleSnapshotEntry
@@ -239,7 +241,8 @@ class SqliteAssetRepository:
 _OBSERVATION_COLUMNS = (
     "id, scope_id, asset_id, source_type, captured_at, confidence, caption, place, activity,"
     " event_type, ocr_text, objects_json, clothing_json, people_json, facts_json, revision,"
-    " created_at, updated_at, source_text"
+    " created_at, updated_at, source_text, short_caption, detail_caption, tags_json,"
+    " entities_json, field_states_json, active_build_id"
 )
 
 
@@ -331,6 +334,46 @@ def _json_list(value: str | None) -> tuple[str, ...]:
     return tuple(str(item) for item in parsed if isinstance(item, (str, int, float)))
 
 
+def _json_entities(value: str | None) -> tuple[ObservationEntity, ...]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    entities: list[ObservationEntity] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        entity_type = str(item.get("type") or item.get("entity_type") or "other").strip() or "other"
+        if entity_type not in OBSERVATION_ENTITY_TYPES:
+            entity_type = "other"
+        evidence = item.get("evidence")
+        entities.append(
+            ObservationEntity(
+                name=name,
+                entity_type=entity_type,
+                entity_id=str(item.get("entity_id") or ""),
+                status=str(item.get("status") or "candidate"),
+                evidence=tuple(str(value) for value in evidence) if isinstance(evidence, list) else (),
+            )
+        )
+    return tuple(entities)
+
+
+def _json_mapping(value: str | None) -> dict[str, str]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(item) for key, item in parsed.items()}
+
+
 def row_to_observation(row: sqlite3.Row) -> Observation:
     return Observation(
         id=row["id"],
@@ -342,6 +385,12 @@ def row_to_observation(row: sqlite3.Row) -> Observation:
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         caption=row["caption"] or "",
+        short_caption=row["short_caption"] or "",
+        detail_caption=row["detail_caption"] or "",
+        tags=_json_list(row["tags_json"]),
+        entities=_json_entities(row["entities_json"]),
+        field_states=_json_mapping(row["field_states_json"]),
+        active_build_id=row["active_build_id"] or "",
         place=row["place"],
         activity=row["activity"],
         event_type=row["event_type"],
@@ -366,8 +415,10 @@ class SqliteObservationRepository:
             connection.execute(
                 "INSERT INTO observations (id, scope_id, asset_id, source_type, captured_at,"
                 " confidence, caption, place, activity, event_type, ocr_text, objects_json,"
-                " clothing_json, people_json, facts_json, revision, created_at, updated_at, source_text)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" + conflict,
+                " clothing_json, people_json, facts_json, revision, created_at, updated_at, source_text,"
+                " short_caption, detail_caption, tags_json, entities_json, field_states_json,"
+                " active_build_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" + conflict,
                 (
                     observation.id,
                     observation.scope_id,
@@ -391,6 +442,14 @@ class SqliteObservationRepository:
                     observation.created_at.isoformat(),
                     observation.updated_at.isoformat(),
                     observation.source_text,
+                    observation.short_caption,
+                    observation.detail_caption,
+                    json.dumps(list(observation.tags), ensure_ascii=False),
+                    json.dumps(
+                        [dataclasses.asdict(item) for item in observation.entities], ensure_ascii=False
+                    ),
+                    json.dumps(dict(observation.field_states), ensure_ascii=False),
+                    observation.active_build_id or None,
                 ),
             )
 
@@ -473,6 +532,8 @@ class SqliteObservationRepository:
             connection.execute(
                 "UPDATE observations SET caption = ?, place = ?, activity = ?, event_type = ?,"
                 " ocr_text = ?, objects_json = ?, clothing_json = ?, facts_json = ?,"
+                " short_caption = ?, detail_caption = ?, tags_json = ?, entities_json = ?,"
+                " field_states_json = ?, active_build_id = COALESCE(NULLIF(?, ''), active_build_id),"
                 " source_text = COALESCE(NULLIF(source_text, ''), ?),"
                 " confidence = MAX(confidence, ?), revision = revision + 1,"
                 " updated_at = datetime('now') WHERE id = ?",
@@ -485,6 +546,12 @@ class SqliteObservationRepository:
                     json.dumps(list(semantics.objects), ensure_ascii=False),
                     json.dumps(list(semantics.clothing), ensure_ascii=False),
                     json.dumps([dataclasses.asdict(item) for item in semantics.facts], ensure_ascii=False),
+                    semantics.short_caption,
+                    semantics.detail_caption,
+                    json.dumps(list(semantics.tags), ensure_ascii=False),
+                    json.dumps([dataclasses.asdict(item) for item in semantics.entities], ensure_ascii=False),
+                    json.dumps(dict(semantics.field_states), ensure_ascii=False),
+                    semantics.active_build_id,
                     semantics.source_text,
                     float(semantics.confidence),
                     observation_id,

@@ -266,6 +266,32 @@ class ObservationFact:
     confidence: float = MODEL_FACT_CONFIDENCE
 
 
+OBSERVATION_ENTITY_TYPES = ("person", "place", "object", "event", "organization", "other")
+OBSERVATION_FIELD_STATES = (
+    "present",
+    "empty_observed",
+    "not_provided",
+    "failed",
+    "retracted",
+    "legacy",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationEntity:
+    """单图实体提及的候选形状；``entity_id`` 由后端解析，模型不创造持久 ID。"""
+
+    name: str
+    entity_type: str = "other"
+    entity_id: str = ""
+    status: str = "candidate"
+    evidence: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.entity_type not in OBSERVATION_ENTITY_TYPES:
+            raise ValueError(f"未知单图实体类型: {self.entity_type!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class Observation:
     """一次导入对资产抽取出的观察结果。
@@ -287,6 +313,12 @@ class Observation:
     created_at: datetime
     updated_at: datetime
     caption: str = ""
+    short_caption: str = ""
+    detail_caption: str = ""
+    tags: tuple[str, ...] = ()
+    entities: tuple[ObservationEntity, ...] = ()
+    field_states: Mapping[str, str] = field(default_factory=dict)
+    active_build_id: str = ""
     place: str = ""
     activity: str = ""
     event_type: str = ""
@@ -312,8 +344,20 @@ class Observation:
 
     @property
     def has_semantics(self) -> bool:
-        """VLM 语义是否已经落上。1.0 用「caption 非空」当这个判据。"""
-        return bool(self.caption or self.place or self.activity or self.event_type or self.source_text)
+        """是否已有可读的有效语义；objects/OCR/facts/tags 也算，不能只看 caption。"""
+        return bool(
+            self.caption
+            or self.short_caption
+            or self.detail_caption
+            or self.place
+            or self.activity
+            or self.event_type
+            or self.source_text
+            or self.objects
+            or self.ocr_text
+            or self.facts
+            or self.tags
+        )
 
 
 # ---- 图片记忆构建版本与字段证据（v3 · M1） -------------------------------------

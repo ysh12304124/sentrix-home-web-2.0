@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -52,7 +53,12 @@ from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.ports import ModelServiceError
 from sentrix.domain.assistant.request_budget import admit_model_attempt
 from sentrix.domain.assistant.request_context import request_slot
-from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
+from sentrix.domain.media.models import (
+    MODEL_FACT_CONFIDENCE,
+    OBSERVATION_ENTITY_TYPES,
+    ObservationEntity,
+    ObservationFact,
+)
 from sentrix.domain.media.ports import ObservationSemantics
 from sentrix.infrastructure.assistant.chat_client import MAX_ANSWER_TOKENS
 from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
@@ -82,9 +88,17 @@ OBSERVATION_CONFIDENCE = 0.65
 #: 精读的主要成本。
 IMAGE_MAX_SIDE = 1280
 
-_LANGUAGE_FIELDS = ("caption", "activity", "place", "event_type")
-_TEXT_FIELDS = ("caption", "activity", "place", "event_type", "ocr_text")
-_LIST_FIELDS = ("objects", "clothing")
+_LANGUAGE_FIELDS = ("caption", "short_caption", "detail_caption", "activity", "place", "event_type")
+_TEXT_FIELDS = (
+    "caption",
+    "short_caption",
+    "detail_caption",
+    "activity",
+    "place",
+    "event_type",
+    "ocr_text",
+)
+_LIST_FIELDS = ("objects", "clothing", "tags", "entities")
 # ``facts`` 是**结构化**字段，不是字符串列表：补全那一步按 ``_COPY_FIELDS`` 逐个搬
 # 标量/列表，搬不动它，所以它单列一份、由 ``semantics_from_payload`` 统一解析。
 _COPY_FIELDS = (*_TEXT_FIELDS, *_LIST_FIELDS)
@@ -94,24 +108,39 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _OBSERVE_PROMPT = """你是家庭记忆观察器。仅根据图片抽取可验证的观察，不猜测姓名。
 严格返回简体中文 JSON 对象，不要解释。不要输出 GPS 坐标、经纬度、文件名或路径。
-字段固定为：caption、activity、place、event_type、objects、clothing、ocr_text、facts。
-caption 是画面里看到什么（160 字内）；activity 是正在发生什么（40 字内）；
+字段固定为：caption、short_caption、detail_caption、activity、place、event_type、objects、
+clothing、ocr_text、tags、entities、facts。
+caption 是画面里看到什么（160 字内）；short_caption 是一句主要主体/活动（40 字内）；
+detail_caption 是完整可见描述（300-600 字，覆盖主体、动作、物体、场景和可见关系；不猜姓名，
+不把画面推断成拍摄时间或拍摄地点）；activity 是正在发生什么（40 字内）；
 place 是语义地点，例如家中客厅、餐厅、公园（40 字内）；event_type 40 字内；
 objects 是可见物品（最多 40 项）；clothing 是可见衣物（最多 12 项）；
-ocr_text 是图中文字（1000 字内）；facts 最多 8 项，仅含 subject、predicate、object、confidence。
-caption、activity、place、event_type 必须**同时**给出自然语言描述，画面能判断时不要留空；
-确实看不清才用空字符串或空数组。"""
+ocr_text 是图中文字原文（1000 字内），保留数字、品牌和英文，不改写、不翻译；
+tags 是可见概念/活动/物体（最多 20 项字符串）；
+entities 是画面或文字可确认的名称+类型数组，每项仅含 name、type，
+type 取值 person/place/object/event/organization/other；人物只写可见描述或图中文字，
+不猜身份，不输出坐标或内部 ID；facts 最多 8 项，仅含 subject、predicate、object、confidence。
+caption、short_caption、activity、place、event_type 必须**同时**给出自然语言描述，
+画面能判断时不要留空；确实看不清才用空字符串或空数组。"""
 
 _RECOVERY_PROMPT = """首轮结果缺少自然语言观察，请补齐可验证的观察。只根据图片，不猜测姓名，不输出坐标。
-严格返回简体中文 JSON：caption（160 字内）、activity（40 字内）、place（语义地点，40 字内）、
-event_type（40 字内）、objects（最多 40 项）、clothing（最多 12 项）、ocr_text（1000 字内）、
+严格返回简体中文 JSON：caption（160 字内）、short_caption（40 字内）、detail_caption（300-600 字）、
+activity（40 字内）、place（语义地点，40 字内）、event_type（40 字内）、objects（最多 40 项）、
+clothing（最多 12 项）、ocr_text（1000 字内，保留原文）、tags（最多 20 项）、
+entities（name+type 数组，type 为 person/place/object/event/organization/other；不猜身份）、
 facts（最多 8 项，仅含 subject、predicate、object、confidence）。
 画面确实看不清才留空；不要只返回分类字段。"""
 
 _CANONICAL_PROMPT = """把下面的家庭图片观察规范化为简体中文 JSON。只翻译和整理已有内容，
-不新增人物、物体、活动或事实，不猜测姓名。保留字段 caption、activity、place、event_type、
-objects、clothing、ocr_text、facts（每项仍只含 subject、predicate、object、confidence）。
+不新增人物、物体、活动或事实，不猜测姓名。保留字段 caption、short_caption、detail_caption、
+activity、place、event_type、objects、clothing、ocr_text、tags、entities、facts
+（facts 每项仍只含 subject、predicate、object、confidence；entities 每项仅含 name、type）。
+**不得改写 ocr_text、数字、品牌或编号；后端会丢弃你对 ocr_text 的修改。**
 \n原始观察："""
+
+_PROMPT_HASH = hashlib.sha256((_OBSERVE_PROMPT + _RECOVERY_PROMPT + _CANONICAL_PROMPT).encode()).hexdigest()[
+    :16
+]
 
 
 def _shrink_image(payload: bytes, mime: str, path: Path, max_side: int) -> tuple[bytes, str]:
@@ -222,17 +251,88 @@ def facts_from_payload(value: object) -> tuple[ObservationFact, ...]:
     return tuple(facts)
 
 
+def entities_from_payload(value: object) -> tuple[ObservationEntity, ...]:
+    """收敛单图实体候选；模型不创造持久 ID，类型非法时折成 ``other``。"""
+    items = value if isinstance(value, (list, tuple)) else ([value] if value else [])
+    entities: list[ObservationEntity] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if isinstance(item, dict):
+            name = _text(item.get("name"))
+            entity_type = _text(item.get("type")) or "other"
+        else:
+            name = _text(item)
+            entity_type = "other"
+        if not name:
+            continue
+        if entity_type not in OBSERVATION_ENTITY_TYPES:
+            entity_type = "other"
+        key = (name, entity_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        entities.append(ObservationEntity(name=name, entity_type=entity_type))
+    return tuple(entities)
+
+
+def field_states_from_payload(payload: dict[str, Any], values: dict[str, object]) -> dict[str, str]:
+    """区分「模型没给这个键」与「给了但结果为空」。"""
+    states: dict[str, str] = {}
+    for key, value in values.items():
+        if key not in payload:
+            states[key] = "not_provided"
+        elif value in (None, "", [], ()):
+            states[key] = "empty_observed"
+        else:
+            states[key] = "present"
+    return states
+
+
 def semantics_from_payload(payload: dict[str, Any]) -> ObservationSemantics:
     """把模型返回的对象收敛成 ``ObservationSemantics``。纯函数，便于单独测。"""
+    caption = _text(payload.get("caption"))
+    short_caption = _text(payload.get("short_caption"))
+    detail_caption = _text(payload.get("detail_caption"))
+    place = _text(payload.get("place"))
+    activity = _text(payload.get("activity"))
+    event_type = _text(payload.get("event_type"))
+    ocr_text = _text(payload.get("ocr_text"))
+    objects = _as_text_tuple(payload.get("objects"))
+    clothing = _as_text_tuple(payload.get("clothing"))
+    tags = _as_text_tuple(payload.get("tags"))
+    entities = entities_from_payload(payload.get("entities"))
+    facts = facts_from_payload(payload.get("facts"))
+    field_states = field_states_from_payload(
+        payload,
+        {
+            "caption": caption,
+            "short_caption": short_caption,
+            "detail_caption": detail_caption,
+            "activity": activity,
+            "place": place,
+            "event_type": event_type,
+            "ocr_text": ocr_text,
+            "objects": objects,
+            "clothing": clothing,
+            "tags": tags,
+            "entities": entities,
+            "facts": facts,
+        },
+    )
     return ObservationSemantics(
-        caption=_text(payload.get("caption")),
-        place=_text(payload.get("place")),
-        activity=_text(payload.get("activity")),
-        event_type=_text(payload.get("event_type")),
-        ocr_text=_text(payload.get("ocr_text")),
-        objects=_as_text_tuple(payload.get("objects")),
-        clothing=_as_text_tuple(payload.get("clothing")),
-        facts=facts_from_payload(payload.get("facts")),
+        caption=caption,
+        short_caption=short_caption,
+        detail_caption=detail_caption,
+        tags=tags,
+        entities=entities,
+        field_states=field_states,
+        place=place,
+        activity=activity,
+        event_type=event_type,
+        ocr_text=ocr_text,
+        objects=objects,
+        clothing=clothing,
+        facts=facts,
         confidence=OBSERVATION_CONFIDENCE,
     )
 
@@ -372,6 +472,15 @@ class OpenAIVlmObserver:
         """这个观察器实际会请求的模型名。探不到就如实抛 ``ModelServiceError``——不编一个。"""
         return self._model.current()
 
+    @property
+    def prompt_hash(self) -> str:
+        """当前三段提示词的稳定哈希前缀；构建记录用它区分提示词版本。"""
+        return _PROMPT_HASH
+
+    @property
+    def protocol_version(self) -> str:
+        return "image-observation-v1"
+
     def observe(self, path: Path) -> ObservationSemantics | None:
         image = _encode_image(Path(path), max_side=self._max_side)
         if image is None:
@@ -398,6 +507,10 @@ class OpenAIVlmObserver:
         if calls < MAX_MODEL_CALLS and _LATIN_RE.search(scalar):
             canonical = self._chat(_CANONICAL_PROMPT + json.dumps(parsed, ensure_ascii=False), None)
             if canonical is not None:
+                # OCR 原文只认首轮/补全轮；中文化返回的 ocr_text 一律丢弃。
+                canonical.pop("ocr_text", None)
+                if "ocr_text" in parsed:
+                    canonical["ocr_text"] = parsed["ocr_text"]
                 parsed = {
                     **parsed,
                     **{key: value for key, value in canonical.items() if value not in (None, "", [])},

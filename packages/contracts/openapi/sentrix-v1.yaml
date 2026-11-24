@@ -4153,8 +4153,7 @@ components:
           additionalProperties:
             anyOf:
             - type: string
-            - items:
-                type: string
+            - items: {}
               type: array
             - type: 'null'
           type: object

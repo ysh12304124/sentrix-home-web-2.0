@@ -757,7 +757,8 @@ class ImportAssets:
             )
             if is_text
             else "",
-            place=asset.source_metadata.precise_address,
+            # provided 地址不再覆盖视觉场景；它由 source_metadata/asset_places 单独承载。
+            place="",
         )
         self._observations.add(observation)
         return observation

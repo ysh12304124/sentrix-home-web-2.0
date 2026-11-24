@@ -172,7 +172,6 @@ PENDING_METHODS: dict[str, str] = {
     "InferenceProvider.token_count": "S9b-2 余项（提示词预算，主链未用到）",
     "TelemetryProvider.kv_cache": "S9b-2 余项（KV cache 指标，采样器从 process_memory 里取）",
     # —— 图片记忆 v3 · S0：先落端口，S1/S8 接线 ——
-    "MemoryBuildRepository.create_or_get": "S1 观察发布：观察字段、build 关联与证据同事务写入时接线",
     "MemoryBuildRepository.latest_for_stage": "S1 图片详情：读取每阶段最新有效构建时接线",
     "MemoryEvidenceRepository.list_for_owner": "S1 字段详情：按 owner/field_path 读取有效依据时接线",
     "MemoryBuildTaskRepository.list_due": "S8 阶段续办：现有后处理调度器 claim 到期任务时接线",

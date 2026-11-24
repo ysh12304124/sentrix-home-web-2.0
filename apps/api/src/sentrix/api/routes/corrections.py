@@ -68,7 +68,7 @@ def memory_write(kind: str, key: str) -> Callable[..., Any]:
 class CorrectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=1)
-    changes: dict[str, str | list[str] | None]
+    changes: dict[str, str | list[object] | None]
     reason: str = Field(default="", max_length=2000)
 
 
@@ -164,9 +164,9 @@ def correct_memory(
 ) -> CorrectionResponse:
     changes: dict[str, object] = dict(payload.changes)
     for key, value in changes.items():
-        if key in {"objects", "clothing"}:
+        if key in {"objects", "clothing", "tags", "entities"}:
             if not isinstance(value, list):
-                raise InvalidRequestError("objects/clothing 必须为列表")
+                raise InvalidRequestError("objects/clothing/tags/entities 必须为列表")
         elif key in {"time_start", "time_end"}:
             if value is not None:
                 if not isinstance(value, str):

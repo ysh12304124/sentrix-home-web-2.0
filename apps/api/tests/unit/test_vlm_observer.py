@@ -125,6 +125,60 @@ def test_semantics_only_keeps_the_s7_fields():
     assert not hasattr(semantics, "detail")
 
 
+def test_new_single_image_fields_and_field_states_are_parsed():
+    payload = {
+        "caption": "海边散步",
+        "short_caption": "一家人在海边散步",
+        "detail_caption": "一家三口沿着海边走，孩子拿着气球，远处有渔船。",
+        "activity": "散步",
+        "place": "海边",
+        "event_type": "出行",
+        "ocr_text": "HELLO 123",
+        "objects": ["气球", "渔船"],
+        "tags": ["海边", "散步"],
+        "entities": [
+            {"name": "妈妈", "type": "person"},
+            {"name": "海边", "type": "place"},
+            {"name": "坏类型", "type": "unknown"},
+        ],
+        "facts": [{"subject": "妈妈", "predicate": "去过", "object": "海边"}],
+    }
+
+    semantics = semantics_from_payload(payload)
+
+    assert semantics.short_caption == "一家人在海边散步"
+    assert semantics.detail_caption.startswith("一家三口")
+    assert semantics.tags == ("海边", "散步")
+    assert [(item.name, item.entity_type) for item in semantics.entities] == [
+        ("妈妈", "person"),
+        ("海边", "place"),
+        ("坏类型", "other"),
+    ]
+    assert semantics.field_states["detail_caption"] == "present"
+    assert semantics.field_states["objects"] == "present"
+
+
+def test_field_states_distinguish_missing_from_empty():
+    semantics = semantics_from_payload({"caption": ""})
+
+    assert semantics.field_states["caption"] == "empty_observed"
+    assert semantics.field_states["detail_caption"] == "not_provided"
+
+
+def test_canonicalization_does_not_rewrite_ocr(image):
+    observer = ScriptedObserver(
+        [
+            {"caption": "Beach walk", "ocr_text": "Starbucks 2024"},
+            {"caption": "海边散步", "ocr_text": "星巴克 2024"},
+        ]
+    )
+
+    semantics = observer.observe(image)
+
+    assert semantics is not None
+    assert semantics.ocr_text == "Starbucks 2024"
+
+
 def test_a_fact_without_a_confidence_gets_the_model_default():
     """1.0 ``model_clients.py:1190``：``normalize_fact_confidences(facts, 0.65)``。
 

@@ -439,6 +439,8 @@ def _build_importer(
             observer=container.vlm_observer if observe else None,
             observations=container.observation_repository,
             storage=container.media_storage,
+            builds=container.memory_builds,
+            evidence=container.memory_evidence,
         ),
         event_assigner=lambda observation: _event_id(assigner, observation),
         event_attacher=lambda event_id, observation: container.event_repository.attach(

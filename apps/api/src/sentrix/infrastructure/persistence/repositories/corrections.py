@@ -36,8 +36,21 @@ TABLES = {
     "fact": "facts",
     "relationship": "relationships",
 }
+JSON_FIELDS = {"objects", "clothing", "tags", "entities"}
 FIELDS = {
-    "observation": {"caption", "place", "activity", "event_type", "ocr_text", "objects", "clothing"},
+    "observation": {
+        "caption",
+        "short_caption",
+        "detail_caption",
+        "place",
+        "activity",
+        "event_type",
+        "ocr_text",
+        "objects",
+        "clothing",
+        "tags",
+        "entities",
+    },
     "event": {"title", "summary", "place", "activity", "event_type", "time_start", "time_end"},
     "entity": {"canonical_name", "summary"},
 }
@@ -178,7 +191,7 @@ class SqliteMemoryCorrections:
         if row is None:
             return None
         result = dict(row)
-        for name in ("objects", "clothing"):
+        for name in JSON_FIELDS:
             if name + "_json" in result:
                 result[name] = json.loads(str(result[name + "_json"]))
         return result
@@ -213,11 +226,9 @@ class SqliteMemoryCorrections:
             values: list[object] = []
             columns = []
             for key, value in changes.items():
-                column = key + "_json" if key in {"objects", "clothing"} else key
+                column = key + "_json" if key in JSON_FIELDS else key
                 columns.append(f"{column}=?")
-                values.append(
-                    json.dumps(value, ensure_ascii=False) if key in {"objects", "clothing"} else value
-                )
+                values.append(json.dumps(value, ensure_ascii=False) if key in JSON_FIELDS else value)
             now = datetime.now(UTC).isoformat()
             conn.execute(
                 f"UPDATE {table} SET {','.join(columns)},revision=revision+1,updated_at=? WHERE id=?",

@@ -24,6 +24,7 @@ from sentrix.domain.media.models import (
     MemoryEvidence,
     Observation,
     ObservationBuild,
+    ObservationEntity,
     ObservationFact,
     VideoMetadata,
 )
@@ -228,6 +229,12 @@ class ObservationSemantics:
     """
 
     caption: str = ""
+    short_caption: str = ""
+    detail_caption: str = ""
+    tags: tuple[str, ...] = ()
+    entities: tuple[ObservationEntity, ...] = ()
+    field_states: Mapping[str, str] = field(default_factory=dict)
+    active_build_id: str = ""
     place: str = ""
     activity: str = ""
     event_type: str = ""

@@ -1,8 +1,8 @@
 {
   "deployment_profile": "server",
-  "llm_profile": "local",
-  "vlm_base_url": "http://127.0.0.1:8081/v1",
-  "vlm_model": "qwen3.8-flash-next-iq3_xxs",
+  "llm_profile": "cloud",
+  "vlm_base_url": "https://llm-355ba48p9iw7pkjz.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "vlm_model": "qwen3.8-flash",
   "vlm_generation_profile": "legacy",
   "vlm_context_tokens": 131072,
   "vlm_exact_output_budget": false,

@@ -11,11 +11,14 @@
 ## 运行环境
 
 - Python：3.11.16（`.venv` 复用 119 既有依赖后重装 `apps/api` / `apps/photobench` editable 包）
-- 开发主模型：`qwen3.8-flash-next-iq3_xxs`
-- 端点：`http://127.0.0.1:8081/v1`
-- 模型能力：`input_modalities=["text","image"]`，`context_length=131072`
-- 实测：文本 chat 与图片 + `response_format={"type":"json_object"}` 均返回合法 JSON
-- 模型服务由 119 现有 Strata 进程提供，本计划不管理其生命周期
+- 开发主模型（2026-11-24 变更）：云端 `qwen3.8-flash`，OpenAI 兼容端点
+  `https://llm-355ba48p9iw7pkjz.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`
+- 云端配置：`/home/asus/sentrix-image-memory-cloud.json`（无密钥）；
+  密钥只放在权限 600 的 `/home/asus/sentrix-image-memory.env`，不进入仓库
+- 模型能力：文本 + 图片；实测图片 + `response_format={"type":"json_object"}` 返回合法 JSON，
+  `OpenAIVlmObserver` 走该配置可返回 caption/ocr_text
+- 其他侧车仍在 119：WeMM 嵌入 `127.0.0.1:8102`、MOSS ASR `8106`、SenseVoice `8107`
+- 本地 Qwen3.8 `127.0.0.1:8081` 只保留作对照，不再是应用主模型
 
 ## 基线自动测试
 
@@ -34,9 +37,7 @@
 `docs/refactor/image_profile_matrix.json` 由 `scripts/report_image_profile_matrix.py` 生成。生成命令：
 
 ```bash
-SENTRIX_VLM_BASE_URL=http://127.0.0.1:8081/v1 \
-SENTRIX_VLM_MODEL=qwen3.8-flash-next-iq3_xxs \
-SENTRIX_VLM_CONTEXT_TOKENS=131072 \
+set -a && . /home/asus/sentrix-image-memory.env && set +a
 .venv/bin/python scripts/report_image_profile_matrix.py \
   > docs/refactor/image_profile_matrix.json
 ```
