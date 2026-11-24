@@ -2,13 +2,13 @@
 
 ## 当前状态
 
-2026-11-24 12:12，7cfe20终态单次验收通过：1013项/994有效分/17timeout/2failed，继承1010原项/994回执/16旧失败及source-seed manifest保持，_index差异0，无缺Judge。3新turn等待8102依赖3660秒后于12:06:33–35被测评器取消；产品cancelled、答卷空、无预算或答题事件，新增分0。每题一提交，内部attempt2为取消时重新认领，failure_count0；已检查实际部署超时取消代码，测评service.py与本机不同，精确副本及SHA保留。不能称本轮已实际答题或修复效果通过。
+2026-11-24 12:23，7cfe20完整在线trace/SFT与新统计均已验收。1013项/994有效分/17timeout/2failed；全1013缺分计错73.014071%，有效均分74.409712%，覆盖98.124383%。共同992题Plus66.708848%/Q445.299059%/豆包74.358119%。compare_transport.py仅执行一次，本机50位Decimal独立复算通过；原994有效分及其CSV全字段、Qwen/Q4所有1013行字段保持，仅3新失败QA执行/终止字段从旧model_error变本轮timeout空终止。旧所有报告保留。
 
-原WeMM10:22:55退出且当前inactive/dead，停止原因未确认；原资源安排问题未获答复，未恢复依赖/停其他GPU任务/部署重启。原3turn已终止，不自动新提交。16题只读审查完成9充分/6限定候选/1GT日期缺证，原GT/分/历史保持，非盲测。
+trace46,103,758字节/SFT1,018,710,524字节，各和同版独立流长度及SHA一致，1013逐题合同通过，未落大正文；全部答卷attempt/评分history、1010继承项/994回执/16旧失败及source-seed manifest保持，_index差异0。固定8874PID1537/实际app-dir/exports SHA3adba6e1/read_revision cf20fe17966d42b49bbd28c31f563925。worker470127/watcher21446均退出，wake ae147985已处理，无待自动Agent/Judge/导出。当前入口为audit/20261124-doubao-transport-comparison及transport-terminal。
 
-终态审计入口audit/20261124-doubao-transport-terminal。166fb39e本机验证提交→同步100四文件SHA/编译/import→push；新wake ae147985-1c46-4486-82a3-c4c652885958先注册再单次launch完整导出，worker470127/watcher21446。固定8874PID1537/原app-dir/exports SHA3adba6e1/read_revision cf20fe17966d42b49bbd28c31f563925，首探contracts和身份均匹配。accept_transport及launch/verify已消费，不重放；probe只读。两流验收后compare_transport一次（尚未消费），本机verify_statistics.py独立Decimal复算，新报告transport-comparison；旧994基线73.014071%全1013计错、74.409712%有效及992共同题保持。
+3新turn本轮未实际答题：11:05各一提交后waiting_dependency，8102WeMM10:22:55退出；12:06:33–35超过3660秒由测评器取消，产品cancelled、答案空、无预算/答题事件、新分0。内部attempt2是取消时重新认领，failure_count0，不算两次提交或答题。实际部署取消路径已查，测评service.py与本机不同，精确副本/SHA保留。未恢复嵌入或停止其他GPU任务，资源安排仍待答复；原3turn已终止，不自动重提。本轮不能评价模型能力或上下文修复效果。
 
-8294PID10256/8874PID1537、原产品context-three-v1及测评projection-v2、型号/16K/100-600-100-500/QA4-3660/独立库/冻结ATMv5豆包Judge保持。Qwen/Q4只读，不再Agent/Judge/导出。不改网络和保护服务器，不启Hard/16题包。旧eb9817ad事件已处理；详细失败分析与只读16题报告均有独立审计。
+16题只读证据审查已完成9充分/6限定候选/1GT日期缺证，原GT/分/历史保持，非盲测。8294PID10256/原产品context-three-v1、8874/原projection-v2、16K/100-600-100-500/QA4-3660/独立库/实际豆包/冻结ATMv5豆包Judge保持，无业务部署重启和网络修改。Qwen/Q4只读，不再Agent/Judge/导出。旧accept/launch/verify/compare及所有seed/resume均已消费，不重放；不改保护服务和其他服务器，不启Hard/16题包。
 
 ### 09:59已验基线（历史，后续3题按以上新授权）
 
