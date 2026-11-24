@@ -1,5 +1,10 @@
 # T006 主线集成与跨相册媒体共享
 
+## 2026-11-24｜.119的8230恢复为现有WeMM方案
+
+8230旧单元强制legacy/8113导致嵌入启动自检失败，原8100/8101/8114也停用。用户明确要求修复，并指出主要使用WeMM。核实验库28425条WeMM向量/8470图片索引后，最终以独立systemd覆盖文件复用已有8102、8081及8107；保留16K和执行参数。源码f43924409保持，最终脚本17afeb63先本机提交再同步核SHA。启动PID1181293、0重启，完整诊断及轻探活200通过；全部历史回合/两图片索引SHA、媒体/文本计数和7保护服务状态保持。旧running1029均无租约，可执行0，未续跑。此前开始的CLIP/BGE下载仅Mac落盘后已清除，没有传服务器或安装。8230原无网页dist，仅验API恢复。详见产品项目audit/20261124-server119-8230-repair。baseline/install已消费，勿重放；无.100操作。
+
+
 ## 2026-11-24｜.119 xy目录整理验收
 
 独立侧聊授权整理asus@192.168.1.119:/home/asus/xy，已信任主机密钥同原192.168.0.153。脚本本机独立分支验证提交后同步核SHA，201项同盘rename：178散文件分归archive/packages(28)/scripts(139)/logs(5)/evidence(6)，17历史验证目录归archive/experiments；23目录合计18079内部条目身份保持。PhotoBench三原根迁入datasets/photobench/{benchmark,packages,split80-v1}，3旧根保留链接服务冻结历史，next-data-package直指规范数据包；ATM-Bench原根保持。其他2审计目录归audit/legacy，deploy-tools归scripts。顶层211→16。

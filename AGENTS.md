@@ -1,5 +1,8 @@
 # Sentrix 与 PhotoBench 开发约定
 
+- 11/24 .119的8230实验API已纠正旧legacy配置，复用现有WeMM8102/主模型8081/语音8107，PID1181293、启动后0重启，完整诊断ok；历史回合/两图片索引SHA及7保护服务保持。误下载的旧模型仅本机暂存后清除、未安装。见audit/20261124-server119-8230-repair，接T006。
+
+
 - 11/24 独立侧聊完成.119(asus)的xy目录整理，201项归类、顶层211→16；数据规范根datasets/ATM-Bench与datasets/photobench，3旧路径链接保留。7稳定服务/5HTTP页保持，8230既有重启循环未改；脚本deploy/maintenance/server119-layout，证据见产品项目audit/20261124-server119-layout，接T006。
 
 - 11/20 Agent时延修复ed268c61已上线1008872，270项及真实34题/979继承范围核验通过；启动状态扫描15历史仅0.267秒，原分/配置保持。8874豆包活动中保持旧版本，待空闲单独发布；见T006及产品项目audit/20261120-agent-latency-fix。
