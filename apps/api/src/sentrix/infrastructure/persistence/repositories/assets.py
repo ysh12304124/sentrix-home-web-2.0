@@ -226,6 +226,19 @@ class SqliteAssetRepository:
                 (status.value, asset_id),
             )
 
+    def update_scope(self, asset_id: str, scope_id: str) -> None:
+        """改归属相册。照片的 GPS 反解发生在入库之后，那时候才知道它其实在哪个区，
+        所以需要一个事后的改法。地点行一起改，否则地点还挂在旧相册上。"""
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "UPDATE assets SET scope_id = ?, updated_at = datetime('now') WHERE id = ?",
+                (scope_id, asset_id),
+            )
+            connection.execute(
+                "UPDATE asset_places SET scope_id = ? WHERE asset_id = ?",
+                (scope_id, asset_id),
+            )
+
     def find_file_by_hash(self, content_sha256: str) -> str | None:
         with self._database.connect() as connection:
             row = connection.execute(

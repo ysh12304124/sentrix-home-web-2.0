@@ -1039,6 +1039,25 @@ def get_asset(asset_id: str, container: Container = Depends(get_container)) -> A
     return to_summary(asset, place.display() if place else "")
 
 
+@router.patch("/assets/{asset_id}/scope")
+def patch_asset_scope(asset_id: str, payload: dict, container: Container = Depends(get_container)) -> AssetSummary:
+    """改照片归属的相册。
+
+    用途：入库时调用方只知道"大概在哪"，GPS 反解要等入库之后。所以照片先落到
+    一个临时相册，反解出省/市/区之后再挪过来。
+    """
+    scope_id = str(payload.get("scope_id", "") or "").strip()
+    if not scope_id:
+        raise HTTPException(status_code=400, detail="scope_id required")
+    asset = container.asset_repository.get(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    container.asset_repository.update_scope(asset_id, scope_id)
+    asset = container.asset_repository.get(asset_id)
+    place = container.asset_place_repository.get(asset_id)
+    return to_summary(asset, place.display() if place else "")
+
+
 @router.get("/assets/{asset_id}/poster")
 def asset_poster(asset_id: str, container: Container = Depends(get_container)) -> Response:
     """视频封面：优先复用已抽取的关键帧，没有就抽第一帧；图片直接给预览。"""
