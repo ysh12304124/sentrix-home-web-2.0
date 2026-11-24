@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -313,3 +314,121 @@ class Observation:
     def has_semantics(self) -> bool:
         """VLM 语义是否已经落上。1.0 用「caption 非空」当这个判据。"""
         return bool(self.caption or self.place or self.activity or self.event_type or self.source_text)
+
+
+# ---- 图片记忆构建版本与字段证据（v3 · M1） -------------------------------------
+#
+# 这些是**构建过程**的权威记录，不是第二份素材记忆。观察的当前有效值仍然在
+# Observation；构建记录回答「这个值是哪次输入、哪个模型/协议、哪次尝试产出的」，
+# 字段证据回答「这个值从哪张图/哪张脸/哪条元数据/哪次用户修正来」。
+BUILD_STAGES = (
+    "metadata",
+    "detection",
+    "observation",
+    "face_binding",
+    "event_projection",
+    "lexical_vector_index",
+    "export_readiness",
+)
+BUILD_STATUSES = ("queued", "running", "succeeded", "partial", "failed")
+TASK_STATUSES = ("queued", "running", "done", "failed")
+EVIDENCE_OWNER_KINDS = ("asset", "observation", "event", "entity", "face_instance")
+EVIDENCE_STATUSES = ("effective", "superseded", "retracted", "legacy", "conflict")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationBuild:
+    """一次图片构建在某个阶段的尝试记录。"""
+
+    id: str
+    scope_id: str
+    asset_id: str
+    stage: str
+    status: str
+    build_key: str
+    observation_id: str | None = None
+    observation_revision: int = 0
+    input_hash: str = ""
+    model_name: str = ""
+    protocol_version: str = ""
+    prompt_hash: str = ""
+    params: Mapping[str, object] = field(default_factory=dict)
+    input_transform: Mapping[str, object] = field(default_factory=dict)
+    raw_response_ref: str = ""
+    error_category: str = ""
+    error: str = ""
+    attempt: int = 1
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.stage not in BUILD_STAGES:
+            raise ValueError(f"未知构建阶段: {self.stage!r}")
+        if self.status not in BUILD_STATUSES:
+            raise ValueError(f"未知构建状态: {self.status!r}")
+        if self.observation_revision < 0:
+            raise ValueError("observation_revision 不能为负")
+        if self.attempt < 1:
+            raise ValueError("attempt 从 1 开始")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryEvidence:
+    """一条字段依据。多态 owner 由仓储做 scope/类型校验，不假装字符串有外键。"""
+
+    id: str
+    scope_id: str
+    owner_kind: str
+    owner_id: str
+    field_path: str
+    source_kind: str
+    role: str = ""
+    value: object | None = None
+    value_hash: str = ""
+    source_modality: str = ""
+    source_channel: str = ""
+    locator: Mapping[str, object] = field(default_factory=dict)
+    observation_revision: int = 0
+    build_id: str = ""
+    correction_id: str = ""
+    status: str = "effective"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.owner_kind not in EVIDENCE_OWNER_KINDS:
+            raise ValueError(f"未知证据 owner_kind: {self.owner_kind!r}")
+        if self.status not in EVIDENCE_STATUSES:
+            raise ValueError(f"未知证据状态: {self.status!r}")
+        if not self.source_kind.strip():
+            raise ValueError("source_kind 不能为空")
+        if self.observation_revision < 0:
+            raise ValueError("observation_revision 不能为负")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryBuildTask:
+    """阶段续办任务；仍由现有 import/后处理调度器推进，不新建 worker。"""
+
+    id: str
+    scope_id: str
+    asset_id: str
+    stage: str
+    build_key: str
+    next_attempt_at: datetime
+    status: str = "queued"
+    attempts: int = 0
+    last_error: str = ""
+    lease_until: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.stage not in BUILD_STAGES:
+            raise ValueError(f"未知构建阶段: {self.stage!r}")
+        if self.status not in TASK_STATUSES:
+            raise ValueError(f"未知任务状态: {self.status!r}")
+        if self.attempts < 0:
+            raise ValueError("attempts 不能为负")

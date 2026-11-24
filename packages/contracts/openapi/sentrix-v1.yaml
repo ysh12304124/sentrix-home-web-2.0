@@ -1830,6 +1830,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds:
+    get:
+      tags:
+      - memory-builds
+      summary: List Memory Builds
+      operationId: list_memory_builds_api_v1_memory_builds_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryBuildInventoryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memory-builds/{build_id}:
+    get:
+      tags:
+      - memory-builds
+      summary: Get Memory Build
+      operationId: get_memory_build_api_v1_memory_builds__build_id__get
+      parameters:
+      - name: build_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Build Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryBuildDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/videos/{asset_id}:
     get:
       tags:
@@ -6599,6 +6661,301 @@ components:
       - attempts
       - last_error
       title: MediaDeletionRecordResponse
+    MemoryBuildAssetPayload:
+      properties:
+        asset_id:
+          type: string
+          title: Asset Id
+        file_name:
+          type: string
+          title: File Name
+        media_kind:
+          type: string
+          title: Media Kind
+        derived_kind:
+          type: string
+          title: Derived Kind
+        parent_asset_id:
+          type: string
+          title: Parent Asset Id
+        observation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Observation Id
+        observation_revision:
+          type: integer
+          title: Observation Revision
+        available_fields:
+          items:
+            type: string
+          type: array
+          title: Available Fields
+        build_states:
+          items:
+            $ref: '#/components/schemas/MemoryBuildStageState'
+          type: array
+          title: Build States
+        status:
+          type: string
+          title: Status
+        pending_tasks:
+          type: integer
+          title: Pending Tasks
+      type: object
+      required:
+      - asset_id
+      - file_name
+      - media_kind
+      - derived_kind
+      - parent_asset_id
+      - observation_id
+      - observation_revision
+      - available_fields
+      - build_states
+      - status
+      - pending_tasks
+      title: MemoryBuildAssetPayload
+    MemoryBuildDetailResponse:
+      properties:
+        build:
+          $ref: '#/components/schemas/MemoryBuildPayload'
+        evidence:
+          items:
+            $ref: '#/components/schemas/MemoryEvidencePayload'
+          type: array
+          title: Evidence
+      type: object
+      required:
+      - build
+      - evidence
+      title: MemoryBuildDetailResponse
+    MemoryBuildInventoryResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        assets:
+          items:
+            $ref: '#/components/schemas/MemoryBuildAssetPayload'
+          type: array
+          title: Assets
+      type: object
+      required:
+      - scope_id
+      - counts
+      - assets
+      title: MemoryBuildInventoryResponse
+    MemoryBuildPayload:
+      properties:
+        id:
+          type: string
+          title: Id
+        scope_id:
+          type: string
+          title: Scope Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Observation Id
+        observation_revision:
+          type: integer
+          title: Observation Revision
+        stage:
+          type: string
+          title: Stage
+        status:
+          type: string
+          title: Status
+        build_key:
+          type: string
+          title: Build Key
+        input_hash:
+          type: string
+          title: Input Hash
+        model_name:
+          type: string
+          title: Model Name
+        protocol_version:
+          type: string
+          title: Protocol Version
+        prompt_hash:
+          type: string
+          title: Prompt Hash
+        params:
+          additionalProperties: true
+          type: object
+          title: Params
+        input_transform:
+          additionalProperties: true
+          type: object
+          title: Input Transform
+        raw_response_ref:
+          type: string
+          title: Raw Response Ref
+        error_category:
+          type: string
+          title: Error Category
+        error:
+          type: string
+          title: Error
+        attempt:
+          type: integer
+          title: Attempt
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        finished_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Finished At
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - id
+      - scope_id
+      - asset_id
+      - observation_id
+      - observation_revision
+      - stage
+      - status
+      - build_key
+      - input_hash
+      - model_name
+      - protocol_version
+      - prompt_hash
+      - params
+      - input_transform
+      - raw_response_ref
+      - error_category
+      - error
+      - attempt
+      - started_at
+      - finished_at
+      - created_at
+      - updated_at
+      title: MemoryBuildPayload
+    MemoryBuildStageState:
+      properties:
+        stage:
+          type: string
+          title: Stage
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - stage
+      - status
+      title: MemoryBuildStageState
+    MemoryEvidencePayload:
+      properties:
+        id:
+          type: string
+          title: Id
+        scope_id:
+          type: string
+          title: Scope Id
+        owner_kind:
+          type: string
+          title: Owner Kind
+        owner_id:
+          type: string
+          title: Owner Id
+        field_path:
+          type: string
+          title: Field Path
+        role:
+          type: string
+          title: Role
+        value:
+          title: Value
+        value_hash:
+          type: string
+          title: Value Hash
+        source_kind:
+          type: string
+          title: Source Kind
+        source_modality:
+          type: string
+          title: Source Modality
+        source_channel:
+          type: string
+          title: Source Channel
+        locator:
+          additionalProperties: true
+          type: object
+          title: Locator
+        observation_revision:
+          type: integer
+          title: Observation Revision
+        build_id:
+          type: string
+          title: Build Id
+        correction_id:
+          type: string
+          title: Correction Id
+        status:
+          type: string
+          title: Status
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - id
+      - scope_id
+      - owner_kind
+      - owner_id
+      - field_path
+      - role
+      - value
+      - value_hash
+      - source_kind
+      - source_modality
+      - source_channel
+      - locator
+      - observation_revision
+      - build_id
+      - correction_id
+      - status
+      - created_at
+      - updated_at
+      title: MemoryEvidencePayload
     MemoryGraphBuildResponse:
       properties:
         scope_id:

@@ -8,8 +8,7 @@ from sentrix.infrastructure.persistence.database import Database
 def _tables(db: Database) -> set[str]:
     with db.connect() as connection:
         return {
-            str(row[0])
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
 
 
@@ -21,9 +20,7 @@ def _columns(db: Database, table: str) -> set[str]:
 def _unique_columns(db: Database, table: str) -> set[tuple[str, ...]]:
     with db.connect() as connection:
         unique_indexes = [
-            str(row[1])
-            for row in connection.execute(f"PRAGMA index_list({table})")
-            if int(row[2]) == 1
+            str(row[1]) for row in connection.execute(f"PRAGMA index_list({table})") if int(row[2]) == 1
         ]
         return {
             tuple(str(column[2]) for column in connection.execute(f"PRAGMA index_info({name})"))
@@ -32,9 +29,7 @@ def _unique_columns(db: Database, table: str) -> set[tuple[str, ...]]:
 
 
 def test_m1_tables_exist(migrations_ready_db: Database) -> None:
-    assert {"observation_builds", "memory_evidence", "memory_build_tasks"} <= _tables(
-        migrations_ready_db
-    )
+    assert {"observation_builds", "memory_evidence", "memory_build_tasks"} <= _tables(migrations_ready_db)
 
 
 def test_observation_builds_columns_and_unique_key(migrations_ready_db: Database) -> None:

@@ -40,6 +40,7 @@ from sentrix.api.routes import (
     maintenance,
     media,
     memories,
+    memory_builds,
     relationships,
     search,
     spaces,
@@ -226,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(diagnostics.router)
     v1.include_router(timeline.router)
     v1.include_router(memories.router)
+    v1.include_router(memory_builds.router)
     # 视频端点（S8a）。与 timeline 分开：视频那四条有自己的响应形状与血缘读法。
     v1.include_router(videos.router)
     v1.include_router(identity.router)

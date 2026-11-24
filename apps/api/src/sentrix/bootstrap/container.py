@@ -61,6 +61,9 @@ from sentrix.domain.media.ports import (
     CaptureTimeResolver,
     MediaDeletionRepository,
     MediaStorage,
+    MemoryBuildRepository,
+    MemoryBuildTaskRepository,
+    MemoryEvidenceRepository,
     MetadataReader,
     ObservationRepository,
     OperationControl,
@@ -163,6 +166,13 @@ from sentrix.infrastructure.persistence.repositories.facts import SqliteFactRepo
 from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
 from sentrix.infrastructure.persistence.repositories.import_jobs import SqliteImportJobRepository
 from sentrix.infrastructure.persistence.repositories.media_deletion import SqliteMediaDeletionRepository
+from sentrix.infrastructure.persistence.repositories.memory_builds import (
+    SqliteMemoryBuildRepository,
+    SqliteMemoryBuildTaskRepository,
+)
+from sentrix.infrastructure.persistence.repositories.memory_evidence import (
+    SqliteMemoryEvidenceRepository,
+)
 from sentrix.infrastructure.persistence.repositories.memory_graph import SqliteMemoryGraphRepository
 from sentrix.infrastructure.persistence.repositories.memory_rotation import SqliteRotationRepository
 from sentrix.infrastructure.persistence.repositories.moments import SqliteMomentRepository
@@ -277,6 +287,9 @@ class Container:
     pipeline_tracker: TrackPipeline
     asset_repository: AssetRepository
     observation_repository: ObservationRepository
+    memory_builds: MemoryBuildRepository
+    memory_evidence: MemoryEvidenceRepository
+    memory_build_tasks: MemoryBuildTaskRepository
     media_storage: MediaStorage
     metadata_reader: MetadataReader
     capture_time_resolver: CaptureTimeResolver
@@ -415,6 +428,9 @@ class Container:
         database = Database(settings.database_path, MIGRATIONS_DIR)
         observations = SqliteObservationRepository(database)
         assets = SqliteAssetRepository(database)
+        memory_builds = SqliteMemoryBuildRepository(database)
+        memory_evidence = SqliteMemoryEvidenceRepository(database)
+        memory_build_tasks = SqliteMemoryBuildTaskRepository(database)
         entities = SqliteEntityRepository(database)
         asset_places = SqliteAssetPlaceRepository(database)
         # 词法投影的 geo/time/file 锚点取自 asset 与 asset_places（不是 observation），
@@ -619,6 +635,9 @@ class Container:
             spaces=SqliteSpaceRepository(database),
             asset_repository=assets,
             observation_repository=observations,
+            memory_builds=memory_builds,
+            memory_evidence=memory_evidence,
+            memory_build_tasks=memory_build_tasks,
             media_storage=FileSystemMediaStorage(settings.media_dir),
             metadata_reader=PillowMetadataReader(),
             capture_time_resolver=ResolveCaptureTime(),

@@ -20,7 +20,10 @@ from sentrix.domain.media.models import (
     DerivedAsset,
     GpsPoint,
     MediaType,
+    MemoryBuildTask,
+    MemoryEvidence,
     Observation,
+    ObservationBuild,
     ObservationFact,
     VideoMetadata,
 )
@@ -685,3 +688,57 @@ class CaptureTimeResolver(Protocol):
     def __call__(
         self, value: datetime | None, gps: GpsPoint | None, source: str
     ) -> tuple[datetime | None, CaptureTime]: ...
+
+
+class MemoryBuildRepository(Protocol):
+    """图片构建的版本/阶段记录。构建记录不是素材记忆的权威，只回答产出条件。"""
+
+    def create_or_get(self, build: ObservationBuild) -> tuple[ObservationBuild, bool]:
+        """按 ``build_key`` 幂等创建；返回 ``(记录, 是否新建)``。"""
+        ...
+
+    def get(self, build_id: str) -> ObservationBuild | None: ...
+
+    def update_status(
+        self,
+        build_id: str,
+        *,
+        status: str,
+        error_category: str = "",
+        error: str = "",
+        finished_at: datetime | None = None,
+    ) -> ObservationBuild | None: ...
+
+    def list_for_asset(self, asset_id: str) -> Sequence[ObservationBuild]: ...
+
+    def latest_for_stage(self, asset_id: str, stage: str) -> ObservationBuild | None: ...
+
+
+class MemoryEvidenceRepository(Protocol):
+    """字段依据的写入与按 owner 读取；owner 的 scope 由仓储显式校验。"""
+
+    def add(self, evidence: MemoryEvidence) -> MemoryEvidence: ...
+
+    def list_for_owner(
+        self,
+        *,
+        scope_id: str,
+        owner_kind: str,
+        owner_id: str,
+        field_path: str = "",
+        statuses: Sequence[str] = (),
+    ) -> Sequence[MemoryEvidence]: ...
+
+    def list_by_build(self, build_id: str) -> Sequence[MemoryEvidence]: ...
+
+
+class MemoryBuildTaskRepository(Protocol):
+    """阶段续办任务；不新建 worker，由现有调度器 claim。"""
+
+    def enqueue(self, task: MemoryBuildTask) -> MemoryBuildTask: ...
+
+    def get(self, task_id: str) -> MemoryBuildTask | None: ...
+
+    def list_due(self, *, limit: int, now: datetime | None = None) -> Sequence[MemoryBuildTask]: ...
+
+    def list_for_asset(self, asset_id: str, *, statuses: Sequence[str] = ()) -> Sequence[MemoryBuildTask]: ...
