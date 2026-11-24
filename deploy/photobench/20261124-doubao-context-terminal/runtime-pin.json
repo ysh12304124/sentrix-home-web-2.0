@@ -1,0 +1,8 @@
+{
+  "basis": "Read-only reconnect inspection after host boot at 2026-11-24 09:36:41 +08:00; original run finished at 04:29:43 before reboot. No business restart or deployment in this acceptance.",
+  "service_pids": {
+    "sentrix-atm100-doubao-api.service": 10256,
+    "sentrix-atm100-doubao-photobench.service": 1537
+  },
+  "expected_product_run_turn_sha256": "9d8dff727f28837ca598cdd3f8eed300401791b4aa008862cd21f1435d84d4dc"
+}
