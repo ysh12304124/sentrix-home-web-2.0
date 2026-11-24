@@ -25,6 +25,9 @@ from sentrix.api.schemas.timeline import (
     CalendarDay,
     CalendarMonth,
     CalendarYear,
+    EventSearchHit,
+    EventSearchMember,
+    EventSearchResponse,
     ImportBatchRequest,
     ImportBatchResponse,
     ImportFailure,
@@ -57,6 +60,7 @@ from sentrix.application.memories.read_timeline import (
     MAX_LIMIT,
     ReadTimeline,
     TimelineDocumentProjection,
+    _document_projection,
 )
 from sentrix.application.memories.read_timeline import (
     TimelineEvent as TimelineEventResult,
@@ -64,6 +68,7 @@ from sentrix.application.memories.read_timeline import (
 from sentrix.application.memories.read_timeline import (
     TimelineEventSummary as TimelineEventSummaryResult,
 )
+from sentrix.application.memories.search_events import SearchEventDocuments
 from sentrix.application.memories.summarize_event import SummarizeEvent
 from sentrix.bootstrap.container import Container
 from sentrix.bootstrap.import_wiring import (
@@ -76,6 +81,19 @@ from sentrix.domain.media.progress import OperationCancelled
 log = logging.getLogger("sentrix.api.timeline")
 
 router = APIRouter(tags=["timeline"])
+
+
+def _string_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
+
+
+def _int_value(value: object) -> int:
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
 def _document_payload(
@@ -111,9 +129,9 @@ def _document_payload(
                 display_label=str(item.get("display_label") or ""),
                 verified_name=str(item.get("verified_name") or ""),
                 pending=bool(item.get("pending", True)),
-                identity_states=[str(v) for v in item.get("identity_states") or ()],
-                descriptions=[str(v) for v in item.get("descriptions") or ()],
-                face_instance_ids=[str(v) for v in item.get("face_instance_ids") or ()],
+                identity_states=_string_list(item.get("identity_states")),
+                descriptions=_string_list(item.get("descriptions")),
+                face_instance_ids=_string_list(item.get("face_instance_ids")),
             )
             for item in document.participants
         ],
@@ -123,10 +141,10 @@ def _document_payload(
                 text=str(item.get("text") or ""),
                 observation_id=str(item.get("observation_id") or ""),
                 asset_id=str(item.get("asset_id") or ""),
-                observation_revision=int(item.get("observation_revision") or 0),
+                observation_revision=_int_value(item.get("observation_revision")),
                 source=str(item.get("source") or "observation"),
                 state=str(item.get("state") or "effective"),
-                evidence_refs=[str(v) for v in item.get("evidence_refs") or ()],
+                evidence_refs=_string_list(item.get("evidence_refs")),
             )
             for item in document.content_items
         ],
@@ -292,6 +310,50 @@ def timeline_calendar(
             for year in years
         ],
     )
+
+
+@router.get("/events/search", response_model=EventSearchResponse)
+def search_events(
+    q: str = Query(..., min_length=1, max_length=200),
+    scope_id: str = "",
+    limit: int = Query(20, ge=1, le=100),
+    container: Container = Depends(get_container),
+) -> EventSearchResponse:
+    """事件文档搜索；静态路径必须注册在 ``/events/{event_id}`` 之前。"""
+    results = SearchEventDocuments(
+        documents=container.event_documents,
+        embedder=container.text_embedder,
+        index=container.vector_index,
+        vectors=container.vector_repository,
+    ).execute(query=q, scope_id=scope_id, limit=limit)
+    items: list[EventSearchHit] = []
+    for result in results:
+        document = _document_payload(_document_projection(result.document))
+        if document is None:
+            continue
+        matched = set(result.matched_observation_ids)
+        items.append(
+            EventSearchHit(
+                event_id=result.event_id,
+                document=document,
+                matched_fields=list(result.matched_fields),
+                evidence_refs=list(result.evidence_refs),
+                channels=list(result.channels),
+                score=result.score,
+                matched_observation_ids=list(result.matched_observation_ids),
+                members=[
+                    EventSearchMember(
+                        observation_id=member.observation_id,
+                        asset_id=member.asset_id,
+                        media_type=member.media_type,
+                        captured_at=member.captured_at.isoformat() if member.captured_at else None,
+                        matched=member.observation_id in matched,
+                    )
+                    for member in result.all_members
+                ],
+            )
+        )
+    return EventSearchResponse(query=q, scope_id=scope_id, items=items)
 
 
 @router.get("/events/{event_id}")

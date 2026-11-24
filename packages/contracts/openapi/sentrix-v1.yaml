@@ -1594,6 +1594,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/events/search:
+    get:
+      tags:
+      - timeline
+      summary: Search Events
+      description: 事件文档搜索；静态路径必须注册在 ``/events/{event_id}`` 之前。
+      operationId: search_events_api_v1_events_search_get
+      parameters:
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          title: Q
+      - name: scope_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scope Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventSearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/events/{event_id}:
     get:
       tags:
@@ -5707,6 +5752,91 @@ components:
         ``relationship_count`` 是 ``relationships`` 上两条计数（subject 侧 + object 侧）
 
         之和，所以**一条关系给两端各记 1**——1.0 ``db.py:4087-4098`` 就是这个算法。'
+    EventSearchHit:
+      properties:
+        event_id:
+          type: string
+          title: Event Id
+        document:
+          $ref: '#/components/schemas/TimelineDocument'
+        matched_fields:
+          items:
+            type: string
+          type: array
+          title: Matched Fields
+        evidence_refs:
+          items:
+            type: string
+          type: array
+          title: Evidence Refs
+        channels:
+          items:
+            type: string
+          type: array
+          title: Channels
+        score:
+          type: number
+          title: Score
+          default: 0.0
+        matched_observation_ids:
+          items:
+            type: string
+          type: array
+          title: Matched Observation Ids
+        members:
+          items:
+            $ref: '#/components/schemas/EventSearchMember'
+          type: array
+          title: Members
+      type: object
+      required:
+      - event_id
+      - document
+      title: EventSearchHit
+    EventSearchMember:
+      properties:
+        observation_id:
+          type: string
+          title: Observation Id
+        asset_id:
+          type: string
+          title: Asset Id
+        media_type:
+          type: string
+          title: Media Type
+        captured_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Captured At
+        matched:
+          type: boolean
+          title: Matched
+          default: false
+      type: object
+      required:
+      - observation_id
+      - asset_id
+      - media_type
+      title: EventSearchMember
+    EventSearchResponse:
+      properties:
+        query:
+          type: string
+          title: Query
+        scope_id:
+          type: string
+          title: Scope Id
+        items:
+          items:
+            $ref: '#/components/schemas/EventSearchHit'
+          type: array
+          title: Items
+      type: object
+      required:
+      - query
+      - scope_id
+      title: EventSearchResponse
     FaceClusterListResponse:
       properties:
         clusters:

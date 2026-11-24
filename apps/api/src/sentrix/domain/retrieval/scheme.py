@@ -55,6 +55,8 @@ TEXT_DIMENSION = WEMM_DIMENSION
 VISUAL_SPACE = "visual"
 SEMANTIC_SPACE = "semantic"
 EPISODIC_SPACE = "episodic"
+# 事件文档独立命名空间：只放 active 事件正文，不与观察/事件旧桥共用集合或 top-k。
+EVENT_DOCUMENT_SPACE = "event_document"
 
 # ---- 方案注册表：整方案原子切换 ------------------------------------------------
 

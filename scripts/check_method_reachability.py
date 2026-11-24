@@ -193,7 +193,6 @@ PENDING_METHODS: dict[str, str] = {
     "EventDocumentRepository.redirect": (
         "events.merge 在同一事务内直接写 redirect 表；端口方法留给 S7 生命周期统一入口"
     ),
-    "EventDocumentRepository.redirect_target": "S5 事件搜索/成员展开解析 merge 重定向时接线",
     # —— S9b-3（2026-10-04）：`request_bytes` 被它自己的反向规则删掉了 ——
     #
     # 证据判分（`application/run_execution/judge.py::_inline_images`）要按 asset_id

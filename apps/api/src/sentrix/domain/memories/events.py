@@ -257,6 +257,18 @@ class EventDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class EventSearchHit:
+    """事件词法命中；只有 active 文档可被返回。"""
+
+    event_id: str
+    document_id: str
+    matched_fields: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    content_observation_ids: tuple[str, ...]
+    score: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class EventParticipantRecord:
     """``event_participants`` 一行，带出这个人当前的名字与状态（1.0 ``list_event_participants``
     的 JOIN）。

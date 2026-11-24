@@ -420,6 +420,13 @@ class SqliteEventRepository:
                 " WHERE event_id = ? AND status = 'active'",
                 (datetime.now(UTC).isoformat(), source_event_id),
             )
+            connection.execute("DELETE FROM event_search_terms WHERE event_id = ?", (source_event_id,))
+            connection.execute("DELETE FROM event_search_fts WHERE event_id = ?", (source_event_id,))
+            connection.execute(
+                "DELETE FROM memory_vectors WHERE space = 'event_document'"
+                " AND source_type = 'event_document' AND source_id = ?",
+                (source_event_id,),
+            )
             connection.execute(
                 "INSERT INTO event_redirects(scope_id, old_event_id, new_event_id, revision, created_at)"
                 " VALUES (?, ?, ?, 1, ?) ON CONFLICT(scope_id, old_event_id) DO UPDATE SET"
@@ -449,6 +456,13 @@ class SqliteEventRepository:
                 "UPDATE event_documents SET status = 'retracted', updated_at = ?"
                 " WHERE event_id = ? AND status = 'active'",
                 (datetime.now(UTC).isoformat(), event_id),
+            )
+            connection.execute("DELETE FROM event_search_terms WHERE event_id = ?", (event_id,))
+            connection.execute("DELETE FROM event_search_fts WHERE event_id = ?", (event_id,))
+            connection.execute(
+                "DELETE FROM memory_vectors WHERE space = 'event_document'"
+                " AND source_type = 'event_document' AND source_id = ?",
+                (event_id,),
             )
             connection.execute("DELETE FROM event_observations WHERE event_id = ?", (event_id,))
             connection.execute("DELETE FROM events WHERE id = ?", (event_id,))

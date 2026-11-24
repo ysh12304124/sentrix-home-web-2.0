@@ -14,6 +14,7 @@ from sentrix.domain.memories.events import (
     EventEntityRecord,
     EventParticipantRecord,
     EventRecord,
+    EventSearchHit,
 )
 from sentrix.domain.memories.facts import Fact
 from sentrix.domain.memories.graph import (
@@ -307,6 +308,10 @@ class EventDocumentRepository(Protocol):
     def active_for_events(self, event_ids: Sequence[str]) -> Mapping[str, EventDocument]: ...
 
     def list_active(self, scope_id: str | None, *, limit: int = 1000) -> Sequence[EventDocument]: ...
+
+    def search_terms(
+        self, query: str, *, scope_id: str | None, limit: int
+    ) -> Sequence[EventSearchHit]: ...
 
     def redirect(self, *, scope_id: str, old_event_id: str, new_event_id: str) -> None: ...
 

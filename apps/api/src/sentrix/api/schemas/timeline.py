@@ -133,6 +133,31 @@ class TimelineCalendarResponse(BaseModel):
     years: list[CalendarYear]
 
 
+class EventSearchMember(BaseModel):
+    observation_id: str
+    asset_id: str
+    media_type: str
+    captured_at: str | None = None
+    matched: bool = False
+
+
+class EventSearchHit(BaseModel):
+    event_id: str
+    document: TimelineDocument
+    matched_fields: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    channels: list[str] = Field(default_factory=list)
+    score: float = 0.0
+    matched_observation_ids: list[str] = Field(default_factory=list)
+    members: list[EventSearchMember] = Field(default_factory=list)
+
+
+class EventSearchResponse(BaseModel):
+    query: str
+    scope_id: str
+    items: list[EventSearchHit] = Field(default_factory=list)
+
+
 class TimelineResponse(BaseModel):
     scope_id: str
     # scope 内的事件总数（不是本页条数），分页据此判断还有没有下一段。

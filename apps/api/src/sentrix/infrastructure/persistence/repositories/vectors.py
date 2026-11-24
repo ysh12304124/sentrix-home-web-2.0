@@ -91,6 +91,23 @@ class VectorTableRepository:
                 ),
             )
 
+    def delete(
+        self,
+        *,
+        space: str,
+        source_type: str,
+        source_id: str,
+        model_name: str | None = None,
+    ) -> int:
+        sql = f"DELETE FROM {self._TABLE} WHERE space = ? AND source_type = ? AND source_id = ?"
+        params: list[Any] = [space, source_type, source_id]
+        if model_name:
+            sql += " AND model_name = ?"
+            params.append(model_name)
+        with self._database.connect() as connection, connection:
+            cursor = connection.execute(sql, tuple(params))
+            return int(cursor.rowcount)
+
     def update_metadata(
         self, *, space: str, source_type: str, source_id: str, metadata: dict[str, object]
     ) -> int:

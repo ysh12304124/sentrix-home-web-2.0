@@ -19,8 +19,10 @@ from sentrix.domain.memories.events import (
     EventDocumentMember,
     EventPersonRef,
     EventPlaceProjection,
+    EventSearchHit,
     EventTimeProjection,
 )
+from sentrix.domain.retrieval.lexical import fts_content, normalize_text, query_tokens
 from sentrix.infrastructure.persistence.database import Database
 
 _COLUMNS = (
@@ -277,6 +279,72 @@ def _row_to_document(row: sqlite3.Row) -> EventDocument:
     )
 
 
+def _refresh_search_terms(
+    connection: sqlite3.Connection, document: EventDocument, document_id: str, now: str
+) -> None:
+    connection.execute("DELETE FROM event_search_terms WHERE event_id = ?", (document.event_id,))
+    connection.execute("DELETE FROM event_search_fts WHERE event_id = ?", (document.event_id,))
+    terms: list[tuple[str, str, str]] = []
+
+    def add(field_type: str, value: str, evidence_ref: str = "", channel: str = "") -> None:
+        normalized = normalize_text(value)
+        if normalized:
+            terms.append((field_type, normalized, evidence_ref or channel))
+
+    for value in (document.title, document.short_summary, document.summary):
+        add("summary", value, f"document:{document_id}", "event_document")
+    for item in document.content_items:
+        add("content", item.text, ",".join(item.evidence_refs), item.source)
+    for person in document.participants:
+        add("participant", person.verified_name, person.person_id, "identity")
+        for description in person.descriptions:
+            add("participant", description, person.person_id, "face_description")
+    for value in document.place.physical_locations:
+        add("physical_place", value, ",".join(document.place.evidence_refs), "asset_place")
+    for value in document.place.scene:
+        add("scene", value, "", "observation")
+    for value in document.time.member_dates:
+        add("member_date", value, "", "capture_time")
+    add("event_id", document.event_id, "", "event")
+    for field_type, value, evidence_ref in dict.fromkeys(terms):
+        term_id = f"eterm_{uuid.uuid4().hex[:16]}"
+        connection.execute(
+            "INSERT INTO event_search_terms("
+            " id, scope_id, event_id, document_id, field_type, normalized_value,"
+            " evidence_ref, source_channel, created_at, updated_at"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                term_id,
+                document.scope_id,
+                document.event_id,
+                document_id,
+                field_type,
+                value,
+                evidence_ref,
+                field_type,
+                now,
+                now,
+            ),
+        )
+        tokens = fts_content(value)
+        if tokens:
+            connection.execute(
+                "INSERT INTO event_search_fts("
+                " tokens, term_id, scope_id, event_id, document_id, field_type,"
+                " normalized_value, evidence_ref) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    tokens,
+                    term_id,
+                    document.scope_id,
+                    document.event_id,
+                    document_id,
+                    field_type,
+                    value,
+                    evidence_ref,
+                ),
+            )
+
+
 class SqliteEventDocumentRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -313,6 +381,7 @@ class SqliteEventDocumentRepository:
             )
             time_payload = _time(document.time)
             time_payload["source_modalities"] = list(document.source_modalities)
+            document_id = _new_id()
             connection.execute(
                 "INSERT INTO event_documents("
                 " id, scope_id, event_id, revision, status, doc_version, title, short_summary,"
@@ -323,7 +392,7 @@ class SqliteEventDocumentRepository:
                 " place_conflict, created_at, updated_at"
                 ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    _new_id(),
+                    document_id,
                     document.scope_id,
                     document.event_id,
                     revision,
@@ -355,6 +424,7 @@ class SqliteEventDocumentRepository:
                     now,
                 ),
             )
+            _refresh_search_terms(connection, document, document_id, now)
         created = self.active_for_event(document.event_id)
         assert created is not None
         return created
@@ -398,6 +468,61 @@ class SqliteEventDocumentRepository:
                 (*params, max(1, int(limit))),
             ).fetchall()
         return tuple(_row_to_document(row) for row in rows)
+
+    def search_terms(self, query: str, *, scope_id: str | None, limit: int) -> Sequence[EventSearchHit]:
+        tokens = query_tokens(query)
+        if not tokens:
+            return ()
+        matched: dict[str, set[str]] = {}
+        fields: dict[str, set[str]] = {}
+        refs: dict[str, set[str]] = {}
+        observations: dict[str, set[str]] = {}
+        documents: dict[str, str] = {}
+        for token in tokens:
+            clause = " WHERE event_search_fts MATCH ?"
+            params: list[object] = [f'"{token}"']
+            if scope_id:
+                clause += " AND scope_id = ?"
+                params.append(scope_id)
+            try:
+                with self._database.connect() as connection:
+                    rows = connection.execute(
+                        "SELECT event_id, document_id, field_type, evidence_ref, normalized_value"
+                        " FROM event_search_fts" + clause,
+                        tuple(params),
+                    ).fetchall()
+            except Exception:
+                continue
+            for row in rows:
+                event_id = str(row["event_id"])
+                matched.setdefault(event_id, set()).add(token)
+                documents[event_id] = str(row["document_id"])
+                fields.setdefault(event_id, set()).add(str(row["field_type"]))
+                if row["evidence_ref"]:
+                    refs.setdefault(event_id, set()).add(str(row["evidence_ref"]))
+                if str(row["field_type"]) == "content" and row["evidence_ref"]:
+                    ref = str(row["evidence_ref"])
+                    if ref.startswith("observation:"):
+                        observations.setdefault(event_id, set()).add(ref.split(":", 1)[1])
+        active = self.active_for_events(list(matched))
+        hits: list[EventSearchHit] = []
+        for event_id, tokens_hit in matched.items():
+            document = active.get(event_id)
+            if document is None or document.id != documents.get(event_id):
+                continue
+            content_obs = tuple(sorted(observations.get(event_id, set())))
+            hits.append(
+                EventSearchHit(
+                    event_id=event_id,
+                    document_id=document.id,
+                    matched_fields=tuple(sorted(fields.get(event_id, set()))),
+                    evidence_refs=tuple(sorted(refs.get(event_id, set()))),
+                    content_observation_ids=content_obs,
+                    score=float(len(tokens_hit)),
+                )
+            )
+        hits.sort(key=lambda item: (-item.score, item.event_id))
+        return tuple(hits[: max(1, int(limit))])
 
     def redirect(self, *, scope_id: str, old_event_id: str, new_event_id: str) -> None:
         with self._database.connect() as connection, connection:

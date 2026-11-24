@@ -133,6 +133,17 @@ class VectorRepository(Protocol):
 
     def has_vector(self, *, space: str, source_type: str, source_id: str, model_name: str) -> bool: ...
 
+    def delete(
+        self,
+        *,
+        space: str,
+        source_type: str,
+        source_id: str,
+        model_name: str | None = None,
+    ) -> int:
+        """按 owner/source 删除权威向量；返回删了几行。"""
+        ...
+
     def update_metadata(
         self, *, space: str, source_type: str, source_id: str, metadata: dict[str, object]
     ) -> int:

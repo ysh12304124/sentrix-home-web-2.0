@@ -32,6 +32,7 @@ from sentrix.application.memories.assign_events import (
     EventVisualSimilarity,
 )
 from sentrix.application.memories.build_graph import BuildMemoryGraph
+from sentrix.application.memories.index_event_document import IndexEventDocument
 from sentrix.application.memories.maintain_facts import MaintainFacts
 from sentrix.application.memories.publish_event_document import PublishEventDocument
 from sentrix.application.memories.summarize_event import SummarizeEvent
@@ -259,9 +260,22 @@ def _event_document_publisher(container: Container) -> Callable[..., object]:
         evidence=container.memory_evidence,
         documents=container.event_documents,
     )
+    indexer = IndexEventDocument(
+        embedder=container.text_embedder,
+        vectors=container.vector_repository,
+        index=container.vector_index,
+        observations=container.observation_repository,
+        text_vectors=container.text_vector_repository,
+    )
 
     def run(event_id: str, *, summary_source: str = "auto", summary_state: str = "") -> object:
-        return use_case.execute(event_id, summary_source=summary_source, summary_state=summary_state)
+        document = use_case.execute(event_id, summary_source=summary_source, summary_state=summary_state)
+        if document is not None:
+            try:
+                indexer.execute(document)
+            except Exception as error:  # noqa: BLE001 - 索引失败不阻断文档与时间线
+                log.warning("事件文档索引失败（event=%s）: %s", event_id, error)
+        return document
 
     return run
 
