@@ -205,6 +205,26 @@ class FaceManifestRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class PersonOccurrenceRecord:
+    """本图一次人物出现；``person_id`` 可空，描述与可信状态分别来自当前有效来源。"""
+
+    face_instance_id: str
+    asset_id: str
+    observation_id: str
+    scope_id: str
+    cluster_id: str | None
+    person_id: str | None
+    display_label: str
+    identity_state: str
+    bbox: tuple[float, ...]
+    description: str
+    description_source: str
+    description_state: str
+    description_build_id: str
+    description_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class FaceEnrollmentResult:
     """一次检测项登记后的可回查结果：检测项 → face_instance / cluster / 可信状态。"""
 

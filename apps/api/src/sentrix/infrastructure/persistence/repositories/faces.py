@@ -27,6 +27,7 @@ from sentrix.domain.identity.models import (
     FaceInstanceRecord,
     FaceManifestRecord,
     FacePrototypeRecord,
+    PersonOccurrenceRecord,
     PhotoIdentityRecord,
 )
 from sentrix.infrastructure.persistence.database import Database
@@ -355,6 +356,171 @@ class SqliteFaceRepository:
 
     def list_instances(self, cluster_id: str) -> Sequence[FaceInstanceRecord]:
         return self._instances_where("fi.cluster_id = ?", (cluster_id,))
+
+    def list_occurrences(
+        self,
+        *,
+        scope_id: str,
+        person_id: str = "",
+        face_instance_id: str = "",
+        asset_id: str = "",
+        limit: int = 200,
+    ) -> Sequence[PersonOccurrenceRecord]:
+        """本图出现读取：描述优先当前有效 appearance，其次 face 级 evidence。"""
+        clauses = ["a.scope_id = ?", "fi.identity_state != 'rejected'"]
+        params: list[object] = [scope_id]
+        if person_id:
+            clauses.append("fc.entity_id = ?")
+            params.append(person_id)
+        if face_instance_id:
+            clauses.append("fi.id = ?")
+            params.append(face_instance_id)
+        if asset_id:
+            clauses.append("fi.asset_id = ?")
+            params.append(asset_id)
+        sql = f"""
+            SELECT fi.id AS face_instance_id, fi.asset_id, fi.observation_id, a.scope_id,
+                   fi.cluster_id, fc.entity_id, fi.identity_state, fi.bbox_json,
+                   e.canonical_name, e.status AS entity_status, e.name_state,
+                   pae.description_text AS appearance_description,
+                   pae.description_state AS appearance_state,
+                   pae.source_build_id AS appearance_build_id,
+                   pae.source_revision AS appearance_revision,
+                   me.value_json AS evidence_value_json,
+                   me.build_id AS evidence_build_id,
+                   me.observation_revision AS evidence_revision
+            FROM face_instances fi
+            JOIN assets a ON a.id = fi.asset_id
+            LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id
+            LEFT JOIN entities e ON e.id = fc.entity_id
+            LEFT JOIN person_appearance_evidence pae ON pae.id = (
+                SELECT pae2.id FROM person_appearance_evidence pae2
+                WHERE pae2.face_instance_id = fi.id
+                  AND pae2.description_state = 'effective'
+                  AND pae2.description_text != ''
+                ORDER BY pae2.source_revision DESC, pae2.updated_at DESC, pae2.id DESC LIMIT 1
+            )
+            LEFT JOIN memory_evidence me ON me.id = (
+                SELECT me2.id FROM memory_evidence me2
+                WHERE me2.owner_kind = 'face_instance' AND me2.owner_id = fi.id
+                  AND me2.field_path = 'face.description' AND me2.status = 'effective'
+                ORDER BY me2.observation_revision DESC, me2.created_at DESC, me2.id DESC LIMIT 1
+            )
+            WHERE {" AND ".join(clauses)}
+            ORDER BY fi.created_at DESC, fi.id DESC LIMIT ?
+        """
+        with self._database.connect() as connection:
+            rows = connection.execute(sql, (*params, max(1, int(limit)))).fetchall()
+        occurrences: list[PersonOccurrenceRecord] = []
+        for row in rows:
+            verified_name = ""
+            if (
+                str(row["entity_status"] or "") == ENTITY_STATUS_CONFIRMED
+                and str(row["name_state"] or "") == NAME_STATE_CONFIRMED
+                and str(row["identity_state"] or "") in {"user_verified", "auto_trusted"}
+            ):
+                verified_name = str(row["canonical_name"] or "").strip()
+            person_id_value = str(row["entity_id"]) if row["entity_id"] else None
+            description = str(row["appearance_description"] or "").strip()
+            source = "appearance" if description else ""
+            state = str(row["appearance_state"] or "effective") if description else "not_provided"
+            build_id = str(row["appearance_build_id"] or "") if description else ""
+            revision = int(row["appearance_revision"] or 0) if description else 0
+            if not description and row["evidence_value_json"]:
+                try:
+                    payload = json.loads(str(row["evidence_value_json"]))
+                except json.JSONDecodeError:
+                    payload = {}
+                description = (
+                    str(payload.get("description") or "").strip() if isinstance(payload, dict) else ""
+                )
+                if description:
+                    source = "face_evidence"
+                    state = "effective"
+                    build_id = str(row["evidence_build_id"] or "")
+                    revision = int(row["evidence_revision"] or 0)
+            if verified_name:
+                label = verified_name
+            elif person_id_value:
+                label = f"人物…{person_id_value[-8:]}"
+            else:
+                label = f"本图…{str(row['face_instance_id'])[-8:]}"
+            occurrences.append(
+                PersonOccurrenceRecord(
+                    face_instance_id=str(row["face_instance_id"]),
+                    asset_id=str(row["asset_id"]),
+                    observation_id=str(row["observation_id"]),
+                    scope_id=str(row["scope_id"]),
+                    cluster_id=str(row["cluster_id"]) if row["cluster_id"] else None,
+                    person_id=person_id_value,
+                    display_label=label,
+                    identity_state=str(row["identity_state"] or "candidate"),
+                    bbox=_vector(row["bbox_json"]),
+                    description=description,
+                    description_source=source,
+                    description_state=state,
+                    description_build_id=build_id,
+                    description_revision=revision,
+                )
+            )
+        return tuple(occurrences)
+
+    def confirm_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord:
+        """用户明确确认这一次出现；只提升该 face 的可信状态，不批量确认簇内其他脸。"""
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT cluster_id FROM face_instances WHERE id = ?", (face_instance_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(face_instance_id)
+            cluster_id = str(row["cluster_id"]) if row["cluster_id"] else ""
+            if not cluster_id:
+                raise ValueError("face is not assigned to a person")
+            if cluster_id != expected_cluster_id:
+                raise ValueError("face assignment changed; reload before confirming")
+            connection.execute(
+                "UPDATE face_instances SET identity_state = 'user_verified', identity_source = 'user'"
+                " WHERE id = ?",
+                (face_instance_id,),
+            )
+        instance = self.get_instance(face_instance_id)
+        assert instance is not None
+        return instance
+
+    def reject_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord:
+        """单次出现驳回：只解除这次归属；脸/图证据保留，旧 confirmed 提及删除。"""
+        now = datetime.now(UTC).isoformat()
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT fi.cluster_id, fc.entity_id FROM face_instances fi"
+                " LEFT JOIN face_clusters fc ON fc.id = fi.cluster_id WHERE fi.id = ?",
+                (face_instance_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(face_instance_id)
+            cluster_id = str(row["cluster_id"]) if row["cluster_id"] else ""
+            if not cluster_id:
+                raise ValueError("face is not assigned to a person")
+            if cluster_id != expected_cluster_id:
+                raise ValueError("face assignment changed; reload before rejecting")
+            entity_id = str(row["entity_id"] or "")
+            connection.execute(
+                "UPDATE face_instances SET cluster_id = NULL, identity_state = 'rejected',"
+                " identity_source = 'user', rejected_entity_id = ? WHERE id = ?",
+                (entity_id, face_instance_id),
+            )
+            connection.execute("DELETE FROM entity_mentions WHERE face_instance_id = ?", (face_instance_id,))
+            connection.execute(
+                "UPDATE face_clusters SET member_count ="
+                " (SELECT COUNT(*) FROM face_instances WHERE cluster_id = ?),"
+                " revision = revision + 1, updated_at = ? WHERE id = ?",
+                (cluster_id, now, cluster_id),
+            )
+        instance = self.get_instance(face_instance_id)
+        assert instance is not None
+        return instance
 
     def list_face_manifest(self, asset_id: str) -> Sequence[FaceManifestRecord]:
         """1.0 ``tools.py:2328-2357`` 那条 SQL，逐字。

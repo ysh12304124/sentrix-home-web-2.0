@@ -46,6 +46,7 @@ from sentrix.domain.identity.models import (
     FacePrototypeRecord,
     PersonMomentRecord,
     PersonNameMatch,
+    PersonOccurrenceRecord,
     PhotoIdentityRecord,
     PortraitRevisionRecord,
     RelationshipRecord,
@@ -149,6 +150,22 @@ class FaceRepository(Protocol):
         ...
 
     def list_instances(self, cluster_id: str) -> Sequence[FaceInstanceRecord]: ...
+
+    def list_occurrences(
+        self,
+        *,
+        scope_id: str,
+        person_id: str = "",
+        face_instance_id: str = "",
+        asset_id: str = "",
+        limit: int = 200,
+    ) -> Sequence[PersonOccurrenceRecord]: ...
+
+    def reject_assignment(self, face_instance_id: str, *, expected_cluster_id: str) -> FaceInstanceRecord: ...
+
+    def confirm_assignment(
+        self, face_instance_id: str, *, expected_cluster_id: str
+    ) -> FaceInstanceRecord: ...
 
     def list_face_manifest(self, asset_id: str) -> Sequence[FaceManifestRecord]:
         """一张照片里**检测到的每一张脸**（含没绑定到人的那些），按提示词要的顺序。T123 用。

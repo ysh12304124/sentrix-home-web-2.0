@@ -519,3 +519,53 @@ class EntityGroupDetailResponse(BaseModel):
     members: list[EntityDetailResponse]
     observations: list[EntityDetailObservation]
     events: list[EntityDetailEvent]
+
+
+class PersonOccurrencePayload(BaseModel):
+    """一次本图出现的稳定读取契约；``display_label`` 不是姓名。"""
+
+    face_instance_id: str
+    asset_id: str
+    observation_id: str
+    scope_id: str
+    cluster_id: str | None
+    person_id: str | None
+    display_label: str
+    identity_state: str
+    bbox: list[float]
+    description: str
+    description_source: str
+    description_state: str
+    description_build_id: str
+    description_revision: int
+
+
+class PersonOccurrenceListResponse(BaseModel):
+    scope_id: str
+    occurrences: list[PersonOccurrencePayload]
+
+
+class RejectFaceAssignmentRequest(BaseModel):
+    expected_cluster_id: str
+
+
+class RejectFaceAssignmentResponse(BaseModel):
+    face_instance_id: str
+    asset_id: str
+    observation_id: str
+    cluster_id: str | None
+    identity_state: str
+    rejected_entity_id: str
+
+
+class ConfirmFaceAssignmentRequest(BaseModel):
+    expected_cluster_id: str
+
+
+class ConfirmFaceAssignmentResponse(BaseModel):
+    face_instance_id: str
+    asset_id: str
+    observation_id: str
+    cluster_id: str | None
+    identity_state: str
+    rejected_entity_id: str

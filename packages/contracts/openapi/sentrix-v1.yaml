@@ -2515,6 +2515,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/occurrences:
+    get:
+      tags:
+      - identity
+      summary: List Person Occurrences
+      operationId: list_person_occurrences_api_v1_people_occurrences_get
+      parameters:
+      - name: scope_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Scope Id
+      - name: person_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Person Id
+      - name: face_instance_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Face Instance Id
+      - name: asset_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Asset Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonOccurrenceListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/people/{person_id}:
     get:
       tags:
@@ -2659,6 +2716,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SeedIdentityResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/face-instances/{face_instance_id}/confirm-assignment:
+    post:
+      tags:
+      - identity
+      summary: Confirm Face Assignment
+      operationId: confirm_face_assignment_api_v1_face_instances__face_instance_id__confirm_assignment_post
+      parameters:
+      - name: face_instance_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Face Instance Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmFaceAssignmentRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmFaceAssignmentResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/face-instances/{face_instance_id}/reject-assignment:
+    post:
+      tags:
+      - identity
+      summary: Reject Face Assignment
+      operationId: reject_face_assignment_api_v1_face_instances__face_instance_id__reject_assignment_post
+      parameters:
+      - name: face_instance_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Face Instance Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectFaceAssignmentRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RejectFaceAssignmentResponse'
         '422':
           description: Validation Error
           content:
@@ -4062,6 +4183,46 @@ components:
       - merged_into
       title: ConfirmClusterResponse
       description: '``merged_into`` 非空表示这次确认并进了另一个已存在的人（同名合并）。'
+    ConfirmFaceAssignmentRequest:
+      properties:
+        expected_cluster_id:
+          type: string
+          title: Expected Cluster Id
+      type: object
+      required:
+      - expected_cluster_id
+      title: ConfirmFaceAssignmentRequest
+    ConfirmFaceAssignmentResponse:
+      properties:
+        face_instance_id:
+          type: string
+          title: Face Instance Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_id:
+          type: string
+          title: Observation Id
+        cluster_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cluster Id
+        identity_state:
+          type: string
+          title: Identity State
+        rejected_entity_id:
+          type: string
+          title: Rejected Entity Id
+      type: object
+      required:
+      - face_instance_id
+      - asset_id
+      - observation_id
+      - cluster_id
+      - identity_state
+      - rejected_entity_id
+      title: ConfirmFaceAssignmentResponse
     ConversationDetailResponse:
       properties:
         conversation:
@@ -7214,6 +7375,89 @@ components:
       required:
       - people
       title: PersonListResponse
+    PersonOccurrenceListResponse:
+      properties:
+        scope_id:
+          type: string
+          title: Scope Id
+        occurrences:
+          items:
+            $ref: '#/components/schemas/PersonOccurrencePayload'
+          type: array
+          title: Occurrences
+      type: object
+      required:
+      - scope_id
+      - occurrences
+      title: PersonOccurrenceListResponse
+    PersonOccurrencePayload:
+      properties:
+        face_instance_id:
+          type: string
+          title: Face Instance Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_id:
+          type: string
+          title: Observation Id
+        scope_id:
+          type: string
+          title: Scope Id
+        cluster_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cluster Id
+        person_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Person Id
+        display_label:
+          type: string
+          title: Display Label
+        identity_state:
+          type: string
+          title: Identity State
+        bbox:
+          items:
+            type: number
+          type: array
+          title: Bbox
+        description:
+          type: string
+          title: Description
+        description_source:
+          type: string
+          title: Description Source
+        description_state:
+          type: string
+          title: Description State
+        description_build_id:
+          type: string
+          title: Description Build Id
+        description_revision:
+          type: integer
+          title: Description Revision
+      type: object
+      required:
+      - face_instance_id
+      - asset_id
+      - observation_id
+      - scope_id
+      - cluster_id
+      - person_id
+      - display_label
+      - identity_state
+      - bbox
+      - description
+      - description_source
+      - description_state
+      - description_build_id
+      - description_revision
+      title: PersonOccurrencePayload
+      description: 一次本图出现的稳定读取契约；``display_label`` 不是姓名。
     PersonPayload:
       properties:
         id:
@@ -7566,6 +7810,46 @@ components:
       - rejected_entity_id
       title: RejectClusterResponse
       description: '``rejected_entity_id`` 为空表示这一簇本来就没有候选实体，调用没有改动任何行。'
+    RejectFaceAssignmentRequest:
+      properties:
+        expected_cluster_id:
+          type: string
+          title: Expected Cluster Id
+      type: object
+      required:
+      - expected_cluster_id
+      title: RejectFaceAssignmentRequest
+    RejectFaceAssignmentResponse:
+      properties:
+        face_instance_id:
+          type: string
+          title: Face Instance Id
+        asset_id:
+          type: string
+          title: Asset Id
+        observation_id:
+          type: string
+          title: Observation Id
+        cluster_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cluster Id
+        identity_state:
+          type: string
+          title: Identity State
+        rejected_entity_id:
+          type: string
+          title: Rejected Entity Id
+      type: object
+      required:
+      - face_instance_id
+      - asset_id
+      - observation_id
+      - cluster_id
+      - identity_state
+      - rejected_entity_id
+      title: RejectFaceAssignmentResponse
     RelationshipBatchItem:
       properties:
         subject:

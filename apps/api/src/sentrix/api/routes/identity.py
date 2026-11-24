@@ -34,6 +34,8 @@ from sentrix.api.schemas.identity import (
     BatchConfirmResponse,
     ConfirmClusterRequest,
     ConfirmClusterResponse,
+    ConfirmFaceAssignmentRequest,
+    ConfirmFaceAssignmentResponse,
     EntityDetailAppearance,
     EntityDetailAsset,
     EntityDetailEntity,
@@ -59,8 +61,12 @@ from sentrix.api.schemas.identity import (
     MergePeopleResponse,
     PersonDetailResponse,
     PersonListResponse,
+    PersonOccurrenceListResponse,
+    PersonOccurrencePayload,
     PersonPayload,
     RejectClusterResponse,
+    RejectFaceAssignmentRequest,
+    RejectFaceAssignmentResponse,
     RenamePersonRequest,
     RenamePersonResponse,
     SeedIdentityResponse,
@@ -69,6 +75,11 @@ from sentrix.api.schemas.identity import (
 from sentrix.application.identity.appearance_sampling import QueueAppearance
 from sentrix.application.identity.merge_people import MergePeople
 from sentrix.application.identity.name_person import NamePerson
+from sentrix.application.identity.person_occurrences import (
+    ConfirmFaceAssignment,
+    ReadPersonOccurrences,
+    RejectFaceAssignment,
+)
 from sentrix.application.identity.read_entity_detail import EntityDetail, ReadEntityDetail
 from sentrix.application.identity.read_entity_groups import (
     EntityGroup,
@@ -102,6 +113,7 @@ from sentrix.domain.identity.models import (
     EntityRecord,
     FaceClusterRecord,
     FaceInstanceRecord,
+    PersonOccurrenceRecord,
     entity_display_name,
 )
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType, Observation
@@ -825,6 +837,47 @@ def list_people(
     return PersonListResponse(people=[_person_payload(container, item) for item in people])
 
 
+def _occurrence_payload(item: PersonOccurrenceRecord) -> PersonOccurrencePayload:
+    return PersonOccurrencePayload(
+        face_instance_id=item.face_instance_id,
+        asset_id=item.asset_id,
+        observation_id=item.observation_id,
+        scope_id=item.scope_id,
+        cluster_id=item.cluster_id,
+        person_id=item.person_id,
+        display_label=item.display_label,
+        identity_state=item.identity_state,
+        bbox=list(item.bbox),
+        description=item.description,
+        description_source=item.description_source,
+        description_state=item.description_state,
+        description_build_id=item.description_build_id,
+        description_revision=item.description_revision,
+    )
+
+
+@router.get("/people/occurrences", response_model=PersonOccurrenceListResponse)
+def list_person_occurrences(
+    scope_id: str = Query(..., min_length=1),
+    person_id: str = "",
+    face_instance_id: str = "",
+    asset_id: str = "",
+    limit: int = Query(200, ge=1, le=1000),
+    container: Container = Depends(get_container),
+) -> PersonOccurrenceListResponse:
+    result = ReadPersonOccurrences(faces=container.face_repository).execute(
+        scope_id=scope_id,
+        person_id=person_id,
+        face_instance_id=face_instance_id,
+        asset_id=asset_id,
+        limit=limit,
+    )
+    return PersonOccurrenceListResponse(
+        scope_id=result.scope_id,
+        occurrences=[_occurrence_payload(item) for item in result.items],
+    )
+
+
 @router.get("/people/{person_id}")
 def get_person(person_id: str, container: Container = Depends(get_container)) -> PersonDetailResponse:
     person = _person_or_404(container, person_id)
@@ -1097,6 +1150,60 @@ async def seed_person_identity(
 
 
 # ---- 人脸裁剪 --------------------------------------------------------------------
+
+
+@router.post(
+    "/face-instances/{face_instance_id}/confirm-assignment",
+    response_model=ConfirmFaceAssignmentResponse,
+)
+def confirm_face_assignment(
+    face_instance_id: str,
+    payload: ConfirmFaceAssignmentRequest,
+    container: Container = Depends(get_container),
+) -> ConfirmFaceAssignmentResponse:
+    try:
+        instance = ConfirmFaceAssignment(faces=container.face_repository).execute(
+            face_instance_id, expected_cluster_id=payload.expected_cluster_id
+        )
+    except KeyError as error:
+        raise NotFoundError("face instance not found") from error
+    except ValueError as error:
+        raise InvalidRequestError(str(error)) from error
+    return ConfirmFaceAssignmentResponse(
+        face_instance_id=instance.id,
+        asset_id=instance.asset_id,
+        observation_id=instance.observation_id,
+        cluster_id=instance.cluster_id,
+        identity_state=instance.identity_state,
+        rejected_entity_id=instance.rejected_entity_id,
+    )
+
+
+@router.post(
+    "/face-instances/{face_instance_id}/reject-assignment",
+    response_model=RejectFaceAssignmentResponse,
+)
+def reject_face_assignment(
+    face_instance_id: str,
+    payload: RejectFaceAssignmentRequest,
+    container: Container = Depends(get_container),
+) -> RejectFaceAssignmentResponse:
+    try:
+        instance = RejectFaceAssignment(faces=container.face_repository).execute(
+            face_instance_id, expected_cluster_id=payload.expected_cluster_id
+        )
+    except KeyError as error:
+        raise NotFoundError("face instance not found") from error
+    except ValueError as error:
+        raise InvalidRequestError(str(error)) from error
+    return RejectFaceAssignmentResponse(
+        face_instance_id=instance.id,
+        asset_id=instance.asset_id,
+        observation_id=instance.observation_id,
+        cluster_id=instance.cluster_id,
+        identity_state=instance.identity_state,
+        rejected_entity_id=instance.rejected_entity_id,
+    )
 
 
 @router.get("/face-instances/{face_instance_id}/crop")
