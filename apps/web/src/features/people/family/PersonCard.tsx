@@ -1,6 +1,9 @@
 /**
  * 一张人物卡。整张卡是一个按钮——点哪都进详情，不需要用户先去瞄准头像或名字。
  *
+ * 名录已按「我的人物 / 待认识」分开，所在的视图本身就说明了是否确认，所以卡片不再挂
+ * 「待确认」标签；家庭归属只对认出来的人有意义，待确认的面孔不显示它。
+ *
  * `data-person-id` 是给测试用的稳定钩子：冒烟用例要数「8 个人渲染出 8 张卡」，
  * 靠文案数会被改名/占位串影响，靠结构数才对得上真实形状（计划书 §5）。
  */
@@ -13,33 +16,24 @@ interface Props {
   readonly person: FamilyPerson;
   readonly selected: boolean;
   readonly onSelect: (personId: string) => void;
-  /** 合并模式：点卡片是勾选/取消勾选，不进详情；卡片上多一个勾选标记。 */
-  readonly picking?: boolean;
 }
 
-export function PersonCard({ person, selected, onSelect, picking = false }: Props) {
+export function PersonCard({ person, selected, onSelect }: Props) {
   const membership = membershipOf(person);
-  const classes = ["person-card"];
-  if (selected) classes.push("selected");
-  if (picking) classes.push("picking");
   return (
     <li className="person-card-item">
       <button
         type="button"
-        className={classes.join(" ")}
+        className={selected ? "person-card selected" : "person-card"}
         data-person-id={person.id}
         aria-pressed={selected}
         onClick={() => onSelect(person.id)}
       >
-        {picking ? (
-          <span className="person-card-check" aria-hidden="true">
-            {selected ? "✓" : ""}
-          </span>
-        ) : null}
         <PersonAvatar person={person} />
         <span className="person-card-name">{personDisplayName(person)}</span>
-        {isPendingPerson(person) ? <span className="person-card-pending">待确认</span> : null}
-        <span className={`membership-badge ${membership}`}>{membershipLabel(membership)}</span>
+        {isPendingPerson(person) ? null : (
+          <span className={`membership-badge ${membership}`}>{membershipLabel(membership)}</span>
+        )}
         <small className="person-card-meta">
           出现 {person.appearance_count} 次
           {person.portrait === null ? "" : " · 有介绍"}

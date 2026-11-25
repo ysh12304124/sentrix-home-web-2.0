@@ -135,10 +135,7 @@ export function PeoplePage() {
               people={visiblePeople}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
-              onMerged={async (targetId) => {
-                await refresh();
-                selectPerson(targetId);
-              }}
+              onChanged={refresh}
             />
           )}
 
