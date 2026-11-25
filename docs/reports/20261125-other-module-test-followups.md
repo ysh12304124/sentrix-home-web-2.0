@@ -1,5 +1,7 @@
 # 测试发现的其他待修改部分
 
+项目协作沟通入口见 [项目改动工作沟通说明](20261125-project-change-communication.md)。
+
 yxw 已包含主线及视频处理改进。本说明供其他成员验证通用检索、规划、证据绑定、地点解释、引用交付及工程门禁。视频处理的已实现流程和部署要求见 [视频功能修改说明](20261125-video-function-changes.md)。
 
 本轮观察来自同一组 10 个视频和 10 道原始英文题。修复前运行编号为 `20261125-113942-atmbench-video-memory-mac-10-qwen35-4b-mlx-q4-de2a66`，修复后为 `20261125-121613-atmbench-video-memory-mac-10-qwen35-4b-mlx-q4-e98413`。两轮使用相同本机模型与评分模型，`reasoning=false`、`graph_enabled=false`、QA 并发为 1。
