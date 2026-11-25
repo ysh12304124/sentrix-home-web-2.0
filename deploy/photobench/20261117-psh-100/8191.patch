@@ -1,0 +1,143 @@
+--- a/apps/api/src/sentrix/api/routes/health.py
++++ b/apps/api/src/sentrix/api/routes/health.py
+@@ -13,6 +13,7 @@
+ """
+ 
+ from typing import Any
++import os
+ 
+ from fastapi import APIRouter, Request
+ from pydantic import BaseModel
+@@ -71,10 +72,18 @@
+ @router.get("/diagnostics", response_model=DiagnosticsResponse, response_model_exclude_none=True)
+ def diagnostics(request: Request) -> dict[str, Any]:
+     """完整诊断：数据库 + 嵌入侧车 + 降级原因。与 ``/health`` 同一份实现。"""
++    container = request.app.state.container
++    runtime = container.settings.runtime_configuration()
++    context_reader = getattr(container.chat_model, "runtime_context_configuration", None)
++    runtime["agent_context"] = (
++        {"process_id": os.getpid(), **context_reader()}
++        if callable(context_reader) else {"available": False}
++    )
+     return {
+         **_diagnostics(request),
+-        "runtime_configuration": request.app.state.container.settings.runtime_configuration(),
++        "runtime_configuration": runtime,
+     }
++
+ 
+ 
+ def _diagnostics(request: Request) -> dict[str, str]:
+--- a/apps/api/src/sentrix/bootstrap/container.py
++++ b/apps/api/src/sentrix/bootstrap/container.py
+@@ -104,6 +104,7 @@
+     ServedModel,
+     probe_context_tokens,
+ )
++from sentrix.infrastructure.assistant.context_contract import load_contract
+ from sentrix.infrastructure.build import read_build_revision
+ from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
+ from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
+@@ -510,6 +511,7 @@
+             chat_budget = ModelBudget(
+                 context_tokens=served_context or settings.vlm_context_tokens,
+             )
++        chat_context_contract = load_contract(settings.chat_context_contract, chat_budget.context_tokens)
+         # **嵌入方案是整方案原子切换**（``scheme.SCHEMES``）。默认 wemm；legacy 是
+         # 16 GB Mac mini 的回退（chinese-clip 768d + bge-m3 1024d）。两个分支都只
+         # 构造 HTTP 客户端，API 进程不 import torch。
+@@ -712,6 +714,7 @@
+                 budget=chat_budget,
+                 payload_config=chat_payload,
+                 retry=chat_retry,
++                context_contract=chat_context_contract,
+             ),
+             vlm_observer=OpenAIVlmObserver(
+                 vision_base_url,
+--- a/apps/api/src/sentrix/config.py
++++ b/apps/api/src/sentrix/config.py
+@@ -198,7 +198,8 @@
+     # 没跟着改——于是 ``4400 - prompt`` 在 ``prompt > 4336`` 时给负数、被下限抬成 64，
+     # 发出去一个注定被截断的请求。这和「模型名不写死」是同一条理由：**窗口是部署事实，
+     # 不是代码事实**（见本模块开头对 126 个 env flag 的那段）。
+-    vlm_context_tokens: int = 6144
++    vlm_context_tokens: int = 16384
++    chat_context_contract: Path | None = None
+ 
+     # 视觉观察走同一个端点（multimodal 可用），模型名同样来自探测。
+     # 一张图最多 3 次调用（首轮 / 补全 / 中文化），每次是一次带图的推理，比纯文本慢得多；
+--- a/apps/api/src/sentrix/infrastructure/assistant/chat_client.py
++++ b/apps/api/src/sentrix/infrastructure/assistant/chat_client.py
+@@ -118,7 +118,7 @@
+ 
+ # 不传 ``context_tokens`` 时用的窗口。**只是为了测试与本地起得来**，生产必须由
+ # ``Settings.vlm_context_tokens`` 给——窗口是部署事实（见该字段的注释）。
+-DEFAULT_CONTEXT_TOKENS = 6144
++DEFAULT_CONTEXT_TOKENS = 16384
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+@@ -364,6 +364,7 @@
+         budget: ModelBudget | None = None,
+         payload_config: Mapping[str, Any] | None = None,
+         retry: Mapping[str, Any] | None = None,
++        context_contract: dict[str, Any] | None = None,
+     ) -> None:
+         self._base_url = base_url.rstrip("/")
+         self._model = model
+@@ -380,6 +381,23 @@
+         # 云端 payload 能力与重试策略；local 留空 = 现有行为。
+         self._payload_config = dict(payload_config or {})
+         self._retry = dict(retry or {})
++        self._context_contract = None
++        if context_contract is not None:
++            from .context_contract import validate_contract
++            self._context_contract = validate_contract(context_contract, context_tokens)
++            self._context_tokens = self._context_contract['context_window_tokens']
++            self._budget = replace(self._budget, context_tokens=self._context_tokens)
++
++    def runtime_context_configuration(self) -> dict[str, Any]:
++        return {
++            "source": "live_chat_model_object",
++            "context_window_tokens": self._context_tokens,
++            "prompt_soft_limit": int(self._context_tokens * self._budget.compaction_ratio),
++            "max_output_tokens": self._budget.max_output_tokens,
++            "safety_tokens": self._budget.safety_tokens,
++            "min_usable_output_tokens": self._budget.min_usable_output_tokens,
++            "fixed_contract_enabled": self._context_contract is not None,
++        }
+ 
+     def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply:
+         if (
+--- /dev/null
++++ b/apps/api/src/sentrix/infrastructure/assistant/context_contract.py
+@@ -0,0 +1,17 @@
++from pathlib import Path
++import json
++EXPECTED = {"contract_version": "sentrix2_native_16k_v1", "context_window_tokens": 16384,
++            "max_input_tokens": 13926, "max_output_tokens": 2048, "safety_tokens": 128,
++            "prompt_compaction_ratio": 0.85, "prompt_tokens_include_tools_and_template": True,
++            "thinking": False}
++def validate_contract(value, served_context_tokens):
++    for key, expected in EXPECTED.items():
++        if type(value.get(key)) is not type(expected) or value.get(key) != expected:
++            raise ValueError("unsupported context contract: " + key)
++    if served_context_tokens < 16384:
++        raise ValueError("model endpoint per-request capacity is below 16384")
++    return dict(EXPECTED)
++def load_contract(path, served_context_tokens):
++    if path is None: return None
++    if served_context_tokens is None: raise ValueError("endpoint context capacity is unknown")
++    return validate_contract(json.loads(Path(path).read_text()), served_context_tokens)
+--- a/apps/api/src/sentrix/infrastructure/media/vlm_observer.py
++++ b/apps/api/src/sentrix/infrastructure/media/vlm_observer.py
+@@ -328,7 +328,8 @@
+             if isinstance(error, ValueError)
+             else "service_error"
+         )
+-        log.warning("视觉调用失败，本次结果跳过: %s", error)
++        detail = error.response.text[:800] if isinstance(error, httpx.HTTPStatusError) else str(error)
++        log.warning("视觉调用失败，本次结果跳过: %s; detail=%s", error, detail)
+         return None
+     finally:
+         fact["duration_ms"] = round((time.perf_counter() - started) * 1000, 1)

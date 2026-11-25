@@ -43,9 +43,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 
 from sentrix.domain.media.models import Observation
+from sentrix.domain.media.text_chunks import TextChunk
 from sentrix.domain.retrieval import scheme
 from sentrix.domain.retrieval.ports import TextEmbedder, VectorRecord, VectorRepository
 
@@ -98,6 +100,43 @@ class IndexObservationText:
     def __init__(self, *, embedder: TextEmbedder, vectors: VectorRepository) -> None:
         self._embedder = embedder
         self._vectors = vectors
+
+    def index_document(self, observation: Observation, chunks: Sequence[TextChunk]) -> TextIndexOutcome:
+        rows = 0
+        for index, chunk in enumerate(chunks):
+            source_id = observation.id if index == 0 else f"{observation.id}:chunk:{index}"
+            if all(
+                self._vectors.has_vector(
+                    space=space,
+                    source_type=OBSERVATION_SOURCE,
+                    source_id=source_id,
+                    model_name=self._embedder.model_id,
+                )
+                for space in (scheme.SEMANTIC_SPACE, scheme.EPISODIC_SPACE)
+            ):
+                continue
+            vector = self._embedder.embed_query(chunk.text)
+            if not vector or len(vector) != self._embedder.dimension:
+                raise ValueError("文档嵌入未完成，可用同一来源ID重试补齐")
+            for record in self._records(
+                replace(observation, id=source_id), None, tuple(float(v) for v in vector)
+            ):
+                self._vectors.upsert(
+                    replace(
+                        record,
+                        metadata={
+                            **record.metadata,
+                            "observation_id": observation.id,
+                            "start_offset": str(chunk.start),
+                            "end_offset": str(chunk.end),
+                            "chunk_index": str(index),
+                            "chunk_count": str(len(chunks)),
+                            "chunk_protocol": chunk.protocol,
+                        },
+                    )
+                )
+                rows += 1
+        return TextIndexOutcome(indexed=True, rows=rows)
 
     def index(
         self, observation: Observation, event_id: str | None, *, force: bool = False

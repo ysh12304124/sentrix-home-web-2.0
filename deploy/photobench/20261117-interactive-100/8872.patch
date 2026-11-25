@@ -1,0 +1,1726 @@
+--- /dev/null
++++ b/apps/photobench/src/photobench/api/interactive_schema.py
+@@ -0,0 +1,48 @@
++"""Additive interactive API contracts; raw product traces retain their existing fields."""
++
++from typing import Any
++
++from pydantic import BaseModel, ConfigDict, Field
++
++
++class ModelSelection(BaseModel):
++    profile: str = "__current__"
++    target_id: str = ""
++    base_url: str = ""
++    manager_url: str = ""
++    endpoint_model: str = ""
++
++
++class RetestRequest(BaseModel):
++    qa_id: str = Field(min_length=1)
++    model: ModelSelection | None = None
++    scoring_profile: str = ""
++    scoring_batch: str = ""
++
++
++class RetestResponse(BaseModel):
++    run_id: str
++    retest_context: dict[str, Any]
++
++
++class ChatCreateRequest(BaseModel):
++    scope_id: str = Field(min_length=1)
++    model: ModelSelection | None = None
++    message: str = Field(default="", max_length=2000)
++    album_id: str = ""
++    qa_set: str = ""
++    qa_id: str = ""
++
++
++class ChatMessageRequest(BaseModel):
++    message: str = Field(min_length=1, max_length=2000)
++
++
++class ChatSessionResponse(BaseModel):
++    model_config = ConfigDict(extra="allow")
++    session_id: str
++    scope_id: str
++    status: str
++    source: dict[str, Any] | None = None
++    turns: list[dict[str, Any]]
++    items: list[dict[str, Any]] | None = None
+--- a/apps/photobench/src/photobench/api/metrics_schema.py
++++ b/apps/photobench/src/photobench/api/metrics_schema.py
+@@ -99,6 +99,7 @@
+ 
+ class RunMetricsResponse(BaseModel):
+     model_config = ConfigDict(extra="allow")
++    retest_context: dict[str, Any] | None = None
+     read_revision: str | None = None
+     history_mode: str | None = None
+     persistence: dict[str, Any] | None = None
+--- /dev/null
++++ b/apps/photobench/src/photobench/api/routes/chat.py
+@@ -0,0 +1,47 @@
++"""Chat session transport; asynchronous work is owned by the application service."""
++
++from typing import Any
++
++from fastapi import APIRouter, Request
++from starlette.concurrency import run_in_threadpool
++
++from photobench.api.deps import get_container
++from photobench.api.interactive_schema import ChatCreateRequest, ChatMessageRequest, ChatSessionResponse
++
++router = APIRouter(tags=["chat"])
++
++
++@router.get("/chat/sessions")
++def list_chats(request: Request) -> dict[str, Any]:
++    return get_container(request).chat.list_chats()
++
++
++@router.post(
++    "/chat/sessions", status_code=202, response_model=ChatSessionResponse, response_model_exclude_unset=True
++)
++async def create_chat(request: Request, payload: ChatCreateRequest) -> dict[str, Any]:
++    return await run_in_threadpool(
++        get_container(request).chat.create_chat, payload.model_dump(exclude_defaults=True)
++    )
++
++
++@router.get(
++    "/chat/sessions/{session_id}", response_model=ChatSessionResponse, response_model_exclude_unset=True
++)
++def get_chat(request: Request, session_id: str) -> dict[str, Any]:
++    return get_container(request).chat.get_chat(session_id)
++
++
++@router.post(
++    "/chat/sessions/{session_id}/turns",
++    status_code=202,
++    response_model=ChatSessionResponse,
++    response_model_exclude_unset=True,
++)
++async def send_chat(request: Request, session_id: str, payload: ChatMessageRequest) -> dict[str, Any]:
++    return await run_in_threadpool(get_container(request).chat.send_chat, session_id, payload.model_dump())
++
++
++@router.post("/chat/sessions/{session_id}/cancel")
++def cancel_chat(request: Request, session_id: str) -> dict[str, Any]:
++    return get_container(request).chat.cancel_chat(session_id)
+--- a/apps/photobench/src/photobench/api/routes/suites.py
++++ b/apps/photobench/src/photobench/api/routes/suites.py
+@@ -21,9 +21,22 @@
+ from starlette.concurrency import run_in_threadpool
+ 
+ from photobench.api.deps import get_container, json_body
++from photobench.api.interactive_schema import RetestRequest, RetestResponse
+ from photobench.api.metrics_schema import WorkStatusResponse
+ 
+ router = APIRouter(tags=["suites"])
++
++
++@router.post("/runs/{run_id}/retest", status_code=202, response_model=RetestResponse)
++async def start_retest(request: Request, run_id: str, payload: RetestRequest) -> dict[str, Any]:
++    return await run_in_threadpool(
++        get_container(request).run_suites.start_retest, run_id, payload.model_dump(exclude_defaults=True)
++    )
++
++
++@router.get("/runs/{run_id}/retests")
++def list_retests(request: Request, run_id: str, qa_id: str = "") -> dict[str, Any]:
++    return get_container(request).run_suites.list_retests(run_id, qa_id)
+ 
+ 
+ @router.post("/runs", status_code=202)
+--- /dev/null
++++ b/apps/photobench/src/photobench/application/interactive/chat.py
+@@ -0,0 +1,347 @@
++"""Persistent chat provenance and serial product turns, sharing model preparation with retests."""
++
++from __future__ import annotations
++
++import copy
++import json
++import logging
++import threading
++import time
++import uuid
++from collections.abc import Callable, Mapping
++from typing import Any
++
++from photobench.application.run_execution.service import RunExecution, RunRequest
++from photobench.application.runs.suites import RunSuites
++from photobench.application.spaces.service import MemorySpaces
++from photobench.domain.chat.ports import ChatStore
++from photobench.domain.chat.projection import turn_item
++from photobench.domain.datasets.ports import AlbumSource
++from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
++from photobench.domain.errors import InvalidRequestError
++from photobench.domain.runs.analysis import now_iso
++from photobench.domain.runs.execution import RunCancelledError, index_assets_by_name
++from photobench.domain.runtime.ports import RunRuntimeSnapshot
++from photobench.domain.sentrix.ports import InteractiveSentrixClient
++
++log = logging.getLogger(__name__)
++ACTIVE = {"preparing", "running", "cancelling"}
++TURN_ACTIVE = {"pending", "running"}
++
++
++class ChatService:
++    def __init__(
++        self,
++        *,
++        store: ChatStore,
++        suites: RunSuites,
++        albums: AlbumSource,
++        spaces: MemorySpaces,
++        client_for: Callable[[str], InteractiveSentrixClient],
++        execution_for: Callable[[RunRequest], RunExecution],
++    ) -> None:
++        self.store, self.suites, self.albums, self.spaces = store, suites, albums, spaces
++        self.client_for, self.execution_for = client_for, execution_for
++        self.lock = threading.RLock()
++        self.workers: dict[str, tuple[threading.Thread, threading.Event]] = {}
++
++    def list_chats(self) -> dict[str, Any]:
++        return {
++            "items": [
++                {
++                    k: s.get(k)
++                    for k in (
++                        "session_id",
++                        "created_at",
++                        "title",
++                        "scope_id",
++                        "model_name",
++                        "status",
++                        "error",
++                        "album_id",
++                    )
++                }
++                for s in self.store.list_sessions()
++            ]
++        }
++
++    def create_chat(self, payload: Mapping[str, Any]) -> dict[str, Any]:
++        scope = str(payload.get("scope_id") or "")
++        spaces = self.spaces.list_spaces()
++        if not any(s.get("id") == scope for s in spaces["spaces"]):
++            raise InvalidRequestError("所选相册不存在")
++        base: dict[str, Any] = next((s for s in spaces["reuse_bases"] if s.get("scope_id") == scope), {})
++        if base and not base.get("ready"):
++            raise InvalidRequestError("所选相册尚未完成构建")
++        request = self.suites.interactive_models.resolve(
++            payload, album_id=str(base.get("album_id") or ""), qa_set="", scope_id=scope, mode="reuse"
++        )
++        snapshot = request.runtime_snapshot
++        assert snapshot is not None
++        embedding = (base.get("scope_build") or {}).get("embedding")
++        if embedding is not None and embedding != snapshot.connection().get("embedding"):
++            raise InvalidRequestError("嵌入配置与所选相册不一致")
++        session: dict[str, Any] = {
++            "session_id": "chat-" + uuid.uuid4().hex[:24],
++            "created_at": now_iso(),
++            "title": "新对话",
++            "scope_id": scope,
++            "album_id": base.get("album_id") or "",
++            "status": "ready",
++            "conversation_id": None,
++            "turns": [],
++            "source": None,
++            "model_profile": request.model_profile,
++            "model_base_url": request.model_base_url,
++            "manager_url": request.manager_url,
++            "endpoint_model": request.endpoint_model,
++            "runtime_snapshot": snapshot.connection(),
++            "build_revision": snapshot.build_revision,
++            "turn_timeout": request.turn_timeout,
++        }
++        if payload.get("qa_id"):
++            album_id, qa_set = str(payload.get("album_id") or ""), str(payload.get("qa_set") or "")
++            if not session["album_id"] or session["album_id"] != album_id:
++                raise InvalidRequestError("题集与所选相册不对应")
++            try:
++                row = self.albums.qa_question(album_id, qa_set, str(payload["qa_id"]))
++            except KeyError as exc:
++                raise InvalidRequestError("题目不存在") from exc
++            session["source"] = {
++                "album_id": album_id,
++                "qa_set": qa_set,
++                "row": copy.deepcopy(row),
++                "definition_sha256": qa_fingerprint([row]),
++            }
++            messages = [str(t.get("message") or "").strip() for t in row.get("conversation") or []] or [
++                str(row["question"])
++            ]
++        else:
++            message = str(payload.get("message") or "").strip()
++            messages = [message] if message else []
++        self._validate_messages(messages)
++        with self.lock:
++            if messages:
++                self._launch(session, messages)
++            else:
++                self.store.save_session(session)
++        return session
++
++    @staticmethod
++    def _validate_messages(messages: list[str]) -> None:
++        if any(not m or len(m) > 2000 for m in messages):
++            raise InvalidRequestError("每条消息需为1至2000字")
++
++    def send_chat(self, session_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
++        message = str(payload.get("message") or "").strip()
++        self._validate_messages([message])
++        with self.lock:
++            session = self.store.load_session(session_id)
++            if session["status"] in ACTIVE:
++                raise InvalidRequestError("请等待当前回答结束")
++            if session.get("status") == "outcome_unknown":
++                raise InvalidRequestError("上次请求的执行状态尚未确认，请先刷新记录")
++            self._launch(session, [message])
++        return session
++
++    def _request(self, session: dict[str, Any]) -> RunRequest:
++        return RunRequest(
++            album_id=session["album_id"],
++            qa_set="",
++            scope_id=session["scope_id"],
++            mode="reuse",
++            model_profile=session["model_profile"],
++            manager_url=session["manager_url"],
++            model_base_url=session["model_base_url"],
++            endpoint_model=session["endpoint_model"],
++            sentrix_url=session["runtime_snapshot"]["sentrix_url"],
++            switch_model=True,
++            runtime_snapshot=RunRuntimeSnapshot(
++                json.dumps(session["runtime_snapshot"]), session["build_revision"]
++            ),
++        )
++
++    def _launch(self, session: dict[str, Any], messages: list[str], *, recovery: bool = False) -> None:
++        key = str(session["session_id"])
++        cancel = threading.Event()
++        self.suites.reserve_interactive(key, cancel, recovery=recovery)
++        if not recovery:
++            session.update(status="preparing", error=None, pending_messages=messages)
++        try:
++            self.store.save_session(session)
++            thread = threading.Thread(
++                target=self._worker, args=(key, cancel, recovery), name=key, daemon=True
++            )
++            self.workers[key] = (thread, cancel)
++            thread.start()
++        except Exception:
++            self.workers.pop(key, None)
++            self.suites.release_interactive(key)
++            raise
++
++    def _update(self, session_id: str, mutate: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
++        with self.lock:
++            session = self.store.load_session(session_id)
++            mutate(session)
++            self.store.save_session(session)
++            return session
++
++    def _patch(self, session_id: str, **changes: Any) -> dict[str, Any]:
++        return self._update(session_id, lambda s: s.update(changes))
++
++    def _worker(self, session_id: str, cancel: threading.Event, recovery: bool) -> None:
++        session = self.store.load_session(session_id)
++        client = self.client_for(session["runtime_snapshot"]["sentrix_url"])
++        try:
++            if not recovery:
++                prepared = self.execution_for(self._request(session)).prepare_interactive_model(
++                    self._request(session), cancel
++                )
++                self._update(
++                    session_id,
++                    lambda s: s.update(
++                        model_name=prepared.get("model_name"),
++                        model_identity=prepared.get("model_identity"),
++                        model_preparation=prepared.get("phases"),
++                    ),
++                )
++            if not session.get("conversation_id"):
++                if recovery:
++                    raise RuntimeError("服务重启时建会话尚未返回，未自动重发请求")
++                cid = client.start_conversation(scope_id=session["scope_id"], title=session["title"])["id"]
++                session = self._update(session_id, lambda s: s.update(conversation_id=cid))
++            # A saved turn is polled after restart; generation POSTs are never replayed.
++            if recovery and session.get("turns") and session["turns"][-1]["status"] in TURN_ACTIVE:
++                self._await(session_id, session["turns"][-1], client, cancel)
++            elif recovery and session.get("dispatching_message"):
++                detail = client.get_conversation(conversation_id=session["conversation_id"])
++                known = {t.get("turn_id") for t in session["turns"]}
++                found = [
++                    t
++                    for t in detail.get("turns") or []
++                    if t["id"] not in known and t.get("question") == session["dispatching_message"]
++                ]
++                if len(found) != 1:
++                    raise RuntimeError("未能确定上次发送的回合，未自动重发")
++                record = self._register_turn(session_id, session["dispatching_message"], found[0]["id"])
++                self._await(session_id, record, client, cancel)
++            session = self.store.load_session(session_id)
++            while session.get("pending_messages"):
++                if cancel.is_set():
++                    raise RunCancelledError("已取消")
++                message = session["pending_messages"][0]
++                self._patch(session_id, dispatching_message=message, status="running")
++                started = client.start_turn(
++                    conversation_id=session["conversation_id"], message=message, include_debug=True
++                )
++                record = self._register_turn(session_id, message, str(started["turn_id"]))
++                self._await(session_id, record, client, cancel)
++                session = self.store.load_session(session_id)
++            self._patch(session_id, status="ready", error=None, poll_error=None)
++        except RunCancelledError:
++            self._update(session_id, lambda s: s.update(status="cancelled", pending_messages=[]))
++        except Exception as exc:
++            log.warning("Chat execution failed: %s (%s)", session_id, type(exc).__name__)
++            current = self.store.load_session(session_id)
++            unknown = bool(current.get("dispatching_message")) or any(
++                t["status"] in TURN_ACTIVE for t in current["turns"]
++            )
++            self._patch(session_id, status="outcome_unknown" if unknown else "failed", error=str(exc))
++        finally:
++            with self.lock:
++                self.workers.pop(session_id, None)
++            if self.store.load_session(session_id)["status"] != "outcome_unknown":
++                self.suites.release_interactive(session_id)
++
++    def _register_turn(self, session_id: str, message: str, turn_id: str) -> dict[str, Any]:
++        def register(s: dict[str, Any]) -> None:
++            s["turns"].append(
++                {
++                    "index": len(s["turns"]),
++                    "turn_id": turn_id,
++                    "message": message,
++                    "status": "pending",
++                    "started_at": now_iso(),
++                }
++            )
++            s.update(
++                dispatching_message=None,
++                pending_messages=s["pending_messages"][1:],
++                title=s["title"] if s["title"] != "新对话" else message[:50],
++            )
++
++        return dict(self._update(session_id, register)["turns"][-1])
++
++    def _await(
++        self,
++        session_id: str,
++        record: dict[str, Any],
++        client: InteractiveSentrixClient,
++        cancel: threading.Event,
++    ) -> None:
++        started = time.monotonic()
++        cancellation_sent = False
++        timeout = int(self.store.load_session(session_id).get("turn_timeout") or 900)
++        while True:
++            if time.monotonic() - started >= timeout:
++                cancel.set()
++            if cancel.is_set() and not cancellation_sent:
++                client.cancel_turn(turn_id=record["turn_id"])
++                cancellation_sent = True
++            try:
++                turn = client.get_turn(turn_id=record["turn_id"])
++            except Exception as exc:
++                self._patch(session_id, poll_error=str(exc))
++                time.sleep(1)
++                continue
++            if turn["status"] not in TURN_ACTIVE:
++
++                def finish(s: dict[str, Any], terminal: dict[str, Any] = turn) -> None:
++                    current = s["turns"][record["index"]]
++                    current.update(
++                        status=terminal["status"],
++                        finished_at=now_iso(),
++                        wall_clock_ms=round((time.monotonic() - started) * 1000),
++                    )
++
++                self._update(session_id, finish)
++                if cancellation_sent or cancel.is_set():
++                    raise RunCancelledError("已取消")
++                if turn["status"] not in {"complete", "partial"}:
++                    raise RuntimeError(str(turn.get("error") or turn["status"]))
++                return
++            cancel.wait(0.5) if not cancel.is_set() else time.sleep(0.5)
++
++    def get_chat(self, session_id: str) -> dict[str, Any]:
++        session = self.store.load_session(session_id)
++        client = self.client_for(session["runtime_snapshot"]["sentrix_url"])
++        assets = (
++            index_assets_by_name(client.list_assets(scope_id=session["scope_id"], limit=None))
++            if session["turns"]
++            else {}
++        )
++        session["items"] = [
++            turn_item(t, client.get_turn(turn_id=t["turn_id"]), assets) for t in session["turns"]
++        ]
++        return session
++
++    def cancel_chat(self, session_id: str) -> dict[str, Any]:
++        with self.lock:
++            session = self.store.load_session(session_id)
++            worker = self.workers.get(session_id)
++            if worker:
++                worker[1].set()
++                self._update(session_id, lambda s: s.update(status="cancelling"))
++            elif session["status"] == "outcome_unknown":
++                self._launch(session, [], recovery=True)
++                self.workers[session_id][1].set()
++        return {
++            "session_id": session_id,
++            "cancel_requested": bool(worker) or session["status"] == "outcome_unknown",
++        }
++
++    def recover_chats(self) -> None:
++        for session in self.store.list_sessions():
++            if session["status"] in ACTIVE or session["status"] == "outcome_unknown":
++                with self.lock:
++                    self._launch(session, [], recovery=True)
+--- /dev/null
++++ b/apps/photobench/src/photobench/application/interactive/models.py
+@@ -0,0 +1,81 @@
++"""Resolve the same model selection for a retest and an interactive conversation."""
++
++from __future__ import annotations
++
++from collections.abc import Callable, Mapping
++from typing import Any
++
++from photobench.application.config.service import (
++    ConfigService,
++    normalize_model_base_url,
++    normalize_service_url,
++)
++from photobench.application.run_execution.service import RunRequest, freeze_runtime_request
++from photobench.domain.errors import InvalidRequestError
++
++
++class InteractiveModels:
++    def __init__(
++        self,
++        config: ConfigService,
++        revision: str,
++        budgets: Mapping[str, Any],
++        diagnostics: Callable[[], dict[str, Any]],
++    ) -> None:
++        self.config, self.revision, self.budgets = config, revision, budgets
++        self.diagnostics = diagnostics
++
++    def resolve(self, payload: Mapping[str, Any], **inputs: Any) -> RunRequest:
++        selection = payload.get("model") or {}
++        if not isinstance(selection, dict):
++            raise InvalidRequestError("model must be an object")
++        connection = self.config.public_runtime_connection_config()
++        observed = self.diagnostics()
++        effective = observed.get("runtime_configuration") or {}
++        if observed.get("build_revision"):
++            connection["product_build_revision"] = observed["build_revision"]
++        connection["product_settings"] = {
++            key: effective[key]
++            for key in (connection.get("product_settings") or self.budgets.get("product_settings") or {})
++            if key in effective
++        }
++        profile = str(selection.get("profile") or "__current__")
++        manager = ""
++        base = str(connection.get("model_base_url") or self.config.model_base_url)
++        endpoint_model = str(connection.get("endpoint_model") or "")
++        if not selection:
++            actual = str(effective.get("vlm_base_url") or "")
++            if actual:
++                if actual.rstrip("/") != base.rstrip("/"):
++                    endpoint_model = ""
++                base = actual
++        if selection.get("target_id"):
++            _, target = self.config.resolve_vllm_target(str(selection["target_id"]))
++            base = str(target.get("model_base_url") or "")
++            manager = str(target.get("manager_url") or "")
++            endpoint_model = str(selection.get("endpoint_model") or "")
++        if selection.get("base_url"):
++            base = normalize_model_base_url(str(selection["base_url"]))
++            manager = normalize_service_url(str(selection.get("manager_url") or ""))
++            endpoint_model = str(selection.get("endpoint_model") or "")
++        if profile != "__current__" and not manager:
++            manager = str(connection.get("vllm_manager_url") or "")
++        if profile != "__current__" and not manager:
++            raise InvalidRequestError("所选模型需要配置模型 Manager 地址")
++        if not base:
++            raise InvalidRequestError("请先配置模型服务地址")
++        if profile != "__current__":
++            endpoint_model = ""
++        connection.update(model_base_url=base, endpoint_model=endpoint_model)
++        request = RunRequest(
++            **inputs,
++            sentrix_url=self.config.sentrix_url,
++            model_profile=profile,
++            model_base_url=base,
++            manager_url=manager,
++            endpoint_model=endpoint_model,
++            switch_model=True,
++            qa_concurrency=1,
++            turn_timeout=int(self.budgets.get("turn_timeout") or 900),
++        )
++        return freeze_runtime_request(request, connection, self.revision)
+--- a/apps/photobench/src/photobench/application/run_execution/service.py
++++ b/apps/photobench/src/photobench/application/run_execution/service.py
+@@ -249,6 +249,8 @@
+     prior_items: tuple[Mapping[str, Any], ...] = ()
+     repair_missing_judges: bool = False
+     resume_context: Mapping[str, Any] | None = None
++    retest_context: Mapping[str, Any] | None = None
++    switch_model: bool = False
+     frozen_qa_snapshot: Mapping[str, Any] | None = None
+     import_timeout: int = 7200
+     pipeline_timeout: int = 86400
+@@ -431,6 +433,17 @@
+             except Exception as exc:  # noqa: BLE001
+                 state.set("cancel_vllm_stop_error", str(exc)[:300])
+ 
++    def prepare_interactive_model(self, request: RunRequest, cancel: threading.Event) -> dict[str, Any]:
++        """Prepare and verify a model without creating an evaluation result."""
++        state = RunState({"phases": {}})
++        state.cancel_event = cancel
++        self._state, self._request = state, request
++        self._cancel_wait(0)
++        state.phase_start("model_deploy")
++        self._phase_model_deploy(state, request)
++        self._cancel_wait(0)
++        return state.snapshot()
++
+     def prepare(self, request: RunRequest) -> RunState:
+         """创建并持久化 ``pending`` 状态，供后台线程开始前的读侧使用。
+ 
+@@ -467,6 +480,7 @@
+                 "sentrix_url": request.sentrix_url,
+                 "model_base_url": request.model_base_url,
+                 "input_integrity": None,
++                "retest_context": copy.deepcopy(request.retest_context),
+                 "status": "failed",
+                 "failed_phase": "initialization",
+                 "telemetry_history_enabled": self.telemetry_history_enabled,
+@@ -568,7 +582,8 @@
+                 phase(state, request)
+                 state.persist()
+                 if (
+-                    request.recover_pipeline and name == "pipeline_processing"
++                    request.recover_pipeline
++                    and name == "pipeline_processing"
+                     and (state.get("phases") or {}).get(name, {}).get("status") != "done"
+                 ):
+                     raise RuntimeError("pipeline recovery is incomplete; QA has not started")
+@@ -713,6 +728,7 @@
+             "qa_snapshot": snapshot,
+             "qa_validation": preflight,
+             "resume_context": copy.deepcopy(request.resume_context),
++            "retest_context": copy.deepcopy(request.retest_context),
+             "metrics_contract_version": 2,
+             "build_revision": self.runtime_snapshot.build_revision
+             if self.runtime_snapshot
+@@ -854,7 +870,11 @@
+                 live["history_enabled"] = history_enabled
+                 live["statistics_mode"] = "streaming_v1"
+                 apply_live_sample(
+-                    live, sample, phase, label, tail=LIVE_TELEMETRY_TAIL_POINTS,
++                    live,
++                    sample,
++                    phase,
++                    label,
++                    tail=LIVE_TELEMETRY_TAIL_POINTS,
+                     record_history=history_enabled,
+                 )
+                 if sample.get("llama_server_args") and not state.data.get("llama_server_args"):
+@@ -949,7 +969,15 @@
+         占位——**两个分支都要做**：没有 Manager 的「外部端点」正是 153 上的形态，
+         而 2.0 的助手用哪个模型只由它自己的 ``vlm_base_url`` 决定，与有没有 Manager 无关。
+         """
+-        if request.mode == "reuse" or request.model_profile == "__current__" or not request.manager_url:
++        if (
++            (request.mode == "reuse" and not request.switch_model)
++            or request.model_profile == "__current__"
++            or not request.manager_url
++        ):
++            if request.switch_model and request.endpoint_model:
++                models = self.inference.list_models().get("models") or []
++                if not models or models[0] != request.endpoint_model:
++                    raise ValueError("所选模型与产品端点实际使用的模型不一致，请选择该模型的专用端点")
+             state.phase_done(
+                 "model_deploy",
+                 {
+@@ -1041,13 +1069,20 @@
+                 "error": "sentrix process controller is not wired",
+                 "restarted": False,
+             }
+-        outcome = self.sentrix_switch.ensure_endpoint(request.model_base_url)
+-        if not outcome.ok:
+-            raise RuntimeError(f"could not point Sentrix at {outcome.endpoint or '(none)'}: {outcome.error}")
+-        result = outcome.to_state()
++        observed = self.client.diagnostics() if request.switch_model else {}
++        actual = str((observed.get("runtime_configuration") or {}).get("vlm_base_url") or "")
++        if request.switch_model and _same_model_endpoint(actual, request.model_base_url):
++            result = {"ok": True, "restarted": False, "endpoint": actual, "reason": "verified_live_endpoint"}
++        else:
++            outcome = self.sentrix_switch.ensure_endpoint(request.model_base_url)
++            if not outcome.ok:
++                raise RuntimeError(
++                    f"could not point Sentrix at {outcome.endpoint or '(none)'}: {outcome.error}"
++                )
++            result = outcome.to_state()
++            observed = self.client.diagnostics() if self.runtime_snapshot is not None else {}
+         if self.runtime_snapshot is not None:
+             expected = self.runtime_snapshot.connection()
+-            observed = self.client.diagnostics()
+             effective = observed.get("runtime_configuration")
+             if not isinstance(effective, dict):
+                 raise RuntimeError("Sentrix did not report effective runtime configuration")
+--- a/apps/photobench/src/photobench/application/runs/suites.py
++++ b/apps/photobench/src/photobench/application/runs/suites.py
+@@ -45,6 +45,7 @@
+     normalize_model_base_url,
+     normalize_service_url,
+ )
++from photobench.application.interactive.models import InteractiveModels
+ from photobench.application.run_execution.gpu_sampler import GpuSampler
+ from photobench.application.run_execution.judge import InlineImages, JudgeRunner
+ from photobench.application.run_execution.profile_scoring import prepare_batches
+@@ -136,6 +137,9 @@
+         self._index = index
+         self._albums = albums
+         self._config = config
++        self.interactive_models = InteractiveModels(
++            config, build_revision, self._budget_defaults, lambda: sentrix.diagnostics()
++        )
+         self._sentrix = sentrix
+         self._http = http
+         self._new_execution = new_execution
+@@ -444,6 +448,159 @@
+             "current_model_snapshot": None,
+         }
+ 
++    def frozen_questions(self, saved: Mapping[str, Any]) -> dict[str, Any]:
++        album_id, qa_set = str(saved.get("album_id") or ""), str(saved.get("qa_set") or "")
++        snapshot = saved.get("qa_snapshot")
++        if not isinstance(snapshot, dict) or "rows" not in snapshot:
++            manifest = self._albums.manifest(album_id)
++            digest = (saved.get("input_integrity") or {}).get("qa_sha256")
++            current = self._albums.integrity(album_id, manifest, qa_set)
++            if (
++                not digest
++                or digest != current.get("qa_sha256")
++                or (saved.get("input_integrity") or {}).get("task_action_policy_sha256")
++                != current.get("task_action_policy_sha256")
++            ):
++                raise InvalidRequestError("原测评缺少QA快照，且无法确认题库版本一致，不能续跑")
++            rows = self._albums.qa_rows(album_id, qa_set)
++            snapshot = {
++                "album_id": album_id,
++                "qa_set": qa_set,
++                "rows": rows,
++                "definition_sha256": qa_fingerprint(rows),
++                "source": "verified_legacy_file",
++            }
++        if snapshot.get("definition_sha256") != qa_fingerprint(snapshot["rows"]):
++            raise InvalidRequestError("原测评QA快照校验失败，不能续跑")
++        return copy.deepcopy(snapshot)
++
++    def reserve_interactive(self, key: str, cancel: threading.Event, *, recovery: bool = False) -> None:
++        with self._lock:
++            retained = self._reservations.pop(key, None) if recovery else None
++            try:
++                self._require_inactive()
++            except Exception:
++                if retained is not None:
++                    self._reservations[key] = retained
++                raise
++            self._reservations[key] = cancel
++
++    def release_interactive(self, key: str) -> None:
++        with self._lock:
++            self._reservations.pop(key, None)
++
++    def start_retest(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
++        self._require_inactive()
++        saved = self._store.load_state(run_id)
++        if saved.get("status") in DIRTY_STATUSES:
++            raise InvalidRequestError("请等待原任务结束后重测")
++        if str(saved.get("sentrix_url") or "").rstrip("/") != self._config.sentrix_url.rstrip("/"):
++            raise InvalidRequestError("请先将产品连接指向原测评实例")
++        scope_id = str(saved.get("scope_id") or "")
++        if not scope_id or (saved.get("scope_build") or {}).get("status") == "incomplete":
++            raise InvalidRequestError("原相册尚未完成构建")
++        connection = self._config.public_runtime_connection_config()
++        embedding = (saved.get("scope_build") or {}).get("embedding")
++        if embedding is not None and embedding != connection.get("embedding"):
++            raise InvalidRequestError("嵌入配置已变化，请使用原相册的嵌入配置")
++        snapshot = self.frozen_questions(saved)
++        qa_id = str(payload.get("qa_id") or "")
++        selected = [(i, r) for i, r in enumerate(snapshot["rows"]) if str(r.get("qa_id")) == qa_id]
++        if len(selected) != 1:
++            raise InvalidRequestError("请选择原任务中的一道题")
++        source_index, row = selected[0]
++        batch_id = str(payload.get("scoring_batch") or "")
++        profile = str(payload.get("scoring_profile") or "")
++        batches = saved.get("scoring_batches") or []
++        if batch_id:
++            selected_batches = [b for b in batches if b["batch_id"] == batch_id]
++        elif profile:
++            selected_batches = [b for b in batches if b["profile_id"] == profile][-1:]
++        else:
++            selected_batches = [
++                b for b in batches if b["batch_id"] in (saved.get("primary_scoring_batch_ids") or [])
++            ]
++            if not selected_batches and batches:
++                selected_batches = [batches[-1]]
++        if (batch_id or profile) and not selected_batches:
++            raise InvalidRequestError("所选评分批次不存在")
++        judges = {json.dumps(b["judge"], sort_keys=True) for b in selected_batches}
++        if len(judges) > 1:
++            raise InvalidRequestError("请选择同一Judge配置的评分批次")
++        primary = selected_batches[0] if selected_batches else None
++        judge = self._frozen_judge_settings(
++            primary["judge"]
++            if primary
++            else {
++                "provider_id": saved.get("judge_provider_id"),
++                "url": saved.get("judge_url"),
++                "model": saved.get("judge_model"),
++            }
++        )
++        context = {
++            "source_run_id": run_id,
++            "qa_id": qa_id,
++            "source_item_index": source_index,
++            "source_qa_definition_sha256": snapshot["definition_sha256"],
++            "source_scoring_batch_ids": [b["batch_id"] for b in selected_batches],
++            "source_rule_versions": [b.get("rule_version") for b in selected_batches],
++        }
++        single = {**snapshot, "rows": [row], "definition_sha256": qa_fingerprint([row])}
++        new_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-retest-{uuid.uuid4().hex[:8]}"
++        diagnostics = (primary or {}).get("diagnostics") or {}
++        request = self.interactive_models.resolve(
++            payload,
++            album_id=str(saved["album_id"]),
++            qa_set=str(saved["qa_set"]),
++            run_id=new_id,
++            mode="reuse",
++            scope_id=scope_id,
++            frozen_qa_snapshot=single,
++            retest_context=context,
++            judge_url=judge.judge_url,
++            judge_model=judge.judge_model,
++            judge_provider_id=judge.judge_provider_id,
++            judge_api_key=judge.judge_api_key,
++            judge_prompts={
++                **(saved.get("judge_prompts") or {}),
++                **{k: diagnostics[k] for k in ("task_decision", "evidence") if k in diagnostics},
++            },
++            scoring_configs={b["profile_id"]: b["config"] for b in selected_batches},
++            prior_scoring={
++                "gt_metadata_snapshot": copy.deepcopy(
++                    (primary or {}).get("gt_metadata_snapshot") or saved.get("gt_metadata_snapshot")
++                )
++            },
++            judge_use_gt_images=bool(saved.get("judge_use_gt_images")),
++            evidence_judge_enabled=bool(
++                diagnostics.get("evidence_enabled", saved.get("evidence_judge_enabled"))
++            ),
++            evaluation_options=saved.get("evaluation_options") or {},
++            evaluation_prompts=saved.get("evaluation_prompts") or default_evaluation_prompts(),
++        )
++        with self._lock:
++            self._require_inactive()
++            execution = self._new_execution(request)
++            execution.prepare(request)
++            self._active[new_id] = execution
++            thread = threading.Thread(
++                target=self._execute_and_release, args=(new_id, request), name=new_id, daemon=True
++            )
++            self._threads[new_id] = thread
++            thread.start()
++        return {"run_id": new_id, "retest_context": context}
++
++    def list_retests(self, run_id: str, qa_id: str) -> dict[str, Any]:
++        entries = {str(e["run_id"]): e for e in self._index.entries()}
++        entries.update({s["run_id"]: analysis.run_list_entry(s) for s in self.active_states().values()})
++        rows = [
++            e
++            for e in entries.values()
++            if (e.get("retest_context") or {}).get("source_run_id") == run_id
++            and (not qa_id or (e.get("retest_context") or {}).get("qa_id") == qa_id)
++        ]
++        return {"items": sorted(rows, key=lambda e: str(e.get("created_at") or ""), reverse=True)}
++
+     # ---- resume -------------------------------------------------------------
+ 
+     def resume_run(self, run_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+@@ -506,28 +663,7 @@
+         except KeyError as exc:
+             raise InvalidRequestError(f"manifest not found for album: {album_id}") from exc
+ 
+-        snapshot = saved.get("qa_snapshot")
+-        if not isinstance(snapshot, dict) or "rows" not in snapshot:
+-            manifest = self._albums.manifest(album_id)
+-            digest = (saved.get("input_integrity") or {}).get("qa_sha256")
+-            current = self._albums.integrity(album_id, manifest, qa_set)
+-            if (
+-                not digest
+-                or digest != current.get("qa_sha256")
+-                or (saved.get("input_integrity") or {}).get("task_action_policy_sha256")
+-                != current.get("task_action_policy_sha256")
+-            ):
+-                raise InvalidRequestError("原测评缺少QA快照，且无法确认题库版本一致，不能续跑")
+-            rows = self._albums.qa_rows(album_id, qa_set)
+-            snapshot = {
+-                "album_id": album_id,
+-                "qa_set": qa_set,
+-                "rows": rows,
+-                "definition_sha256": qa_fingerprint(rows),
+-                "source": "verified_legacy_file",
+-            }
+-        if snapshot.get("definition_sha256") != qa_fingerprint(snapshot["rows"]):
+-            raise InvalidRequestError("原测评QA快照校验失败，不能续跑")
++        snapshot = self.frozen_questions(saved)
+         prior_items = tuple(
+             item
+             for item in (saved.get("items") or [])
+@@ -755,7 +891,12 @@
+                 for key, (thread, event) in self._auxiliary.items()
+             ]
+             reserved = [
+-                {"id": key, "kind": "starting", "worker_alive": True, "cancel_requested": event.is_set()}
++                {
++                    "id": key,
++                    "kind": "chat" if key.startswith("chat-") else "starting",
++                    "worker_alive": True,
++                    "cancel_requested": event.is_set(),
++                }
+                 for key, event in self._reservations.items()
+             ]
+             cleanup = [
+--- a/apps/photobench/src/photobench/bootstrap/container.py
++++ b/apps/photobench/src/photobench/bootstrap/container.py
+@@ -34,6 +34,7 @@
+ from photobench.application.datasets.service import DatasetCatalog
+ from photobench.application.deploy.service import SentrixModelSwitch
+ from photobench.application.error_analysis.service import ErrorAnalysis
++from photobench.application.interactive.chat import ChatService
+ from photobench.application.model_profiles.service import ModelProfiles
+ from photobench.application.run_execution.service import (
+     JudgeSettings,
+@@ -47,6 +48,7 @@
+ from photobench.application.runs.suites import RunSuites
+ from photobench.application.spaces.service import MemorySpaces
+ from photobench.config import Settings
++from photobench.domain.chat.ports import ChatStore
+ from photobench.domain.config.ports import ConfigStore, SecretEnvStore
+ from photobench.domain.datasets.ports import AlbumSource, QaMetadataSource
+ from photobench.domain.deploy.ports import SentrixProcess
+@@ -59,7 +61,8 @@
+     RunRuntimeSnapshot,
+     RuntimeProviders,
+ )
+-from photobench.domain.sentrix.ports import SentrixClient
++from photobench.domain.sentrix.ports import InteractiveSentrixClient, SentrixClient
++from photobench.infrastructure.chat.store import FileChatStore
+ from photobench.infrastructure.config.env import DotenvSecretStore
+ from photobench.infrastructure.config.files import JsonConfigStore, read_build_revision
+ from photobench.infrastructure.datasets.albums import JsonAlbumSource
+@@ -124,6 +127,8 @@
+     run_suites: RunSuites
+     error_analysis: ErrorAnalysis
+     analysis_backend: AnalysisBackend
++    chat_store: ChatStore
++    chat: ChatService
+ 
+     @staticmethod
+     def build(settings: Settings) -> Container:
+@@ -362,6 +367,21 @@
+         # 再建一个客户端只会多一份连接池与一套超时默认值。
+         datasets = DatasetCatalog(albums=album_source, http=http, config=config)
+         spaces = MemorySpaces(http=http, config=config, index=run_index)
++        chat_store: ChatStore = FileChatStore(
++            settings.results_root.with_name(settings.results_root.name + "-chat")
++        )
++
++        def interactive_client(url: str) -> InteractiveSentrixClient:
++            return HttpxSentrixClient(http, lambda: url)
++
++        chat = ChatService(
++            store=chat_store,
++            suites=run_suites,
++            albums=album_source,
++            spaces=spaces,
++            client_for=interactive_client,
++            execution_for=run_execution,
++        )
+         return Container(
+             settings=settings,
+             config_store=config_store,
+@@ -390,4 +410,6 @@
+             run_suites=run_suites,
+             error_analysis=error_analysis,
+             analysis_backend=analysis_backend,
+-        )
++            chat_store=chat_store,
++            chat=chat,
++        )
+--- /dev/null
++++ b/apps/photobench/src/photobench/domain/chat/ports.py
+@@ -0,0 +1,11 @@
++"""Interactive session provenance; product turns remain the source of raw results."""
++
++from typing import Any, Protocol
++
++
++class ChatStore(Protocol):
++    def list_sessions(self) -> list[dict[str, Any]]: ...
++
++    def load_session(self, session_id: str) -> dict[str, Any]: ...
++
++    def save_session(self, session: dict[str, Any]) -> None: ...
+--- /dev/null
++++ b/apps/photobench/src/photobench/domain/chat/projection.py
+@@ -0,0 +1,58 @@
++"""Project product turn facts into the shared trace/media view, without scoring."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from photobench.domain.runs.execution import (
++    agent2_trace_from,
++    debug_steps_from,
++    resolve_predicted_media,
++    retrieved_candidate_asset_ids,
++    selected_asset_ids,
++    summarize_progress,
++    traces_from_progress,
++)
++
++
++def turn_item(
++    record: dict[str, Any], turn: dict[str, Any], assets: dict[str, list[dict[str, Any]]]
++) -> dict[str, Any]:
++    result = turn.get("result") or {}
++    events = turn.get("public_progress") or []
++    bundle = result.get("trace") or {}
++    runtime = {
++        "index": 0,
++        "message": record["message"],
++        "turn_id": record.get("turn_id"),
++        "answer": result.get("answer") or "",
++        "status": turn.get("status"),
++        "trace": events,
++        "trace_bundle": bundle,
++        "agent2_trace": agent2_trace_from(
++            bundle, termination_reason=str(result.get("termination_reason") or "")
++        ),
++        "debug_trace": debug_steps_from(events),
++    }
++    tools, execution = traces_from_progress([runtime])
++    return {
++        "index": record["index"],
++        "qa_id": record.get("qa_id") or record.get("turn_id"),
++        "question": record["message"],
++        "answer": runtime["answer"],
++        "final_answer": runtime["answer"],
++        "execution_status": turn.get("status"),
++        "agent_status": turn.get("status"),
++        "error": turn.get("error"),
++        "termination_reason": result.get("termination_reason"),
++        "wall_clock_ms": record.get("wall_clock_ms"),
++        "metrics_contract_version": 2,
++        "runtime_turns": [runtime],
++        "trace_summary": summarize_progress(events),
++        "tool_trace": tools,
++        "execution_trace": execution,
++        "model_call_metrics": [{**m, "conversation_turn": 0} for m in bundle.get("model_calls") or []],
++        "predicted_media": resolve_predicted_media(selected_asset_ids(result), assets),
++        "retrieved_candidate_media": resolve_predicted_media(retrieved_candidate_asset_ids(result), assets),
++        "attachments": result.get("attachments") or [],
++    }
+--- a/apps/photobench/src/photobench/domain/datasets/ports.py
++++ b/apps/photobench/src/photobench/domain/datasets/ports.py
+@@ -60,6 +60,10 @@
+         """
+         ...
+ 
++    def qa_question(self, album_id: str, qa_set: str, qa_id: str) -> dict[str, Any]:
++        """Load and validate one selected question with dataset defaults and version checks."""
++        ...
++
+     def gt_metadata_snapshot(self, album_id: str) -> dict[str, Any]:
+         """Load versioned Judge-only capture context; absence is recorded explicitly."""
+         ...
+--- a/apps/photobench/src/photobench/domain/runs/analysis.py
++++ b/apps/photobench/src/photobench/domain/runs/analysis.py
+@@ -1885,6 +1885,7 @@
+         key: state.get(key)
+         for key in (
+             "run_id",
++            "retest_context",
+             "mode",
+             "scope_source",
+             "scope_build",
+@@ -1915,6 +1916,14 @@
+         )
+         if state.get(key) is not None
+     }
++    if state.get("retest_context"):
++        item: dict[str, Any] = next(iter(state.get("items") or []), {})
++        result["retest_summary"] = {
++            "wall_clock_ms": item.get("wall_clock_ms"),
++            "delivery_recall": item.get("retrieval_recall"),
++            "candidate_recall": item.get("candidate_retrieval_recall"),
++            "answer": item.get("answer"),
++        }
+     result.update(execution_metadata(state))
+     result["item_count"] = len(state.get("items") or [])
+     result["summary"] = {key: summary.get(key) for key in summary_keys if summary.get(key) is not None}
+--- a/apps/photobench/src/photobench/domain/runs/exports.py
++++ b/apps/photobench/src/photobench/domain/runs/exports.py
+@@ -324,6 +324,7 @@
+         )
+     return {
+         "run_id": state.get("run_id"),
++        **({"retest_context": state["retest_context"]} if state.get("retest_context") else {}),
+         "scoring_profile": state.get("selected_scoring_profile"),
+         "scoring_batch": state.get("selected_scoring_batch"),
+         "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
+--- a/apps/photobench/src/photobench/domain/sentrix/ports.py
++++ b/apps/photobench/src/photobench/domain/sentrix/ports.py
+@@ -202,3 +202,11 @@
+     def cancel_operation(self, *, kind: str, operation_id: str, timeout: int = 3) -> dict[str, Any]:
+         """Request/observe cooperative cancellation; transport/unknown failures propagate."""
+         ...
++
++
++class InteractiveSentrixClient(SentrixClient, Protocol):
++    """Conversation reads and cooperative turn cancellation for the chat page."""
++
++    def get_conversation(self, *, conversation_id: str, timeout: int = 30) -> dict[str, Any]: ...
++
++    def cancel_turn(self, *, turn_id: str, timeout: int = 30) -> dict[str, Any]: ...
+--- /dev/null
++++ b/apps/photobench/src/photobench/infrastructure/chat/store.py
+@@ -0,0 +1,42 @@
++"""Atomic, independent session files beside the evaluation result directory."""
++
++from __future__ import annotations
++
++import json
++import re
++import tempfile
++from pathlib import Path
++from typing import Any
++
++
++class FileChatStore:
++    def __init__(self, root: Path) -> None:
++        self.root = root
++
++    def _path(self, session_id: str) -> Path:
++        if not re.fullmatch(r"chat-[a-f0-9]{24}", session_id):
++            raise KeyError(session_id)
++        return self.root / f"{session_id}.json"
++
++    def list_sessions(self) -> list[dict[str, Any]]:
++        sessions = [self.load_session(path.stem) for path in self.root.glob("chat-*.json")]
++        return sorted(sessions, key=lambda s: str(s["created_at"]), reverse=True)
++
++    def load_session(self, session_id: str) -> dict[str, Any]:
++        try:
++            value: dict[str, Any] = json.loads(self._path(session_id).read_text(encoding="utf-8"))
++        except FileNotFoundError as exc:
++            raise KeyError(session_id) from exc
++        return value
++
++    def save_session(self, session: dict[str, Any]) -> None:
++        path = self._path(str(session["session_id"]))
++        self.root.mkdir(parents=True, exist_ok=True)
++        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.root, delete=False) as handle:
++            temporary = Path(handle.name)
++            try:
++                json.dump(session, handle, ensure_ascii=False)
++                handle.flush()
++                temporary.replace(path)
++            finally:
++                temporary.unlink(missing_ok=True)
+--- a/apps/photobench/src/photobench/infrastructure/config/files.py
++++ b/apps/photobench/src/photobench/infrastructure/config/files.py
+@@ -18,6 +18,8 @@
+ 
+ def read_build_revision(repo_root: Path) -> str:
+     """A release records its committed revision at packaging time, once at boot."""
++    if revision := os.environ.get("PHOTOBENCH_BUILD_REVISION"):
++        return revision
+     try:
+         value = json.loads((repo_root / "build-info.json").read_text(encoding="utf-8"))
+         return str(value["revision"])
+--- a/apps/photobench/src/photobench/infrastructure/datasets/albums.py
++++ b/apps/photobench/src/photobench/infrastructure/datasets/albums.py
+@@ -166,6 +166,15 @@
+         return value
+ 
+     def qa_rows(self, album_id: str, qa_set: str) -> list[dict[str, Any]]:
++        return self._qa_rows(album_id, qa_set)
++
++    def qa_question(self, album_id: str, qa_set: str, qa_id: str) -> dict[str, Any]:
++        rows = self._qa_rows(album_id, qa_set, qa_id=qa_id)
++        if len(rows) != 1:
++            raise KeyError(qa_id)
++        return rows[0]
++
++    def _qa_rows(self, album_id: str, qa_set: str, *, qa_id: str | None = None) -> list[dict[str, Any]]:
+         manifest = self.manifest(album_id)
+         relative = (manifest.get("qa_sets") or {}).get(qa_set)
+         if not relative:
+@@ -188,6 +197,9 @@
+                 raise ValueError("QA IDs must be present and unique")
+             if definition.get("qa_sha256") != sha256_file(path):
+                 raise ValueError("versioned QA file fingerprint mismatch")
++        if qa_id is not None:
++            rows = [row for row in rows if str(row.get("qa_id")) == qa_id]
++        if definition.get("schema_version") in {"2.0", "3.0"}:
+             for row in rows:
+                 if definition.get("schema_version") == "3.0" and (
+                     not row.get("ability_taxonomy_version")
+--- a/apps/photobench/src/photobench/infrastructure/sentrix/client.py
++++ b/apps/photobench/src/photobench/infrastructure/sentrix/client.py
+@@ -61,6 +61,20 @@
+ 
+     def _url(self, path: str) -> str:
+         return f"{self._base_url().rstrip('/')}{API_PREFIX}{path}"
++
++    def get_conversation(self, *, conversation_id: str, timeout: int = 30) -> dict[str, Any]:
++        return dict(
++            self._http.request_json(
++                self._url(f"/assistant/conversations/{_quote(conversation_id)}"), timeout=timeout
++            )
++        )
++
++    def cancel_turn(self, *, turn_id: str, timeout: int = 30) -> dict[str, Any]:
++        return dict(
++            self._http.request_json(
++                self._url(f"/assistant/turns/{_quote(turn_id)}/cancel"), {}, "POST", timeout
++            )
++        )
+ 
+     def diagnostics(self, *, timeout: int = 10) -> dict[str, Any]:
+         body: dict[str, Any] = self._http.request_json(self._url("/diagnostics"), timeout=timeout)
+--- a/apps/photobench/src/photobench/main.py
++++ b/apps/photobench/src/photobench/main.py
+@@ -32,6 +32,7 @@
+ from photobench import __version__
+ from photobench.api import errors
+ from photobench.api.routes import assets as assets_routes
++from photobench.api.routes import chat as chat_routes
+ from photobench.api.routes import config as config_routes
+ from photobench.api.routes import datasets as datasets_routes
+ from photobench.api.routes import error_analysis as analysis_routes
+@@ -121,6 +122,7 @@
+     @asynccontextmanager
+     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+         container.startup_recovery.acquire_and_recover()
++        container.chat.recover_chats()
+         log.info("PhotoBench build revision: %s", container.build_revision)
+         if scan_in_background:
+             threading.Thread(
+@@ -146,6 +148,7 @@
+     # 写侧（S9b-3）先于只读侧挂上：``/runs/{id}/judge-prompt`` 这类更具体的路径要与
+     # ``/runs/{id}`` 区分开，先挂的一方在同形路径上优先匹配。
+     api.include_router(suites_routes.router)
++    api.include_router(chat_routes.router)
+     api.include_router(runs_routes.router)
+     # 报告三条与 ``/runs/{id}`` 不同形（多一段路径），挂载顺序不影响匹配；
+     # 与写侧同批挂在只读侧之后即可。
+--- a/apps/photobench/web/src/App.tsx
++++ b/apps/photobench/web/src/App.tsx
+@@ -1,5 +1,8 @@
+ import { defaultScoring, scoringPayload } from './lib/scoring.ts';
+-import type { ActiveWorkStatus } from "./api/types.ts";
++import "./features/interactive/interactive.css";
++import { ChatView } from "./features/chat/ChatView.tsx";
++import { RetestDialog } from "./features/interactive/RetestDialog.tsx";
++import type { ActiveWorkStatus, RunItemSummary } from "./api/types.ts";
+ /**
+  * PhotoBench 前端的组合层（组合根）。
+  *
+@@ -142,6 +145,7 @@
+   const [deleteScopeAfterRun, setDeleteScopeAfterRun] = useState(false);
+   const [suiteRunning, setSuiteRunning] = useState(false);
+   const [lightbox, setLightbox] = useState<LightboxTarget | null>(null);
++  const [retestQuestion, setRetestQuestion] = useState<RunItemSummary | null>(null);
+   const [activeView, setActiveView] = useState<ActiveView>("runs");
+   const [loading, setLoading] = useState(initialLoading);
+   /** init() 是否已跑完（`loading` 的初值可被 `initialLoading=false` 关掉，不能拿它当判据）。 */
+@@ -384,6 +388,8 @@
+       }
+     : undefined;
+ 
++  const interactiveModels = { profiles: modelApi.profiles, targets: configApi.config?.vllm_targets || {}, managerUrl: modelApi.vllmManagerUrl, modelEndpoint: modelApi.modelEndpoint };
++  const selectInteractiveRun = (id: string) => { setRetestQuestion(null); setActiveView("runs"); void runs.loadRuns(1); runs.selectRun({ run_id: id }); runs.startPolling(); };
+   if (loading) {
+     return <Loading />;
+   }
+@@ -442,16 +448,18 @@
+             {/* 1.0 里逐题结果是 `RunDetail` 的 `v-else` 分支，未选中 run 时整块不存在。
+                 2.0 拆成两个兄弟组件后忘了这层条件，初始状态会多出一整块
+                 「QA 逐题结果 / 筛选结果 0 / 全部 0 条」的空白面板。 */}
++            {runs.activeRun?.retest_context && <div className="retest-origin">单题重测 · 原第 {Number(runs.activeRun.retest_context.source_item_index) + 1} 题 <button className="btn ghost compact" onClick={() => selectInteractiveRun(runs.activeRun!.retest_context!.source_run_id)}>返回原任务</button></div>}
+             {runs.activeRun ? (
+             <QaResults
+               activeRun={runs.activeRun}
+               qa={qa}
+               resultRef={runs.runDetailRef}
+               onOpenMedia={setLightbox}
++              onRetest={setRetestQuestion}
+             />
+             ) : null}
+           </>
+-        ) : activeView === "capacity" ? <CapacityReport /> : (
++        ) : activeView === "chat" ? <ChatView sentrixUrl={configApi.sentrixUrl} manifests={configApi.manifests} models={interactiveModels} busy={workBusy || runs.hasRunning || suiteRunning} onOpenMedia={setLightbox}/> : activeView === "capacity" ? <CapacityReport /> : (
+           <QaBrowserView
+             sentrixUrl={configApi.sentrixUrl}
+             manifests={configApi.manifests}
+@@ -459,6 +467,7 @@
+           />
+         )}
+       </main>
++      {retestQuestion && runs.activeRun && <RetestDialog run={runs.activeRun} question={retestQuestion} models={interactiveModels} busy={workBusy || runs.hasRunning || suiteRunning} onClose={() => setRetestQuestion(null)} onSelectRun={selectInteractiveRun}/>}
+       <Lightbox target={lightbox} onClose={() => setLightbox(null)} />
+     </>
+   );
+--- a/apps/photobench/web/src/api/types.ts
++++ b/apps/photobench/web/src/api/types.ts
+@@ -359,6 +359,9 @@
+   /** 详情响应的可选内嵌条目；`effectiveRunSummary` 会读它（`App.vue:430`）。 */
+   items?: RunItemSummary[];
+   [key: string]: unknown;
++  retest_context?: RetestContext;
++  retest_summary?: { wall_clock_ms?: number; delivery_recall?: number; candidate_recall?: number; answer?: string };
++
+ }
+ 
+ /** `GET /api/runs` 的信封（`loadRuns` `App.vue:2233`）。 */
+@@ -876,3 +879,36 @@
+   cleanup_status: string;
+   errors?: Record<string, string>;
+ }
++
++/** One actual endpoint/profile, shared by retests and chat. */
++export interface InteractiveModel {
++  profile?: string;
++  target_id?: string;
++  base_url?: string;
++  manager_url?: string;
++  endpoint_model?: string;
++}
++export interface RetestContext {
++  source_run_id: string;
++  qa_id: string;
++  source_item_index: number;
++  source_scoring_batch_ids: string[];
++  source_rule_versions?: string[];
++}
++export interface ChatSession {
++  session_id: string;
++  created_at: string;
++  title: string;
++  scope_id: string;
++  album_id: string;
++  model_name?: string;
++  model_profile?: string;
++  model_identity?: Record<string, unknown>;
++  model_preparation?: Record<string, unknown>;
++  runtime_snapshot?: Record<string, unknown>;
++  status: string;
++  error?: string;
++  source?: { album_id: string; qa_set: string; row: QaRow; definition_sha256: string } | null;
++  turns?: Array<{ index: number; message: string; turn_id: string; status: string }>;
++  items?: RunItemDetail[];
++}
+--- a/apps/photobench/web/src/components/ViewTabs.tsx
++++ b/apps/photobench/web/src/components/ViewTabs.tsx
+@@ -7,7 +7,7 @@
+  */
+ 
+ /** 两个顶层视图。1.0 `activeView` 的取值就是这两个字符串。 */
+-export type ActiveView = "runs" | "qa-browser" | "capacity";
++export type ActiveView = "runs" | "qa-browser" | "capacity" | "chat";
+ 
+ export interface ViewTabsProps {
+   activeView: ActiveView;
+@@ -34,6 +34,7 @@
+       <button type="button" className={`view-tab${activeView === "capacity" ? " active" : ""}`} onClick={() => onSelect("capacity")}>
+         并发实验
+       </button>
++      <button type="button" className={`view-tab${activeView === "chat" ? " active" : ""}`} onClick={() => onSelect("chat")}>聊天对话</button>
+     </nav>
+   );
+ }
+--- /dev/null
++++ b/apps/photobench/web/src/features/chat/ChatView.tsx
+@@ -0,0 +1,136 @@
++import { useEffect, useRef, useState } from 'react';
++import { api, post } from '../../api/client.ts';
++import { mediaRefs } from '../../api/media.ts';
++import type { ChatSession, InteractiveModel, ManifestSummary, QaRow, RunItemDetail } from '../../api/types.ts';
++import { useQaBrowser } from '../../hooks/useQaBrowser.ts';
++import { fmtMs } from '../../lib/format.ts';
++import { toolRecallMedia, itemEvidenceMedia } from '../../lib/evidence.ts';
++import { DebugTracePanel } from '../qa/DebugTracePanel.tsx';
++import { ModelSelect, type ModelOptions } from '../interactive/ModelSelect.tsx';
++import { MediaGrid } from '../interactive/MediaGrid.tsx';
++
++type Space = { id: string; name?: string; created_at?: string };
++type Base = { scope_id: string; album_id: string; ready?: boolean };
++const active = (status: string) => ['preparing', 'running', 'cancelling'].includes(status);
++const stateLabel = (status: string) => ({ preparing: '准备模型', running: '回答中', cancelling: '正在取消', ready: '可继续提问', failed: '执行失败', cancelled: '已取消', outcome_unknown: '等待确认请求状态' }[status] || status);
++
++export function ChatView({ sentrixUrl, manifests, models, busy, onOpenMedia }: {
++  sentrixUrl: string; manifests: ManifestSummary[]; models: ModelOptions; busy: boolean;
++  onOpenMedia: (target: { url: string; name: string }) => void;
++}) {
++  const [spaces, setSpaces] = useState<Space[]>([]), [bases, setBases] = useState<Base[]>([]);
++  const [scope, setScope] = useState(''), [model, setModel] = useState<InteractiveModel>({});
++  const [sessions, setSessions] = useState<ChatSession[]>([]), [session, setSession] = useState<ChatSession | null>(null);
++  const [message, setMessage] = useState(''), [error, setError] = useState(''), [sending, setSending] = useState(false);
++  const [picker, setPicker] = useState(false), [selectedQa, setSelectedQa] = useState<QaRow | null>(null);
++  const browser = useQaBrowser({ sentrixUrl, manifests });
++  const selectedId = useRef('');
++  const loadSessions = async () => { const data = await api<{ items: ChatSession[] }>('/chat/sessions'); setSessions(data.items); return data.items; };
++  const select = async (id: string) => {
++    selectedId.current = id;
++    try {
++      const data = await api<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`);
++      if (selectedId.current !== id) return;
++      setSession(data); setScope(data.scope_id); setModel({ profile: data.model_profile, base_url: String(data.runtime_snapshot?.model_base_url || ''), manager_url: String(data.runtime_snapshot?.vllm_manager_url || '') }); localStorage.setItem('photobench-chat-session', id);
++    } catch (e) { setError((e as Error).message); }
++  };
++  useEffect(() => {
++    let disposed = false;
++    void (async () => {
++      try {
++        const [data, history] = await Promise.all([
++          api<{ spaces: Space[]; reuse_bases: Base[] }>(`/memory-spaces?sentrix_url=${encodeURIComponent(sentrixUrl)}`), loadSessions(),
++        ]);
++        if (disposed) return;
++        setSpaces(data.spaces); setBases(data.reuse_bases); setScope(data.spaces[0]?.id || '');
++        const remembered = localStorage.getItem('photobench-chat-session');
++        if (remembered && history.some(s => s.session_id === remembered)) void select(remembered);
++      } catch (e) { if (!disposed) setError((e as Error).message); }
++    })();
++    return () => { disposed = true; selectedId.current = ''; };
++  }, [sentrixUrl]); // oxlint-disable-line react-hooks/exhaustive-deps
++  const id = session?.session_id;
++  const status = session?.status || '';
++  useEffect(() => {
++    if (!id || !active(status)) return;
++    let pending = false, disposed = false;
++    const timer = window.setInterval(() => {
++      if (pending) return;
++      pending = true;
++      void api<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`).then(data => {
++        if (!disposed && selectedId.current === id) setSession(data);
++        if (!active(data.status)) void loadSessions();
++      }).catch((e: Error) => { if (!disposed) setError(e.message); }).finally(() => { pending = false; });
++    }, 1200);
++    return () => { disposed = true; window.clearInterval(timer); };
++  }, [id, status]); // oxlint-disable-line react-hooks/exhaustive-deps
++  useEffect(() => {
++    if (picker && browser.qaBrowserAlbum && browser.qaBrowserOptions.includes(browser.qaBrowserSet)) void browser.loadQaBrowser();
++  }, [picker, browser.qaBrowserAlbum, browser.qaBrowserSet]); // oxlint-disable-line react-hooks/exhaustive-deps
++  const reset = () => { selectedId.current = ''; setSession(null); setSelectedQa(null); localStorage.removeItem('photobench-chat-session'); };
++  const send = async (row?: QaRow) => {
++    setSending(true); setError('');
++    try {
++      const result = session && !row
++        ? await post<ChatSession>(`/chat/sessions/${encodeURIComponent(session.session_id)}/turns`, { message })
++        : await post<ChatSession>('/chat/sessions', { scope_id: scope, model, ...(row ? {
++          album_id: browser.qaBrowserAlbum, qa_set: browser.qaBrowserSet, qa_id: row.qa_id,
++        } : { message }) });
++      selectedId.current = result.session_id; setSession(result); setMessage(''); setPicker(false); setSelectedQa(null);
++      localStorage.setItem('photobench-chat-session', result.session_id); await loadSessions();
++    } catch (e) { setError((e as Error).message); }
++    finally { setSending(false); }
++  };
++  const sourceAlbum = bases.find(b => b.scope_id === scope)?.album_id;
++  const source = session?.source;
++  const openPicker = () => {
++    const album = sourceAlbum || browser.qaBrowserAlbum;
++    const sets = manifests.find(m => m.album_id === album)?.qa_sets || browser.qaBrowserOptions;
++    const preferred = source?.album_id === album ? source.qa_set : browser.qaBrowserSet;
++    browser.setQaBrowserAlbum(album);
++    browser.setQaBrowserSet(sets.includes(preferred) ? preferred : sets[0] || '');
++    setSelectedQa(null); setPicker(true);
++  };
++  const ownActive = Boolean(session && active(session.status));
++  return <section className="chat-view">
++    <div className="section-head"><div><h2>聊天对话</h2><p className="muted">选择相册与模型，自由提问或运行题集中的一道题。</p></div><button className="btn ghost" disabled={ownActive || sending} onClick={reset}>新建对话</button></div>
++    <div className="chat-controls">
++      <label>相册<select aria-label="聊天相册" value={scope} disabled={ownActive || sending} onChange={e => { reset(); setScope(e.target.value); }}><option value="">选择相册</option>{spaces.map(s => <option key={s.id} value={s.id}>{s.name || s.id}{s.created_at ? ` · ${s.created_at.slice(0, 16)}` : ''}</option>)}</select></label>
++      <ModelSelect key={session ? session.session_id : 'new'} options={models} value={model} onChange={value => { reset(); setModel(value); }} disabled={ownActive || sending}/>
++    </div>
++    <div className="chat-layout"><aside className="chat-history"><h3>会话记录</h3>{sessions.map(s => <button key={s.session_id} className={'chat-history-item' + (s.session_id === id ? ' selected' : '')} disabled={sending} onClick={() => void select(s.session_id)}><strong>{s.title}</strong><small>{s.model_name || '当前模型'} · {stateLabel(s.status)}</small></button>)}{!sessions.length && <p className="muted">暂无记录</p>}</aside>
++      <div className="chat-main">
++        {error && <p className="error" role="alert">{error}</p>}
++        {session && <div className="chat-state"><strong>{session.model_name || '模型准备中'}</strong><span>{stateLabel(session.status)}</span><details><summary>运行配置</summary><pre>{JSON.stringify({ model: session.model_identity, configuration: session.runtime_snapshot, preparation: session.model_preparation }, null, 2)}</pre></details></div>}
++        {session?.error && <p role="alert" className="error">{session.error}</p>}
++        {source && <details className="chat-source" open><summary>题集对照 · {source.row.qa_id} · {source.qa_set}</summary><p>{source.row.question}</p><h4>标准答案</h4><p>{source.row.answer}</p><h4>检索 GT 媒体</h4><MediaGrid items={mediaRefs(source.row, 'retrieval')} albumId={source.album_id} onOpenMedia={onOpenMedia}/><h4>答案证据 GT 媒体</h4><MediaGrid items={mediaRefs(source.row, 'answer_evidence')} albumId={source.album_id} onOpenMedia={onOpenMedia}/></details>}
++        <div className="chat-messages">{session?.turns?.map((turn, i) => {
++          const item = session.items?.[i];
++          return <article className="chat-exchange" key={turn.turn_id}><div className="chat-question"><small>提问 {i + 1}</small><p>{turn.message}</p></div><div className="chat-answer"><small>{session.model_name || '模型'} · {fmtMs(item?.wall_clock_ms)}</small><p>{String(item?.final_answer || item?.answer || item?.error || (['pending', 'running'].includes(turn.status) ? '正在回答…' : turn.status))}</p>
++            {item && <ChatResult item={item} albumId={session.album_id} modelLabel={session.model_name || ''} onOpenMedia={onOpenMedia}/>}</div></article>;
++        })}{!session && <p className="chat-empty">输入问题开始对话，也可以从题集中选择一道题。</p>}</div>
++        <form className="chat-composer" onSubmit={e => { e.preventDefault(); void send(); }}>
++          <textarea aria-label="聊天问题" placeholder="输入问题，支持连续追问…" maxLength={2000} value={message} disabled={ownActive || sending} onChange={e => setMessage(e.target.value)}/>
++          <div className="chat-composer-actions"><button className="btn ghost" type="button" disabled={!scope || ownActive || sending || busy} onClick={openPicker}>从题集选题</button>
++            {ownActive ? <button type="button" className="btn ghost" onClick={() => { void post(`/chat/sessions/${encodeURIComponent(id!)}/cancel`, {}).then(() => select(id!)).catch(e => setError((e as Error).message)); }}>停止回答</button> : <button className="btn" disabled={!scope || !message.trim() || sending || busy}>{sending ? '正在发送…' : '发送'}</button>}
++          </div>
++        </form>
++      </div>
++    </div>
++    {picker && <div className="modal-backdrop" onClick={() => setPicker(false)}><section className="interactive-dialog" role="dialog" aria-modal="true" aria-label="从题集选题" onClick={e => e.stopPropagation()}><div className="section-head"><h3>从题集选题</h3><button className="btn ghost compact" onClick={() => setPicker(false)}>关闭</button></div>
++      <div className="chat-controls"><label>数据集<select value={browser.qaBrowserAlbum} onChange={e => { browser.setQaBrowserAlbum(e.target.value); setSelectedQa(null); }}>{manifests.map(m => <option key={m.album_id} value={m.album_id}>{m.album_name || m.album_id}</option>)}</select></label><label>题集<select value={browser.qaBrowserSet} onChange={e => { browser.setQaBrowserSet(e.target.value); setSelectedQa(null); }}>{browser.qaBrowserOptions.map(s => <option key={s} value={s}>{s}</option>)}</select></label></div>
++      <input aria-label="搜索聊天题目" placeholder="搜索题号、问题、答案或标签" value={browser.qaBrowserSearch} onChange={e => browser.setQaBrowserSearch(e.target.value)}/>
++      {browser.qaBrowserError && <p role="alert">{browser.qaBrowserError}</p>}
++      {sourceAlbum !== browser.qaBrowserAlbum && <p>请先选择与该数据集对应的相册。</p>}
++      <div className="chat-qa-list">{browser.qaBrowserLoading ? <p>加载题集…</p> : browser.visibleQaBrowserItems.map(row => <button className={'chat-qa-option' + (selectedQa?.qa_id === row.qa_id ? ' selected' : '')} key={row.qa_id} onClick={() => setSelectedQa(row)}><strong>{row.qa_id}</strong> {row.question}</button>)}</div>
++      {selectedQa && <div className="chat-qa-preview"><h4>{selectedQa.question}</h4>{selectedQa.conversation && <pre>{JSON.stringify(selectedQa.conversation, null, 2)}</pre>}<p>标准答案：{selectedQa.answer}</p><h4>检索 GT</h4><MediaGrid items={mediaRefs(selectedQa, 'retrieval')} albumId={browser.qaBrowserAlbum} onOpenMedia={onOpenMedia}/><h4>答案证据 GT</h4><MediaGrid items={mediaRefs(selectedQa, 'answer_evidence')} albumId={browser.qaBrowserAlbum} onOpenMedia={onOpenMedia}/></div>}
++      {error && <p className="error" role="alert">{error}</p>}<button className="btn" disabled={!selectedQa || sourceAlbum !== browser.qaBrowserAlbum || sending || busy} onClick={() => void send(selectedQa!)}>运行此题（新对话）</button>
++    </section></div>}
++  </section>;
++}
++
++function ChatResult({ item, albumId, modelLabel, onOpenMedia }: {
++  item: RunItemDetail; albumId: string; modelLabel: string; onOpenMedia: (target: { url: string; name: string }) => void;
++}) {
++  return <><h4>召回候选媒体</h4><MediaGrid items={toolRecallMedia(item, albumId)} albumId={albumId} onOpenMedia={onOpenMedia}/><h4>最终交付媒体</h4><MediaGrid items={itemEvidenceMedia(item, albumId)} albumId={albumId} onOpenMedia={onOpenMedia}/><DebugTracePanel detail={item} modelLabel={modelLabel}/></>;
++}
+--- /dev/null
++++ b/apps/photobench/web/src/features/interactive/MediaGrid.tsx
+@@ -0,0 +1,13 @@
++import { decorateMedia, imageUrl, isVideoMedia, type MediaLike } from '../../api/media.ts';
++
++export function MediaGrid({ items, albumId, onOpenMedia }: {
++  items: MediaLike[]; albumId: string; onOpenMedia: (target: { url: string; name: string }) => void;
++}) {
++  return <div className="image-grid interactive-media">{decorateMedia(items, albumId).map((media, i) => {
++    const url = imageUrl(media), name = String(media.file_name || media.media_id || media.asset_id || '');
++    return <div key={String(media.asset_id || media.media_id || i)} className="image-tile">
++      {url ? isVideoMedia(media) ? <video src={url} controls preload="metadata" playsInline /> : <img src={url} alt={name} loading="lazy" onClick={() => onOpenMedia({ url, name })}/> : <span>未找到媒体</span>}
++      <span className="image-label">{name}</span>
++    </div>;
++  })}{!items.length && <span className="muted small">无</span>}</div>;
++}
+--- /dev/null
++++ b/apps/photobench/web/src/features/interactive/ModelSelect.tsx
+@@ -0,0 +1,32 @@
++import type { InteractiveModel } from '../../api/types.ts';
++
++export interface ModelOptions {
++  profiles: Array<{ id: string; available?: boolean; label?: string }>;
++  targets: Record<string, { label?: unknown; model_base_url?: unknown; manager_url?: unknown }>;
++  managerUrl: string;
++  modelEndpoint: string;
++}
++
++export function ModelSelect({ options, value, onChange, disabled = false }: {
++  options: ModelOptions; value: InteractiveModel; onChange: (value: InteractiveModel) => void; disabled?: boolean;
++}) {
++  const choice = value.profile && value.profile !== '__current__' ? 'profile:' + value.profile : value.target_id ? 'target:' + value.target_id : value.base_url !== undefined ? 'custom' : 'current';
++  return <div className="interactive-model">
++    <label>模型<select aria-label="问答模型" value={choice} disabled={disabled} onChange={e => {
++      const next = e.target.value;
++      if (next.startsWith('profile:')) onChange({ profile: next.slice(8), base_url: options.modelEndpoint, manager_url: options.managerUrl });
++      else if (next.startsWith('target:')) onChange({ target_id: next.slice(7) });
++      else if (next === 'custom') onChange({ base_url: options.modelEndpoint, endpoint_model: '' });
++      else onChange({});
++    }}>
++      <option value="current">当前部署模型</option>
++      {options.profiles.map(p => <option key={p.id} value={'profile:' + p.id} disabled={p.available === false}>{p.label || p.id}</option>)}
++      {Object.entries(options.targets).map(([id, target]) => <option key={id} value={'target:' + id}>{String(target.label || id)}</option>)}
++      <option value="custom">其他模型端点</option>
++    </select></label>
++    {choice === 'custom' && <>
++      <label>模型服务地址<input aria-label="问答模型地址" value={value.base_url || ''} placeholder="http://host:port/v1" disabled={disabled} onChange={e => onChange({ ...value, base_url: e.target.value })}/></label>
++      <label>模型名（可选）<input aria-label="问答模型名" value={value.endpoint_model || ''} disabled={disabled} onChange={e => onChange({ ...value, endpoint_model: e.target.value })}/></label>
++    </>}
++  </div>;
++}
+--- /dev/null
++++ b/apps/photobench/web/src/features/interactive/RetestDialog.tsx
+@@ -0,0 +1,55 @@
++import { useEffect, useState } from 'react';
++import { api, post } from '../../api/client.ts';
++import type { InteractiveModel, Run, RunItemSummary } from '../../api/types.ts';
++import { fmtMs, fmtPct, modelName } from '../../lib/format.ts';
++import { ModelSelect, type ModelOptions } from './ModelSelect.tsx';
++
++function scoringLabel(run: Run): string {
++  const summaries = (run.summary?.scoring as { profiles?: Record<string, unknown> } | undefined)?.profiles;
++  const rows = Array.isArray(summaries) ? summaries : Object.values((summaries || {}) as Record<string, unknown>);
++  return rows.map(value => {
++    const row = value as Record<string, unknown>;
++    return row.max_score === 2 && typeof row.scored_mean === 'number' ? `${row.scored_mean.toFixed(2)} / 2` : typeof row.total_score === 'number' ? `${(row.total_score * 100).toFixed(1)}%` : '待评分';
++  }).join(' / ') || (typeof run.summary?.answer_quality_mean === 'number' ? `${run.summary.answer_quality_mean.toFixed(2)} / 2` : '未评分');
++}
++
++export function RetestDialog({ run, question, models, busy, onClose, onSelectRun }: {
++  run: Run; question: RunItemSummary; models: ModelOptions; busy: boolean;
++  onClose: () => void; onSelectRun: (id: string) => void;
++}) {
++  const [model, setModel] = useState<InteractiveModel>({});
++  const [history, setHistory] = useState<Run[]>([]);
++  const [error, setError] = useState('');
++  const [starting, setStarting] = useState(false);
++  const load = async () => {
++    try { const data = await api<{ items: Run[] }>(`/runs/${encodeURIComponent(run.run_id!)}/retests?qa_id=${encodeURIComponent(String(question.qa_id))}`); setHistory(data.items); }
++    catch (e) { setError((e as Error).message); }
++  };
++  useEffect(() => { void load(); }, [run.run_id, question.qa_id]); // oxlint-disable-line react-hooks/exhaustive-deps
++  const start = async () => {
++    setStarting(true); setError('');
++    try {
++      const result = await post<{ run_id: string }>(`/runs/${encodeURIComponent(run.run_id!)}/retest`, {
++        qa_id: question.qa_id, model,
++        scoring_profile: run.selected_scoring_profile || undefined,
++        scoring_batch: run.selected_scoring_batch || undefined,
++      });
++      onSelectRun(result.run_id);
++    } catch (e) { setError((e as Error).message); }
++    finally { setStarting(false); }
++  };
++  return <div className="modal-backdrop" onClick={onClose}><section className="interactive-dialog" role="dialog" aria-modal="true" aria-label="单题重测与模型比较" onClick={e => e.stopPropagation()}>
++    <div className="section-head"><h3>单题重测与模型比较</h3><button className="btn ghost compact" onClick={onClose}>关闭</button></div>
++    <p>第 {Number(question.index) + 1} 题 · {question.qa_id}</p><p>{String(question.display_question || question.question || '')}</p>
++    <p className="muted small">复用原相册；多轮题从第一轮开始。评分沿用当前所选批次，原答卷及总分保留。</p>
++    <ModelSelect options={models} value={model} onChange={setModel} disabled={starting}/>
++    {error && <p role="alert" className="error">{error}</p>}
++    <button className="btn" disabled={busy || starting} onClick={() => void start()}>{starting ? '正在启动…' : busy ? '等待当前任务结束' : '开始重测'}</button>
++    <h4>比较记录</h4>
++    <div className="interactive-table"><table><thead><tr><th>记录</th><th>模型</th><th>得分</th><th>交付召回</th><th>耗时</th><th>状态</th><th></th></tr></thead><tbody>
++      <tr><td>原结果</td><td>{modelName(run)}</td><td>{Object.values(question.profile_scores || {}).map(s => typeof s.score === 'number' ? String(s.score) : '未评分').join(' / ') || String(question.judge?.score ?? '未评分')}</td><td>{fmtPct(question.retrieval_recall)}</td><td>{fmtMs(question.wall_clock_ms)}</td><td>{String(question.execution_status || '')}</td><td></td></tr>
++      {history.map(row => <tr key={row.run_id}><td>{String(row.created_at || row.run_id)}</td><td>{modelName(row)}</td><td>{scoringLabel(row)}</td><td>{fmtPct(row.retest_summary?.delivery_recall)}</td><td>{fmtMs(row.retest_summary?.wall_clock_ms)}</td><td>{row.status}</td><td><button className="btn ghost compact" onClick={() => onSelectRun(row.run_id!)}>查看回答与轨迹</button></td></tr>)}
++    </tbody></table></div>
++    <p className="muted small">原结果耗时 {fmtMs(question.wall_clock_ms)}；每次重测可独立查看实际模型、评分版本与耗时。</p>
++  </section></div>;
++}
+--- /dev/null
++++ b/apps/photobench/web/src/features/interactive/interactive.css
+@@ -0,0 +1,45 @@
++.chat-view { background: #fff; border: 1px solid #dfe3ef; border-radius: 18px; padding: 24px; }
++.chat-controls, .interactive-model { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
++.chat-controls label, .interactive-model label { display: grid; gap: 6px; font-size: 13px; color: #65708e; }
++.chat-controls select, .interactive-model input, .interactive-model select { max-width: 100%; min-width: 180px; }
++.chat-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; margin-top: 24px; }
++.chat-history { border-right: 1px solid #e6e9f2; padding-right: 16px; }
++.chat-history-item, .chat-qa-option { display: block; width: 100%; border: 1px solid transparent; background: #f7f8fc; border-radius: 10px; padding: 12px; text-align: left; margin-bottom: 8px; cursor: pointer; color: #252d45; overflow-wrap: anywhere; }
++.chat-history-item strong, .chat-history-item small { display: block; }
++.chat-history-item small { margin-top: 6px; color: #758099; }
++.chat-history-item.selected, .chat-qa-option.selected { border-color: #918ac9; background: #f0eef9; }
++.chat-main { min-width: 0; }
++.chat-state { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; font-size: 13px; color: #6d7790; }
++.chat-state details { width: 100%; }
++.chat-view pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto; }
++.chat-source { border: 1px solid #e6e0f2; border-radius: 12px; padding: 14px; margin-top: 18px; }
++.chat-source summary { cursor: pointer; font-weight: 600; }
++.chat-messages { min-height: 180px; padding: 16px 0; }
++.chat-question { padding: 14px 18px; background: #f1eff9; border-radius: 12px; margin: 14px 0; }
++.chat-answer { padding: 8px 4px 20px; border-bottom: 1px solid #eceef5; }
++.chat-messages p, .chat-source p, .chat-qa-preview p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
++.chat-messages small { color: #79829b; }
++.chat-empty { padding: 40px 16px; text-align: center; color: #8a93a9; }
++.chat-composer { display: grid; gap: 10px; }
++.chat-composer textarea { resize: vertical; min-height: 90px; width: 100%; padding: 14px; border: 1px solid #dce1ee; border-radius: 12px; box-sizing: border-box; font: inherit; }
++.chat-composer-actions { display: flex; justify-content: space-between; gap: 10px; }
++.interactive-dialog { margin: 5vh auto; width: min(1000px, calc(100vw - 32px)); max-height: 90vh; overflow: auto; background: #fff; padding: 24px; border-radius: 16px; box-shadow: 0 16px 70px #28314c30; box-sizing: border-box; }
++.interactive-dialog .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
++.interactive-dialog > .btn { margin: 16px 0; }
++.interactive-dialog input { padding: 10px; border: 1px solid #dce1ee; border-radius: 8px; }
++.interactive-table { overflow-x: auto; }
++.interactive-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
++.interactive-table th, .interactive-table td { padding: 12px 8px; border-bottom: 1px solid #e8ebf3; text-align: left; max-width: 260px; overflow-wrap: anywhere; }
++.interactive-media { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
++.chat-qa-list { max-height: 260px; overflow-y: auto; margin: 16px 0; }
++.chat-qa-preview { border-top: 1px solid #e8ebf3; padding-top: 12px; }
++.qa-retest-actions { display: flex; justify-content: flex-end; padding: 4px 14px 10px; }
++.retest-origin { padding: 10px 16px; background: #f2eff9; border-radius: 10px; }
++@media(max-width: 700px) {
++  .chat-view { padding: 16px; }
++  .chat-layout { grid-template-columns: 1fr; gap: 14px; }
++  .chat-history { border-right: none; border-bottom: 1px solid #e6e9f2; padding: 0 0 12px; max-height: 160px; overflow-y: auto; }
++  .chat-controls > label, .chat-controls > .interactive-model, .interactive-model > label { min-width: 0; width: 100%; }
++  .chat-controls select, .interactive-model input, .interactive-model select { width: 100%; min-width: 0; }
++  .interactive-dialog { padding: 16px; }
++}
+--- a/apps/photobench/web/src/features/qa/QaItemCard.tsx
++++ b/apps/photobench/web/src/features/qa/QaItemCard.tsx
+@@ -101,6 +101,7 @@
+   onToggle: () => void;
+   onOpenImage: (media: MediaLike) => void;
+   onOpenJudgeInput: (detail: RunItemDetail) => void;
++  onRetest?: () => void;
+   review?: ReviewDraft;
+   onReviewChange?: (patch: ReviewDraft) => void;
+ }
+@@ -114,6 +115,7 @@
+   modelLabel,
+   activeRejudge,
+   onToggle,
++  onRetest,
+   onOpenImage,
+   onOpenJudgeInput,
+ }: QaItemCardProps) {
+@@ -150,6 +152,7 @@
+           ⌄
+         </span>
+       </button>
++      {onRetest && <div className="qa-retest-actions"><button className="btn ghost compact" onClick={onRetest}>重测本题 / 模型比较</button></div>}
+       {open && (
+         <div className="qa-expanded">
+           {loading ? (
+--- a/apps/photobench/web/src/features/qa/QaResults.tsx
++++ b/apps/photobench/web/src/features/qa/QaResults.tsx
+@@ -61,6 +61,7 @@
+    * 点击图片时上抛给组合层的**共享**灯箱（1.0 `:3767` 的根级元素，两个视图共用）。
+    * 缺省时为无操作（与 1.0 的灯箱是根级、本切片不持有状态一致）。
+    */
++  onRetest?: (summary: RunItemSummary) => void;
+   onOpenMedia?: (target: { url: string; name: string }) => void;
+ }
+ 
+@@ -71,6 +72,7 @@
+   reviewFor,
+   onReviewChange,
+   onOpenMedia,
++  onRetest,
+ }: QaResultsProps) {
+   const activeRejudge = activeRun?.rejudge ?? null;
+   const scoreOptions = scoreChoices({evaluation_summary: activeRun?.summary?.evaluation_summary});
+@@ -259,6 +261,7 @@
+             albumId={albumId}
+             modelLabel={modelLabel}
+             activeRejudge={activeRejudge}
++            onRetest={onRetest ? () => onRetest(summary) : undefined}
+             onToggle={() => void toggleQa(summary)}
+             onOpenImage={openImage}
+             onOpenJudgeInput={setJudgeItem}
+--- a/apps/photobench/web/src/features/runs/RunsTable.tsx
++++ b/apps/photobench/web/src/features/runs/RunsTable.tsx
+@@ -103,7 +103,7 @@
+                 onClick={() => onSelectRun(run)}
+               >
+                 <td>
+-                  <b>{modelName(run)}</b>
++                  <b>{modelName(run)}{run.retest_context && <small className="muted"> · 单题重测（原第 {run.retest_context.source_item_index + 1} 题）</small>}</b>
+                   <span className={"mode-badge " + modeBadgeClass(run.mode)}>{modeLabel(run.mode)}</span>
+                   {run.execution_versions && <small className="muted">{run.execution_versions.length} 次执行</small>}
+                 </td>

@@ -27,6 +27,8 @@ it("切换运行和轮询更新时分析入口与记忆面板保持独立", () =
   for (const id of ["r2", "r2", "r1", "r1"]) {
     view.rerender(<RunDetail {...props} activeRun={run({run_id: id})} />);
     expect(screen.getAllByRole("button", {name: "错误分析 展开"})).toHaveLength(1);
+    expect(view.container.querySelectorAll('.keyframe-analysis-panel')).toHaveLength(1);
+    expect(view.container.querySelector('.memory-layer-panel .keyframe-analysis-panel')).toBeNull();
   }
 });
 

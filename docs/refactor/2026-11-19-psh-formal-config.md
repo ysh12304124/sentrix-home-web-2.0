@@ -1,0 +1,11 @@
+# psh 正式代码与153 Q4生效配置对齐
+
+psh a5daf5192fecf9059a6e922f41d5e279241eec53 和main 28ba9e6d5b58a9068224e0f52d4e175ef7f28bb0均已为本分支祖先；无新正式提交需要重复合并。保留本机后续有限推理、失败工具过滤、懒加载与评分修复。
+
+2026-11-19只读核查153：8772静态默认连接文件仍写8191（当前未监听），最新实际run917247的runtime_snapshot指向8195；8195实际PID2287466，local模式，显式qwen35_nonthinking。8230是独立实验副本，含SENTRIX_AGENT_MAX_SEARCH_CALLS=1等覆盖，排除。153仓库另有未提交媒体/导入/测评改动，未复制。
+
+/home/asus/sentrix-cloud/q4km.json没有被8195加载：进程未设置cloud/profile JSON，local装配完全不读取该文件。其600秒超时、2次重试、大工具预览、drop_only及无限预算均不纳入正式对齐；该JSON还缺现行角色加载器要求的context_tokens/max_output_tokens，不能直接用作现行配置。
+
+必要生效配置已纳入deploy/experience/qwen35-q4km.env.example。现有ServedModel对该开关生成temperature0.7、seed42、top_p0.8、top_k20、min_p0、presence_penalty1.5、enable_thinking=false；已被正式代码中的聊天、结构化规划和视觉调用共享。产品reasoning是Agent调用策略，与模型enable_thinking分属两个开关。保留100模型/600工具（搜索100、其他500）和共享重试/收尾计数。
+
+100仅对Q4产品8291及测评8872做一次受控配置切换：已完成题和原scope保留，恢复时显式选择已配置产品版本，在新runtime_snapshot记录采样开关和四个上限，source_runtime_snapshot保留原配置。Qwen8294/8874仍运行原配置，不套用Q4采样参数。嵌入、上下文、QA4/3660、1013、graph和冻结ATM/Judge保持。切换前后的题数与有效配置分段记录在产品项目audit/20261119-psh-formal-config/。所有旧脚本禁止重放。

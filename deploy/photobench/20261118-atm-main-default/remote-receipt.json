@@ -1,0 +1,28 @@
+{
+  "revision": "6476d88",
+  "package": "/var/tmp/sentrix-atm-sources-20261117/2026.11.17-atm-sources-addresses",
+  "qa_set": "atm-bench",
+  "qa_count": 1013,
+  "changed_qa_ids": [
+    "atm-500f1059-8d20-4bd7-be43-32ef39bee511"
+  ],
+  "other_qa_unchanged": 1012,
+  "qa_sets": [
+    "atm-bench",
+    "atm-bench-hard",
+    "atm-bench-email",
+    "atm-bench-hard-email"
+  ],
+  "before_sha256": {
+    "qa/atm-bench.jsonl": "f6788fcd547b2f1b64bc454cbc8650cef244e74b8953b27b6d4227feafcd725c",
+    "manifest.json": "f94db1eb3fe6e136a0280fa0068263cb2df83b24e50a567d10e04a1583f8474b",
+    "audit/preflight.json": "4b111c419e0b68f397c16e56cc6a5b805b26c477f6e57172c326f1b36c55943a"
+  },
+  "after_sha256": {
+    "qa/atm-bench.jsonl": "13d07b33d8e9c522347bf485539a9a71d8ce569385d1ecf26620218b7e3383c3",
+    "manifest.json": "4a282e7f697179ab192604fabdf2a0932bf4aac3b5cceb88119948cd1ab7c1a4",
+    "audit/preflight.json": "7e07df2504fc8549b44d04a7f2c944593e14d7aabd6ff4092200bec80023a2a9"
+  },
+  "backup": "/var/tmp/sentrix-atm-sources-20261117/2026.11.17-atm-sources-addresses/audit/20261118-main-default-before.zip",
+  "payload_sha256": "cf713879fbce61c7d8edbdd7d340ce2b0209c26433563b70f6a7220a18ba70b7"
+}

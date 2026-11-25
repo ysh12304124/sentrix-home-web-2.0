@@ -39,6 +39,8 @@ export function KeyframeAnalysisPanel({
   keyframeAnalysisError,
 }: KeyframeAnalysisPanelProps) {
   const ready = keyframeAnalysis?.status === "ready";
+  const hits = keyframeAnalysis?.evidence_hits;
+  const hitLabel = (n: number, d: number) => d > 0 ? `${n}/${d} (${(n * 100 / d).toFixed(1)}%)` : `${n}/${d}（无可计算数据）`;
   const assets = keyframeAnalysis?.assets;
   const retrieval = keyframeAnalysis?.retrieval;
   const temporal = keyframeAnalysis?.temporal;
@@ -64,6 +66,18 @@ export function KeyframeAnalysisPanel({
         <p className="error">{keyframeAnalysisError}</p>
       ) : ready ? (
         <div className="keyframe-analysis-grid">
+          {hits && hits.annotated > 0 ? <div>
+            <small>关键帧时间命中（QA 数）</small>
+            <b>{hits.annotated} 条有有效标注</b>
+            <span>候选来自正确视频：{hitLabel(hits.candidate_video, hits.annotated - hits.unmapped_video)}；候选为空 {hits.candidate_empty ?? "未记录"} 条</span>
+            <span>已记录查看正确视频：{hitLabel(hits.viewed_video, hits.annotated - hits.unmapped_video)}；缺少工具轨迹 {hits.viewed_trace_missing ?? "未记录"} 条</span>
+            {[2, 30, 60].map(window => {
+              const candidate = hits.windows?.candidate?.[String(window)];
+              const viewed = hits.windows?.viewed?.[String(window)];
+              return <span key={window}>标注段 ±{window} 秒：候选 {candidate ? hitLabel(candidate.hits, hits.candidate_video - candidate.unknown) : "未计算"}；实际查看 {viewed ? hitLabel(viewed.hits, hits.viewed_video - viewed.unknown) : "未计算"}</span>;
+            })}
+            <span>实际查看统计 inspect_photo 已完成的模型视觉调用；缺少轨迹时无法确认是否查看。视频无法映射 {hits.unmapped_video}。</span>
+          </div> : null}
           <div>
             <small>关键帧规模</small>
             <b>{assets?.keyframes}</b>

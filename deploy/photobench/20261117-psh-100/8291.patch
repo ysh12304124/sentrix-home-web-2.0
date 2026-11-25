@@ -1,0 +1,11 @@
+--- a/apps/api/src/sentrix/infrastructure/persistence/repositories/turns.py
++++ b/apps/api/src/sentrix/infrastructure/persistence/repositories/turns.py
+@@ -222,6 +222,8 @@
+             try:
+                 row = connection.execute(
+                     f"SELECT {_TURN_COLUMNS} FROM agent_turns WHERE "
++                    # Keep the ten archived 2026-11-10 pending turns untouched.
++                    "id NOT IN ('turn_20261110064059251617', 'turn_20261110064059252188', 'turn_20261110064059253059', 'turn_20261110064059253624', 'turn_20261110065608379748', 'turn_20261110065608411216', 'turn_20261110065608797731', 'turn_20261110065608846083', 'turn_20261110071117717857', 'turn_20261110071117916274') AND "
+                     "(? IS NULL OR id = ?) AND ("
+                     "(status = 'pending' AND execution_state <> 'waiting_dependency'"
+                     " AND (next_retry_at IS NULL OR next_retry_at <= ?)) "

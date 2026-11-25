@@ -36,6 +36,22 @@ MAX_FRAME_SIDE = 640
 FEATURE_SIZE = (32, 18)
 
 
+class ThreadSafeImageSelector(ImageSelector):
+    """Katna's one-worker filter without forking the multithreaded API process."""
+
+    def __filter_optimum_brightness_and_contrast_images__(self, images: list[np.ndarray]) -> list[np.ndarray]:
+        # Preserve Katna's scores, strict bounds, and input order. Its Pool(1)
+        # forks after OpenCV/BLAS threads exist and can inherit a locked mutex.
+        brightness = [self.__get_brightness_score__(image) for image in images]
+        entropy = [self.__get_entropy_score__(image) for image in images]
+        return [
+            image
+            for image, light, contrast in zip(images, brightness, entropy, strict=True)
+            if self.min_brightness_value < light < self.max_brightness_value
+            and self.min_entropy_value < contrast < self.max_entropy_value
+        ]
+
+
 def _feature(image: np.ndarray) -> np.ndarray:
     """Match the compact grayscale-plus-color descriptor used in the experiment."""
     small = cv2.resize(image, (160, 90), interpolation=cv2.INTER_AREA)
@@ -184,7 +200,7 @@ def _katna_select(candidates: list[FrameCandidate], requested_budget: int) -> li
     if not candidates:
         return []
     budget = min(max(1, int(requested_budget)), len(candidates))
-    selected_images = ImageSelector(n_processes=1).select_best_frames(
+    selected_images = ThreadSafeImageSelector(n_processes=1).select_best_frames(
         [item["image"] for item in candidates], budget
     )
     selected: list[FrameCandidate] = []

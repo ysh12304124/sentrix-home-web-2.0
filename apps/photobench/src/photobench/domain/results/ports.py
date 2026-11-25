@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -51,7 +51,7 @@ class RunStore(Protocol):
         """
         ...
 
-    def read_gpu_sample_lines(self, run_id: str) -> list[str]:
+    def read_gpu_sample_lines(self, run_id: str) -> Iterable[str]:
         """读 ``gpu_samples.jsonl`` 的**原始行**；文件不存在时返回空表。
 
         解析留给 ``domain.runs.analysis.attach_gpu_sample_history``——1.0 是逐行
@@ -145,6 +145,13 @@ class RunRevisions(Protocol):
 
 
 @runtime_checkable
+class RunListViews(Protocol):
+    """Read the committed list projection without visiting execution traces."""
+
+    def load_entry(self, run_id: str) -> dict[str, Any]: ...
+
+
+@runtime_checkable
 class RunReadViews(Protocol):
     """Optional lightweight committed view, without loading item traces.
 
@@ -161,7 +168,47 @@ class RunReadViews(Protocol):
 
 
 @runtime_checkable
+class ProcessDiagnosticStore(Protocol):
+    """Derived observations are stored separately from immutable run snapshots."""
+
+    def save_process_diagnostics(self, run_id: str, diagnostics: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
 class RunVideoComparisonStore(Protocol):
     def read_video_comparison(self, run_id: str) -> dict[str, Any] | None:
         """Read an optional persisted, question-level historical comparison."""
         ...
+
+
+@runtime_checkable
+class RunIndexedViews(Protocol):
+    """Revision-pinned light reads and explicit node-content reads."""
+
+    def use_read_index(self, run_id: str) -> bool: ...
+    def load_selected_overview(
+        self, run_id: str, profile: str, batch: str, *, revision: str = ""
+    ) -> dict[str, Any]: ...
+    def load_item_index(
+        self, run_id: str, profile: str, batch: str, *, revision: str = ""
+    ) -> list[dict[str, Any]]: ...
+    def load_indexed_state(self, run_id: str, *, revision: str = "") -> dict[str, Any]: ...
+
+    def load_item_core(
+        self, run_id: str, index: int, profile: str, batch: str, *, revision: str = "", preview: bool = False
+    ) -> dict[str, Any]: ...
+    def load_item_record(self, run_id: str, index: int, *, revision: str = "") -> dict[str, Any]: ...
+    def load_item_answer_fingerprint(self, run_id: str, index: int, *, revision: str = "") -> str: ...
+
+    def load_trace_nodes(self, run_id: str, index: int, **options: Any) -> dict[str, Any]: ...
+    def load_trace_content(self, run_id: str, index: int, node_id: str, **options: Any) -> dict[str, Any]: ...
+    def load_item_content(self, run_id: str, index: int, **options: Any) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class CommittedTraceCompactor(Protocol):
+    """Replace committed immutable traces while the owner holds its state lock."""
+
+    def compact_committed_traces(
+        self, run_id: str, current: dict[str, Any], stored: dict[str, Any]
+    ) -> None: ...

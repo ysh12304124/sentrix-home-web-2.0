@@ -28,6 +28,7 @@ def test_container_builds_all_adapters(tmp_path, monkeypatch):
 def test_local_upload_jobs_are_consumed_without_experience_mode(isolated_app):
     container = replace(
         isolated_app.state.container,
+        settings=isolated_app.state.container.settings.model_copy(update={"upload_min_free_bytes": 0}),
         model_health=SimpleNamespace(check=lambda: (True, "")),
     )
     assert not container.settings.experience_mode
@@ -94,7 +95,18 @@ def test_shipped_migrations_directory_is_not_empty():
     assert sorted(MIGRATIONS_DIR.glob("*.sql")), f"{MIGRATIONS_DIR} 下没有任何 .sql 迁移"
 
 
-def test_local_queued_turn_executes_and_cancelled_turn_is_not_run(isolated_app):
+def test_local_queued_turn_executes_and_cancelled_turn_is_not_run(isolated_app, monkeypatch):
+    import threading
+
+    original_start = threading.Thread.start
+
+    def defer_dispatch(thread):
+        if thread.name.startswith("turn-turn_"):
+            return
+        return original_start(thread)
+
+    # 模拟回合已落库、请求线程尚未开始执行时进程退出。
+    monkeypatch.setattr(threading.Thread, "start", defer_dispatch)
     container = replace(
         isolated_app.state.container,
         model_health=SimpleNamespace(check=lambda: (True, "")),

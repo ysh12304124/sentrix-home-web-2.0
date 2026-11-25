@@ -110,7 +110,8 @@ _MESSAGES: Mapping[str, str] = {
     "write_not_allowed": "回答里声称已经写入/删除/修改了数据，而系统只能读。请如实说明你只是查看。",
     "placeholder_leak": "回答里出现了「地点名称/数量/时间」这类未填写的占位符，必须替换成真实数据或删除。",
     "denial_without_search": (
-        "你说没有找到相关照片，但本轮尚未检索照片。请先检索；无法检索时改为“现有记录无法确认”。"
+        "你说没有找到相关照片，但本轮尚未检索照片。"
+        "请先检索；无法检索时改为“现有记录无法确认”。"
     ),
     "omission_conflict": (
         "工具确认存在相关结果（total>0），但你的回答却说没有找到。"
@@ -159,17 +160,7 @@ class GuardFacts:
         for record in state.records:
             if record.status != "ok" or record.tool not in _RETRIEVAL_TOOLS:
                 continue
-            preview = record.observation.get("preview") or []
-            candidate_only_text = record.tool == "search_text_memories" or bool(
-                preview and all(isinstance(p, Mapping) and p.get("media_kind") == "text" for p in preview)
-            )
-            rows.append(
-                {
-                    "tool": record.tool,
-                    "total": record.observation.get("total"),
-                    **({"candidate_only_text": True} if candidate_only_text else {}),
-                }
-            )
+            rows.append({"tool": record.tool, "total": record.observation.get("total")})
             has_more = bool(record.observation.get("has_more"))
         return cls(tool_results=tuple(rows), has_more=has_more)
 
@@ -220,7 +211,7 @@ class FinalGuard:
         顺序有意义：安全硬拦在前，任何一条命中就返回，后面的规则不再看。
         """
         for verdict in (
-            self._safety(answer, source_text=any(r.get("candidate_only_text") for r in facts.tool_results)),
+            self._safety(answer),
             self._placeholder(answer),
             self._denial_without_search(answer, facts),
             self._existence(answer, facts),
@@ -233,7 +224,7 @@ class FinalGuard:
     # ---- 规则 ---------------------------------------------------------------
 
     @staticmethod
-    def _safety(answer: str, *, source_text: bool = False) -> GuardVerdict | None:
+    def _safety(answer: str) -> GuardVerdict | None:
         for pattern, code in (
             (_INTERNAL_ID, "internal_id_leak"),
             (_TABLE_NAME, "table_name_leak"),
@@ -242,18 +233,6 @@ class FinalGuard:
             (_WRITE_NOT_ALLOWED, "write_not_allowed"),
         ):
             if pattern.search(answer):
-                if source_text and pattern is _TABLE_NAME:
-                    names = pattern.findall(answer)
-                    explicit = re.search(
-                        r"`(?:assets|observations)`|\b(?:table|schema|database)\s+(?:assets|observations)\b|"
-                        r"\b(?:assets|observations)\s+(?:table|schema|database)\b|"
-                        r"\b(?:SELECT|JOIN|INTO|UPDATE)\b.{0,80}\b(?:assets|observations)\b|"
-                        r"(?:数据库|数据表|表名).{0,10}(?:assets|observations)",
-                        answer,
-                        re.I,
-                    )
-                    if all(name in {"assets", "observations"} for name in names) and not explicit:
-                        continue
                 return _verdict(code, evidence=_match_evidence(pattern, answer))
         return None
 
@@ -291,8 +270,7 @@ class FinalGuard:
         found_claim = bool(_FOUND_DELIVERY.search(text)) and not _ANY_DENIAL.search(text)
 
         totals = [row.get("total") for row in facts.tool_results if row.get("total") is not None]
-        confirmed = [r.get("total") for r in facts.tool_results if not r.get("candidate_only_text")]
-        if any(int(str(total or 0)) > 0 for total in confirmed) and denies:
+        if any(int(str(total or 0)) > 0 for total in totals) and denies:
             return _verdict("omission_conflict")
         if any(int(str(total or 0)) == 0 for total in totals) and found_claim:
             return _verdict("fabrication_from_empty")

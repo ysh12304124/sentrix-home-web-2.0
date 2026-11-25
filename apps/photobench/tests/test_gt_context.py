@@ -353,12 +353,15 @@ def bundle_fixture(profile, scorer="open_judge", *, enabled=True, replies=None):
     ],
 )
 def test_one_switch_pairs_each_image_with_its_own_frozen_capture_fields(profile, scorer, reply):
-    saved, svc, batch, http, receipts = bundle_fixture(profile, scorer, replies=[task(), reply])
+    native = scorer.startswith("atm_")
+    saved, svc, batch, http, receipts = bundle_fixture(
+        profile, scorer, replies=[reply] if native else [task(), reply]
+    )
     # A later annotation edit must not change the request or a retry's materials.
     saved["gt_metadata_snapshot"]["entries"][0]["metadata"]["readable_location"] = "later edit"
     result = svc.score(batch, scoring_targets(saved, batch, "all")[0])
     assert valid_result(result), result
-    assert len(http.calls) == 2
+    assert len(http.calls) == (1 if native else 2)
     content = http.calls[-1]["messages"][1]["content"]
     pairs = [(content[i - 1], part) for i, part in enumerate(content) if part.get("type") == "image_url"]
     assert len(pairs) == 2
@@ -380,7 +383,8 @@ def test_one_switch_pairs_each_image_with_its_own_frozen_capture_fields(profile,
     wire = json.dumps(http.calls[-1], ensure_ascii=False)
     assert "later edit" not in wire and "37.7201694" not in wire and "source.jpg" not in wire
     assert result["gt_metadata"]["mode"] == "image_metadata_v1"
-    assert "赵州桥" not in json.dumps(http.calls[0], ensure_ascii=False)
+    if not native:
+        assert "赵州桥" not in json.dumps(http.calls[0], ensure_ascii=False)
     assert receipts[-1]["scoring_results"][result["key"]]["requests"][-1]["input"] == http.calls[-1]
     # Simulate a failed score after the materials were durably saved; recover using the same batch.
     saved["scoring_results"][result["key"]].update(status="failed", score=None)

@@ -197,6 +197,9 @@ export function AssetDetail({
           />
         ) : null}
         <dl className="asset-detail-metadata">
+          {asset.source_metadata?.title && <><dt>标题</dt><dd>{asset.source_metadata.title}</dd></>}
+          {asset.external_source_id && <><dt>来源 ID</dt><dd>{asset.external_source_id}</dd></>}
+          {asset.source_metadata?.precise_address && <><dt>精确地址</dt><dd>{asset.source_metadata.precise_address}</dd><dt>地址来源</dt><dd>{asset.source_metadata.address_source}</dd></>}
           <dt>类型</dt><dd>{MEDIA_LABEL[asset.media_type] ?? "资料"}</dd>
           <dt>拍摄时间</dt><dd>{asset.captured_at ?? "未标注"}</dd>
           <dt>地点</dt>

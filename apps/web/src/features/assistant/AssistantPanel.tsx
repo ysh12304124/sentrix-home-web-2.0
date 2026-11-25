@@ -13,7 +13,7 @@ import {
 import { Lightbox } from "../../shared/ui/Lightbox";
 import { ResultSetWall } from "./ResultSetWall";
 import { TurnTimeline, isTerminalStatus } from "./TurnTimeline";
-import { useTurnStream } from "./useTurnStream";
+import { useTurnStream, waitForTurnAcceptance } from "./useTurnStream";
 import { useSpeechInput } from "./speech/useSpeechInput";
 import "./speech/speechInput.css";
 
@@ -118,6 +118,8 @@ export function AssistantPanel({
   // 一次导航，而用户按「后退」时那条 URL 又是对的——两件事会打架。
   const consumed = useRef<string | null>(null);
   const [text, setText] = useState("");
+  // 推理模式是**下一问的开关**，不是会话状态：用户开一次问完，可以再关掉。
+  const [reasoning, setReasoning] = useState(false);
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -128,8 +130,10 @@ export function AssistantPanel({
     progress,
     result,
     busy,
+    stopping,
     error,
     ask,
+    resume,
     cancel,
     cancelled,
     executionState,
@@ -169,12 +173,19 @@ export function AssistantPanel({
     setHistoryCursor("");
     setHistoryHasMore(false);
     setHistoryLoading(true);
-    getConversation(conversationId)
+    waitForTurnAcceptance(conversationId)
+      .then(() => getConversation(conversationId))
       .then((detail) => {
         if (token !== historyToken.current) return;
-        setExchanges(replayExchanges(detail));
+        const history = replayExchanges(detail);
+        setExchanges(history);
         setHistoryCursor(detail.next_cursor ?? "");
         setHistoryHasMore(detail.has_more === true);
+        const active = history.find((item) => item.turnId !== "" && !isTerminalStatus(item.status));
+        if (active) {
+          setLive({ conversationId, key: active.key });
+          resume(active.turnId);
+        }
       })
       .catch((cause: Error) => {
         if (token !== historyToken.current) return;
@@ -184,7 +195,8 @@ export function AssistantPanel({
       .finally(() => {
         if (token === historyToken.current) setHistoryLoading(false);
       });
-  }, [conversationId]);
+    return () => { historyToken.current++; };
+  }, [conversationId, resume]);
 
   const loadEarlier = useCallback(async () => {
     if (conversationId === null || historyCursor === "" || loadingEarlier) return;
@@ -232,9 +244,10 @@ export function AssistantPanel({
             ? {
                 ...item,
                 status: poll.status,
-                reason: poll.waiting_reason || item.reason,
+                reason: poll.result?.termination_reason ?? (poll.waiting_reason || item.reason),
                 answer: poll.result?.answer || item.answer,
                 attachments: poll.result?.attachments ?? item.attachments,
+                events: poll.public_progress,
               }
             : item,
         ),
@@ -291,11 +304,11 @@ export function AssistantPanel({
           turnId: "",
           events: [],
         },
-        ...previous,
+        ...previous.filter((item) => !(item.turnId === "" && item.status === "failed" && item.question === question)),
       ]);
-      return ask(conversationId, question);
+      return ask(conversationId, question, reasoning);
     },
-    [ask, conversationId],
+    [ask, conversationId, reasoning],
   );
 
   // ``complete`` 到了就补到发起它的那条提问上。**按 key 定位**，不按「最后一条」——
@@ -321,11 +334,12 @@ export function AssistantPanel({
           : item,
       ),
     );
+    setLive(null);
   }, [conversationId, live, result]);
 
   // 建回合/轮询失败时 hook 只给一句 error；把那条提问标成失败，别一直停在「处理中」。
   useEffect(() => {
-    if (error === null || live === null) return;
+    if (error === null || live === null || liveTurnId !== null || busy) return;
     setExchanges((previous) =>
       previous.map((item) =>
         item.key === live.key && item.status === "running"
@@ -333,7 +347,7 @@ export function AssistantPanel({
           : item,
       ),
     );
-  }, [error, live]);
+  }, [busy, error, live, liveTurnId]);
 
   // 用户点了停止：就地收尾这一条，不再等一个不会到达的 complete。
   useEffect(() => {
@@ -441,10 +455,20 @@ export function AssistantPanel({
           {busy ? "处理中…" : "发送"}
         </button>
         {busy ? (
-          <button type="button" className="ghost-action" onClick={() => void cancel()}>
-            停止回答
+          <button type="button" className="ghost-action" disabled={stopping} onClick={() => void cancel()}>
+            {stopping ? "正在停止…" : "停止回答"}
           </button>
         ) : null}
+        <button
+          type="button"
+          className={reasoning ? "assistant-reasoning on" : "assistant-reasoning"}
+          aria-pressed={reasoning}
+          onClick={() => setReasoning((value) => !value)}
+          disabled={conversationId === null || historyLoading}
+          title="开启后会调用更多取证工具，回答更慢、更完整"
+        >
+          {reasoning ? "推理模式：开" : "推理模式：关"}
+        </button>
       </form>
       <p id="assistant-speech-status" className="assistant-speech-status" role="status" aria-live="polite">
         {speech.unavailable ?? (speech.message || "录音发送至本机后端识别，点击“停止并识别”后自动发送。")}
@@ -483,14 +507,18 @@ export function AssistantPanel({
                 <ul className="assistant-photos">
                   {exchange.attachments.map((photo) => (
                     <li key={photo.handle}>
+                      {photo.media_type === "text" ? (
+                        <details>
+                          <summary>{photo.title || photo.source_id || photo.file_name}</summary>
+                          <p>{photo.source_type === "email" ? "邮件" : "文档"} · {photo.source_id} · {photo.source_timestamp}</p>
+                          <blockquote style={{ whiteSpace: "pre-wrap" }}>{photo.excerpt}</blockquote>
+                          <a href={deliveredPhotoUrl(photo.asset_id, photo.file_name)} target="_blank" rel="noreferrer">查看完整原文</a>
+                        </details>
+                      ) : (
+                        <>
                       {/* **点图片是放大**，不是新标签打开原文件——后者遇到 HEIC
                           或不认识的 MIME 会被浏览器直接下载。 */}
-                      {photo.media_type === "text" || photo.media_type === "email" || /\.(txt|md)$/i.test(photo.file_name) ? (
-                        <a href={`/api/v1/assets/${encodeURIComponent(photo.asset_id)}/file`}
-                          target="_blank" rel="noreferrer" className="button secondary">
-                          查看文本证据 · {photo.file_name}
-                        </a>
-                      ) : <button
+                      <button
                         type="button"
                         className="assistant-photo-open"
                         onClick={() =>
@@ -505,7 +533,9 @@ export function AssistantPanel({
                           alt="相关照片"
                           loading="lazy"
                         />
-                      </button>}
+                      </button>
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>

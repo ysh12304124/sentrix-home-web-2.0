@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from sentrix.domain.media.capture_time import CaptureTime
+from sentrix.domain.media.source_metadata import SourceMetadata
 
 
 class MediaType(StrEnum):
@@ -226,6 +227,7 @@ class Asset:
     source_timestamp_sec: float | None = None
     capture_time: CaptureTime = CaptureTime()
     external_source_id: str | None = None
+    source_metadata: SourceMetadata = field(default_factory=SourceMetadata)
 
     def __post_init__(self) -> None:
         if not isinstance(self.media_type, MediaType):

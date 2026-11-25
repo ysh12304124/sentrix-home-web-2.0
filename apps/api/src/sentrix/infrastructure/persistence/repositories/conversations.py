@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
+from sentrix.domain.assistant.errors import ConversationBusyError
 from sentrix.domain.assistant.models import ChatRole, Conversation, Message
 from sentrix.infrastructure.persistence.database import Database
 
@@ -104,6 +105,14 @@ class SqliteConversationRepository:
         照片、观察与原始资产一律不动——「导入源不得写入记忆」的另一面是「删对话不得删记忆」。
         """
         with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                "SELECT 1 FROM agent_turns WHERE conversation_id = ?"
+                " AND status IN ('pending', 'running') LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+            if active:
+                raise ConversationBusyError("请先停止回答，等待回合结束后再删除对话")
             cursor = connection.execute(
                 "UPDATE agent_conversations SET state = 'deleted', updated_at = ?"
                 " WHERE id = ? AND state = 'active'",
@@ -113,6 +122,11 @@ class SqliteConversationRepository:
                 return False
             connection.execute(
                 "DELETE FROM agent_turn_events WHERE turn_id IN"
+                " (SELECT id FROM agent_turns WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM agent_turn_events_v2 WHERE turn_id IN"
                 " (SELECT id FROM agent_turns WHERE conversation_id = ?)",
                 (conversation_id,),
             )

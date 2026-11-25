@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from sentrix.domain.media.models import Asset, MediaType, Observation
@@ -47,11 +48,22 @@ class ObserveAsset(AssetObserver):
                 log.warning("文本原件无法读取: asset=%s", asset.id)
                 return None
             if text.strip() and "\x00" not in text:
-                return ObservationSemantics(source_text=text, confidence=1.0)
+                return ObservationSemantics(
+                    source_text=text,
+                    caption="\n".join(
+                        part for part in (asset.source_metadata.title, asset.source_metadata.summary) if part
+                    ),
+                    confidence=1.0,
+                )
             return None
-        if asset.media_type is not MediaType.IMAGE or self._observer is None:
-            return None
-        return self._observer.observe(Path(asset.path))
+        semantics = (
+            self._observer.observe(Path(asset.path))
+            if asset.media_type is MediaType.IMAGE and self._observer is not None
+            else None
+        )
+        if asset.source_metadata.precise_address:
+            return replace(semantics or ObservationSemantics(), place=asset.source_metadata.precise_address)
+        return semantics
 
     def commit(self, observation: Observation, semantics: ObservationSemantics | None) -> Observation | None:
         """第二段：写回。``semantics`` 为空就什么都不写。"""

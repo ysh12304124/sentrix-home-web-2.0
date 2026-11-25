@@ -375,6 +375,26 @@ it("定期重读全程控制曲线点数，终态自动补齐", async () => {
   expect(result.current.activeRun?.telemetry_live?.history).toEqual([{ t: 0 }, { t: 20 }]);
 });
 
+it("最新值模式不定期请求全程曲线，终态也不补读历史", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+  const { result } = mount();
+  const latest = runDetail({
+    status: "running", history_mode: "latest", telemetry_history_enabled: false,
+    telemetry_live: { history_enabled: false, samples_count: 50000, latest: { temperature_c: 50 }, history: [] },
+  });
+  apiMock.mockResolvedValue(latest);
+  await act(async () => { await result.current.loadActiveRun(); });
+  clock.mockReturnValue(50000);
+  await act(async () => { await result.current.loadActiveRun(); });
+  apiMock.mockResolvedValue({ ...latest, status: "completed" });
+  await act(async () => { await result.current.loadActiveRun(); });
+  const paths = apiMock.mock.calls.map(([path]) => path).filter(path => path.includes("?include_history="));
+  expect(paths).toEqual([
+    "/runs/r1?include_history=true", "/runs/r1?include_history=false", "/runs/r1?include_history=false",
+  ]);
+  expect(result.current.activeRun?.telemetry_live?.history).toEqual([]);
+});
+
 it("后台暂停错过窗口时补读全程，切换测评不会混入旧曲线", async () => {
   const { result, ref } = mount();
   apiMock.mockResolvedValueOnce(runDetail({ status: "running", history_mode: "full", telemetry_live: { history: [{ t: 0 }, { t: 20 }] } }));
@@ -446,4 +466,26 @@ it('defaults a new profile run to its first collected standard and preserves man
   act(()=>result.current.setReadProfile('atm_qs_v1'));
   await act(async () => {await result.current.loadActiveRun();});
   expect(result.current.readProfile).toBe('atm_qs_v1');
+});
+
+it('从冻结标准初始化结果与补评，轮询不覆盖手动选择', async () => {
+  const frozen = runDetail({album_id:'2026.11.17-atm-sources-addresses',qa_set:'atm-bench',
+    scoring_profiles:['atm_qs_v1'],scoring_configs:{atm_qs_v1:{use_gt_images:true}}});
+  apiMock.mockImplementation(async (url:string) => url.includes('?include_history=') ? frozen : {});
+  const {result}=mount();
+  await act(async()=>{await result.current.loadActiveRun();});
+  await waitFor(()=>expect(result.current.readProfile).toBe('atm_qs_v1'));
+  expect(result.current.scoring.profiles).toEqual(['atm_qs_v1']);
+  expect(result.current.scoring.configs.atm_qs_v1.use_gt_images).toBe(true);
+  act(()=>result.current.setReadProfile('photobench_open_v1'));
+  await act(async()=>{await result.current.loadActiveRun();});
+  expect(result.current.readProfile).toBe('photobench_open_v1');
+});
+
+it('旧记录缺少冻结标准时按题集选择，题集优先于相册名称', async () => {
+  apiMock.mockImplementation(async (url:string) => url.includes('?include_history=')
+    ? runDetail({album_id:'atm-photos',qa_set:'compact-10q'}) : {});
+  const {result}=mount();
+  await act(async()=>{await result.current.loadActiveRun();});
+  await waitFor(()=>expect(result.current.scoring.profiles).toEqual(['photobench_open_v1']));
 });

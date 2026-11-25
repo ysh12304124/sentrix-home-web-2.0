@@ -22,7 +22,7 @@ def test_loop_runs_no_more_than_configured_worker_count():
     peak = 0
     executor = TurnExecutor(
         turns=Turns(),
-        run_turn_factory=lambda: None,
+        run_turn_factory=lambda _reasoning: None,
         broker=None,
         dependencies_ready=lambda: (True, ""),
         max_workers=3,

@@ -53,7 +53,8 @@ export function terminationDisplayLabel(item: unknown): string {
 /** 1.0 `:2118-2120`。 */
 export function hasToolTrace(item: unknown): boolean {
   return (
-    Object.prototype.hasOwnProperty.call(item || {}, "tool_trace") ||
+    dict(item).trace_read_summary != null ||
+    (dict(dict(item).trace_storage).version !== 3 && Object.prototype.hasOwnProperty.call(item || {}, "tool_trace")) ||
     dict(dict(item).timing_breakdown).tool_trace_recorded === true
   );
 }

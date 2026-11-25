@@ -6,7 +6,7 @@ import html
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from photobench.domain.evaluation.profiles import ATM, OPEN
 
@@ -125,8 +125,9 @@ def score_labels(cases: Sequence[Mapping[str, Any]]) -> dict[str, str]:
 
 
 def retrieval_quality_counts(cases: Sequence[dict[str, Any]], channel: str) -> dict[str, Any]:
-    """Pair saved QA-level media counts with that QA's primary quality bucket."""
+    """Pair any/all coverage with primary quality in one pass over saved QA counts."""
     cells: Counter[tuple[bool, int]] = Counter()
+    all_cells: Counter[tuple[bool, int]] = Counter()
     excluded: Counter[str] = Counter()
     for case in cases:
         evaluation = case.get("evaluation") or {}
@@ -158,53 +159,98 @@ def retrieval_quality_counts(cases: Sequence[dict[str, Any]], channel: str) -> d
             excluded["缺少有效主评分"] += 1
             continue
         cells[row["matched"] > 0, score] += 1
-    return {"cells": cells, "valid": sum(cells.values()), "excluded": excluded}
+        all_cells[row["matched"] == row["gt"], score] += 1
+    return {"cells": cells, "all_cells": all_cells, "valid": sum(cells.values()), "excluded": excluded}
 
 
-def retrieval_quality_card(counts: Mapping[str, Any], channel: str, *, partial: bool) -> str:
+def retrieval_heat(share: float) -> str:
+    """A shared 0–100% sequential scale, independent of category and card."""
+    palette = ((239, 246, 255), (168, 202, 232), (85, 147, 197), (40, 105, 165), (22, 69, 118))
+    position = share * (len(palette) - 1)
+    index = min(int(position), len(palette) - 2)
+    fraction = position - index
+    rgb = tuple(
+        round(a + (b - a) * fraction) for a, b in zip(palette[index], palette[index + 1], strict=True)
+    )
+    return "#" + "".join(f"{value:02x}" for value in rgb)
+
+
+def retrieval_quality_card(
+    counts: Mapping[str, Any],
+    channel: str,
+    *,
+    partial: bool,
+    match_mode: Literal["any", "all"] = "any",
+) -> str:
     title = (
         ("候选检索" if channel == "candidate" else "最终交付")
         + " × "
         + ("含部分正确率" if partial else "满分率")
+        + f"（{match_mode}）"
     )
     total = counts["valid"]
     excluded = "；".join(f"{name}{n}题" for name, n in counts["excluded"].items()) or "无"
     note = f"按题级主评分统计 · 有效{total}题；排除：{excluded}。"
     if not total:
         return card(title, '<p class="empty">没有可配对的有效媒体计数和主评分。</p>', note)
-    cells = counts["cells"]
+    cells = counts["all_cells" if match_mode == "all" else "cells"]
+    hit_labels = ("全部命中", "未全部命中") if match_mode == "all" else ("命中", "未命中")
     correct = {
         hit: sum(cells[hit, score] for score in ((1, 2) if partial else (2,))) for hit in (True, False)
     }
     groups = {hit: sum(cells[hit, score] for score in (0, 1, 2)) for hit in (True, False)}
-    body = '<div class="retrieval-matrix" role="table" aria-label="' + esc(title) + '">'
-    body += '<div role="row" class="matrix-row"><span role="columnheader">主评分 ↓ / 媒体 →</span>'
-    body += '<b role="columnheader">命中GT</b><b role="columnheader">未命中GT</b></div>'
-    for passed, label in ((False, "未达标"), (True, "正确" if partial else "满分")):
-        body += '<div role="row" class="matrix-row"><b role="rowheader">' + label + "</b>"
-        for hit in (True, False):
+    passed_label = "正确" if partial else "满分"
+    body = '<p class="matrix-guide">面积 = 题数占比 · 颜色越深，占比越高</p>'
+    body += f'<div class="matrix-axis"><span>{hit_labels[0]}GT</span><span>{hit_labels[1]}GT</span></div>'
+    body += (
+        '<div class="retrieval-matrix" role="group" aria-label="' + esc(title) + '" '
+        f'style="grid-template-columns:minmax(0,{groups[True]}fr) minmax(0,{groups[False]}fr)">'
+    )
+    for hit in (True, False):
+        # Column width × within-column height = the cell's share of all valid QAs.
+        body += (
+            '<div class="matrix-column" '
+            f'style="grid-template-rows:minmax(0,{correct[hit]}fr) '
+            f'minmax(0,{groups[hit] - correct[hit]}fr)">'
+        )
+        for passed, label in ((True, passed_label), (False, "未满分")):
             n = correct[hit] if passed else groups[hit] - correct[hit]
-            name = ("命中" if hit else "未命中") + " · " + label
+            name = hit_labels[0 if hit else 1] + " · " + label
+            color = retrieval_heat(n / total)
+            description = f"{name}：{n}题，占有效样本{rate(n, total)}"
+            focus = ' tabindex="0"' if n else ""
             body += (
-                f'<div role="cell" class="matrix-cell {"hit" if hit else "miss"}'
+                f'<div role="img" class="matrix-cell {"hit" if hit else "miss"}'
                 f' {"correct" if passed else "wrong"}" data-count="{n}" '
-                f'aria-label="{name}：{n}题，占有效样本{rate(n, total)}">'
-                f"<span>{name}</span><strong>{rate(n, total)}</strong><small>{n} / {total}题</small></div>"
+                f'style="background:{color};color:{"white" if n / total >= 0.6 else "#163853"}"'
+                f'{focus} title="{description}" aria-label="{description}">'
+                f'<div class="matrix-cell-content"><span>{name}</span>'
+                f"<strong>{rate(n, total)}</strong><small>{n} / {total}题</small></div></div>"
             )
         body += "</div>"
-    body += '</div><div class="matrix-conditions">'
+    body += (
+        '</div><div class="matrix-scale" aria-label="颜色按有效样本占比使用统一0%至100%色阶">'
+        '<span>0%</span><i aria-hidden="true"></i><span>100%</span></div>'
+        '<div class="matrix-conditions">'
+    )
     for hit in (True, False):
         body += (
             "<div><span>"
-            + ("命中组" if hit else "未命中组")
+            + hit_labels[0 if hit else 1]
+            + "组"
             + ("正确率" if partial else "满分率")
             + "</span><b>"
             + rate(correct[hit], groups[hit])
             + f"</b><small>{correct[hit]} / {groups[hit]}题</small></div>"
         )
-    body += '</div><p class="note">命中指至少1个GT媒体被'
+    body += '</div><p class="note">'
+    body += "全部命中指所有GT媒体均被" if match_mode == "all" else "命中指至少1个GT媒体被"
     body += "工具候选集合检索到" if channel == "candidate" else "最终交付"
-    body += "；未命中指GT命中数为0。"
+    body += (
+        "；未全部命中包含部分命中和零命中；多返回额外媒体不影响全部命中的判断。"
+        if match_mode == "all"
+        else "；未命中指GT命中数为0。"
+    )
     body += "正确指主评分大于0，包含部分正确。" if partial else "满分指主评分达到该量表满分。"
     body += "四格百分比均以有效题数为分母；下方按各组题数计算。"
     body += "按轮筛选时，仅纳入主评分轮在范围内的题。</p>"
@@ -223,9 +269,11 @@ def retrieval_quality(cases: Sequence[dict[str, Any]], source: Mapping[str, Any]
     )
     atm = profile == ATM or (profile != OPEN and native_atm)
     counts = {channel: retrieval_quality_counts(cases, channel) for channel in ("candidate", "delivery")}
+    match_modes: tuple[Literal["any", "all"], ...] = ("any", "all")
     return "".join(
-        retrieval_quality_card(counts[channel], channel, partial=partial)
-        for partial in ((False,) if atm else (False, True))
+        retrieval_quality_card(counts[channel], channel, partial=partial, match_mode=match_mode)
+        for match_mode in match_modes
+        for partial in ((False,) if atm or match_mode == "all" else (False, True))
         for channel in ("candidate", "delivery")
     )
 

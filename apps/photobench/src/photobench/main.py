@@ -32,6 +32,7 @@ from starlette.types import Scope
 from photobench import __version__
 from photobench.api import errors
 from photobench.api.routes import assets as assets_routes
+from photobench.api.routes import chat as chat_routes
 from photobench.api.routes import config as config_routes
 from photobench.api.routes import datasets as datasets_routes
 from photobench.api.routes import error_analysis as analysis_routes
@@ -121,6 +122,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         container.startup_recovery.acquire_and_recover()
+        container.chat.recover_chats()
         log.info("PhotoBench build revision: %s", container.build_revision)
         if scan_in_background:
             threading.Thread(
@@ -146,6 +148,7 @@ def create_app(
     # 写侧（S9b-3）先于只读侧挂上：``/runs/{id}/judge-prompt`` 这类更具体的路径要与
     # ``/runs/{id}`` 区分开，先挂的一方在同形路径上优先匹配。
     api.include_router(suites_routes.router)
+    api.include_router(chat_routes.router)
     api.include_router(runs_routes.router)
     # 报告三条与 ``/runs/{id}`` 不同形（多一段路径），挂载顺序不影响匹配；
     # 与写侧同批挂在只读侧之后即可。

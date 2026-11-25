@@ -3,6 +3,73 @@ info:
   title: PhotoBench
   version: 0.1.0
 paths:
+  /api/v1/runs/{run_id}/retest:
+    post:
+      tags:
+      - suites
+      summary: Start Retest
+      operationId: start_retest_api_v1_runs__run_id__retest_post
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetestRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/retests:
+    get:
+      tags:
+      - suites
+      summary: List Retests
+      operationId: list_retests_api_v1_runs__run_id__retests_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: qa_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Qa Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Retests Api V1 Runs  Run Id  Retests Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runs:
     post:
       tags:
@@ -19,6 +86,21 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Start Suite Api V1 Runs Post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reasoning:
+                  type: boolean
+                  default: true
+                  description: 是否开启推理模式；开放全工具与调用次数，默认开启
+                turn_timeout:
+                  type: integer
+                  description: 单回合等待秒数；推理模式默认3660，关闭时默认900
+              additionalProperties: true
     get:
       tags:
       - runs
@@ -56,6 +138,35 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response List Runs Api V1 Runs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/progress:
+    get:
+      tags:
+      - suites
+      summary: Get Retest Progress
+      operationId: get_retest_progress_api_v1_runs__run_id__progress_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Retest Progress Api V1 Runs  Run Id  Progress
+                  Get
         '422':
           description: Validation Error
           content:
@@ -443,6 +554,457 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions:
+    get:
+      tags:
+      - chat
+      summary: List Chats
+      operationId: list_chats_api_v1_chat_sessions_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response List Chats Api V1 Chat Sessions Get
+    post:
+      tags:
+      - chat
+      summary: Create Chat
+      operationId: create_chat_api_v1_chat_sessions_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCreateRequest'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}:
+    get:
+      tags:
+      - chat
+      summary: Get Chat
+      operationId: get_chat_api_v1_chat_sessions__session_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: include_items
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Items
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - chat
+      summary: Delete Chat
+      operationId: delete_chat_api_v1_chat_sessions__session_id__delete
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/turns/{index}:
+    get:
+      tags:
+      - chat
+      summary: Get Chat Turn
+      operationId: get_chat_turn_api_v1_chat_sessions__session_id__turns__index__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Index
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Chat Turn Api V1 Chat Sessions  Session Id  Turns  Index  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/turns/{index}/trace:
+    get:
+      tags:
+      - chat
+      summary: Get Chat Trace
+      operationId: get_chat_trace_api_v1_chat_sessions__session_id__turns__index__trace_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Index
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      - name: turn
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Turn
+      - name: kind
+        in: query
+        required: false
+        schema:
+          type: string
+          default: calls
+          title: Kind
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Chat Trace Api V1 Chat Sessions  Session Id  Turns  Index  Trace
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/turns/{index}/trace/{node_id}:
+    get:
+      tags:
+      - chat
+      summary: Get Chat Trace Content
+      operationId: get_chat_trace_content_api_v1_chat_sessions__session_id__turns__index__trace__node_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Index
+      - name: node_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Id
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      - name: field
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Field
+      - name: view
+        in: query
+        required: false
+        schema:
+          enum:
+          - content
+          - timing
+          type: string
+          default: content
+          title: View
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 65536
+          minimum: 1
+          default: 32768
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Chat Trace Content Api V1 Chat Sessions  Session
+                  Id  Turns  Index  Trace  Node Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/turns/{index}/content:
+    get:
+      tags:
+      - chat
+      summary: Get Chat Turn Content
+      operationId: get_chat_turn_content_api_v1_chat_sessions__session_id__turns__index__content_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: index
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Index
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Path
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 65536
+          minimum: 1
+          default: 32768
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Chat Turn Content Api V1 Chat Sessions  Session
+                  Id  Turns  Index  Content Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/turns:
+    post:
+      tags:
+      - chat
+      summary: Send Chat
+      operationId: send_chat_api_v1_chat_sessions__session_id__turns_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/sessions/{session_id}/cancel:
+    post:
+      tags:
+      - chat
+      summary: Cancel Chat
+      operationId: cancel_chat_api_v1_chat_sessions__session_id__cancel_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Cancel Chat Api V1 Chat Sessions  Session Id  Cancel
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/process-diagnostics:
+    get:
+      tags:
+      - runs
+      summary: Get Process Diagnostics
+      operationId: get_process_diagnostics_api_v1_runs__run_id__process_diagnostics_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: scoring_profile
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Profile
+      - name: scoring_batch
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Scoring Batch
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Process Diagnostics Api V1 Runs  Run Id  Process
+                  Diagnostics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runs/{run_id}/items:
     get:
       tags:
@@ -616,6 +1178,214 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunItemResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/items/{item_index}/trace:
+    get:
+      tags:
+      - runs
+      summary: Get Trace Nodes
+      operationId: get_trace_nodes_api_v1_runs__run_id__items__item_index__trace_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: item_index
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Index
+      - name: turn
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 0
+          title: Turn
+      - name: kind
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Kind
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '0'
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '50'
+          title: Limit
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Trace Nodes Api V1 Runs  Run Id  Items  Item Index  Trace
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/items/{item_index}/trace/{node_id}:
+    get:
+      tags:
+      - runs
+      summary: Get Trace Node Content
+      operationId: get_trace_node_content_api_v1_runs__run_id__items__item_index__trace__node_id__get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: item_index
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Index
+      - name: node_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Node Id
+      - name: field
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Field
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '0'
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '65536'
+          title: Limit
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      - name: view
+        in: query
+        required: false
+        schema:
+          type: string
+          default: content
+          title: View
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Trace Node Content Api V1 Runs  Run Id  Items  Item
+                  Index  Trace  Node Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/items/{item_index}/content:
+    get:
+      tags:
+      - runs
+      summary: Get Item Content
+      operationId: get_item_content_api_v1_runs__run_id__items__item_index__content_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Run Id
+      - name: item_index
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Index
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Path
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '0'
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: string
+          default: '65536'
+          title: Limit
+      - name: revision
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Revision
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Item Content Api V1 Runs  Run Id  Items  Item
+                  Index  Content Get
         '422':
           description: Validation Error
           content:
@@ -2102,6 +2872,24 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Current Model Api V1 Current Model Post
+  /api/v1/current-deployed-model:
+    get:
+      tags:
+      - model-profiles
+      summary: Current Deployed Model
+      description: Query the product's actual model endpoint without changing its
+        deployment.
+      operationId: current_deployed_model_api_v1_current_deployed_model_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Current Deployed Model Api V1 Current Deployed Model
+                  Get
   /api/v1/test-model:
     post:
       tags:
@@ -2997,6 +3785,103 @@ components:
       - missing
       - signals
       title: CaseReference
+    ChatCreateRequest:
+      properties:
+        scope_id:
+          type: string
+          minLength: 1
+          title: Scope Id
+        reasoning:
+          type: boolean
+          title: Reasoning
+          description: 是否开启推理模式，默认开启
+          default: true
+        model:
+          anyOf:
+          - $ref: '#/components/schemas/ModelSelection'
+          - type: 'null'
+        message:
+          type: string
+          maxLength: 2000
+          title: Message
+          default: ''
+        album_id:
+          type: string
+          title: Album Id
+          default: ''
+        qa_set:
+          type: string
+          title: Qa Set
+          default: ''
+        qa_id:
+          type: string
+          title: Qa Id
+          default: ''
+      type: object
+      required:
+      - scope_id
+      title: ChatCreateRequest
+    ChatMessageRequest:
+      properties:
+        message:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Message
+        reasoning:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Reasoning
+          description: 本轮推理模式；省略时沿用会话设置
+      type: object
+      required:
+      - message
+      title: ChatMessageRequest
+    ChatSessionResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        scope_id:
+          type: string
+          title: Scope Id
+        status:
+          type: string
+          title: Status
+        reasoning:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Reasoning
+        source:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Source
+        turns:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Turns
+        items:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Items
+      additionalProperties: true
+      type: object
+      required:
+      - session_id
+      - scope_id
+      - status
+      - turns
+      title: ChatSessionResponse
     ComparisonEvidenceSide:
       properties:
         index:
@@ -3632,6 +4517,30 @@ components:
       additionalProperties: true
       type: object
       title: MemoryObservation
+    ModelSelection:
+      properties:
+        profile:
+          type: string
+          title: Profile
+          default: __current__
+        target_id:
+          type: string
+          title: Target Id
+          default: ''
+        base_url:
+          type: string
+          title: Base Url
+          default: ''
+        manager_url:
+          type: string
+          title: Manager Url
+          default: ''
+        endpoint_model:
+          type: string
+          title: Endpoint Model
+          default: ''
+      type: object
+      title: ModelSelection
     PhaseMetricsProjection:
       properties:
         agent_completed:
@@ -3809,6 +4718,47 @@ components:
       - difficulty
       - special
       title: QaTaxonomyResponse
+    RetestRequest:
+      properties:
+        qa_id:
+          type: string
+          minLength: 1
+          title: Qa Id
+        reasoning:
+          type: boolean
+          title: Reasoning
+          description: 是否开启推理模式，默认开启
+          default: true
+        model:
+          anyOf:
+          - $ref: '#/components/schemas/ModelSelection'
+          - type: 'null'
+        scoring_profile:
+          type: string
+          title: Scoring Profile
+          default: ''
+        scoring_batch:
+          type: string
+          title: Scoring Batch
+          default: ''
+      type: object
+      required:
+      - qa_id
+      title: RetestRequest
+    RetestResponse:
+      properties:
+        run_id:
+          type: string
+          title: Run Id
+        retest_context:
+          additionalProperties: true
+          type: object
+          title: Retest Context
+      type: object
+      required:
+      - run_id
+      - retest_context
+      title: RetestResponse
     RunItemObservation:
       properties:
         text_retrieval_metrics:
@@ -3959,6 +4909,17 @@ components:
       title: RunItemsResponse
     RunMetricsResponse:
       properties:
+        reasoning:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Reasoning
+        retest_context:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Retest Context
         read_revision:
           anyOf:
           - type: string

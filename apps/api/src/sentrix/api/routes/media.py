@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import psutil
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -35,6 +36,7 @@ from sentrix.api.schemas.media import (
     MediaDeletionRecordResponse,
 )
 from sentrix.application.media.delete_asset import DeleteAsset
+from sentrix.application.media.documents import parse_document_package
 from sentrix.application.media.import_assets import ImportRequest, StagedImport
 from sentrix.bootstrap.container import Container
 from sentrix.bootstrap.import_wiring import (
@@ -51,6 +53,7 @@ from sentrix.domain.media.import_jobs import (
 from sentrix.domain.media.models import Asset, AssetStatus, MediaType
 from sentrix.domain.media.ports import TranscriptionSegment
 from sentrix.domain.media.scenes import SceneWindow
+from sentrix.domain.media.source_metadata import SourceMetadata
 
 router = APIRouter(tags=["media"])
 log = logging.getLogger("sentrix.api.media")
@@ -126,7 +129,63 @@ def to_summary(asset: Asset, place: str = "") -> AssetSummary:
         parent_asset_id=asset.parent_asset_id,
         source_timestamp_sec=asset.source_timestamp_sec,
         external_source_id=asset.external_source_id,
+        source_metadata=asset.source_metadata.to_dict(),
     )
+
+
+@router.post("/documents/import")
+async def import_documents(
+    file: UploadFile = File(...),
+    scope_id: str = Form("home-default"),
+    format: str = Form("auto"),
+    validate_only: bool = Form(False),
+    container: Container = Depends(get_container),
+) -> dict[str, Any]:
+    content = await file.read()
+    if format not in {"auto", "standard", "atm_email"}:
+        raise HTTPException(400, "format 需为 auto、standard 或 atm_email")
+    try:
+        records = parse_document_package(content, file.filename or "documents.json", format)
+    except (ValueError, TypeError, KeyError) as error:
+        raise HTTPException(400, str(error)) from error
+    package_sha = hashlib.sha256(content).hexdigest()
+    if validate_only:
+        return {"valid": True, "total": len(records), "package_sha256": package_sha}
+    # 原始包按内容保存一次，不进入记忆索引。
+    package_root = container.settings.media_dir / "document-packages"
+    package_root.mkdir(parents=True, exist_ok=True)
+    package_path = package_root / (package_sha + ".json")
+    if not package_path.exists():
+        package_path.write_bytes(content)
+    importer = build_import_assets(container, observe=False)
+    items = []
+    for record in records:
+        try:
+            result = await run_in_threadpool(importer.execute, record.import_request(scope_id))
+            items.append(
+                {
+                    "external_source_id": record.external_source_id,
+                    "asset_id": result.asset_id,
+                    "status": "reused" if result.deduplicated else "imported",
+                    "indexed": result.indexed,
+                }
+            )
+        except Exception as error:
+            items.append(
+                {"external_source_id": record.external_source_id, "status": "failed", "error": str(error)}
+            )
+    receipt = {
+        "scope_id": scope_id,
+        "package_sha256": package_sha,
+        "total": len(records),
+        "failed": sum(item["status"] == "failed" for item in items),
+        "items": items,
+    }
+    (
+        package_root
+        / (package_sha + "." + hashlib.sha256(scope_id.encode()).hexdigest()[:16] + ".receipt.json")
+    ).write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    return receipt
 
 
 @router.post("/media/import", status_code=201)
@@ -135,12 +194,17 @@ async def import_media(
     scope_id: str = Form("home-default"),
     external_source_id: str | None = Form(None, description="文本来源在当前 scope 内的稳定 ID"),
     source_timestamp: str | None = Form(None, description="文本来源的 ISO 8601 日期时间，可带偏移"),
+    source_metadata: str = Form("{}", description="文档信息或来源精确地址 JSON"),
     container: Container = Depends(get_container),
 ) -> ImportResponse:
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="empty file")
 
+    try:
+        source = SourceMetadata.from_dict(json.loads(source_metadata))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise HTTPException(400, "无效 source_metadata") from error
     request = ImportRequest(
         scope_id=scope_id,
         file_name=file.filename or "unnamed",
@@ -149,6 +213,7 @@ async def import_media(
         defer_processing=False,
         external_source_id=external_source_id,
         source_timestamp=source_timestamp,
+        source_metadata=source,
     )
     media_type = MediaType.from_upload(request.content_type, request.file_name)
     if media_type is MediaType.TEXT:
@@ -368,7 +433,9 @@ async def upload_media(
             media = declared
 
         asset_id = f"asset_{uuid.uuid4().hex[:12]}"
-        final_path = container.media_storage.move_from_path(asset_id, file_name, staging_path)
+        final_path = await run_in_threadpool(
+            container.media_storage.move_from_path, asset_id, file_name, staging_path
+        )
         now = datetime.now(UTC)
         job = ImportJob(
             id=f"job_{uuid.uuid4().hex[:16]}",
@@ -404,14 +471,14 @@ async def upload_media(
         accepted = True
         if not created and stored.asset_id != asset_id:
             # 重试的新副本不是权威原件，删掉；返回第一次接收的作业。
-            final_path.unlink(missing_ok=True)
+            await run_in_threadpool(container.media_storage.delete_assets, (), (str(final_path),))
         return UploadAcceptedResponse(job_id=stored.id, asset_id=stored.asset_id, status="accepted")
     finally:
         if not accepted:
             await run_in_threadpool(container.import_jobs.release_upload, reservation)
             staging_path.unlink(missing_ok=True)
             if final_path is not None:
-                final_path.unlink(missing_ok=True)
+                await run_in_threadpool(container.media_storage.delete_assets, (), (str(final_path),))
 
 
 def schedule_video_job(container: Container, job_id: str) -> None:

@@ -10,11 +10,12 @@ import time
 from pathlib import Path
 
 from sentrix.domain.media.import_jobs import ImportJobRepository
+from sentrix.domain.media.ports import MediaStorage
 
 
 def reconcile_uploads(
     *,
-    media_dir: Path,
+    storage: MediaStorage,
     staging_dir: Path,
     jobs: ImportJobRepository,
     grace_s: int,
@@ -23,7 +24,6 @@ def reconcile_uploads(
     referenced = jobs.referenced_paths()
     cutoff = time.time() - grace_s
     removed_staging = 0
-    removed_orphans = 0
 
     if staging_dir.is_dir():
         for path in staging_dir.glob("*.part"):
@@ -34,17 +34,7 @@ def reconcile_uploads(
             except OSError:
                 continue
 
-    if media_dir.is_dir():
-        for path in media_dir.glob("asset_*"):
-            try:
-                if not path.is_file() or path.is_symlink():
-                    continue
-                if str(path) in referenced or path.stat().st_mtime >= cutoff:
-                    continue
-                path.unlink(missing_ok=True)
-                removed_orphans += 1
-            except OSError:
-                continue
+    removed_orphans = storage.cleanup_orphans(referenced, cutoff)
 
     return {
         "reservations_cleared": reservations,

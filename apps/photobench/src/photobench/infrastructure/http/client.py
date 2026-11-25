@@ -41,7 +41,7 @@ from typing import Any
 
 import httpx
 
-from photobench.domain.errors import RequestOutcomeUnknownError
+from photobench.domain.errors import HttpResponseError, RequestOutcomeUnknownError
 from photobench.domain.http.ports import HttpStream
 
 _RETRYABLE = (
@@ -199,9 +199,12 @@ class HttpxJsonClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             response = exc.response
-            raise RuntimeError(
-                f"HTTP {response.status_code} {response.reason_phrase}: {_error_detail(response)}"
+            raise HttpResponseError(
+                response.status_code,
+                f"HTTP {response.status_code} {response.reason_phrase}: {_error_detail(response)}",
             ) from exc
+        if response.status_code == 204:
+            return None
         return response.json()
 
     def request_bytes(self, url: str, timeout: int = 120) -> bytes:

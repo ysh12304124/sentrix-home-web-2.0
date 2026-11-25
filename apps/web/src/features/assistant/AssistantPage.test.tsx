@@ -83,13 +83,32 @@ describe("会话重命名 / 删除", () => {
     expect(await screen.findByText("改名后的对话")).toBeTruthy();
 
     // ---- 删除：先确认，未确认前不调接口 --------------------------------
-    fireEvent.click(screen.getByLabelText("更多操作：改名后的对话"));
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
-    expect(screen.getByText("删除这个对话？")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("删除对话：改名后的对话"));
+    expect(screen.getByText("删除此对话及消息、轨迹？此操作无法撤销。")).toBeTruthy();
     expect(client.deleteConversation).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
     await waitFor(() => expect(client.deleteConversation).toHaveBeenCalledWith("c1"));
     await waitFor(() => expect(screen.queryByText("改名后的对话")).toBeNull());
+  });
+
+  it("删除失败保留对话，显示服务端提示", async () => {
+    vi.mocked(client.deleteConversation).mockRejectedValueOnce(new Error("请先停止回答"));
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("删除对话：第一个对话"));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    expect(await screen.findByText("请先停止回答")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "确认删除" })).toBeTruthy();
+    expect(client.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("删除非选中对话不切换当前会话", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByLabelText("删除对话：第二个对话"));
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(screen.queryByText("第二个对话")).toBeNull());
+    expect(screen.getByText("第一个对话")).toBeTruthy();
+    expect(client.deleteConversation).toHaveBeenCalledWith("c2");
+    expect(client.createConversation).not.toHaveBeenCalled();
   });
 });

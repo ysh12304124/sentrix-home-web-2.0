@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sentrix.application.identity.observe_appearance import ObserveAppearance
+from sentrix.application.identity.observe_appearance import RequestAppearance
 from sentrix.application.identity.review_cluster import (
     ClusterNotFoundError,
     InvalidReviewRequestError,
@@ -58,7 +58,7 @@ class MergePeople:
         faces: FaceRepository,
         merges: PersonMergeRepository,
         events: ConfirmedPersonEvents,
-        appearance: ObserveAppearance,
+        appearance: RequestAppearance,
     ) -> None:
         self._entities = entities
         self._faces = faces

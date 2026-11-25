@@ -26,7 +26,7 @@ export function journeyNodes(item: RunItemDetail, locations: Record<string, stri
       const raw = entry.call || entry.tool || {};
       const failed = !!raw.error || ["error", "failed", "partial", "denied", "cancelled"].includes(String(raw.status));
       const title = entry.kind === "answer" ? "最终回答" : entry.kind === "tool" ? toolLabel(String(raw.tool || raw.tool_name || "未命名工具")) :
-        entry.kind === "planner" ? "任务规划" : entry.kind === "judge" ? "答案核验" : raw.call_type === "claim_verifier" ? "事实核验" : raw.call_type === "tool_internal" ? "工具内模型" : "模型推理";
+        entry.kind === "planner" ? "任务规划" : entry.kind === "judge" ? (raw.call_type === "claim_verifier" ? "事实核验" : "答案核验") : raw.call_type === "tool_internal" ? "工具内模型" : "模型推理";
       const status = entry.kind === "answer" ? (entry.answer?.trim() ? "已记录回答" : "回答未记录") : failed ? "调用异常" :
         ["ok", "success", "complete", "completed"].includes(String(raw.status)) ? "调用完成" : "已记录调用";
       return {id:entry.key, turn:ti, title, status, failed, entry, refs:[]};

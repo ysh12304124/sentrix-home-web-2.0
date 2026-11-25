@@ -1,0 +1,30 @@
+{
+  "revision": "de88f01781a9c0b86667301e011704ba53d2f145",
+  "scope": "8872 only; preserve active 8874 and 8772/8191",
+  "files": {
+    "apps/photobench/src/photobench/application/run_execution/state.py": {
+      "before": "7df472a9ea4bd561ee6bf0bc197d89cd17cb6f0628d39b96f15c7b12faf2810e",
+      "after": "196b7cd66d00bd604cdee75df544043d101c96bd13ac50c5643b3a924aa68fb8"
+    },
+    "apps/photobench/src/photobench/infrastructure/results/store.py": {
+      "before": "fa5b031a0af95e485476c384767f5b46b578bb3384d1ce11c1e865c40c7319fc",
+      "after": "bb4d34202f5e66883bef2913d995282c1a55b05c755560087c031843d9e63d42"
+    },
+    "apps/photobench/src/photobench/infrastructure/results/recovery.py": {
+      "before": "1bdcbf38631258d224df37d7fd3c0d9ece26a4cdbec6a9dfbfea944a95ad2951",
+      "after": "973bdc34f023b869b2dd2d5146f1725973cb5a7fafd649bcf20a67569513e3f5"
+    },
+    "apps/photobench/src/photobench/infrastructure/results/encoding.py": {
+      "before": null,
+      "after": "767ed85d810f4790444df684939d3709ec0945723acb0b21ed8c9e355de3ec2b"
+    },
+    "apps/photobench/src/photobench/infrastructure/error_analysis/worker.py": {
+      "before": "2114e365e5a625e06027de108cf7ede25b4ff93be0769c7f9dd94a1547391acf",
+      "after": "bfcfe90c67b330d06e9e9eb903ed804ed17edc4449d278baeeb0850b64671be2"
+    },
+    "apps/photobench/src/photobench/infrastructure/error_analysis/backend.py": {
+      "before": "f4c4e0cccd49bac64183add90a3c695c91c1436605258b8b9db2cd21d4a66750",
+      "after": "c81eb9dc6f283a799f3fa207c66ebaa58b0ef93ca2756fd4e7c360dd2f87e0c4"
+    }
+  }
+}

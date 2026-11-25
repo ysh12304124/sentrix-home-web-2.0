@@ -12,7 +12,7 @@ vi.mock("../../shared/clientEvents", () => ({
   errorCodeFromStatus: () => "network",
 }));
 
-import { useTurnStream } from "./useTurnStream";
+import { useTurnStream, waitForTurnAcceptance } from "./useTurnStream";
 
 class FakeEventSource extends EventTarget {
   static instances: FakeEventSource[] = [];
@@ -59,7 +59,7 @@ it("创建失败返回 false，保留错误，不自动重发", async () => {
   expect(mocks.start).toHaveBeenCalledTimes(1);
 });
 
-it("创建期间取消，拿到回合 ID 后取消同一回合，不建立事件流", async () => {
+it("创建期间取消，拿到回合 ID 后取消并等服务端终态", async () => {
   let accept!: (value: { turn_id: string }) => void;
   mocks.start.mockReturnValueOnce(new Promise((resolve) => { accept = resolve; }));
   const { result } = renderHook(useTurnStream);
@@ -68,9 +68,11 @@ it("创建期间取消，拿到回合 ID 后取消同一回合，不建立事件
   await act(() => result.current.cancel());
   await act(async () => { accept({ turn_id: "turn-1" }); expect(await asked).toBe(true); });
   expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("turn-1");
+  expect(result.current.stopping).toBe(true);
+  expect(result.current.busy).toBe(true);
+  act(() => FakeEventSource.instances[0].emit("complete", { turn_id: "turn-1", status: "cancelled" }));
   expect(result.current.cancelled).toBe(true);
   expect(result.current.busy).toBe(false);
-  expect(FakeEventSource.instances).toHaveLength(0);
 });
 
 it("SSE 断线重连同一回合且带游标，取消后不再重连", async () => {
@@ -84,8 +86,57 @@ it("SSE 断线重连同一回合且带游标，取消后不再重连", async () 
   expect(FakeEventSource.instances[1].url).toContain("turn-1");
   expect(FakeEventSource.instances[1].url).toContain("3");
   await act(() => result.current.cancel());
+  act(() => FakeEventSource.instances[1].emit("complete", { turn_id: "turn-1", status: "cancelled" }));
   await act(() => vi.advanceTimersByTimeAsync(20_000));
   expect(FakeEventSource.instances).toHaveLength(2);
   expect(mocks.start).toHaveBeenCalledTimes(1);
   expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("turn-1");
+});
+
+it("离开时只关闭订阅，恢复原回合并去重，不再 POST 提问", async () => {
+  const first = renderHook(useTurnStream);
+  await act(() => first.result.current.ask("same-conversation", "原问题"));
+  const oldSource = FakeEventSource.instances[0];
+  first.unmount();
+  expect(oldSource.close).toHaveBeenCalled();
+  expect(mocks.cancel).not.toHaveBeenCalled();
+  const { result } = renderHook(useTurnStream);
+  act(() => result.current.resume("turn-1"));
+  const resumed = FakeEventSource.instances[1];
+  expect(resumed.url).toContain("/turn-1/events");
+  act(() => {
+    resumed.emit("progress", { step_index: 1 });
+    resumed.emit("progress", { step_index: 1 });
+    oldSource.emit("complete", { turn_id: "turn-1", status: "failed" });
+  });
+  expect(result.current.progress).toHaveLength(1);
+  expect(result.current.busy).toBe(true);
+  await act(() => result.current.cancel());
+  expect(mocks.cancel).toHaveBeenCalledExactlyOnceWith("turn-1");
+  act(() => resumed.emit("complete", { turn_id: "turn-1", status: "cancelled" }));
+  expect(result.current.result?.status).toBe("cancelled");
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+});
+
+it("收到 202 前离开时，返回会话等提交落定，旧组件不再打开 SSE", async () => {
+  let accept!: (value: { turn_id: string }) => void;
+  mocks.start.mockReturnValueOnce(new Promise((resolve) => { accept = resolve; }));
+  const first = renderHook(useTurnStream);
+  act(() => { void first.result.current.ask("await-acceptance", "原问题"); });
+  first.unmount();
+  const done = vi.fn();
+  const waiting = waitForTurnAcceptance("await-acceptance").then(done);
+  await Promise.resolve();
+  expect(done).not.toHaveBeenCalled();
+  await act(async () => { accept({ turn_id: "turn-1" }); await waiting; });
+  expect(FakeEventSource.instances).toHaveLength(0);
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+});
+
+it("提交结果不明时重试同一个问题沿用幂等键", async () => {
+  mocks.start.mockRejectedValueOnce(new Error("connection lost"));
+  const { result } = renderHook(useTurnStream);
+  await act(() => result.current.ask("retry-acceptance", "原问题"));
+  await act(() => result.current.ask("retry-acceptance", "原问题"));
+  expect(mocks.start.mock.calls[0][2]).toBe(mocks.start.mock.calls[1][2]);
 });

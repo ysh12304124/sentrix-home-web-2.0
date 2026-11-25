@@ -112,17 +112,10 @@ class DiesAfterPlanning:
         )
 
 
-def build_client(settings, model, request) -> TestClient:
+def build_client(settings, model) -> TestClient:
     app = create_app(settings)
     app.state.container = dataclasses.replace(app.state.container, chat_model=model)
-    from conftest import FakeEmbeddingHealth
-
-    app.state.container = dataclasses.replace(app.state.container, embedding_health=FakeEmbeddingHealth())
-    app.state.turn_executor = app.state.container.build_turn_executor()
-    client = TestClient(app)
-    client.__enter__()
-    request.addfinalizer(lambda: client.__exit__(None, None, None))
-    return client
+    return TestClient(app)
 
 
 def read_events(client: TestClient, turn_id: str, **headers: str) -> list[dict]:
@@ -159,8 +152,8 @@ def run_turn(client: TestClient, message: str = "给我看看在海边的照片"
 
 
 @pytest.fixture
-def client(settings, request) -> TestClient:
-    return build_client(settings, ScriptedChatModel([final("这是一句回答。")]), request)
+def client(settings) -> TestClient:
+    return build_client(settings, ScriptedChatModel([final("这是一句回答。")]))
 
 
 def test_the_stream_ends_by_itself_after_complete(client: TestClient):
@@ -211,7 +204,7 @@ def test_the_first_progress_event_is_the_plan(client: TestClient):
     """规划是 S3 的第一步，也是「为什么这一轮要取证」的书面记录。"""
     _conversation_id, turn_id = run_turn(client)
 
-    first = read_events(client, turn_id)[0]
+    first = next(event for event in read_events(client, turn_id) if event["event"] == "progress")
 
     assert first["data"]["kind"] == "plan"
     assert first["data"]["stage"] == "planning"
@@ -270,7 +263,7 @@ def test_the_complete_frame_does_not_repeat_the_progress_array(client: TestClien
     assert [item["status"] for item in complete["requirements"]] == ["open", "open"]
 
 
-def test_a_dead_endpoint_is_reported_as_the_model_service(settings, request):
+def test_a_dead_endpoint_is_reported_as_the_model_service(settings):
     """端点整个挂掉时，失败发生在**规划**这一步——1.0 也是这么记的。
 
     1.0 ``runtime.py:1828``：``planner_call_error`` 走到最后就是 ``planner_blocked``，
@@ -282,7 +275,7 @@ def test_a_dead_endpoint_is_reported_as_the_model_service(settings, request):
     ——那是把基础设施故障说成了理解能力不足：用户会去换个问法重问，而该做的是去看那个
     端点。这里把端点自己的说明（含地址）一并交给用户。
     """
-    client = build_client(settings, FailingModel(), request)
+    client = build_client(settings, FailingModel())
     _conversation_id, turn_id = run_turn(client)
 
     complete = read_events(client, turn_id)[-1]["data"]
@@ -294,7 +287,7 @@ def test_a_dead_endpoint_is_reported_as_the_model_service(settings, request):
     assert "无法可靠规划" not in complete["answer"]
 
 
-def test_a_model_that_dies_after_planning_is_reported_as_failed(settings, request):
+def test_a_model_that_dies_after_planning_is_reported_as_failed(settings):
     """规划成功、主循环才挂时，才是 ``failed`` / ``model_error``。
 
     **且文案要可执行**（用户 2026-09-25 裁决二）：说模型服务、带端点、带服务端给的原因。
@@ -302,7 +295,7 @@ def test_a_model_that_dies_after_planning_is_reported_as_failed(settings, reques
     的请求一律 400（见 ``docs/refactor/s5-deviations.md`` §2n）——那句话里写着根因，
     不能让它只在日志里落地为止。
     """
-    client = build_client(settings, DiesAfterPlanning(), request)
+    client = build_client(settings, DiesAfterPlanning())
     _conversation_id, turn_id = run_turn(client)
 
     complete = read_events(client, turn_id)[-1]["data"]
@@ -353,11 +346,10 @@ def test_a_garbage_last_event_id_falls_back_to_a_full_replay(client: TestClient)
     assert [item["id"] for item in events if item["event"] == "progress"][0] == 1
 
 
-def test_two_turns_in_one_conversation_each_get_their_own_stream(settings, request):
+def test_two_turns_in_one_conversation_each_get_their_own_stream(settings):
     client = build_client(
         settings,
         ScriptedChatModel([tool_call("get_result_page", "c1", result_set_id="rs_1", page=1)]),
-        request,
     )
     conversation_id, first_turn = run_turn(client)
 
@@ -376,7 +368,7 @@ def test_two_turns_in_one_conversation_each_get_their_own_stream(settings, reque
     assert [item["id"] for item in second if item["event"] == "progress"][0] == 1
 
 
-def test_a_tool_call_turn_emits_action_and_result_events(settings, request):
+def test_a_tool_call_turn_emits_action_and_result_events(settings):
     client = build_client(
         settings,
         ScriptedChatModel(
@@ -385,7 +377,6 @@ def test_a_tool_call_turn_emits_action_and_result_events(settings, request):
                 final("这是你要的照片。"),
             ]
         ),
-        request,
     )
     _conversation_id, turn_id = run_turn(client)
 
@@ -502,8 +493,6 @@ def test_terminal_transition_between_history_read_and_check_cannot_drop_progress
 
     monkeypatch.setattr(turns, "events_after", read_before_commit)
     events = read_events(client, turn_id)
-    assert [e["id"] for e in events if e["event"] == "progress"] == [
-        seq for seq, _attempt, _event in expected
-    ]
+    assert [e["id"] for e in events if e["event"] == "progress"] == [seq for seq, _, _ in expected]
     assert events[0]["data"]["kind"] == "plan"
     assert events[-1]["event"] == "complete"

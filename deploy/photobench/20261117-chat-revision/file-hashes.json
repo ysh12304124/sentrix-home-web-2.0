@@ -1,0 +1,15 @@
+{
+  "base_revision": "b2030e16b72f36a8fb80baa1436dc06f050c177d",
+  "source_parent": "133434f43c51b3c15bc567609a552e8d77e9735f",
+  "files": {
+    "apps/photobench/src/photobench/application/interactive/chat.py": {
+      "before": "86ffe10ba0ad649c8afd604eea2fcbfd8585ba0f602d4f650e8cd62f54a382e2",
+      "after": "2a65ba8f828043bcf12bd2ae4baa1207c39247100b53e5769182efbca55d1ece"
+    },
+    "apps/photobench/src/photobench/application/run_execution/service.py": {
+      "before": "fe3ff6b16aab7f30eef105f5a6deb630c82fb2ec7099c6b67b51382158c8c0bb",
+      "after": "d350653ab4c75d6cbff14dfdbc859ea6c2ecbcc49e4779f8590bdb158da8af38"
+    }
+  },
+  "base_overlay": "deploy/photobench/20261117-psh-100/8772.patch"
+}

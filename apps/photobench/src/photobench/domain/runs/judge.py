@@ -212,6 +212,8 @@ def execution_failure(agent_status: str | None, termination_reason: str | None) 
     """
     status = str(agent_status or "").lower()
     termination = str(termination_reason or "").lower()
+    if termination in {"answered", "answered_with_gap", "policy_refusal"} and status == "partial":
+        return False
     return status in {"partial", "error", "timeout", "failed", "cancelled", "canceled"} or any(
         marker in termination
         for marker in ("limit", "failure", "error", "timeout", "blocked", "parse_failure")

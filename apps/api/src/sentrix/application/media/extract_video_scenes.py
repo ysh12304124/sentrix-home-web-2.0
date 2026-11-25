@@ -444,6 +444,7 @@ class ExtractVideoScenes:
             captured_at=_offset(source.captured_at, window.keyframe_timestamp_sec),
             captured_location=source.captured_location,
             capture_time=source.capture_time,
+            source_metadata=source.source_metadata,
             created_at=now,
             updated_at=now,
         )

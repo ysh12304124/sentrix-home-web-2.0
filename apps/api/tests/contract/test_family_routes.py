@@ -145,6 +145,43 @@ def test_each_person_carries_its_entity_status(family_client: TestClient) -> Non
     assert by_id["kid"]["status"] == "pending"
 
 
+def test_marking_a_person_as_a_passerby_shows_up_as_hidden_and_can_be_undone(
+    family_client: TestClient,
+) -> None:
+    """「标为路人」走通用属性写入；名录投影读成 ``hidden``，再写 false 就回来。"""
+    assert {item["id"]: item["hidden"] for item in _people(family_client)} == {
+        "mom": False,
+        "kid": False,
+    }
+
+    response = family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": True})
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in _people(family_client)}
+    assert by_id["kid"]["hidden"] is True
+    assert by_id["mom"]["hidden"] is False
+    # 只是不铺开，不是拒绝：这个人还在名录里，状态不变。
+    assert by_id["kid"]["status"] == "pending"
+
+    family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": False})
+    assert {item["id"]: item["hidden"] for item in _people(family_client)}["kid"] is False
+
+
+def test_only_a_literal_true_hides_a_person(family_client: TestClient) -> None:
+    """属性值的类型不固定；只有布尔真才算隐藏，``"false"`` 之类的串不算。"""
+    family_client.put("/api/v1/entities/kid/properties/hidden", json={"value": "false"})
+
+    assert {item["id"]: item["hidden"] for item in _people(family_client)}["kid"] is False
+
+
+def test_each_person_carries_the_aliases_the_user_gave(family_client: TestClient) -> None:
+    """名录与选人列表要按别名搜人，投影直接带上别名，不必逐个拉详情。"""
+    family_client.put("/api/v1/entities/mom/properties/aliases", json={"value": ["老妈", "阿娟"]})
+
+    by_id = {item["id"]: item for item in _people(family_client)}
+    assert by_id["mom"]["aliases"] == ["老妈", "阿娟"]
+    assert by_id["kid"]["aliases"] == []
+
+
 def test_representative_media_comes_from_faces_not_from_observations(family_client: TestClient) -> None:
     """**这张表走人脸，不走观察。**
 
@@ -413,14 +450,36 @@ def test_a_relationship_without_a_scope_is_a_400(family_client: TestClient) -> N
     assert response.json()["message"] == "scope_id is required"
 
 
-def test_a_label_outside_the_whitelist_is_a_400_with_the_whitelist_message(
+def test_a_user_can_write_a_custom_label_outside_the_kinship_whitelist(
     family_client: TestClient,
 ) -> None:
-    """白名单校验在仓储里，路由只把它的话术带出去。"""
-    response = _put_relationship(family_client, predicate="同事", inverse_predicate="同事")
+    """用户建关系不再从词表里选：「同事」「干妈 / 干女儿」这类称谓照样落库。"""
+    response = _put_relationship(family_client, predicate="干妈", inverse_predicate="干女儿")
+
+    assert response.status_code == 200
+    labels = {(row["predicate"], row["inverse_predicate"]) for row in response.json()["relationships"]}
+    assert labels == {("干妈", "干女儿"), ("干女儿", "干妈")}
+
+
+@pytest.mark.parametrize(
+    ("predicate", "message"),
+    [
+        ("   ", "family relationship requires both predicates"),
+        (
+            "一二三四五六七八九十一二三四五六七",
+            "关系标签不能超过 16 个字: 一二三四五六七八九十一二三四五六七",
+        ),
+        ("同\x00事", "关系标签不能包含控制字符"),
+    ],
+)
+def test_a_malformed_custom_label_is_a_400_with_the_repository_message(
+    family_client: TestClient, predicate: str, message: str
+) -> None:
+    """自定义称谓只做形状校验；仓储的话术原样带出去。"""
+    response = _put_relationship(family_client, predicate=predicate, inverse_predicate="同事")
 
     assert response.status_code == 400
-    assert response.json()["message"] == "关系标签不匹配: 同事 -> 同事"
+    assert response.json()["message"] == message
 
 
 def test_retracting_writes_a_block_so_the_model_cannot_restore_it(family_client: TestClient) -> None:
@@ -645,3 +704,101 @@ def test_the_run_key_belongs_to_the_scope_in_the_request(family_client: TestClie
 
     assert body["scope_ids"] == [HOME, OTHER]
     assert body["run"]["id"] == "run_other"
+
+
+# ---- 派生同步在请求之外（关系写入不再等记忆图重建） ------------------------------------
+
+
+def _sync(client: TestClient, graph_calls: list[str], *, fail: bool = False):
+    from sentrix.application.memories.sync_corrections import CorrectionSyncExecutor, SyncCorrections
+
+    def graph(scope: str) -> None:
+        graph_calls.append(scope)
+        if fail:
+            raise RuntimeError("图谱暂不可用")
+
+    sync = SyncCorrections(client.app.state.container.memory_corrections, lambda _scope: None, graph)
+    return CorrectionSyncExecutor(sync)
+
+
+def _job(client: TestClient, job_id: str) -> dict:
+    return client.get(f"/api/v1/memories/corrections/jobs/{job_id}").json()
+
+
+def test_a_relationship_write_returns_before_the_memory_graph_is_rebuilt(
+    family_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重建记忆图（含因果 LLM 判定）要十几秒；写入只登记任务，请求里绝不调用同步。"""
+    from sentrix.api.routes import corrections
+
+    monkeypatch.setattr(corrections, "synchronizer", lambda _container: pytest.fail("请求里不应同步派生数据"))
+    body = _put_relationship(family_client).json()
+
+    assert body["sync_status"] == "pending"
+    assert body["sync_error"] == ""
+    assert _job(family_client, body["sync_job_id"]) == {
+        "id": body["sync_job_id"],
+        "status": "pending",
+        "error": "",
+    }
+
+    graph_calls: list[str] = []
+    assert _sync(family_client, graph_calls).run_once()
+    assert graph_calls == [HOME]
+    assert _job(family_client, body["sync_job_id"])["status"] == "synced"
+
+
+def test_writes_to_one_album_are_derived_once(family_client: TestClient) -> None:
+    """连续改几次关系，后台只重建一次：同一相册的到期任务是一批。"""
+    first = _put_relationship(family_client).json()["sync_job_id"]
+    second = _patch_membership(family_client, scope_id=HOME, membership="family").json()["sync_job_id"]
+
+    graph_calls: list[str] = []
+    assert _sync(family_client, graph_calls).run_once()
+
+    assert graph_calls == [HOME]
+    assert {_job(family_client, job)["status"] for job in (first, second)} == {"synced"}
+
+
+def test_a_write_still_in_progress_is_not_claimed(family_client: TestClient) -> None:
+    """写入提交之前任务不可领取，否则会按旧值重建、却把任务标成已同步。"""
+    jobs = family_client.app.state.container.memory_corrections
+    graph_calls: list[str] = []
+    executor = _sync(family_client, graph_calls)
+
+    with jobs.track(HOME, "family", "mom") as job_id:
+        assert not executor.run_once()
+        assert _job(family_client, job_id)["status"] == "pending"
+
+    assert executor.run_once()
+    assert graph_calls == [HOME]
+    assert _job(family_client, job_id)["status"] == "synced"
+
+
+def test_a_failing_sync_backs_off_and_then_fails(family_client: TestClient) -> None:
+    """派生失败不热循环：退避重试，三次后标 failed，用户可在页面上重试。"""
+    job_id = _put_relationship(family_client).json()["sync_job_id"]
+    graph_calls: list[str] = []
+    executor = _sync(family_client, graph_calls, fail=True)
+
+    assert executor.run_once()
+    pending = _job(family_client, job_id)
+    assert pending["status"] == "pending"
+    assert "图谱暂不可用" in pending["error"]
+    assert not executor.run_once()  # 退避期内不再领取
+    for _ in range(2):
+        with _db(family_client).connect() as connection, connection:
+            connection.execute("UPDATE memory_corrections SET next_attempt_at='' WHERE id=?", (job_id,))
+        assert executor.run_once()
+    assert _job(family_client, job_id)["status"] == "failed"
+    assert len(graph_calls) == 3
+
+    retried = family_client.post(f"/api/v1/memories/corrections/jobs/{job_id}/retry")
+    assert retried.status_code == 202
+    assert retried.json()["status"] == "pending"
+    assert _sync(family_client, graph_calls).run_once()
+    assert _job(family_client, job_id)["status"] == "synced"
+
+
+def test_an_unknown_sync_job_is_404(family_client: TestClient) -> None:
+    assert family_client.get("/api/v1/memories/corrections/jobs/nope").status_code == 404

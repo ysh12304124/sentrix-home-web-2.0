@@ -6,14 +6,17 @@ import copy
 from collections.abc import Mapping
 from typing import Any, cast
 
+from photobench.domain.evaluation.list_comparison import list_answer_comparison
 from photobench.domain.evaluation.media import saved_media_metrics
 from photobench.domain.evaluation.profiles import (
     ATM,
     LABELS,
     OPEN,
+    digest,
     evaluation_turn,
     result_key,
     scoring_summary,
+    tool_list_score,
     valid_result,
 )
 
@@ -31,9 +34,24 @@ def select_batch(state: Mapping[str, Any], profile: str, batch_id: str = "") -> 
 
 
 def item_scores(state: Mapping[str, Any], qa_id: str) -> list[dict[str, Any]]:
-    return [
-        copy.deepcopy(r) for r in (state.get("scoring_results") or {}).values() if str(r["qa_id"]) == qa_id
-    ]
+    batches = {b["batch_id"]: b for b in state.get("scoring_batches") or []}
+    rows = []
+    for result in (state.get("scoring_results") or {}).values():
+        if str(result["qa_id"]) != qa_id:
+            continue
+        value = copy.deepcopy(result)
+        batch = batches.get(result.get("batch_id"))
+        if batch:
+            config = batch.get("config") or {}
+            value["batch_definition"] = {
+                "rule_version": batch.get("rule_version"),
+                "qa_definition_sha256": batch.get("qa_definition_sha256"),
+                "judge": {k: (batch.get("judge") or {}).get(k) for k in ("url", "model")},
+                "config": {k: copy.deepcopy(v) for k, v in config.items() if k != "prompts"},
+                "prompts_sha256": digest(config.get("prompts") or {}),
+            }
+        rows.append(value)
+    return rows
 
 
 def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]:
@@ -42,6 +60,9 @@ def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]
         (r for r in (state.get("qa_snapshot") or {}).get("rows") or [] if str(r["qa_id"]) == qa_id), {}
     )
     turn = evaluation_turn(row)
+    original: Mapping[str, Any] = next(
+        (i for i in state.get("items") or [] if str(i.get("qa_id")) == qa_id), {}
+    )
     results = {}
     for profile in LABELS:
         batch = select_batch(state, profile)
@@ -50,6 +71,12 @@ def item_profile_results(state: Mapping[str, Any], qa_id: str) -> dict[str, Any]
         valid = valid_result(value)
         results[profile] = {
             **{k: copy.deepcopy(v) for k, v in value.items() if k not in {"requests", "history"}},
+            "tool_list_score": tool_list_score(row.get("evaluation") or {}, value)
+            if profile == ATM and (row.get("evaluation") or {}).get("scorer") in {"media_set", "atm_list"}
+            else None,
+            "list_comparison": list_answer_comparison(row.get("evaluation") or {}, original, turn, value)
+            if profile == ATM
+            else None,
             "profile_id": profile,
             "batch_id": batch_id,
             "turn_index": turn,
@@ -93,11 +120,12 @@ def choice_matching_result(state: Mapping[str, Any], qa_id: str) -> dict[str, An
 
 
 def primary_profile_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Default reads use the latest batch; original required IDs remain for completion checks."""
     if state.get("selected_scoring_profile") or not state.get("scoring_profiles"):
         return state
     ids = state.get("primary_scoring_batch_ids") or []
     batch = next((b for b in state.get("scoring_batches") or [] if b["batch_id"] in ids), None)
-    return profile_state(state, batch["profile_id"], batch["batch_id"]) if batch else state
+    return profile_state(state, batch["profile_id"]) if batch else state
 
 
 def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") -> dict[str, Any]:
@@ -132,6 +160,7 @@ def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") 
                         "profile_id",
                         "status",
                         "reason",
+                        "checks",
                         "finished_at",
                         "purpose",
                         "choice_match",
@@ -173,6 +202,11 @@ def profile_state(state: dict[str, Any], profile: str = "", batch_id: str = "") 
                 "media_metrics": copy.deepcopy(value["media_metrics"])
                 if "media_metrics" in value
                 else saved_media_metrics(rows.get(qa_id, {}), original, index),
+                "list_comparison": list_answer_comparison(
+                    (rows.get(qa_id, {}) or {}).get("evaluation") or {}, original, index, value
+                )
+                if profile == ATM
+                else None,
             }
 
         def apply(record: dict[str, Any], index: int, qa_id: str = qa_id) -> None:

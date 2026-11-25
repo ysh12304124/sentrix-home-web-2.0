@@ -17,6 +17,7 @@ import {
   executionState,
   executionStateClass,
   fmtDate,
+  fmtTimestamp,
   fmtMemory,
   fmtMs,
   fmtNumber,
@@ -96,6 +97,16 @@ describe("fmtDate (:327)", () => {
     const out = fmtDate("2026-01-02T03:04:00Z");
     expect(out).not.toBe("-");
     expect(out).toContain(":");
+  });
+});
+
+describe("fmtTimestamp", () => {
+  it("displays local dates to seconds and treats equivalent offsets consistently", () => {
+    const local = new Date(2026, 10, 18, 1, 50, 41, 28);
+    expect(fmtTimestamp(local.toISOString())).toBe("2026-11-18 01:50:41");
+    expect(fmtTimestamp(local.toISOString(), true)).toBe("01:50:41");
+    expect(fmtTimestamp("2026-11-18T01:50:41.028859+08:00")).toBe(fmtTimestamp("2026-11-17T17:50:41.028859Z"));
+    for (const value of [null, undefined, "", "invalid"]) expect(fmtTimestamp(value)).toBe("-");
   });
 });
 

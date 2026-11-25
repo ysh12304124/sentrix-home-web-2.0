@@ -119,6 +119,7 @@ class RenamePersonResponse(BaseModel):
     aliases: list[str]
     sync_status: str = "synced"
     sync_error: str = ""
+    sync_job_id: str | None = None
 
 
 class MergePeopleRequest(BaseModel):
@@ -150,6 +151,9 @@ class BatchConfirmItem(BaseModel):
     person_id: str = ""
     name: str = ""
     family_role: str | None = None
+    # 用户在「已有一位同名的人，是同一个人吗？」里答了「不是」时为 false：照常确认，
+    # 不并入那个同名的人。默认 true 保持原行为（同名即并入）。
+    merge_same_name: bool = True
 
 
 class BatchConfirmRequest(BaseModel):
@@ -163,6 +167,8 @@ class BatchConfirmOutcome(BaseModel):
     family_role: str | None
     # 这一次确认是不是走了同名合并。1.0 回的是 ``native.get("merged_into")`` 的真假。
     merged: bool
+    # 确认后重建记忆图的后台任务；前端用它查同步进度。
+    sync_job_id: str | None = None
 
 
 class BatchConfirmFailure(BaseModel):
@@ -285,6 +291,7 @@ class EntityPropertyPayload(BaseModel):
     updated_at: str | None
     sync_status: str = "synced"
     sync_error: str = ""
+    sync_job_id: str | None = None
 
 
 class EntityDetailEntity(BaseModel):

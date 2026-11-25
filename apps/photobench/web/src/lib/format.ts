@@ -87,6 +87,16 @@ export function fmtDate(value: unknown): string {
   });
 }
 
+/** Interaction timestamps use the browser's local time, rounded down to seconds. */
+export function fmtTimestamp(value: unknown, timeOnly = false): string {
+  if (!value) return "-";
+  const date = new Date(value as string | number | Date);
+  if (!Number.isFinite(date.getTime())) return "-";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return timeOnly ? time : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+}
+
 /** 1.0 `:328-333` —— 未开始回 `-`；不足 1 分钟 `${s}s`，否则 `${m}m${s}s`。 */
 export function duration(run: unknown): string {
   const r = dict(run);

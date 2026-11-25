@@ -17,6 +17,7 @@ import pytest
 
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.assistant.tools import AssistantToolbox, is_empty_result
+from sentrix.application.identity.person_directory import EntityPersonDirectory
 from sentrix.application.retrieval.retrieve_entity import RetrieveEntity
 from sentrix.application.retrieval.retrieve_evidence import RetrieveEvidence
 from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
@@ -45,6 +46,7 @@ from sentrix.infrastructure.persistence.repositories.assets import (
 )
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
 from sentrix.infrastructure.persistence.repositories.faces import SqliteFaceRepository
+from sentrix.infrastructure.persistence.repositories.family import SqliteFamilyGraphRepository
 from sentrix.infrastructure.persistence.repositories.result_sets import SqliteResultSetRepository
 from sentrix.infrastructure.persistence.repositories.search_terms import SqliteLexicalIndex
 from sentrix.infrastructure.persistence.repositories.structured import (
@@ -106,7 +108,7 @@ class StubPeople:
     def __init__(self, profiles: dict[str, PersonProfile] | None = None) -> None:
         self._profiles = profiles or {}
 
-    def lookup(self, name: str, scope_id: str) -> PersonProfile | None:
+    def lookup(self, name: str, scope_id: str, *, include_portrait: bool = False) -> PersonProfile | None:
         return self._profiles.get(name)
 
 
@@ -153,6 +155,7 @@ def toolbox(migrations_ready_db, tmp_path):
     # 三条召回通道与 HTTP 端点用的是同一套编排（1.0 里两个入口共用同一个 Kernel）。
     # 这个夹具不落 Observation，所以词法与元数据两条通道恒空——被测的是工具的信息
     # 边界，不是召回；通道自己的行为在 test_retrieve_evidence.py。
+    entities = SqliteEntityRepository(migrations_ready_db)
     build = AssistantToolbox(
         retrieval=RetrieveEvidence(
             entity=RetrieveEntity(
@@ -192,7 +195,9 @@ def toolbox(migrations_ready_db, tmp_path):
                 # 不是地点匹配；别名桥接自己的行为在 test_structured_query_repository.py。
                 EMPTY_ALIASES,
             ),
-            entities=SqliteEntityRepository(migrations_ready_db),
+            people=EntityPersonDirectory(
+                entities=entities, family=SqliteFamilyGraphRepository(migrations_ready_db, entities)
+            ),
         ),
         # `query_photo_people` 的两条读路径（T122）。这个夹具不落脸也不落观察，
         # 所以它们恒空——被测的是别的工具的信息边界。它们自己的行为在
@@ -943,9 +948,9 @@ def test_a_known_person_returns_membership_and_relationships(toolbox):
     assert outcome.ok
     assert outcome.model_visible == {
         "person": "妈妈",
+        "aliases": [],
         "membership": "family",
         "membership_source": "user_override",
-        "summary": "家庭归属：family；近期记忆：一起在公园野餐。",
         "relationships": [{"predicate": "母亲", "other_name": "小明", "source": "model"}],
     }
     assert outcome.blocks is None

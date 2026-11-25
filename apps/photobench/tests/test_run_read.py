@@ -365,6 +365,40 @@ def test_get_run_item_returns_the_full_item_and_rejects_a_bad_index(results: Pat
         runs.get_run_item("run-a", 99)
 
 
+def test_split_mode_requires_explicit_legacy_index(results: Path, monkeypatch):
+    monkeypatch.setenv("PHOTOBENCH_SPLIT_RESULTS", "1")
+    store = FileRunStore(results)
+    assert store.use_read_index("run-a") is False
+    from photobench.infrastructure.results.split_store import ReadIndexRequired
+
+    with pytest.raises(ReadIndexRequired):
+        store.load_state("run-a")
+    with pytest.raises(ReadIndexRequired):
+        _read_runs(results).get_run_item("run-a", 0)
+
+
+def test_split_backed_run_preserves_item_list_and_detail_fields(results: Path):
+    from photobench.infrastructure.results.split_store import SplitResultWriter
+
+    store = FileRunStore(results)
+    original_state = store.load_state("run-a")
+    original = _read_runs(results)
+    original_page = original.get_run_items("run-a")
+    original_item = original.get_run_item("run-a", 0)["item"]
+
+    SplitResultWriter(results).write(results / "run-a", original_state)
+    indexed = _read_runs(results)
+    split_page = indexed.get_run_items("run-a")
+    split_item = indexed.get_run_item("run-a", 0)["item"]
+
+    assert [row["qa_id"] for row in split_page["items"]] == [row["qa_id"] for row in original_page["items"]]
+    assert split_page["items"][0]["judge"] == original_page["items"][0]["judge"]
+    assert split_item["index"] == 0
+    assert split_item["qa_id"] == original_item["qa_id"]
+    assert split_item["trace_storage"]["version"] == 3
+    assert split_item["trace_storage"]["revision"]
+
+
 def test_legacy_runs_get_their_ground_truth_images_hydrated_over_http(results: Path):
     """``_hydrate_legacy_gt_images``（1.0 ``:6851``）：本切片里 ``request_json`` 的唯一调用者。"""
     _write(
@@ -451,6 +485,30 @@ def test_a_running_run_is_not_served_from_a_stale_cache(results: Path):
     assert reader.get_run("run-b")["status"] == "completed"  # 终态之后走缓存
 
 
+def test_running_state_skips_cache_size_traversal(results: Path, monkeypatch):
+    from photobench.application.runs import read_runs
+
+    def unexpected_size(*args, **kwargs):
+        raise AssertionError("active states are not cache candidates")
+
+    monkeypatch.setattr(read_runs, "_object_bytes", unexpected_size)
+    reader = _read_runs(results)
+    assert reader._state("run-b")["status"] == "running"
+    assert "run-b" not in reader._states
+
+
+def test_cache_size_walk_stops_at_its_admission_limit():
+    from photobench.application.runs.read_runs import _object_bytes
+
+    class Unvisited:
+        def __sizeof__(self):
+            raise AssertionError("walk continued after the size limit")
+
+    assert _object_bytes([Unvisited(), b"x" * 2048], limit=1024) > 1024
+    shared = ["small"]
+    assert _object_bytes([shared, shared], limit=1024) < 1024
+
+
 def test_read_reconciles_saved_validity_without_changing_history(tmp_path: Path):
     original = _state("partial", run_valid=True, phases={"pipeline_processing": {"status": "partial"}})
     _write(tmp_path, "partial", original)
@@ -512,3 +570,238 @@ def test_legacy_overview_adapts_scoring_and_media_without_rewriting_snapshot(tmp
     assert overview["summary"]["media_ranking"]["recall_at_5"] == 1
     assert overview["summary"]["media_ranking"]["included"] == 1
     assert all((run / name).read_bytes() == data for name, data in originals.items())
+
+
+def test_committed_overview_labels_list_sources_without_loading_answer_state(tmp_path, monkeypatch):
+    _write(tmp_path, "basis", _state("basis"))
+    reader = _read_runs(tmp_path)
+    overview = FileRunStore(tmp_path).load_overview("basis")
+    batch = {"profile_id": "atm_qs_v1", "total_score": 0, "batch_id": "b"}
+    overview["summary"]["scoring"] = {
+        "profiles": {"atm_qs_v1": batch},
+        "batches": {"b": batch},
+        "diagnostic_judge_calls": 17,
+    }
+    path = tmp_path / "basis/metadata.json"
+    path.write_text(json.dumps({"overview": overview}))
+    before = path.read_bytes()
+    monkeypatch.setattr(reader, "_state", lambda *args: pytest.fail("Overview must stay lightweight"))
+    actual = reader.get_run("basis", include_history=False)["summary"]["scoring"]
+    assert actual["profiles"]["atm_qs_v1"]["list_source"] == "model_delivery"
+    assert actual["batches"]["b"]["text_ids_are_diagnostic_only"] is True
+    assert actual["profiles"]["atm_qs_v1"]["total_score"] == 0
+    assert actual["diagnostic_judge_calls"] == 17 and path.read_bytes() == before
+
+
+def test_default_profile_read_projects_diagnostics_and_preserves_both_scores(tmp_path):
+    from test_scoring_profiles import ATM, OPEN, scoring_targets, setup, state, task
+
+    snapshot = state()
+    snapshot["scoring_profiles"] = [OPEN, ATM]
+    service, batches, _, _ = setup(snapshot, [OPEN, ATM], [task(), {"score": 0}, {"accuracy": True}])
+    snapshot["primary_scoring_batch_ids"] = [batch["batch_id"] for batch in batches]
+    for batch in batches:
+        service.score(batch, scoring_targets(snapshot, batch, "all")[0])
+    snapshot["items"][0]["task_judge"] = {"status": "pending_judge"}
+    _write(tmp_path, "r", snapshot)
+    before = (tmp_path / "r/run.json").read_bytes()
+    reader = _read_runs(tmp_path)
+    detail = reader.get_run_item("r", 0)["item"]
+    assert detail["task_judge"].get("status") != "pending_judge"
+    assert detail["task_judge"]["actual_action"] == "answer"
+    assert detail["profile_scores"][OPEN]["score"] == 0
+    assert detail["profile_scores"][ATM]["score"] == 1
+    assert set(detail["profile_scores"]) == {OPEN, ATM}
+    assert (tmp_path / "r/run.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_default_reads_latest_batch_and_explicit_old_batch_stays_unchanged(tmp_path, committed):
+    from test_scoring_profiles import (
+        ATM,
+        prepare_batches,
+        profile_configs,
+        scoring_targets,
+        setup,
+        state,
+        task,
+    )
+
+    from photobench.domain.evaluation.profile_view import profile_state
+    from photobench.domain.runs.analysis import effective_summary
+    from photobench.infrastructure.results.store import committed_path, write_committed_snapshot
+
+    snapshot = state()
+    service, batches, _, _ = setup(snapshot, [ATM], [task(), {"accuracy": False}, {"accuracy": True}])
+    old = batches[0]
+    snapshot.update(scoring_profiles=[ATM], primary_scoring_batch_ids=[old["batch_id"]])
+    service.score(old, scoring_targets(snapshot, old, "all")[0])
+    new = prepare_batches(snapshot, profile_configs([ATM]), old["judge"], nonce="later")[0]
+    service.score(new, scoring_targets(snapshot, new, "all")[0])
+    stale = effective_summary(profile_state(snapshot, ATM, old["batch_id"]))
+    stale.pop("profile_read_version", None)
+    if committed:
+        write_committed_snapshot(tmp_path / "r", snapshot)
+        path = committed_path(tmp_path / "r", "metadata.json")
+        metadata = json.loads(path.read_text())
+        for section in (metadata["entry"], metadata["overview"]):
+            section["summary"] = stale
+        path.write_text(json.dumps(metadata))
+    else:
+        snapshot["summary"] = stale
+        _write(tmp_path, "r", snapshot)
+    originals = {p: p.read_bytes() for p in (tmp_path / "r").rglob("*") if p.is_file()}
+    reader = _read_runs(tmp_path)
+    listed = reader.list_runs()["runs"][0]
+    overview = reader.get_run("r", include_history=False)
+    for value in (listed, overview):
+        result = value["summary"]["scoring"]["profiles"][ATM]
+        assert result["batch_id"] == new["batch_id"] and result["total_score"] == 1
+    assert reader.get_run_item("r", 0)["item"]["evaluation_result"]["score"] == 1
+    assert reader.get_run_items("r")["items"][0]["evaluation_result"]["score"] == 1
+    from photobench.application.runs.reports import RunReports
+
+    reports = RunReports(
+        store=FileRunStore(tmp_path), http=FakeJsonHttpClient(), sentrix_url=lambda: "http://local"
+    )
+    assert reports.export_traces("r")[0]["evaluation_result"]["score"] == 1
+    assert reports.export_sft("r")["items"][0]["evaluation_result"]["score"] == 1
+    assert (
+        reports.export_traces("r", scoring_profile=ATM, scoring_batch=old["batch_id"])[0][
+            "evaluation_result"
+        ]["score"]
+        == 0
+    )
+    historical = reader.get_run("r", scoring_profile=ATM, scoring_batch=old["batch_id"])
+    assert historical["summary"]["scoring"]["profiles"][ATM]["total_score"] == 0
+    assert overview["primary_scoring_batch_ids"] == [old["batch_id"]]
+    assert all(p.read_bytes() == content for p, content in originals.items())
+
+
+def test_atm_tags_remain_native_and_raw_adapter_fields_stay_available():
+    from photobench.domain.runs.analysis import hydrate_qa_metadata
+
+    raw = {
+        "qa_id": "q",
+        "benchmark_id": "atm-bench",
+        "answerability": "answerable",
+        "expected_action": "answer",
+        "evaluation": {"source_qtype": "number"},
+        "tags": ["native", "answerability:answerable", "action:answer"],
+    }
+    projected = hydrate_qa_metadata(raw, {})
+    assert projected["tags"] == ["native"]
+    assert projected["answerability"] == "answerable"
+    assert raw["tags"] == ["native", "answerability:answerable", "action:answer"]
+
+
+def test_old_committed_summary_exposes_tool_qs_without_writing_original_files(tmp_path):
+
+    from test_scoring_profiles import ATM, media, setup, state
+
+    from photobench.domain.evaluation.profiles import result_key, summarize_batches
+    from photobench.domain.runs.exports import export_sft, export_traces
+    from photobench.infrastructure.results.store import read_entry
+
+    snapshot = state("atm_list", target_media_refs=[media("a.jpg")])
+    _, batches, _, _ = setup(snapshot, [ATM])
+    batch = batches[0]
+    snapshot.update(scoring_profiles=[ATM], primary_scoring_batch_ids=[batch["batch_id"]])
+    snapshot["scoring_results"] = {
+        result_key(batch["batch_id"], "q", 0): {
+            "qa_id": "q",
+            "turn_index": 0,
+            "batch_id": batch["batch_id"],
+            "profile_id": ATM,
+            "purpose": "list",
+            "status": "completed",
+            "score": 0,
+            "max_score": 1,
+            "media_metrics": {"tools": {"status": "available", "predicted": ["image:a.jpg", "video:b"]}},
+        }
+    }
+    from photobench.infrastructure.results.store import write_committed_snapshot
+
+    write_committed_snapshot(tmp_path / "r", snapshot)
+    # Emulate a committed pre-feature metadata view.
+    run_dir = tmp_path / "r"
+    from photobench.infrastructure.results.store import committed_path
+
+    meta_path = committed_path(run_dir, "metadata.json")
+    metadata = json.loads(meta_path.read_text())
+    for section in (metadata["entry"], metadata["overview"]):
+        scoring = section["summary"]["scoring"]
+        for summary in [*scoring["profiles"].values(), *scoring["batches"].values()]:
+            summary.pop("tool_list_qs", None)
+    meta_path.write_text(json.dumps(metadata))
+    originals = {str(p): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
+    expected = summarize_batches(snapshot)[batch["batch_id"]]["tool_list_qs"]
+    entry = read_entry(run_dir)
+    assert entry["summary"]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    detail = _read_runs(tmp_path).get_run("r", include_history=False)
+    assert detail["summary"]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert export_traces(snapshot)[0]["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert export_sft(snapshot)["scoring"]["profiles"][ATM]["tool_list_qs"] == expected
+    assert expected["total_score"] == 0.5
+    assert all(Path(name).read_bytes() == content for name, content in originals.items())
+
+
+def test_active_detail_reads_reuse_live_trace_and_keep_current_scores(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from photobench.application.run_execution.state import RunState
+    from photobench.application.runs.suites import RunSuites
+
+    monkeypatch.setenv("PHOTOBENCH_REUSE_TRACE_CHECKPOINTS", "1")
+    data = _state("live", status="running")
+    data["items"][0]["tool_trace"] = [{"tool": "read_source_text", "result": "原始正文" * 10000}]
+    _write(tmp_path, "live", data)
+    live = RunState(data)
+    suites = RunSuites.__new__(RunSuites)
+    suites._lock = threading.RLock()
+    suites._active = {"live": SimpleNamespace(state=live)}
+    reader = _read_runs(tmp_path)
+    reader._live_snapshot = suites.active_snapshot
+
+    def no_full_disk_read(run_id):
+        raise AssertionError("active reads must not parse another complete checkpoint")
+
+    monkeypatch.setattr(reader._store, "load_state", no_full_disk_read)
+    first = reader.get_run_item("live", 0)["item"]
+    frozen = live.data["items"][0]["tool_trace"]
+    assert first["tool_trace"][0]["result"] is frozen[0]["result"]
+    first["answer"] = "只改读侧"
+    assert live.data["items"][0].get("answer") is None
+    live.data["items"][0]["judge"] = {"score": 1}
+    second = reader.get_run_item("live", 0)["item"]
+    assert second["judge"]["score"] == 1
+    assert second["tool_trace"][0]["result"] is frozen[0]["result"]
+    assert reader.get_run_items("live")["total"] == 2
+    assert suites.active_snapshot("missing") is None
+
+
+def test_concurrent_full_state_reads_share_parse_and_propagate_failure(tmp_path, monkeypatch):
+    import time
+
+    reader = _read_runs(tmp_path)
+    reader._versions = None
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def load(run_id):
+        calls.append(run_id)
+        entered.set()
+        assert release.wait(5)
+        raise ValueError("broken checkpoint")
+
+    monkeypatch.setattr(reader._store, "load_state", load)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(reader._state, "r") for _ in range(4)]
+        assert entered.wait(5)
+        time.sleep(0.05)
+        release.set()
+        for result in futures:
+            with pytest.raises(ValueError, match="broken checkpoint"):
+                result.result()
+    assert calls == ["r"]
+    assert not reader._state_reads

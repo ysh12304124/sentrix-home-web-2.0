@@ -182,6 +182,18 @@ describe("保存提示词用的是用户编辑的那份（P1）", () => {
 });
 
 describe("deleteRun 的可注入 confirm", () => {
+  it("删除被后端拒绝时显示原因并保留当前记录", async () => {
+    const { result } = renderHook(() => useRuns());
+    await act(async () => { result.current.selectRun({ run_id: "r1" }); });
+    apiMock.mockImplementation(async (path, options) => {
+      if (options?.method === "DELETE") throw new Error("cannot delete an active run");
+      return path.startsWith("/runs?") ? emptyPage() : {};
+    });
+    await act(async () => { await result.current.deleteRun({ run_id: "r1" }, () => true); });
+    expect(result.current.error).toBe("删除评测失败：cannot delete an active run");
+    expect(result.current.activeRunId).toBe("r1");
+  });
+
   it("confirm 返回 false 不删（零请求）；返回 true 才真删（DELETE + 重载列表）", async () => {
     const { result } = renderHook(() => useRuns());
     await act(async () => {

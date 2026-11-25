@@ -20,9 +20,9 @@ from sentrix.application.assistant.run_turn import (
     TurnAlreadyClaimedError,
     TurnNotFoundError,
     TurnRequest,
-    _tool_status_text,
 )
 from sentrix.application.assistant.tools import ToolOutcome
+from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement
 from sentrix.domain.assistant.models import (
     Attachment,
     ChatMessage,
@@ -42,55 +42,6 @@ from sentrix.infrastructure.persistence.repositories.conversations import (
 from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepository
 
 QUESTION = "给我看看在海边的照片"
-
-
-def test_email_memory_search_progress_is_not_mislabeled_as_photo_results() -> None:
-    outcome = ToolOutcome(
-        observation={"total": 2},
-        model_visible={
-            "preview": [
-                {"media_kind": "text", "source_kind": "text", "source_type": "email"},
-                {"media_kind": "text", "source_kind": "text", "source_type": "email"},
-            ]
-        },
-    )
-
-    assert _tool_status_text("search_text_memories", outcome) == "结果集里共有 2 条邮件/文本记忆。"
-
-
-def test_text_scope_uses_explicit_text_path_with_media_baseline_available(env) -> None:
-    """Text retrieval is explicit; mixed scopes retain the visual tool contract."""
-    _conversations, _turns, conversation, _db = env
-    model = ScriptedModel(
-        [tool_call("search_text_memories", "c1", query="BMVC accommodation"), final("邮件中找到金额。")],
-        planner=planner_reply(
-            "source_text",
-            goal="检索邮件中的住宿金额",
-            value_type="amount",
-        ),
-    )
-    toolbox = StubToolbox(
-        {
-            "search_text_memories": SEARCH_OK,
-            FINAL_ANSWER_TOOL: DELIVER_OK,
-        }
-    )
-    from types import SimpleNamespace
-
-    conversations, turns, _conversation, _db = env
-    run_turn = RunTurn(
-        model=model,
-        conversations=conversations,
-        turns=turns,
-        toolbox=toolbox,
-        observations=SimpleNamespace(has_source_text=lambda scope: True),
-    )
-
-    run_turn.run(start(run_turn, conversation))
-
-    assert toolbox.calls[0][0] == "search_text_memories"
-    assert "search_memories" not in model.tool_sets[0]
-    assert "search_text_memories" in model.tool_sets[0]
 
 
 # ---- 假件 -------------------------------------------------------------------
@@ -178,6 +129,7 @@ class StubToolbox:
         now: datetime,
         question: str = "",
         graph_enabled: bool = True,
+        requirements: Sequence[EvidenceRequirement] = (),
     ) -> ToolOutcome:
         # ``question`` 是 `inspect_photo` 要的（1.0 ``tools.py:2162-2165`` 拿它找裁剪目标）,
         # 与 ``__init__`` 那三件一样：**凡是 ``RunTurn`` 会传给真实 toolbox 的形参，
@@ -1062,6 +1014,34 @@ def test_strict_budget_does_not_add_an_extra_recovery_model_call(env):
     assert len(model.calls) == 3
 
 
+def test_reasoning_stops_repeated_denied_calls_and_persists_true_attempt_budget(env):
+    from sentrix.domain.assistant.profile import REASONING_PROFILE
+    from sentrix.domain.assistant.request_budget import admit_model_attempt, current_request_budget
+
+    class CountedModel(ScriptedModel):
+        def complete(self, messages, tools):
+            admit_model_attempt(10)
+            return super().complete(messages, tools)
+
+    conversations, turns, conversation, _db = env
+    model = CountedModel([tool_call("read_source_text", "bad", unknown="invalid")])
+    run_turn = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=StubToolbox(),
+        profile=replace(REASONING_PROFILE, max_model_calls=8),
+    )
+    result = run_turn.run(start(run_turn, conversation))
+    assert result.termination_reason is TerminationReason.STEP_BUDGET_EXHAUSTED
+    saved = turns.get(result.turn_id)
+    budget = saved.trace["budget"]["request_limits"]
+    assert budget["version"] == "reasoning-bounded-v1"
+    assert budget["model_attempts"] <= 8 and budget["tool_admitted"] <= 600
+    assert any(event.kind == "request_budget" for _, _, event in turns.events_after(result.turn_id, 0))
+    assert current_request_budget() is None
+
+
 def test_strict_context_budget_preserves_history_and_does_not_retry_cropped_input(env):
     conversations, turns, conversation, _db = env
     model = ScriptedModel(
@@ -1256,7 +1236,9 @@ def test_an_unexpected_exception_still_produces_a_named_reason(env):
     """
 
     class Exploding(StubToolbox):
-        def execute(self, name, arguments, *, scope_id, now, question="", graph_enabled=True):  # type: ignore[override]
+        def execute(  # type: ignore[override]
+            self, name, arguments, *, scope_id, now, question="", graph_enabled=True, requirements=()
+        ):
             raise ValueError("工具内部炸了")
 
     _conversations, turns, conversation, _db = env
@@ -1893,11 +1875,7 @@ def test_include_debug_persists_the_switch_before_the_turn_runs(env):
         TurnRequest(conversation_id=conversation.id, question=QUESTION, include_debug=True)
     ).id
 
-    assert turns.get(turn_id).trace == {
-        "include_debug": True,
-        "graph_enabled": True,
-        "retrieval_mode": "auto",
-    }
+    assert turns.get(turn_id).trace == {"include_debug": True, "graph_enabled": True, "reasoning": False}
 
 
 def test_include_debug_records_planner_agent_and_judge_with_exact_messages(env):
@@ -1966,58 +1944,99 @@ def test_debug_trace_is_off_by_default(env):
     assert trace["debug_calls"] == []
 
 
-def test_text_budget_reserves_an_actual_final_and_reviews_the_full_read_body(env):
+@pytest.mark.parametrize("delivery_ok", [True, False])
+def test_final_answer_records_own_duration_before_judge(env, monkeypatch, delivery_ok):
+    """交付成功与拒绝均记录自身时长，后续核验耗时单独保存。"""
+    from importlib import import_module
     from types import SimpleNamespace
 
-    conversations, turns, conversation, _db = env
+    clock = SimpleNamespace(value=100.0)
+    module = import_module("sentrix.application.assistant.run_turn")
+    monkeypatch.setattr(module, "time", SimpleNamespace(perf_counter=lambda: clock.value))
 
-    class Model(ScriptedModel):
+    class TimedModel(ScriptedModel):
         def complete(self, messages, tools):
-            if tools and {t.name for t in tools} == {"final_answer"}:
-                self.tool_sets.append(["final_answer"])
-                return tool_call(
-                    "final_answer",
-                    "last",
-                    answer="The cost was 23 pounds.",
-                    selected_image_handles=[],
-                    selected_text_handles=["source-one"],
-                )
+            clock.value += 0.9
             return super().complete(messages, tools)
 
-    model = Model(
-        [tool_call("search_text_memories", "s", query="cost")]
-        + [
-            tool_call("read_source_text", f"r{i}", asset_handle="rs_1/photo_1", offset=i * 10)
-            for i in range(5)
-        ],
-        planner=planner_reply("source_text", value_type="amount"),
-    )
+    class TimedToolbox(StubToolbox):
+        def deliver(self, *args, **kwargs):
+            clock.value += 0.125
+            return super().deliver(*args, **kwargs)
 
-    class Box(StubToolbox):
-        def text_citations(self, handles, result_set_ids, *, scope_id):
-            return [
-                {"asset_id": "a", "evidence_id": "source-one", "handle": "source-one", "source_type": "email"}
-            ]
+    _conversations, turns, conversation, _db = env
+    model = TimedModel(
+        [
+            tool_call("search_memories", "c1", query="海边"),
+            final_call("这是你要的两张海边照片。", "photo_1", "photo_2"),
+        ]
+    )
+    delivery = (
+        DELIVER_OK
+        if delivery_ok
+        else ToolOutcome(
+            observation={"failure_reason": "bad_handle"},
+            model_visible={"error": "bad_handle"},
+            failure_reason="bad_handle",
+        )
+    )
+    toolbox = TimedToolbox({"search_memories": SEARCH_OK, FINAL_ANSWER_TOOL: delivery})
+    run_turn = build(env, model, toolbox)
+    turn_id = run_turn.start(
+        TurnRequest(conversation_id=conversation.id, question=QUESTION, include_debug=True)
+    ).id
+    run_turn.run(turn_id)
 
-    box = Box(
-        {
-            "search_text_memories": SEARCH_OK,
-            "read_source_text": ToolOutcome(
-                observation={"asset_id": "a"},
-                model_visible={"text": "Payment received: 23 pounds.", "evidence_id": "source-one"},
-            ),
-        }
+    events = [event for _, _, event in turns.events_after(turn_id, 0)]
+    terminal_tools = [
+        event
+        for event in events
+        if event.kind in {"tool_result", "tool_error"} and event.payload.get("tool") == FINAL_ANSWER_TOOL
+    ]
+    assert len(terminal_tools) == 1
+    event = terminal_tools[0]
+    assert event.kind == ("tool_result" if delivery_ok else "tool_error")
+    assert event.payload["duration_ms"] == 125.0
+    assert event.payload["arguments"]["selected_image_handles"] == ["photo_1", "photo_2"]
+    assert len(model.calls) == 2
+    assert len(model.judge_calls) == 1
+    trace = turns.get(turn_id).trace
+    judge = next(call for call in trace["model_calls"] if call["call_type"] == "faithfulness_judge")
+    assert judge["duration_ms"] == 900.0
+
+
+def test_bad_final_arguments_preserve_raw_and_duration_then_continue(env, monkeypatch):
+    """坏参数仍可重试，失败节点保留无效JSON原文和实测耗时。"""
+    from importlib import import_module
+    from types import SimpleNamespace
+
+    module = import_module("sentrix.application.assistant.run_turn")
+    monkeypatch.setattr(module, "time", SimpleNamespace(perf_counter=lambda: 100.0))
+    _conversations, turns, conversation, _db = env
+    broken = ModelReply(
+        finish_reason="tool_calls",
+        tool_calls=(ToolCall(call_id="bad_final", name=FINAL_ANSWER_TOOL, arguments_json="{broken"),),
     )
-    run = RunTurn(
-        model=model,
-        conversations=conversations,
-        turns=turns,
-        toolbox=box,
-        observations=SimpleNamespace(has_source_text=lambda scope: True),
+    model = ScriptedModel(
+        [
+            tool_call("search_memories", "c1", query="海边"),
+            broken,
+            final_call("这是你要的照片。", "photo_1", "photo_2"),
+        ]
     )
-    result = run.run(start(run, conversation))
-    assert result.termination_reason in {TerminationReason.ANSWERED, TerminationReason.ANSWERED_WITH_GAP}
-    assert result.answer == "The cost was 23 pounds."
-    assert model.tool_sets[-1] == ["final_answer"]
-    assert not model.claim_calls
-    assert model.judge_calls and "Payment received: 23 pounds." in str(model.judge_calls[-1])
+    run_turn = build(env, model, StubToolbox({"search_memories": SEARCH_OK, FINAL_ANSWER_TOOL: DELIVER_OK}))
+    turn_id = start(run_turn, conversation)
+    run_turn.run(turn_id)
+
+    events = [event for _, _, event in turns.events_after(turn_id, 0)]
+    errors = [
+        event
+        for event in events
+        if event.kind == "tool_error" and event.payload.get("step_id") == "bad_final"
+    ]
+    assert len(errors) == 1
+    assert errors[0].payload["arguments"] == {"_raw": "{broken"}
+    assert errors[0].payload["duration_ms"] == 0.0
+    assert errors[0].payload["result"]["failure_reason"] == "bad_arguments"
+    assert len(model.calls) == 3
+    assert turns.get(turn_id).status == TurnStatus.COMPLETE

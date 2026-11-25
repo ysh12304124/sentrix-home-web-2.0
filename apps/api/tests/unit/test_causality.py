@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -43,19 +45,21 @@ def test_object_appearance_alone_and_unstable_scene_are_not_causality():
     assert extract_causal_pairs((first, appeared, switched)) == ()
 
 
-def test_causal_prompt_requires_one_valid_json_object_for_all_pairs():
-    pairs = extract_causal_pairs(
-        (
-            _frame("a", "video", 1.0, "person holds bottle"),
-            _frame("b", "video", 4.0, "person puts bottle"),
-        )
-    )
-    prompt = signals_prompt(pairs)
-    assert "exactly 1 row(s)" in prompt
-    assert '"results"' in prompt
-    assert '"pair_id"' in prompt
+@pytest.mark.parametrize("count", [1, 12])
+def test_causal_prompt_uses_valid_json_and_one_results_array_for_the_entire_batch(count):
+    pair = extract_causal_pairs(
+        (_frame("a", "video", 1.0, "person holds bottle"), _frame("b", "video", 4.0, "person puts bottle"))
+    )[0]
+    prompt = signals_prompt((pair,) * count)
+    example = next(line for line in prompt.splitlines() if line.startswith('{"results":'))
+
+    verdicts = OpenAICausalJudge._parse(example, 1)
+    assert len(verdicts) == 1
+    assert json.loads(example)["results"][0]["pair_id"] == 0
+    assert f"exactly {count} entries" in prompt
+    assert f"each pair_id in {list(range(count))} exactly once" in prompt
+    assert "object per pair" not in prompt
     assert "{results:" not in prompt
-    assert "ONE compact, valid JSON object" in prompt
 
 
 def test_causal_response_requires_every_pair_and_valid_confidence():
@@ -99,7 +103,7 @@ def test_causal_adapter_sends_text_only_and_fails_closed(monkeypatch):
 
     calls = []
 
-    def _post(url, *, json, timeout):
+    def _post(url, *, json, timeout, headers):
         calls.append((url, json, timeout))
         return _Response()
 
@@ -111,7 +115,7 @@ def test_causal_adapter_sends_text_only_and_fails_closed(monkeypatch):
     assert calls[0][1]["model"] == "local-model"
     assert calls[0][2] == 30
 
-    def _fail(url, *, json, timeout):
+    def _fail(url, *, json, timeout, headers):
         raise httpx.ConnectError("unavailable")
 
     monkeypatch.setattr(httpx, "post", _fail)

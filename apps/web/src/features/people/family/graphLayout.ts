@@ -1,14 +1,11 @@
 /**
- * 分层布局。**纯函数，不碰 DOM**——这是它能被单测钉住的前提，也是 1.0 做不到的
- * （1.0 的布局长在 `people_graph.js` 的渲染流程里，只能整页跑）。
- *
- * 分层直觉来自 1.0（Ancestry / MyHeritage 也是分层而不是力导向），但 1.0 的执行
- * 有个已知缺陷：行内是**等分** `width*(col+1)/(n+1)`，没有碰撞规避，人多就挤成一条
- * 线。这里改成**固定最小间距**，超宽交给视图的自适应缩放去装（计划书 §1 裁决①）。
+ * 关系图的公共几何：去重、视图变换（自适应 / 缩放 / 屏幕↔世界）、拖拽落点判定。
+ * **纯函数，不碰 DOM**。节点坐标本身由 `forceLayout.ts`（分层力导向 / 环形聚焦）给出；
+ * 原先的固定间距分层布局 `graphLayout()` 已于 2026-11-12 被它取代。
  */
 
-import type { FamilyPerson, FamilyRelationship } from "../../../shared/api/client";
-import { isNamed, membershipOf, parentRelations, relationPriority } from "./membership";
+import type { FamilyRelationship } from "../../../shared/api/client";
+import { canonicalKinship, relationPriority } from "./membership";
 
 /** 一对人之间那条边。方向保留（subject 是长辈、object 是晚辈）。 */
 export interface RelationEdge {
@@ -23,15 +20,6 @@ export interface LayoutPoint {
   readonly y: number;
 }
 
-/** 布局参数。导出是给测试用的，视图靠它换算节点尺寸与包围盒。 */
-export const LAYOUT = {
-  /** 相邻同层节点的中心距。固定值 = 永不重叠，这是相对 1.0 等分的关键改动。 */
-  columnGap: 124,
-  /** 相邻层的行距上限；层数多时按可用高度压缩。 */
-  rowGap: 132,
-  /** 包围盒四周留白。 */
-  padding: 56,
-} as const;
 
 /** 无向 pair 的键。一对人无论从哪个方向来都落到同一个键上。 */
 function pairKey(a: string, b: string): string {
@@ -40,8 +28,8 @@ function pairKey(a: string, b: string): string {
 
 /** 优先级小者胜；同优先级按谓词字典序。返回负数表示 a 更优。 */
 function compareEdges(a: FamilyRelationship, b: FamilyRelationship): number {
-  const pa = relationPriority.get(a.predicate) ?? Number.MAX_SAFE_INTEGER;
-  const pb = relationPriority.get(b.predicate) ?? Number.MAX_SAFE_INTEGER;
+  const pa = relationPriority.get(canonicalKinship(a.predicate)) ?? Number.MAX_SAFE_INTEGER;
+  const pb = relationPriority.get(canonicalKinship(b.predicate)) ?? Number.MAX_SAFE_INTEGER;
   if (pa !== pb) return pa - pb;
   return a.predicate < b.predicate ? -1 : a.predicate > b.predicate ? 1 : 0;
 }
@@ -87,112 +75,6 @@ export function confirmedRelationships(
   relationships: readonly FamilyRelationship[],
 ): RelationEdge[] {
   return dedupeRelationships(relationships.filter(isConfirmedRelationship));
-}
-
-/**
- * 辈分：`level[object] = max(level[object], level[subject] + 1)`。
- *
- * 方向**原样保留**——subject 是长辈、object 是晚辈（1.0 `people_graph.js:73`），
- * 所以父亲在上、儿子在下。用松弛迭代到不动点；迭代上限取人数，是给关系里出现环时
- * 兜底用的（环上不收敛，截断即可，不能让布局挂住）。
- */
-export function familyLevels(
-  people: readonly FamilyPerson[],
-  relationships: readonly FamilyRelationship[],
-): Map<string, number> {
-  const levels = new Map<string, number>(people.map((person) => [person.id, 0]));
-  const ids = new Set(people.map((person) => person.id));
-  const parentEdges = dedupeRelationships(relationships).filter(
-    (edge) =>
-      parentRelations.has(edge.predicate) &&
-      ids.has(edge.subject_entity_id) &&
-      ids.has(edge.object_entity_id),
-  );
-
-  for (let round = 0; round < people.length; round += 1) {
-    let changed = false;
-    for (const edge of parentEdges) {
-      const next = (levels.get(edge.subject_entity_id) ?? 0) + 1;
-      if (next > (levels.get(edge.object_entity_id) ?? 0)) {
-        levels.set(edge.object_entity_id, next);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-  return levels;
-}
-
-/** 行内稳定排序：有名的在前 → 出现次数降序 → id 升序。不用 localeCompare（它依赖环境）。 */
-function sortRow(people: readonly FamilyPerson[]): FamilyPerson[] {
-  return [...people].sort((a, b) => {
-    const namedA = isNamed(a) ? 0 : 1;
-    const namedB = isNamed(b) ? 0 : 1;
-    if (namedA !== namedB) return namedA - namedB;
-    if (a.appearance_count !== b.appearance_count) return b.appearance_count - a.appearance_count;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-}
-
-/**
- * 把每个人摆到一个坐标上。
- *
- * 行序：家人按辈分从高到低逐行 → 朋友一层 → **待归类单独一行放最下面**。
- * 最后那一行是 F7 相对 1.0 的核心改动：1.0 把 unknown 直接排除在图外，于是
- * 「8 个人全 unknown」的真实数据下图是空的（计划书 §0）。这里它始终有位置。
- *
- * `width` / `height` 是参考画布尺寸：用来决定行距与每行居中，不裁剪坐标——
- * 超出部分由视图的「加载即自适应」缩放到刚好装下。
- */
-export function graphLayout(
-  people: readonly FamilyPerson[],
-  relationships: readonly FamilyRelationship[],
-  width: number,
-  height: number,
-): Map<string, LayoutPoint> {
-  const result = new Map<string, LayoutPoint>();
-  if (people.length === 0) return result;
-
-  const levels = familyLevels(people, relationships);
-  const byLevel = new Map<number, FamilyPerson[]>();
-  const friends: FamilyPerson[] = [];
-  const unknowns: FamilyPerson[] = [];
-
-  for (const person of people) {
-    const membership = membershipOf(person);
-    if (membership === "friend") {
-      friends.push(person);
-    } else if (membership === "unknown") {
-      unknowns.push(person);
-    } else {
-      const level = levels.get(person.id) ?? 0;
-      const bucket = byLevel.get(level);
-      if (bucket === undefined) byLevel.set(level, [person]);
-      else bucket.push(person);
-    }
-  }
-
-  const rows: FamilyPerson[][] = [...byLevel.keys()]
-    .sort((a, b) => a - b)
-    .map((level) => sortRow(byLevel.get(level) ?? []))
-    .filter((row) => row.length > 0);
-  if (friends.length > 0) rows.push(sortRow(friends));
-  if (unknowns.length > 0) rows.push(sortRow(unknowns));
-
-  const rowCount = rows.length;
-  const usableHeight = Math.max(height - LAYOUT.padding * 2, 1);
-  const rowGap = rowCount > 1 ? Math.min(LAYOUT.rowGap, usableHeight / (rowCount - 1)) : 0;
-  const centerY = height / 2;
-
-  rows.forEach((row, rowIndex) => {
-    const y = rowCount === 1 ? centerY : LAYOUT.padding + rowIndex * rowGap;
-    const startX = width / 2 - ((row.length - 1) * LAYOUT.columnGap) / 2;
-    row.forEach((person, columnIndex) => {
-      result.set(person.id, { x: startX + columnIndex * LAYOUT.columnGap, y });
-    });
-  });
-
-  return result;
 }
 
 /** 所有节点的包围盒。视图用它算初始 scale/translate；空结果返回 null。 */

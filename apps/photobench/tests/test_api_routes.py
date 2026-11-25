@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from collections.abc import Iterator
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from photobench.config import Settings
 from photobench.main import create_app
@@ -25,7 +27,7 @@ TARGETS = {
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def client(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[TestClient]:
     config_root = tmp_path / "config"
     config_root.mkdir()
     (config_root / "runtime_connection.json").write_text(
@@ -33,6 +35,9 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     )
     (config_root / "judge_providers.json").write_text(json.dumps(PROVIDERS), encoding="utf-8")
     (config_root / "vllm_targets.json").write_text(json.dumps(TARGETS), encoding="utf-8")
+    (config_root / "telemetry.json").write_text(
+        json.dumps({"history_enabled": getattr(request, "param", False)}), encoding="utf-8"
+    )
 
     results_root = tmp_path / "results"
     (results_root / "run-a").mkdir(parents=True)
@@ -70,6 +75,22 @@ def test_get_runs_lists_the_scan_result(client: TestClient):
     assert body["scan"] == {"state": "ready", "scanned": 1, "total": 1, "error": None}
 
 
+def test_process_diagnostics_api_item_and_exports_share_derived_observations(client: TestClient):
+    path = client.app.state.container.settings.results_root / "run-a" / "run.json"
+    original = path.read_bytes()
+    report = client.get("/api/v1/runs/run-a/process-diagnostics").json()
+    assert report["summary"]["analyzed_qa"] == 1
+    assert report["summary"]["agent_calls"] == report["summary"]["judge_calls"] == 0
+    assert report["items"][0]["qa_id"] == "q1"
+    for profile in ("", "photobench_open_v1", "atm_qs_v1"):
+        item = client.get("/api/v1/runs/run-a/items/0", params={"scoring_profile": profile}).json()
+        assert "process_diagnostics" not in item["item"]
+    assert path.read_bytes() == original
+    derived = next((path.parent.parent / ".process-diagnostics").glob("run-a.*.json"))
+    assert json.loads(derived.read_text()) == report
+    assert client.get("/api/v1/runs/missing/process-diagnostics").status_code == 404
+
+
 def test_a_bad_page_number_is_a_400_with_the_1_0_message(client: TestClient):
     """1.0 ``:7652`` 的 ``ValueError("page and page_size must be integers")`` → 400。"""
     response = client.get("/api/v1/runs?page=x")
@@ -82,6 +103,45 @@ def test_get_run_returns_the_state_without_items(client: TestClient):
     assert body["item_count"] == 1
     assert "items" not in body
     assert body["summary"]["answer_quality_mean"] == 2.0
+
+
+@pytest.mark.parametrize("fail_first", [False, True])
+def test_slow_duplicate_details_leave_workers_for_live_status(client, monkeypatch, fail_first):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    reads = client.app.state.container.runs
+    original = reads.get_run
+
+    def slow_read(*args, **kwargs):
+        calls.append(args[0])
+        entered.set()
+        assert release.wait(5)
+        if fail_first:
+            raise RuntimeError("checkpoint read failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reads, "get_run", slow_read)
+
+    async def exercise():
+        transport = ASGITransport(app=client.app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as http:
+            pending = [asyncio.create_task(http.get("/api/v1/runs/run-a")) for _ in range(48)]
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                await asyncio.sleep(0.1)
+                status = await asyncio.wait_for(http.get("/api/v1/active-work"), timeout=1)
+                assert status.status_code == 200
+                assert calls == ["run-a"]
+            finally:
+                release.set()
+                responses = await asyncio.gather(*pending)
+            assert {r.status_code for r in responses} == ({400} if fail_first else {200})
+
+    asyncio.run(exercise())
+    fail_first = False
+    assert client.get("/api/v1/runs/run-a").status_code == 200
+    assert calls == ["run-a", "run-a"]
 
 
 def test_optional_metrics_projection_preserves_unknown_and_explicit_zero(client: TestClient):
@@ -378,6 +438,7 @@ def test_explicit_historical_score_derivation_is_consistent_and_does_not_rewrite
     assert path.read_bytes() == raw
 
 
+@pytest.mark.parametrize("client", [True], indirect=True)
 def test_memory_component_freshness_survives_raw_store_to_http_projection(client: TestClient):
     container = client.app.state.container
     directory = container.settings.results_root / "run-a"
@@ -440,3 +501,58 @@ def test_memory_component_freshness_survives_raw_store_to_http_projection(client
         == state["phases"]["gpu_metrics"]["sampling_integrity"]
     )
     assert (directory / "gpu_samples.jsonl").read_text() == raw
+
+
+def test_default_http_detail_skips_raw_history(client: TestClient, monkeypatch):
+    container = client.app.state.container
+    monkeypatch.setattr(
+        container.run_store, "read_gpu_sample_lines", lambda _: pytest.fail("raw history opened")
+    )
+    for include_history in (0, 1):
+        body = client.get(f"/api/v1/runs/run-a?include_history={include_history}").json()
+        assert body["history_mode"] == "latest"
+    assert container.config.telemetry_history_enabled is False
+
+
+def test_scoring_audit_persists_and_exports_without_changing_formal_run(client):
+    path = client.app.state.container.settings.results_root / "run-a" / "run.json"
+    state = json.loads(path.read_text())
+    state["scoring_results"] = {
+        "b:q1:0": {
+            "key": "b:q1:0",
+            "qa_id": "q1",
+            "batch_id": "b",
+            "profile_id": "atm_qs_v1",
+            "turn_index": 0,
+            "answer_fingerprint": "sha",
+            "score": 0,
+        }
+    }
+    path.write_text(json.dumps(state))
+    before = path.read_bytes()
+    raw = {
+        "qa_id": "q1",
+        "batch_id": "b",
+        "profile_id": "atm_qs_v1",
+        "turn_index": 0,
+        "answer_fingerprint": "sha",
+        "verdict": "needs_review",
+        "reviewer": "审核人",
+        "note": "核对原始证据",
+    }
+    response = client.post("/api/v1/runs/run-a/reviews", json={"scoring_reviews": [raw]})
+    assert response.status_code == 200, response.text
+    audit = response.json()["scoring_reviews"][0]
+    assert audit["score_unchanged"] is True
+    assert client.get("/api/v1/runs/run-a/reviews").json()["scoring_reviews"] == [audit]
+    detail = client.get("/api/v1/runs/run-a/items/0").json()["item"]
+    assert detail["scoring_reviews"] == [audit]
+    trace = client.get("/api/v1/runs/run-a/export-trace").json()
+    sft = client.get("/api/v1/runs/run-a/export-sft").json()
+    assert trace[0]["scoring_reviews"] == sft["items"][0]["scoring_reviews"] == [audit]
+    assert path.read_bytes() == before
+    bad = client.post(
+        "/api/v1/runs/run-a/reviews", json={"scoring_reviews": [raw | {"answer_fingerprint": "stale"}]}
+    )
+    assert bad.status_code == 400
+    assert client.get("/api/v1/runs/run-a/reviews").json()["scoring_reviews"] == [audit]

@@ -21,11 +21,13 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from sentrix.domain.identity.models import (
+    ALIAS_PROPERTY_KEY,
     DEFAULT_SCOPE_ID,
     ENTITY_STATUS_CONFIRMED,
     ENTITY_STATUS_PENDING,
     ENTITY_STATUS_REJECTED,
     ENTITY_TYPE_PERSON,
+    PERSON_HIDDEN_PROPERTY_KEY,
     PROPERTY_SOURCE_USER,
     PROPERTY_STATUS_ACTIVE,
     PROPERTY_STATUS_PENDING,
@@ -53,8 +55,6 @@ _PROPERTY_COLUMNS = (
     " supersedes_property_id, revision, created_at, updated_at"
 )
 _MENTION_COLUMNS = "id, entity_id, observation_id, face_instance_id, confidence, created_at"
-
-ALIAS_PROPERTY_KEY = "aliases"
 
 
 def _new_id(prefix: str) -> str:
@@ -89,6 +89,18 @@ def _decode(text: str | None, fallback: object = None) -> object:
 def _decode_list(text: str | None) -> list[object]:
     value = _decode(text, [])
     return value if isinstance(value, list) else []
+
+
+def _person_aliases(value_json: str | None) -> tuple[str, ...]:
+    value = _decode(value_json)
+    raw = value if isinstance(value, list) else [value]
+    return tuple(
+        dict.fromkeys(
+            name
+            for item in raw
+            if isinstance(item, str) and (name := item.strip()) and not is_pending_cluster_name(name)
+        )
+    )
 
 
 def _dedupe(values: Sequence[str]) -> tuple[str, ...]:
@@ -595,6 +607,50 @@ class SqliteEntityRepository:
                 return PersonNameMatch(entity_id=candidate["id"], via_alias=True)
         return None
 
+    def confirmed_people_named(self, scope_id: str, name: str) -> tuple[EntityRecord, ...]:
+        target = name.strip()
+        if not target:
+            return ()
+        scope_clause = (
+            "scope_id=?"
+            if scope_id
+            else "scope_id NOT IN (SELECT id FROM memory_spaces WHERE include_in_people=0)"
+        )
+        scope_params = (scope_id,) if scope_id else ()
+        with self._database.connect() as conn:
+            base = (
+                f"SELECT {_ENTITY_COLUMNS} FROM entities e WHERE {scope_clause}"
+                " AND entity_type='person' AND status='confirmed'"
+            )
+            rows = conn.execute(
+                base + " AND canonical_name=? ORDER BY id", (*scope_params, target)
+            ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    "SELECT e.*, (SELECT p.value_json FROM entity_properties p"
+                    " WHERE p.entity_id=e.id AND p.property_key=? AND p.status='active'"
+                    " ORDER BY p.revision DESC, p.updated_at DESC LIMIT 1) AS aliases_json"
+                    f" FROM entities e WHERE {scope_clause}"
+                    " AND e.entity_type='person' AND e.status='confirmed' ORDER BY e.id",
+                    (ALIAS_PROPERTY_KEY, *scope_params),
+                ).fetchall()
+                rows = [row for row in rows if target in _person_aliases(row["aliases_json"])]
+        return tuple(_row_to_entity(row) for row in rows)
+
+    def asset_ids_for_person(self, entity_id: str, scope_id: str) -> tuple[str, ...]:
+        with self._database.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT a.id, a.captured_at FROM entity_mentions m"
+                " JOIN entities e ON e.id=m.entity_id"
+                " JOIN observations o ON o.id=m.observation_id AND o.scope_id=e.scope_id"
+                " JOIN assets a ON a.id=o.asset_id AND a.scope_id=e.scope_id"
+                " WHERE e.id=? AND e.scope_id=? AND e.entity_type='person' AND e.status='confirmed'"
+                " AND a.status='processed'"
+                " ORDER BY capture_sort_key(a.captured_at) DESC, a.id",
+                (entity_id, scope_id),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
     def record_revision(
         self,
         entity_id: str,
@@ -788,42 +844,57 @@ class SqliteEntityRepository:
         *,
         evidence_ids: Sequence[str] = (),
     ) -> EntityPropertyRecord:
-        self._require_entity(entity_id)
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self.set_property_in_transaction(
+                connection, entity_id, property_key, value, evidence_ids=evidence_ids
+            )
+
+    def set_property_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        entity_id: str,
+        property_key: str,
+        value: object,
+        *,
+        evidence_ids: Sequence[str] = (),
+    ) -> EntityPropertyRecord:
+        if connection.execute("SELECT 1 FROM entities WHERE id=?", (entity_id,)).fetchone() is None:
+            raise KeyError(entity_id)
         key = self._clean_key(property_key)
         evidence = _dedupe(evidence_ids)
         encoded = _encode(value)
         now = _now()
-        with self._database.connect() as connection, connection:
-            current = self._current_property(connection, entity_id, key)
-            if current is not None:
-                connection.execute(
-                    "UPDATE entity_properties SET status = 'superseded', updated_at = ?"
-                    " WHERE entity_id = ? AND property_key = ? AND status IN ('active', 'pending')",
-                    (now, entity_id, key),
-                )
-            written = self._insert_property(
-                connection,
-                entity_id=entity_id,
-                property_key=key,
-                encoded=encoded,
-                source=PROPERTY_SOURCE_USER,
-                confidence=1.0,
-                evidence=evidence,
-                status=PROPERTY_STATUS_ACTIVE,
-                supersedes=current["id"] if current is not None else None,
-                revision=int(current["revision"] or 0) + 1 if current is not None else 1,
+        current = self._current_property(connection, entity_id, key)
+        if current is not None:
+            connection.execute(
+                "UPDATE entity_properties SET status = 'superseded', updated_at = ?"
+                " WHERE entity_id = ? AND property_key = ? AND status IN ('active', 'pending')",
+                (now, entity_id, key),
             )
-            # 修订的旧值存**编码后的串**，与 1.0 一致：属性值的类型不固定（串 / 列表 / 字典），
-            # 审计行统一成文本才可比。
-            self._insert_revision(
-                connection,
-                entity_id,
-                f"property:{key}",
-                current["value_json"] if current is not None else None,
-                encoded,
-                PROPERTY_SOURCE_USER,
-                evidence,
-            )
+        written = self._insert_property(
+            connection,
+            entity_id=entity_id,
+            property_key=key,
+            encoded=encoded,
+            source=PROPERTY_SOURCE_USER,
+            confidence=1.0,
+            evidence=evidence,
+            status=PROPERTY_STATUS_ACTIVE,
+            supersedes=current["id"] if current is not None else None,
+            revision=int(current["revision"] or 0) + 1 if current is not None else 1,
+        )
+        # 修订的旧值存**编码后的串**，与 1.0 一致：属性值的类型不固定（串 / 列表 / 字典），
+        # 审计行统一成文本才可比。
+        self._insert_revision(
+            connection,
+            entity_id,
+            f"property:{key}",
+            current["value_json"] if current is not None else None,
+            encoded,
+            PROPERTY_SOURCE_USER,
+            evidence,
+        )
         return written
 
     @staticmethod
@@ -909,18 +980,20 @@ class SqliteEntityRepository:
 
     # ---- 别名与改名 --------------------------------------------------------------
 
+    def person_hidden(self, entity_id: str) -> bool:
+        with self._database.connect() as connection:
+            row = self._current_property(connection, entity_id, PERSON_HIDDEN_PROPERTY_KEY)
+        return row is not None and _decode(row["value_json"]) is True
+
     def person_aliases(self, entity_id: str) -> tuple[str, ...]:
         with self._database.connect() as connection:
-            row = self._current_property(connection, entity_id, ALIAS_PROPERTY_KEY)
-        if row is None:
-            return ()
-        value = _decode(row["value_json"])
-        raw = value if isinstance(value, list) else ([value] if value else [])
-        # 旧数据里可能存着改名时折进来的内部簇名（「待确认人物簇 · cluster-x」）。
-        # 那是落库标识，不是用户起的名字，读侧统一滤掉。
-        return tuple(
-            str(item) for item in raw if str(item or "").strip() and not is_pending_cluster_name(str(item))
-        )
+            return self.person_aliases_in_transaction(connection, entity_id)
+
+    def person_aliases_in_transaction(
+        self, connection: sqlite3.Connection, entity_id: str
+    ) -> tuple[str, ...]:
+        row = self._current_property(connection, entity_id, ALIAS_PROPERTY_KEY)
+        return _person_aliases(row["value_json"]) if row is not None and row["status"] == "active" else ()
 
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:
         cleaned = _dedupe([str(item or "").strip() for item in aliases if str(item or "").strip()])
@@ -930,43 +1003,44 @@ class SqliteEntityRepository:
         return self.person_aliases(entity_id)
 
     def rename_person(self, entity_id: str, new_name: str) -> EntityRecord | None:
-        entity = self.get(entity_id)
-        if entity is None or entity.entity_type != ENTITY_TYPE_PERSON:
+        with self._database.connect() as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self.rename_person_in_transaction(connection, entity_id, new_name)
+
+    def rename_person_in_transaction(
+        self, connection: sqlite3.Connection, entity_id: str, new_name: str
+    ) -> EntityRecord | None:
+        row = connection.execute(
+            f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id=?", (entity_id,)
+        ).fetchone()
+        if row is None or row["entity_type"] != ENTITY_TYPE_PERSON:
             return None
         name = str(new_name or "").strip()
         if not name:
             raise ValueError("person name is required")
-        old_name = entity.canonical_name
-        if old_name != name:
-            # pending 实体的旧名是内部簇名，折进别名会把它带到用户面前。
-            if old_name and not is_pending_cluster_name(old_name):
-                aliases = list(self.person_aliases(entity_id))
-                if old_name not in aliases:
-                    aliases.append(old_name)
-                self.set_person_aliases(entity_id, aliases)
-            with self._database.connect() as connection, connection:
-                now = _now()
-                connection.execute(
-                    "UPDATE entities SET canonical_name = ?, name_state = 'confirmed', updated_at = ?"
-                    " WHERE id = ?",
-                    (name, now, entity_id),
+        old_name = row["canonical_name"]
+        if old_name == name:
+            return _row_to_entity(row)
+        if old_name and not is_pending_cluster_name(old_name):
+            aliases = self.person_aliases_in_transaction(connection, entity_id)
+            if old_name not in aliases:
+                self.set_property_in_transaction(
+                    connection, entity_id, ALIAS_PROPERTY_KEY, [*aliases, old_name]
                 )
-                self._insert_revision(
-                    connection,
-                    entity_id,
-                    "canonical_name",
-                    old_name,
-                    name,
-                    REVISION_SOURCE_USER_RENAME,
-                    (),
-                )
-                # 同一个事务里把观察上的人物快照改成新名字。快照存的是**名字**，它是检索
-                # 人物条件、实体通道兜底、记忆图人物节点、家庭图谱洞察证据与照片预览
-                # 「people」的共同输入；只改 ``entities`` 的话，已确认的人一改名，他所有
-                # 照片上记的还是旧名，按新名字什么都查不到。pending 的人没有快照，
-                # 这一步对他们是空操作。
-                self._rename_in_person_snapshots(connection, entity_id, name)
-        return self.get(entity_id)
+        connection.execute(
+            "UPDATE entities SET canonical_name = ?, name_state = 'confirmed', updated_at = ? WHERE id = ?",
+            (name, _now(), entity_id),
+        )
+        self._insert_revision(
+            connection, entity_id, "canonical_name", old_name, name, REVISION_SOURCE_USER_RENAME, ()
+        )
+        # The name snapshot and its lexical projection must commit with the name.
+        self._rename_in_person_snapshots(connection, entity_id, name)
+        updated = connection.execute(
+            f"SELECT {_ENTITY_COLUMNS} FROM entities WHERE id=?", (entity_id,)
+        ).fetchone()
+        assert updated is not None
+        return _row_to_entity(updated)
 
     @staticmethod
     def _rename_in_person_snapshots(connection: sqlite3.Connection, entity_id: str, name: str) -> int:

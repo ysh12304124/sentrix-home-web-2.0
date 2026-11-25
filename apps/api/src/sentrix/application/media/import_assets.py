@@ -1,7 +1,7 @@
 """导入用例：把一次上传变成 Asset + 地点 + 视觉向量 + Observation + 事件 + 词法投影。
 
-业务规则（都来自 1.0 的既有行为）：
-- 内容 SHA-256 去重，**按 scope 隔离**，不跨相册去重
+导入规则：
+- 资产记录按 scope + SHA256 去重；不同相册分别建记录，原始媒体文件按内容共享
 - 去重命中时不重复落盘
 - 拍摄时间与 GPS 来自 EXIF，抽不到就留空，**不阻断导入**
 
@@ -110,6 +110,7 @@ from sentrix.domain.media.ports import (
     VideoTranscoder,
     audio_mime_type,
 )
+from sentrix.domain.media.source_metadata import SourceMetadata
 from sentrix.domain.places.ports import AssetPlaceIndex
 from sentrix.domain.retrieval.ports import AssetVisualIndexer, LexicalIndex, PreparedVisual
 from sentrix.domain.spaces.ports import SpaceRepository
@@ -134,7 +135,7 @@ class ImportRequest:
     file_name: str
     content_type: str | None
     # 接收阶段已确认并持久化的类型；优先于扩展名/MIME 推断。
-    media_type: MediaType | None = None
+    media_type: MediaType | None = field(default=None, kw_only=True)
     content: bytes = b""
     # ``True`` 只完成资产落盘/登记，把关键帧与记忆构建留给显式流水线阶段。
     # 默认 False，保证既有单张导入与 ``POST /imports`` 的外部行为不变。
@@ -148,6 +149,7 @@ class ImportRequest:
     # 可选资料来源身份与原始 ISO 8601 时间。普通媒体仍按内容哈希去重。
     external_source_id: str | None = None
     source_timestamp: str | None = None
+    source_metadata: SourceMetadata = field(default_factory=SourceMetadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +276,7 @@ class ImportAssets:
         observations: ObservationRepository,
         storage: MediaStorage,
         metadata: MetadataReader,
+        address_reader: Callable[[Path], SourceMetadata] | None = None,
         resolve_capture_time: CaptureTimeResolver | None = None,
         visual_indexer: AssetVisualIndexer | None = None,
         place_indexer: AssetPlaceIndex | None = None,
@@ -320,6 +323,7 @@ class ImportAssets:
         self._video_metadata = video_metadata
         self._video_transcoder = video_transcoder
         self._video_repository = video_repository
+        self._address_reader = address_reader
         self._audio_metadata = audio_metadata
         self._audio_repository = audio_repository
         self._event_attacher = event_attacher
@@ -392,7 +396,14 @@ class ImportAssets:
                 return self._deduplicate(existing, request, content_sha256)
 
         asset_id = request.asset_id or _new_id("asset")
-        if request.source_path is None:
+        shared_file = self._assets.find_file_by_hash(content_sha256)
+        if shared_file is not None and Path(shared_file).is_file():
+            if _sha256_file(Path(shared_file)) != content_sha256:
+                raise ValueError("stored media content does not match its SHA256")
+            stored_path = self._storage.copy_from_path(asset_id, request.file_name, Path(shared_file))
+            if request.source_move and request.source_path is not None and request.source_path != stored_path:
+                self._storage.delete_assets((), (str(request.source_path),))
+        elif request.source_path is None:
             stored_path = self._storage.store(asset_id, request.file_name, request.content)
         elif request.source_move:
             stored_path = self._storage.move_from_path(asset_id, request.file_name, request.source_path)
@@ -446,7 +457,7 @@ class ImportAssets:
 
             declared_mime = mimetypes.guess_type(request.file_name)[0]
         mime_type = (
-            audio_mime_type(request.file_name, declared_mime)
+            audio_mime_type(request.file_name, request.content_type)
             if media_type is MediaType.AUDIO
             else declared_mime
         )
@@ -470,6 +481,18 @@ class ImportAssets:
         now = self._clock()
         # 拍摄时间读不出来就保持 None，不能拿导入时刻冒充。main 的
         # ``ResolveCaptureTime`` 已负责保留原始偏移/未知时区语义，这里不再二次归一化。
+        source_metadata = request.source_metadata
+        if media_type in {MediaType.IMAGE, MediaType.VIDEO} and self._address_reader is not None:
+            embedded = self._address_reader(stored_path)
+            if (
+                embedded.precise_address
+                and source_metadata.precise_address
+                and embedded.precise_address != source_metadata.precise_address
+            ):
+                self._storage.delete_assets((), (str(stored_path),))
+                raise ValueError("嵌入地址与导入清单地址不一致")
+            if not source_metadata.precise_address:
+                source_metadata = embedded
         asset = Asset(
             id=asset_id,
             scope_id=request.scope_id,
@@ -486,6 +509,7 @@ class ImportAssets:
             created_at=now,
             updated_at=now,
             external_source_id=request.external_source_id,
+            source_metadata=source_metadata,
         )
         if media_type is MediaType.TEXT:
             try:
@@ -539,6 +563,8 @@ class ImportAssets:
             request.external_source_id is not None or request.source_timestamp is not None
         ) and asset.capture_time.raw != (request.source_timestamp or ""):
             raise TextSourceConflict("重复导入的文本资料与已有来源时间不一致")
+        if asset.media_type is MediaType.TEXT and asset.source_metadata != request.source_metadata:
+            raise TextSourceConflict("来源元数据已变化，请显式使用新版本的 external_source_id")
         if asset.media_type is MediaType.TEXT and not request.defer_processing:
             # 原件登记后若曾中断，重放用同一资产和观察补齐索引。
             return StagedImport(asset=asset, media_type=asset.media_type, deduplicated=True)
@@ -760,6 +786,12 @@ class ImportAssets:
             created_at=now,
             updated_at=now,
             source_text=source_text,
+            caption="\n".join(
+                part for part in (asset.source_metadata.title, asset.source_metadata.summary) if part
+            )
+            if is_text
+            else "",
+            place=asset.source_metadata.precise_address,
         )
         self._observations.add(observation)
         return observation

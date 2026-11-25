@@ -15,8 +15,15 @@ from typing import cast
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from sentrix.domain.errors import DomainError
+
+
+class DomainErrorResponse(BaseModel):
+    code: str
+    message: str
+    detail: dict[str, object]
 
 
 class NotFoundError(DomainError):
@@ -47,5 +54,5 @@ async def domain_error_handler(_request: Request, exc: Exception) -> JSONRespons
     error = cast(DomainError, exc)
     return JSONResponse(
         status_code=error.status_code,
-        content={"code": error.code, "message": error.message, "detail": {}},
+        content=DomainErrorResponse(code=error.code, message=error.message, detail={}).model_dump(),
     )

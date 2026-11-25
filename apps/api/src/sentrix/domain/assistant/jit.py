@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from enum import StrEnum
 
 from sentrix.domain.assistant.evidence_ledger import EvidenceLedger, EvidenceType, RequirementStatus
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS, ToolSpec
@@ -40,33 +39,6 @@ _TOOLS_BY_REQUIREMENT: dict[EvidenceType, frozenset[str]] = {
     EvidenceType.STRUCTURED_FACT: frozenset({"query_memory_facts"}),
     EvidenceType.PERSON_PROFILE: frozenset({"query_photo_people", "get_person_profile"}),
 }
-
-
-class RetrievalMode(StrEnum):
-    AUTO = "auto"
-    MEDIA = "media"
-    TEXT = "text"
-    MIXED = "mixed"
-
-
-def retrieval_mode_for(
-    ledger: EvidenceLedger,
-    *,
-    has_source_text: bool,
-    requested_mode: RetrievalMode = RetrievalMode.AUTO,
-) -> RetrievalMode:
-    """Choose retrieval paths from the planner's evidence needs, never scope contents."""
-    if requested_mode is not RetrievalMode.AUTO:
-        return requested_mode
-    if not has_source_text:
-        return RetrievalMode.MEDIA
-    needs_text = any(item.evidence_type is EvidenceType.SOURCE_TEXT for item in ledger.requirements)
-    needs_media = any(item.evidence_type is not EvidenceType.SOURCE_TEXT for item in ledger.requirements)
-    if needs_text and needs_media:
-        return RetrievalMode.MIXED
-    if needs_text:
-        return RetrievalMode.TEXT
-    return RetrievalMode.MEDIA
 
 
 def select_tools(
@@ -97,12 +69,7 @@ def select_tools(
     )
 
 
-def select_turn_tools(
-    ledger: EvidenceLedger,
-    *,
-    has_source_text: bool = False,
-    retrieval_mode: RetrievalMode | None = None,
-) -> tuple[ToolSpec, ...]:
+def select_turn_tools(ledger: EvidenceLedger, *, has_source_text: bool = False) -> tuple[ToolSpec, ...]:
     """planner 结束后冻结的本回合工具集，**描述已换成 brief**。
 
     与 ``select_tools`` 的区别是**不看当前结果集/需求状态**：同一回合的工具表
@@ -111,57 +78,24 @@ def select_turn_tools(
     检索额度用完后仍然可见；收敛交给失败移除与预算耗尽后的 final-only（见
     ``run_turn._converse``）。
     """
-    mode = retrieval_mode or retrieval_mode_for(ledger, has_source_text=has_source_text)
-    has_text_path = mode in {RetrievalMode.TEXT, RetrievalMode.MIXED}
-    has_media_path = mode in {RetrievalMode.MEDIA, RetrievalMode.MIXED}
-    offered = {FINAL_ANSWER_TOOL}
-    if has_media_path:
-        offered.add("search_memories")
-    if has_text_path:
-        offered.add("search_text_memories")
+    offered = {FINAL_ANSWER_TOOL, "search_memories"}
     for item in ledger.requirements:
-        if item.evidence_type is EvidenceType.SOURCE_TEXT and not has_text_path:
-            continue
-        if item.evidence_type is not EvidenceType.SOURCE_TEXT and not has_media_path:
-            continue
         offered.update(_TOOLS_BY_REQUIREMENT.get(item.evidence_type, frozenset()))
-    if has_text_path:
+    if has_source_text:
+        # 同一结果集中可能同时命中图片和文本，后续读取不改变本轮工具集。
         offered.add("read_source_text")
     return tuple(
-        _turn_spec(spec, retrieval_mode=mode) for spec in TOOL_SPECS if spec.name in offered
+        _turn_spec(spec, has_source_text=has_source_text) for spec in TOOL_SPECS if spec.name in offered
     )
 
 
-def _turn_spec(spec: ToolSpec, *, retrieval_mode: RetrievalMode) -> ToolSpec:
-    has_text_path = retrieval_mode in {RetrievalMode.TEXT, RetrievalMode.MIXED}
-    if has_text_path and spec.name == "read_source_text":
-        return replace(
-            spec,
-            description="读文本原文：省略offset从命中块开始，next_offset续读。",
-        )
-    if has_text_path and spec.name == "search_memories":
-        return replace(spec, description="检索照片与视频；邮件和文档请用 search_text_memories。")
-    if has_text_path and spec.name == FINAL_ANSWER_TOOL:
+def _turn_spec(spec: ToolSpec, *, has_source_text: bool) -> ToolSpec:
+    if has_source_text and spec.name == "search_memories":
+        return replace(spec, description="按人名、日期或内容词检索照片、视频和文本资料。")
+    if has_source_text and spec.name == FINAL_ANSWER_TOOL:
         properties = dict(spec.parameters["properties"])
         properties["answer"] = {"type": "string", "description": "使用用户语言给出最终回答。"}
-        properties["selected_image_handles"] = {
-            **properties["selected_image_handles"],
-            "description": "仅填写图片handle。纯文本回答必须填空数组，文本citation_handle不能放在这里。",
-        }
-        properties["selected_text_handles"] = {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "实际引用的citation_handle或本回合返回的evidence_id；未引用时填空数组。",
-        }
-        return replace(
-            spec,
-            description="回答并结束；文本填引用栏，照片填图片栏。",
-            parameters={
-                **spec.parameters,
-                "properties": properties,
-                "required": [*spec.parameters["required"], "selected_text_handles"],
-            },
-        )
+        return replace(spec, description=spec.brief, parameters={**spec.parameters, "properties": properties})
     return replace(spec, description=spec.brief)
 
 

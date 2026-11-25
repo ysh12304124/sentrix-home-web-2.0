@@ -2,7 +2,7 @@
  * 2.0 的完整 Agent 轨迹访问器。
  *
  * 数据来源是主 API 回合终态载荷里的 `trace.debug_calls`（评测侧 `include_debug=true`
- * 才会写）：每次模型调用一条，带实际发送的 `messages` / `tools` 与原始 `response`。
+ * 才会写）：每次模型调用一条，带模型端口的 `messages` / `tools` 与解析后的 `response`。
  * PhotoBench 把它原样存进 `runtime_turns[i].trace_bundle`，所以这里不构造任何新事实，
  * 只负责把「模型调用」和「它发起的工具调用」按发生顺序拼回一条时间线。
  *
@@ -83,15 +83,17 @@ function preferredCall(calls: Dict[], stepId: string, callType: string): Dict | 
   return preferred ?? fallback;
 }
 
-/** 一轮里每个 agent `step_id` 最终生效的那条调用（供工具绑定用）。 */
+/** 同轮 agent 父步骤只在有效调用唯一时绑定。 */
 function preferredAgentCallMap(calls: Dict[]): Map<string, Dict> {
   const map = new Map<string, Dict>();
+  const ambiguous = new Set<string>();
   for (const call of calls) {
     if (String(call.call_type || "agent") !== "agent") continue;
+    if (["error", "failed", "cancelled"].includes(String(call.status)) || call.error) continue;
     const stepId = String(call.step_id || "");
-    if (!stepId) continue;
-    const current = map.get(stepId);
-    if (!current || (call.status !== "error" && call.response)) map.set(stepId, call);
+    if (!stepId || ambiguous.has(stepId)) continue;
+    if (map.has(stepId)) { map.delete(stepId); ambiguous.add(stepId); }
+    else map.set(stepId, call);
   }
   return map;
 }
@@ -134,10 +136,10 @@ export function turnModelCalls(item: unknown, turnIndex: number): Dict[] {
       ? debugStepForCallInGroup(item, group, call) : null;
     const legacyIO = legacy ? { messages: legacy.prompt ?? dict(legacy.debug).prompt,
       response: { content: legacy.raw_full ?? legacy.raw ?? dict(legacy.debug).raw } } : {};
-    return { ...legacyIO, ...io, ...call, conversation_turn: turnIndex };
+    return { ...legacyIO, ...io, ...call, conversation_turn: turnIndex, ...(io ? { _debugCallIndex: debug.indexOf(io) } : {}) };
   });
   // 只保存了debug的真实调用也要展示，不把调用数写成0。
-  const extra = debug.filter(call => !used.has(call)).map(call => ({ ...call, conversation_turn: turnIndex }));
+  const extra = debug.flatMap((call, index) => used.has(call) ? [] : [{ ...call, conversation_turn: turnIndex, _debugCallIndex: index }]);
   return [...merged, ...extra].sort((a, b) => {
     const left = Number((a as Dict).seq), right = Number((b as Dict).seq);
     return Number.isFinite(left) && Number.isFinite(right) ? left - right : 0;
@@ -196,7 +198,7 @@ export function toolsForDebugCall(item: unknown, turnIndex: number, call: unknow
   return objectList(dict(item).tool_trace).filter((trace, index) => {
     if (Number(trace.conversation_turn ?? 0) !== turnIndex) return false;
     if (c._globalCallIndex != null) return normalizedToolCallIndex(item, trace, index) === c._globalCallIndex;
-    if (trace.parent_call_id) return trace.parent_call_id === c.call_id;
+    if (trace.parent_call_id) return trace.parent_call_id === c.call_id && calls.filter(value => value.call_id === c.call_id).length === 1;
     const target = preferred.get(String(trace.parent_step_id || ""));
     if (!target || !c.step_id || target.step_id !== c.step_id) return false;
     return target.seq === c.seq && target.attempt === c.attempt;
@@ -284,7 +286,7 @@ export function turnTimeline(item: unknown, turnIndex: number): TraceTimelineEnt
     });
   }
   entries.push({ kind: "answer", key: "answer-" + turnIndex,
-    answer: String(turn.answer || turn.final_answer || ""), attachments: Array.isArray(turn.attachments) ? turn.attachments : [] });
+    answer: turn.answer != null || turn.final_answer != null ? String(turn.answer ?? turn.final_answer) : undefined, attachments: Array.isArray(turn.attachments) ? turn.attachments : [] });
   return entries;
 }
 

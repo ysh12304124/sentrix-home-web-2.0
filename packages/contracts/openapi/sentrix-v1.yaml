@@ -77,6 +77,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DiagnosticsResponse'
+  /api/v1/memories/corrections/name-sync:
+    get:
+      tags:
+      - memory-corrections
+      summary: Latest Name Sync
+      operationId: latest_name_sync_api_v1_memories_corrections_name_sync_get
+      parameters:
+      - name: entity_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Entity Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/NameSyncStatus'
+                - type: 'null'
+                title: Response Latest Name Sync Api V1 Memories Corrections Name
+                  Sync Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/corrections/jobs/{job_id}:
+    get:
+      tags:
+      - memory-corrections
+      summary: Correction Job
+      description: 一条修正同步任务的进度（关系、归属、改名、确认身份都用它查）。
+      operationId: correction_job_api_v1_memories_corrections_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NameSyncStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/corrections/name-sync/{job_id}/retry:
+    post:
+      tags:
+      - memory-corrections
+      summary: Retry Name Sync
+      operationId: retry_name_sync_api_v1_memories_corrections_name_sync__job_id__retry_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NameSyncStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/memories/corrections/jobs/{job_id}/retry:
+    post:
+      tags:
+      - memory-corrections
+      summary: Retry Correction Job
+      description: 让一条失败或在退避中的同步任务立即重新入队，由后台执行器处理。
+      operationId: retry_correction_job_api_v1_memories_corrections_jobs__job_id__retry_post
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NameSyncStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/memories/corrections:
     get:
       tags:
@@ -126,13 +236,6 @@ paths:
           type: string
           default: ''
           title: Scope Id
-      - name: person_id
-        in: query
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Person Id
       responses:
         '200':
           description: Successful Response
@@ -246,17 +349,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/emails/import:
+  /api/v1/documents/import:
     post:
       tags:
-      - emails
-      summary: Import Emails
-      operationId: import_emails_api_v1_emails_import_post
+      - media
+      summary: Import Documents
+      operationId: import_documents_api_v1_documents_import_post
       requestBody:
         content:
-          application/json:
+          multipart/form-data:
             schema:
-              $ref: '#/components/schemas/EmailImportRequest'
+              $ref: '#/components/schemas/Body_import_documents_api_v1_documents_import_post'
         required: true
       responses:
         '200':
@@ -266,90 +369,7 @@ paths:
               schema:
                 additionalProperties: true
                 type: object
-                title: Response Import Emails Api V1 Emails Import Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/emails/{asset_id}:
-    get:
-      tags:
-      - emails
-      summary: Email Detail
-      operationId: email_detail_api_v1_emails__asset_id__get
-      parameters:
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Email Detail Api V1 Emails  Asset Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/text/import:
-    post:
-      tags:
-      - text-memory
-      summary: Import Text
-      operationId: import_text_api_v1_text_import_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TextImportRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                type: object
-                title: Response Import Text Api V1 Text Import Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/text/{asset_id}:
-    get:
-      tags:
-      - text-memory
-      summary: Text Detail
-      operationId: text_detail_api_v1_text__asset_id__get
-      parameters:
-      - name: asset_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Asset Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Text Detail Api V1 Text  Asset Id  Get
+                title: Response Import Documents Api V1 Documents Import Post
         '422':
           description: Validation Error
           content:
@@ -900,10 +920,10 @@ paths:
           type: array
           items:
             type: string
-          description: 人物条件，可重复：scope 内已确认人物的本名
+          description: 人物条件，可重复：已确认人物的本名或别名
           default: []
           title: Person
-        description: 人物条件，可重复：scope 内已确认人物的本名
+        description: 人物条件，可重复：已确认人物的本名或别名
       - name: place
         in: query
         required: false
@@ -924,16 +944,6 @@ paths:
           default: ''
           title: Media Type
         description: 媒体类型：image / video / audio / text
-      - name: source_type
-        in: query
-        required: false
-        schema:
-          type: string
-          maxLength: 40
-          description: 可选文本来源标签，如email/note/document
-          default: ''
-          title: Source Type
-        description: 可选文本来源标签，如email/note/document
       responses:
         '200':
           description: Successful Response
@@ -941,6 +951,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
+        '409':
+          description: 有多位已确认人物匹配所填姓名或别名
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainErrorResponse'
         '422':
           description: Validation Error
           content:
@@ -1608,7 +1624,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ImportBatchRequest'
+              $ref: '#/components/schemas/AssetImportRequest'
         required: true
       responses:
         '201':
@@ -1628,7 +1644,6 @@ paths:
       tags:
       - timeline
       summary: Process Album Pipeline
-      description: 同步执行关键帧、记忆构建和图构建，并返回逐阶段耗时。
       operationId: process_album_pipeline_api_v1_pipeline_process_post
       requestBody:
         content:
@@ -1643,6 +1658,89 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PipelineProcessResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/pipeline/finalize:
+    post:
+      tags:
+      - timeline
+      summary: Finalize Album Pipeline
+      description: Explicit recovery after the original request has stopped; source
+        inference is never repeated.
+      operationId: finalize_album_pipeline_api_v1_pipeline_finalize_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineProcessRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineProcessResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/pipeline/recover:
+    post:
+      tags:
+      - timeline
+      summary: Recover Album Pipeline
+      description: Explicit recovery after the owning product process has stopped;
+        preserve completed sources.
+      operationId: recover_album_pipeline_api_v1_pipeline_recover_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineProcessRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineProcessResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/pipeline/operations/{operation_id}:
+    get:
+      tags:
+      - timeline
+      summary: Pipeline Receipt
+      operationId: pipeline_receipt_api_v1_pipeline_operations__operation_id__get
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Operation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Pipeline Receipt Api V1 Pipeline Operations  Operation
+                  Id  Get
         '422':
           description: Validation Error
           content:
@@ -3331,6 +3429,33 @@ components:
       - failures
       title: AssetImportBatchResponse
       description: 资产导入阶段响应：只落盘/登记，不包含关键帧、记忆或图构建。
+    AssetImportRequest:
+      properties:
+        directory:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Directory
+        scope_id:
+          type: string
+          title: Scope Id
+          default: home-default
+        limit:
+          type: integer
+          minimum: 1.0
+          title: Limit
+          default: 200
+        operation_id:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9_-]{1,96}$
+          - type: 'null'
+          title: Operation Id
+      type: object
+      required:
+      - directory
+      title: AssetImportRequest
+      description: 资产登记不执行模型推理，允许一次登记完整目录。
     AssetListResponse:
       properties:
         items:
@@ -3418,6 +3543,11 @@ components:
           - type: string
           - type: 'null'
           title: External Source Id
+        source_metadata:
+          additionalProperties: true
+          type: object
+          title: Source Metadata
+          default: {}
       type: object
       required:
       - id
@@ -3443,6 +3573,34 @@ components:
         media_type:
           type: string
           title: Media Type
+          default: ''
+        source_type:
+          type: string
+          title: Source Type
+          default: ''
+        source_id:
+          type: string
+          title: Source Id
+          default: ''
+        title:
+          type: string
+          title: Title
+          default: ''
+        source_timestamp:
+          type: string
+          title: Source Timestamp
+          default: ''
+        offset:
+          type: integer
+          title: Offset
+          default: 0
+        end_offset:
+          type: integer
+          title: End Offset
+          default: 0
+        excerpt:
+          type: string
+          title: Excerpt
           default: ''
       type: object
       required:
@@ -3482,6 +3640,10 @@ components:
           - type: string
           - type: 'null'
           title: Family Role
+        merge_same_name:
+          type: boolean
+          title: Merge Same Name
+          default: true
       type: object
       title: BatchConfirmItem
     BatchConfirmOutcome:
@@ -3503,6 +3665,11 @@ components:
         merged:
           type: boolean
           title: Merged
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - person_id
@@ -3550,6 +3717,28 @@ components:
         1.0 就是这个形状（``app.py:2226`` 的 ``confirmed`` / ``failed`` / ``count``），
 
         理由是批量确认的输入来自用户逐个点选，一件失败就把整批回滚会丢掉其余选择。'
+    Body_import_documents_api_v1_documents_import_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+        scope_id:
+          type: string
+          title: Scope Id
+          default: home-default
+        format:
+          type: string
+          title: Format
+          default: auto
+        validate_only:
+          type: boolean
+          title: Validate Only
+          default: false
+      type: object
+      required:
+      - file
+      title: Body_import_documents_api_v1_documents_import_post
     Body_import_media_api_v1_media_import_post:
       properties:
         file:
@@ -3572,6 +3761,11 @@ components:
           - type: 'null'
           title: Source Timestamp
           description: 文本来源的 ISO 8601 日期时间，可带偏移
+        source_metadata:
+          type: string
+          title: Source Metadata
+          description: 文档信息或来源精确地址 JSON
+          default: '{}'
       type: object
       required:
       - file
@@ -3698,13 +3892,6 @@ components:
           type: string
           title: Reason
           default: ''
-        all_scores:
-          items:
-            additionalProperties: true
-            type: object
-          type: array
-          title: All Scores
-          default: []
       type: object
       required:
       - channel
@@ -4052,30 +4239,24 @@ components:
       - embeddings
       - runtime_configuration
       title: DiagnosticsResponse
-    EmailImportRequest:
+    DomainErrorResponse:
       properties:
-        scope_id:
+        code:
           type: string
-          maxLength: 200
-          minLength: 1
-          title: Scope Id
-        items:
-          items:
-            additionalProperties: true
-            type: object
-          type: array
-          maxItems: 500
-          minItems: 1
-          title: Items
-        rebuild_graph:
-          type: boolean
-          title: Rebuild Graph
-          default: true
+          title: Code
+        message:
+          type: string
+          title: Message
+        detail:
+          additionalProperties: true
+          type: object
+          title: Detail
       type: object
       required:
-      - scope_id
-      - items
-      title: EmailImportRequest
+      - code
+      - message
+      - detail
+      title: DomainErrorResponse
     EntityDetailAppearance:
       properties:
         id:
@@ -4805,6 +4986,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - id
@@ -5412,6 +5598,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - ok
@@ -5453,6 +5644,15 @@ components:
         status:
           type: string
           title: Status
+        aliases:
+          items:
+            type: string
+          type: array
+          title: Aliases
+        hidden:
+          type: boolean
+          title: Hidden
+          default: false
       type: object
       required:
       - id
@@ -5569,6 +5769,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - ok
@@ -5715,6 +5920,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - ok
@@ -5787,6 +5997,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - ok
@@ -6571,6 +6786,27 @@ components:
       - turn_id
       - created_at
       title: MessageSummary
+    NameSyncStatus:
+      properties:
+        id:
+          type: string
+          title: Id
+        status:
+          type: string
+          enum:
+          - pending
+          - synced
+          - failed
+          title: Status
+        error:
+          type: string
+          title: Error
+      type: object
+      required:
+      - id
+      - status
+      - error
+      title: NameSyncStatus
     OperationCancellationResponse:
       properties:
         operation_id:
@@ -6679,15 +6915,17 @@ components:
           items:
             type: string
           type: array
-          maxItems: 1000
           title: Asset Ids
+        operation_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Operation Id
         graph_enabled:
           type: boolean
           title: Graph Enabled
-          default: true
-        finalize:
-          type: boolean
-          title: Finalize
           default: true
       type: object
       required:
@@ -6696,6 +6934,16 @@ components:
       description: 显式流水线请求。``asset_ids`` 的顺序是语义提交顺序。
     PipelineProcessResponse:
       properties:
+        operation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Id
+        resumed_asset_ids:
+          items:
+            type: string
+          type: array
+          title: Resumed Asset Ids
         scope_id:
           type: string
           title: Scope Id
@@ -7317,6 +7565,11 @@ components:
           type: string
           title: Sync Error
           default: ''
+        sync_job_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Job Id
       type: object
       required:
       - entity
@@ -7829,16 +8082,11 @@ components:
           title: Graph Enabled
           description: 是否启用图记忆拓展检索；评测对照 run 可关闭
           default: true
-        retrieval_mode:
-          type: string
-          enum:
-          - auto
-          - media
-          - text
-          - mixed
-          title: Retrieval Mode
-          description: 证据检索路由；默认由规划器需求自动选择，评测可按 QA 集固定路由
-          default: auto
+        reasoning:
+          type: boolean
+          title: Reasoning
+          description: 是否开启推理模式（全工具、不限步骤和工具次数、至少3600秒墙钟，产品默认关闭）
+          default: false
       type: object
       required:
       - message
@@ -7868,30 +8116,6 @@ components:
       - conversation_id
       - status
       title: StartTurnResponse
-    TextImportRequest:
-      properties:
-        scope_id:
-          type: string
-          maxLength: 200
-          minLength: 1
-          title: Scope Id
-        items:
-          items:
-            additionalProperties: true
-            type: object
-          type: array
-          maxItems: 500
-          minItems: 1
-          title: Items
-        rebuild_graph:
-          type: boolean
-          title: Rebuild Graph
-          default: true
-      type: object
-      required:
-      - scope_id
-      - items
-      title: TextImportRequest
     TimelineCalendarResponse:
       properties:
         scope_id:

@@ -1,0 +1,13 @@
+{
+  "scope": "100:8872 candidate only; activation waits for actual product and evaluator idle",
+  "files": {
+    "apps/photobench/src/photobench/api/routes/runs.py": {
+      "before": "6a08e7496ba04a763209157176d73392eea2c7dd24429cd4a72a63cceb54f0d9",
+      "after": "39357b0bcc0e9b0ec4d30668f3c4b28f121901640c4c9673d4aa520dfa6bff98"
+    },
+    "apps/photobench/src/photobench/application/runs/read_runs.py": {
+      "before": "02b66f034b8d3cd321b7d40f5805c14e308f82152815b7482d060f98c814ddfd",
+      "after": "965817b24d66e564b9652206ef4e669dfd65c98bffd4eca65394a69a4a917dfd"
+    }
+  }
+}

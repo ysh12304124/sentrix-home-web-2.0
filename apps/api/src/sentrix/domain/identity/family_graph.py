@@ -22,6 +22,8 @@ S7a 落的）的 ``predicate`` 是**自由文本**，任何串都能写进去（
 
 from __future__ import annotations
 
+import unicodedata
+
 RELATION_INVERSES: dict[str, set[str]] = {
     "丈夫": {"妻子"},
     "妻子": {"丈夫"},
@@ -55,6 +57,27 @@ RELATION_INVERSES: dict[str, set[str]] = {
     "密友": {"密友"},
     "其他亲属": {"其他亲属"},
 }
+
+
+# 用户自定义称谓的长度上限。图上的边标签与详情里的整句都要放得下。
+MAX_CUSTOM_LABEL_LENGTH = 16
+
+
+def validate_custom_relationship_pair(predicate: str, inverse_predicate: str) -> None:
+    """用户自己写的一对称谓（2026-11-12 起建关系不再从词表里选）。
+
+    只做形状校验：strip 后非空、不超过 ``MAX_CUSTOM_LABEL_LENGTH`` 个字、不含控制字符。
+    **白名单只约束模型推断**（``validate_relationship_pair``）——用户写「同事」「干妈」
+    「师父」都是他自己的判断，不该被一张亲属词表拒之门外。
+    """
+    for label in (predicate, inverse_predicate):
+        clean = str(label or "").strip()
+        if not clean:
+            raise ValueError("关系标签不能为空")
+        if len(clean) > MAX_CUSTOM_LABEL_LENGTH:
+            raise ValueError(f"关系标签不能超过 {MAX_CUSTOM_LABEL_LENGTH} 个字: {clean}")
+        if any(unicodedata.category(char).startswith("C") for char in clean):
+            raise ValueError("关系标签不能包含控制字符")
 
 
 def validate_relationship_pair(predicate: str, inverse_predicate: str) -> None:

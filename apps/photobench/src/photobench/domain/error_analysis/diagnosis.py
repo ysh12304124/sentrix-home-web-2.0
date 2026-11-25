@@ -11,7 +11,7 @@ from photobench.domain.error_analysis.rules import Aggregator, trace_records
 from photobench.domain.error_analysis.scoring import scoring_evidence
 
 PROMPT_VERSION = "analysis-diagnosis-8"
-EVIDENCE_VERSION = 8
+EVIDENCE_VERSION = 9
 MAX_INPUT_CHARS = 48000
 CASE_PROMPT = (
     "scoring记录提供本次实际评分标准、批次、题型、理由和集合差异。原始definition与实际result分开阅读；"
@@ -159,8 +159,11 @@ def evidence_package(case: dict[str, Any], item: dict[str, Any]) -> dict[str, An
         nonlocal budget
         if value is None:
             return
-        raw = json.dumps(value, ensure_ascii=False)
         take = min(cap, max(budget, 0))
+        if not take:
+            omissions.append({"ref": ref, "path": path, "included_chars": 0})
+            return
+        raw = json.dumps(value, ensure_ascii=False)
         if len(raw) > take:
             omissions.append({"ref": ref, "path": path, "original_chars": len(raw), "included_chars": take})
         if take:
@@ -168,6 +171,8 @@ def evidence_package(case: dict[str, Any], item: dict[str, Any]) -> dict[str, An
             budget -= min(len(raw), take) + 120
 
     prefix = f"i{case['index']}"
+    if item.get("analysis_projection"):
+        add(prefix + ":projection", "analysis_projection", item["analysis_projection"], 1200)
     add(prefix + ":task_contract", "case.turns", task_contract(case), 6000)
     add(prefix + ":scoring", "case.scoring_evidence", scoring_evidence(case), 10000)
     add(

@@ -50,6 +50,7 @@ from sentrix.domain.assistant.ports import (
     OutputTruncatedError,
     PromptTooLongError,
 )
+from sentrix.domain.assistant.request_budget import admit_model_attempt
 from sentrix.domain.assistant.request_context import output_budget_override, request_slot
 from sentrix.domain.assistant.tools import ToolSpec, openai_tools
 from sentrix.infrastructure.assistant.model_endpoint import FixedModelName, ServedModel
@@ -119,6 +120,7 @@ TOOLS_TOKENS_PER_CHAR = 0.48
 # 不传 ``context_tokens`` 时用的窗口。**只是为了测试与本地起得来**，生产必须由
 # ``Settings.vlm_context_tokens`` 给——窗口是部署事实（见该字段的注释）。
 DEFAULT_CONTEXT_TOKENS = 6144
+REASONING_CONTEXT_TOKENS = 131072
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +366,7 @@ class OpenAIChatModel:
         budget: ModelBudget | None = None,
         payload_config: Mapping[str, Any] | None = None,
         retry: Mapping[str, Any] | None = None,
+        reasoning_context_tokens: int | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
@@ -380,6 +383,24 @@ class OpenAIChatModel:
         # 云端 payload 能力与重试策略；local 留空 = 现有行为。
         self._payload_config = dict(payload_config or {})
         self._retry = dict(retry or {})
+        self._reasoning_context_tokens = reasoning_context_tokens or self._context_tokens
+
+    def for_reasoning(self) -> OpenAIChatModel:
+        """每回合持有独立预算，保留端点、输出上限与请求参数。"""
+        context_tokens = self._reasoning_context_tokens
+        if self._model.exact_output_budget:
+            context_tokens = self._model.context_tokens
+        return OpenAIChatModel(
+            self._base_url,
+            self._model,
+            timeout_s=self._timeout_s,
+            context_tokens=context_tokens,
+            api_key=self._api_key,
+            budget=replace(self._budget, context_tokens=context_tokens, compaction_ratio=0.95),
+            payload_config=self._payload_config,
+            retry=self._retry,
+            reasoning_context_tokens=context_tokens,
+        )
 
     def complete(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ModelReply:
         if (
@@ -424,17 +445,23 @@ class OpenAIChatModel:
             handles = arguments.get("selected_image_handles") if isinstance(arguments, dict) else None
             valid = (
                 isinstance(arguments, dict)
-                and set(tool.parameters.get("required", ())) <= set(arguments)
-                and set(arguments) <= set(tool.parameters["properties"])
+                and {"answer", "selected_image_handles"}
+                <= set(arguments)
+                <= {"answer", "selected_image_handles", "source_citations"}
+                and isinstance(arguments.get("source_citations", []), list)
+                and len(arguments.get("source_citations", [])) <= 20
+                and all(
+                    isinstance(c, dict)
+                    and set(c) == {"result_set_id", "asset_handle"}
+                    and all(isinstance(v, str) for v in c.values())
+                    for c in arguments.get("source_citations", [])
+                )
                 and isinstance(arguments["answer"], str)
                 and isinstance(handles, list)
                 and all(isinstance(handle, str) for handle in handles)
                 and len(handles) <= tool.parameters["properties"]["selected_image_handles"]["maxItems"]
                 and not reply.tool_calls
             )
-            if valid and "selected_text_handles" in tool.parameters["properties"]:
-                text_handles = arguments.get("selected_text_handles")
-                valid = isinstance(text_handles, list) and all(isinstance(h, str) for h in text_handles)
         except ValueError:
             valid = False
         if not valid:
@@ -789,9 +816,10 @@ class OpenAIChatModel:
         retry_status = set(self._retry.get("retry_on_status") or (429, 500, 502, 503, 504, 529))
         attempts = 0
         while True:
+            request_timeout = admit_model_attempt(self._timeout_s)
             attempts += 1
             try:
-                with httpx.Client(timeout=self._timeout_s) as client:
+                with httpx.Client(timeout=request_timeout) as client:
                     response = client.post(
                         f"{self._base_url}/chat/completions",
                         json=payload,

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class TurnProfile:
     name: str
-    #: ``None`` = 不限制轮数/调用次数（cloud profile）。
+    #: ``None`` = 不限制轮数/调用次数（普通 cloud profile 的历史行为）。
     max_steps: int | None
     max_tool_calls: int | None
     max_search_calls: int | None
@@ -52,6 +52,8 @@ class TurnProfile:
     wall_time_s: float
     final_reserve_s: float
     strict_model_step_budget: bool = False
+    max_model_calls: int | None = None
+    max_other_tool_calls: int | None = None
 
     # ---- 历史 / 评审输入预算（2026-11-17） -------------------------------------
     history_messages: int = 8
@@ -122,4 +124,20 @@ CLOUD_PROFILE = TurnProfile(
     compaction_preview_rewrite=False,
     compaction_protect_latest_preview=True,
     compaction_max_preview_level=0,
+)
+
+
+#: 推理模式：全工具可选，生成请求和工具请求分别执行有限上界。
+#: 装配时仅覆盖执行额度，历史、评审与压缩配置沿用当前模型 profile。
+REASONING_PROFILE = TurnProfile(
+    name="reasoning",
+    max_steps=100,
+    max_model_calls=100,
+    max_tool_calls=600,
+    max_search_calls=100,
+    max_other_tool_calls=500,
+    max_page_calls=None,
+    max_inspections=None,
+    wall_time_s=3600.0,
+    final_reserve_s=10.0,
 )

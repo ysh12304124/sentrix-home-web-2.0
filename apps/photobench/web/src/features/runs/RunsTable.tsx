@@ -103,7 +103,7 @@ export function RunsTable({
                 onClick={() => onSelectRun(run)}
               >
                 <td>
-                  <b>{modelName(run)}</b>
+                  <b>{modelName(run)}{run.retest_context && <small className="muted"> · 单题重测（原第 {run.retest_context.source_item_index + 1} 题）</small>}</b>
                   <span className={"mode-badge " + modeBadgeClass(run.mode)}>{modeLabel(run.mode)}</span>
                   {run.execution_versions && <small className="muted">{run.execution_versions.length} 次执行</small>}
                 </td>

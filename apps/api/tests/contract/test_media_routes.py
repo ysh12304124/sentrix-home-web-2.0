@@ -2,6 +2,7 @@ import hashlib
 import io
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -93,7 +94,7 @@ def test_text_import_keeps_original_bytes_and_builds_both_indexes(client: TestCl
     assert container.lexical_index.search_fts("ZEPHYR84019", scope_id="text-scope", limit=1)[0][0] == asset_id
     assert not container.lexical_index.search_fts("ZEPHYR84019", scope_id="other-scope", limit=1)
     for space in (EPISODIC_SPACE, SEMANTIC_SPACE):
-        assert container.vector_repository.has_vector(
+        assert container.text_vector_repository.has_vector(
             space=space,
             source_type="observation",
             source_id=observation.id,
@@ -126,7 +127,14 @@ def test_text_source_identity_survives_parallel_imports(client: TestClient):
     different_id = upload("mail-002")
     other_scope = upload("mail-001", scope="other-scope")
     assert different_id.status_code == other_scope.status_code == 201
-    assert len({first["asset_id"], different_id.json()["asset_id"], other_scope.json()["asset_id"]}) == 3
+    source_ids = [first["asset_id"], different_id.json()["asset_id"], other_scope.json()["asset_id"]]
+    assert len(set(source_ids)) == 3
+    paths = [Path(container.asset_repository.get(asset_id).path) for asset_id in source_ids]
+    assert len({(path.stat().st_dev, path.stat().st_ino) for path in paths}) == 1
+    for asset_id in source_ids:
+        original = client.get(f"/api/v1/assets/{asset_id}/file")
+        assert original.status_code == 200
+        assert original.content == text.encode()
     assert upload("mail-001", body="Changed body").status_code == 409
     assert upload("mail-001", time="2024-06-24T18:20:00").status_code == 409
 

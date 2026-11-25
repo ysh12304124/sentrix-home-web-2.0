@@ -1,0 +1,349 @@
+--- a/apps/photobench/src/photobench/application/datasets/service.py
++++ b/apps/photobench/src/photobench/application/datasets/service.py
+@@ -143,7 +143,7 @@
+         try:
+             spaces_data = self._http.request_json(f"{base}{API_PREFIX}/memory-spaces?limit=1000", timeout=20)
+             spaces = spaces_data.get("spaces") if isinstance(spaces_data, dict) else spaces_data
+-            scope_id = qa_scope_id_for_album(spaces or [], album_id)
++            scope_id = qa_scope_id_for_album(spaces or [], album_id, self._albums.list_album_ids())
+             query = f"{base}{API_PREFIX}/assets?limit=1000"
+             if scope_id:
+                 query += f"&scope_id={quote(scope_id)}"
+--- a/apps/photobench/src/photobench/application/run_execution/service.py
++++ b/apps/photobench/src/photobench/application/run_execution/service.py
+@@ -581,6 +581,7 @@
+                 if sampling and name in {"photo_import", "pipeline_processing", "qa_eval"}:
+                     sampler.sample_once()
+                 phase(state, request)
++                request = self._request or request
+                 state.persist()
+                 if (
+                     request.recover_pipeline
+@@ -956,6 +957,24 @@
+ 
+     # ---- model_deploy -------------------------------------------------------
+ 
++    def _resolve_current_model_profile(self, request: RunRequest) -> str:
++        profiles = self.lifecycle.profiles().get("profiles") or []
++        profiles = [p for p in profiles if isinstance(p, dict) and p.get("id")]
++        current = self.lifecycle.state() or {}
++        active = str(current.get("profile") or "").strip()
++        if active:
++            matches = [p for p in profiles if p["id"] == active]
++        else:
++            model = str(request.endpoint_model or "").strip()
++            if (not model or model == "__current__") and self.runtime_snapshot is not None:
++                model = str(self.runtime_snapshot.connection().get("endpoint_model") or "").strip()
++            if not model or model == "__current__":
++                model = str(current.get("served_model_name") or "").strip()
++            matches = [p for p in profiles if model and model in {p["id"], p.get("served_model_name")}]
++        if len(matches) != 1 or matches[0].get("available") is False:
++            raise RuntimeError("无法将当前模型唯一解析为可用注册名，请明确选择已注册模型；当前模型未停止。")
++        return str(matches[0]["id"])
++
+     def _phase_model_deploy(self, state: RunState, request: RunRequest) -> None:
+         """1.0 ``:2526``。
+ 
+@@ -977,6 +996,16 @@
+             or request.model_profile == "__current__"
+             or not request.manager_url
+         ):
++            if not request.manager_url:
++                # Listing a proxy's static models does not verify upstream auth.
++                identity = self._record_model_identity(state, request)
++                if identity.get("status") != "resolved":
++                    raise RuntimeError("External model identity could not be resolved")
++                probe_model = identity.get("raw_id") or request.endpoint_model or request.model_profile
++                self.inference.chat(
++                    {"model": probe_model, "messages": [{"role": "user", "content": "Reply OK."}],
++                     "max_tokens": 16}, timeout=45,
++                )
+             if request.switch_model and request.endpoint_model:
+                 models = self.inference.list_models().get("models") or []
+                 if not models or models[0] != request.endpoint_model:
+@@ -993,6 +1022,14 @@
+                 },
+             )
+             return
++        # Resolve the UI sentinel while the current Manager state still exists.
++        if request.model_profile == "__current__":
++            profile = self._resolve_current_model_profile(request)
++            request = replace(request, model_profile=profile)
++            self._request = request
++            state.set("requested_model_profile", "__current__")
++            state.set("resolved_model_profile", profile)
++            state.set("model_profile", profile)
+         started = time.perf_counter()
+         stop_seconds = 0.0
+         # 1.0 ``:2547``：卸载失败不阻断装载——没在跑的模型本来就停不掉。
+@@ -1132,6 +1169,11 @@
+             if self.runtime_snapshot
+             else ""
+         )
++        if request.manager_url:
++            managed = self.lifecycle.state() or {}
++            if managed.get("profile") != request.model_profile:
++                raise RuntimeError("Model profile mismatch: requested=" + request.model_profile + ", actual=" + str(managed.get("profile")))
++            requested = str(managed.get("served_model_name") or request.model_profile)
+         if requested == "__current__":
+             requested = ""
+         try:
+@@ -1141,6 +1183,8 @@
+         identity["observed_at"] = now_iso()
+         state.set("model_identity", identity)
+         state.set("model_name", identity.get("display_name"))
++        if request.manager_url and identity.get("status") != "resolved":
++            raise RuntimeError("Model identity verification failed: " + str(identity.get("reason")))
+         return identity
+ 
+     def _cancel_wait(self, seconds: float) -> None:
+@@ -2790,6 +2834,10 @@
+                     "judge_status": "pending",
+                 }
+             )
++            failures = [turn for turn in turn_records if turn.get("termination_reason") == "model_error" or turn.get("status") == "failed"]
++            if failures:
++                raise RuntimeError("Agent execution failed: " + str(failures[0].get("error") or failures[0].get("answer") or "model_error"))
++            item["attribution"] = derive_attribution(item)
+             item["execution_status"] = "completed"
+         except RunCancelledError:
+             raise
+--- a/apps/photobench/src/photobench/application/run_execution/state.py
++++ b/apps/photobench/src/photobench/application/run_execution/state.py
+@@ -216,10 +216,10 @@
+                     self._persist_condition.wait_for(
+                         lambda: self._persist_stopping or self._persist_requested > self._persist_written
+                     )
+-                    if self._persist_stopping:
++                    if self._persist_stopping and self._persist_requested <= self._persist_written:
+                         return
+                     self._persist_condition.wait_for(lambda: self._persist_stopping, timeout=self.debounce)
+-                    if self._persist_stopping:
++                    if self._persist_stopping and self._persist_requested <= self._persist_written:
+                         return
+                 try:
+                     began = time.monotonic()
+@@ -255,6 +255,12 @@
+                     self._persist_written = target
+                     self._persist_condition.notify_all()
+         finally:
++            with self._lock:
++                if (self.data.get("persistence") or {}).get("status") == "stop_pending":
++                    self.data["persistence"] = {
++                        "status": "failed" if self._persist_error else "stopped",
++                        "error": str(self._persist_error) if self._persist_error else None,
++                    }
+             with self._persist_condition:
+                 if not self._persist_stopping and self._persist_error is None:
+                     self._persist_error = RuntimeError("persist writer exited unexpectedly")
+@@ -295,20 +301,30 @@
+ 
+     def stop_persist_writer(self) -> None:
+         """Signal stop even on persistence failure; report any writer still holding resources."""
+-        deadline = time.monotonic() + self.persist_timeout
++        flush_error: Exception | None = None
+         try:
+             self.persist(wait=True)
++        except Exception as exc:
++            flush_error = exc
+         finally:
+             with self._persist_condition:
+                 self._persist_stopping = True
+                 self._persist_condition.notify_all()
+             thread = self._persist_thread
+             if thread is not None:
+-                thread.join(timeout=max(0, deadline - time.monotonic()))
+-                if thread.is_alive():
+-                    with self._lock:
++                # Flushing and joining have independent budgets. On timeout the
++                # writer drains requested revisions before exiting.
++                thread.join(timeout=self.persist_timeout)
++                with self._lock:
++                    if thread.is_alive():
+                         self.data["persistence"] = {"status": "stop_pending", "error": "writer_stop_timeout"}
+-                    raise TimeoutError("benchmark state writer did not stop before deadline")
++                        raise TimeoutError("benchmark state writer did not stop before deadline")
++                    if (self.data.get("persistence") or {}).get("status") == "stop_pending":
++                        self.data["persistence"] = {"status": "stopped"}
++        if self._persist_error is not None:
++            raise RuntimeError(f"benchmark state persistence failed: {self._persist_error}")
++        if flush_error is not None and self._persist_written < self._persist_requested:
++            raise flush_error
+ 
+ 
+ __all__ = ["PERSIST_DEBOUNCE_SECONDS", "RunState"]
+--- a/apps/photobench/src/photobench/application/runs/suites.py
++++ b/apps/photobench/src/photobench/application/runs/suites.py
+@@ -42,6 +42,9 @@
+ 
+ from photobench.application.config.service import (
+     ConfigService,
++    BIG_MODEL_PROFILE_ID,
++    BIG_MODEL_ENABLED,
++    BIG_MODEL_MODEL,
+     normalize_model_base_url,
+     normalize_service_url,
+ )
+@@ -214,6 +217,17 @@
+                 self._on_finished(run_id)
+ 
+     def _require_inactive(self) -> None:
++        # A timed-out cleanup can finish after execute() returns. Reap only
++        # terminal executions whose worker and all cleanup guards are finished.
++        for rid, run in list(self._active.items()):
++            thread = self._threads.get(rid)
++            if (
++                run.state is not None
++                and run.state.get("status") not in DIRTY_STATUSES
++                and (thread is None or not thread.is_alive())
++                and not self._stop_pending(run.state.data)
++            ):
++                self._active.pop(rid, None)
+         busy = self._active_ids()
+         if (
+             busy
+@@ -231,7 +245,10 @@
+                 run.state is not None and self._stop_pending(run.state.data) for run in self._active.values()
+             )
+         ):
+-            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(busy)}")
++            occupied = sorted(set(busy) | set(self._active) | {
++                rid for rid, thread in self._threads.items() if thread.is_alive()
++            })
++            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(occupied)}")
+ 
+     def _state_if_exists(self, run_id: str) -> dict[str, Any] | None:
+         try:
+@@ -379,14 +396,22 @@
+                     f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
+                     f"{safe_slug(str(model))}-{uuid.uuid4().hex[:6]}"
+                 )
++                cloud = str(model) == BIG_MODEL_PROFILE_ID
++                if cloud and not BIG_MODEL_ENABLED:
++                    raise InvalidRequestError("cloud model profile is disabled")
++                run_connection = dict(connection)
++                if cloud:
++                    # Auth remains in the loopback gateway, never in run snapshots.
++                    run_connection.update(model_base_url="http://127.0.0.1:18106/v1",
++                                          vllm_manager_url="", endpoint_model=BIG_MODEL_MODEL)
+                 request = RunRequest(
+                     album_id=album_id,
+                     qa_set=qa_set,
+                     model_profile=str(model),
+                     sentrix_url=sentrix_url,
+-                    manager_url=deps.manager_url,
+-                    model_base_url=deps.model_base_url,
+-                    endpoint_model=endpoint_model,
++                    manager_url="" if cloud else deps.manager_url,
++                    model_base_url="http://127.0.0.1:18106/v1" if cloud else deps.model_base_url,
++                    endpoint_model=BIG_MODEL_MODEL if cloud else endpoint_model,
+                     run_id=run_id,
+                     mode=mode,
+                     qa_concurrency=int(
+@@ -402,7 +427,7 @@
+                     pipeline_timeout=int(payload.get("pipeline_timeout") or 86400),
+                     # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
+                     scope_id=existing_scope_id,
+-                    runtime_framework=deps.runtime_framework,
++                    runtime_framework="generic" if cloud else deps.runtime_framework,
+                     judge_provider_id=deps.judge.judge_provider_id,
+                     judge_url=deps.judge.judge_url,
+                     judge_model=deps.judge.judge_model,
+@@ -419,7 +444,7 @@
+                     evidence_judge_enabled=deps.judge.evidence_enabled,
+                     judge_use_gt_images=deps.judge.judge_use_gt_images,
+                 )
+-                request = freeze_runtime_request(request, connection, self._build_revision)
++                request = freeze_runtime_request(request, run_connection, self._build_revision)
+                 requests[run_id] = request
+                 execution = self._new_execution(request)
+                 execution.prepare(request)
+--- a/apps/photobench/src/photobench/domain/datasets/qa_media.py
++++ b/apps/photobench/src/photobench/domain/datasets/qa_media.py
+@@ -40,19 +40,16 @@
+     return refs
+ 
+ 
+-def qa_scope_id_for_album(spaces: list[dict[str, Any]], album_id: str) -> str | None:
+-    """1.0 ``:1404``：挑名字里带这个 album slug 的、最新的一个 scope。
++def qa_scope_id_for_album(
++    spaces: list[dict[str, Any]], album_id: str, album_ids: list[str] | None = None
++) -> str | None:
++    """Choose the newest scope for the exact catalog album.
+ 
+-    ``exact`` 这一格是「按词边界命中」的加权：``album3`` 不该命中 ``album3-max`` 的
+-    分数与命中 ``album3`` 一样高。排序键是 ``(exact, created_at, id)`` 逆序——
+-    1.0 就是这么写的，``created_at`` 只作次级判据。
+-
+-    **2.0 的上游可能没有 ``created_at``**：``apps/api`` 的 ``GET /api/v1/memory-spaces``
+-    只回 ``{id, name, kind, status}``（``api/routes/spaces.py:20``）。缺了它这一格就是
+-    空串，于是「最新的一个」退化成「id 最大的一个」——这是上游的数据形状差异，
+-    不是这里能补的（编一个时间戳等于发明事实）。登记在行为基线里。
++    Album slugs may contain hyphens and be prefixes of other albums. Resolve
++    the longest registered album match before considering scope recency.
+     """
+     target = safe_slug(album_id).casefold()
++    known = {safe_slug(value).casefold() for value in (album_ids or [album_id])}
+     candidates: list[tuple[int, str, str]] = []
+     for space in spaces or []:
+         if not isinstance(space, dict) or not space.get("id"):
+@@ -60,6 +57,11 @@
+         name = str(space.get("name") or "")
+         slug = safe_slug(name).casefold()
+         if not target or target not in slug:
++            continue
++        matches = [value for value in known if value and re.search(
++            rf"(?:^|[-_]){re.escape(value)}(?:[-_]|$)", slug
++        )]
++        if matches and max(matches, key=len) != target:
+             continue
+         exact = 1 if re.search(rf"(?:^|[-_]){re.escape(target)}(?:[-_]|$)", slug) else 0
+         candidates.append((exact, str(space.get("created_at") or ""), str(space["id"])))
+--- a/apps/photobench/src/photobench/infrastructure/deploy/systemd_process.py
++++ b/apps/photobench/src/photobench/infrastructure/deploy/systemd_process.py
+@@ -279,7 +279,15 @@
+                     self._runtime_snapshot, endpoint, self._config_home / "photobench/startup-snapshots"
+                 )
+             )
+-        lines = ["[Service]"]
++        # EnvironmentFile overrides Environment=, including runtime.env.
++        # Keep dynamic endpoint values in a later file rather than claiming a
++        # switch succeeded while the running process still uses the old URL.
++        endpoint_env = path.with_suffix(".env")
++        endpoint_env.write_text("".join(
++            key + "=" + json.dumps(value) + "\n" for key, value in values.items()
++        ))
++        endpoint_env.chmod(0o600)
++        lines = ["[Service]", f"EnvironmentFile={endpoint_env}"]
+         for key, value in values.items():
+             escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+             lines.append(f'Environment="{key}={escaped}"')
+--- a/apps/photobench/src/photobench/infrastructure/runtime/providers.py
++++ b/apps/photobench/src/photobench/infrastructure/runtime/providers.py
+@@ -772,7 +772,7 @@
+         )
+ 
+     def state(self) -> dict[str, Any]:
+-        return dict(self._request("/state", timeout=15))
++        return dict(self._request("/state", timeout=15) or {})
+ 
+ 
+ class ManagerTelemetryProvider:
+--- a/apps/photobench/src/photobench/infrastructure/runtime/selection.py
++++ b/apps/photobench/src/photobench/infrastructure/runtime/selection.py
+@@ -197,6 +197,15 @@
+         return SelectedRuntime(
+             ManagerLifecycleProvider(manager_url), ManagerTelemetryProvider(manager_url), "vllm_manager"
+         )
++    if (manager_url and is_local_endpoint and urlparse(manager_url).hostname in local_hosts
++            and framework in {"llama.cpp", "llamacpp"}):
++        # Explicit local Manager owns the registered GGUF lifecycle; telemetry
++        # comes from llama.cpp, never the vLLM-specific metrics adapter.
++        return SelectedRuntime(
++            ManagerLifecycleProvider(manager_url),
++            LlamaCppTelemetryProvider(endpoint_url=endpoint_url, telemetry_services=telemetry_services),
++            "llamacpp_manager",
++        )
+     lifecycle: LifecycleProvider = UnavailableLifecycleProvider()
+     jetson = is_jetson_host()
+     if not cloud and framework in {"llama.cpp", "llamacpp"} and jetson and host in local_hosts:

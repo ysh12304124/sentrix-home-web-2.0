@@ -1,0 +1,20 @@
+{
+  "files": {
+    "apps/photobench/src/photobench/domain/runs/frozen_trace.py": {
+      "before": null,
+      "after": "cb84e165097b45dd524ac41524b7c1b930b1d0b1c15c766db6d213b1f1e49753"
+    },
+    "apps/photobench/src/photobench/application/run_execution/state.py": {
+      "before": "196b7cd66d00bd604cdee75df544043d101c96bd13ac50c5643b3a924aa68fb8",
+      "after": "4e8aeec11f017e1b32e27b000033dbad1d0d692faef1017164b0384da72f48e8"
+    },
+    "apps/photobench/src/photobench/infrastructure/results/store.py": {
+      "before": "bb4d34202f5e66883bef2913d995282c1a55b05c755560087c031843d9e63d42",
+      "after": "1ca8b4561d30b623332ba4f9fb530a6bfa45feb1875e88e89ce5f1e6cb91f6f7"
+    },
+    "apps/photobench/tests/test_trace_checkpoint_reuse.py": {
+      "before": null,
+      "after": "458aadd36208e73a80b3a5044b3eaada7571757d2bca2350f6c46cbc497e26f3"
+    }
+  }
+}

@@ -106,7 +106,7 @@ class StubImporter:
 def album(tmp_path: Path) -> Path:
     root = tmp_path / "album"
     root.mkdir()
-    for name in ("b.jpg", "a.JPG", "c.png", "notes.txt"):
+    for name in ("b.jpg", "a.JPG", "c.png", "notes.pdf"):
         (root / name).write_bytes(b"content-" + name.encode())
     return root
 
@@ -195,6 +195,19 @@ def test_limit_caps_the_batch(album: Path):
 
     assert importer.finished == ["a.JPG"]
     assert result.imported == 1
+
+
+def test_asset_staging_imports_a_complete_large_directory(tmp_path):
+    for index in range(1533):
+        (tmp_path / f"{index:04d}.jpg").write_bytes(b"x")
+    importer = StubImporter()
+    result = ImportAlbum(importer=importer).stage_only(
+        AlbumImportRequest(scope_id="large", directory=str(tmp_path), limit=1533)
+    )
+    assert result.imported == 1533
+    assert len(result.asset_ids) == 1533
+    assert importer.staged == [f"{index:04d}.jpg" for index in range(1533)]
+    assert not importer.prepared and not importer.finished
 
 
 def test_missing_directory_is_an_error_not_an_empty_result(tmp_path: Path):
@@ -293,7 +306,7 @@ def test_videos_are_scanned_alongside_photos(tmp_path: Path):
     """
     root = tmp_path / "album"
     root.mkdir()
-    for name in ("a.jpg", "b.mov", "c.MP4", "d.mkv", "notes.txt"):
+    for name in ("a.jpg", "b.mov", "c.MP4", "d.mkv", "notes.pdf"):
         (root / name).write_bytes(b"content-" + name.encode())
 
     importer = StubImporter()
@@ -317,7 +330,7 @@ def test_audio_is_scanned_alongside_photos_and_videos(tmp_path: Path):
     """
     root = tmp_path / "album"
     root.mkdir()
-    for name in ("a.jpg", "b.m4a", "c.MP3", "d.flac", "notes.txt"):
+    for name in ("a.jpg", "b.m4a", "c.MP3", "d.flac", "notes.pdf"):
         (root / name).write_bytes(b"content-" + name.encode())
 
     importer = StubImporter()

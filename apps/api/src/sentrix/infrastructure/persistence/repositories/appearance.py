@@ -172,6 +172,15 @@ class SqliteAppearanceRepository:
         assert created is not None, "刚写进去的那条证据读不回来"
         return created
 
+    def is_sampled(self, person_id: str, face_instance_id: str, model_name: str) -> bool:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM person_appearance_evidence"
+                " WHERE person_id = ? AND face_instance_id = ? AND model_name = ? AND status = ?",
+                (person_id, face_instance_id, str(model_name or "unknown"), CONFIRMED),
+            ).fetchone()
+        return row is not None
+
     def get(self, evidence_id: str) -> AppearanceEvidenceRecord | None:
         with self._database.connect() as connection:
             row = connection.execute(

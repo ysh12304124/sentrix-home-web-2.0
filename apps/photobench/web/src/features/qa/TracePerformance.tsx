@@ -25,12 +25,16 @@ export function TimingSegments({ title, segments, total }: { title: string; segm
   </section>;
 }
 
-export function ModelPerformanceDetails({ detail, call }: { detail?: RunItemDetail; call: Dict }) {
+export function ModelPerformanceDetails({ detail, call, tools, toolsComplete = true }: { detail?: RunItemDetail; call: Dict; tools?: Dict[]; toolsComplete?: boolean }) {
   const observation = callObservation(call);
-  const timing = detail ? callAgentLoopTiming(detail, call) : null;
+  const timing = detail ? callAgentLoopTiming(detail, call, tools) : null;
   const incompleteToolTiming = timing?.tools.some(tool => toolDurationMs(tool) == null);
   return <section className="trace-call-performance">
-    {detail && timing && !incompleteToolTiming ? <TimingSegments title="本步耗时 · 模型与关联工具" total={timing.totalMs} segments={callLatencySegments(detail, call)} /> : null}
+    {detail && timing && !incompleteToolTiming && toolsComplete ? <>
+      <TimingSegments title={call.agent_loop_total_ms != null ? "本步耗时 · 模型与关联工具" : "本步调用累计 · 模型与关联工具"} total={timing.totalMs} segments={callLatencySegments(detail, call, tools)} />
+      {call.agent_loop_total_ms == null ? <p className="muted small">本步未记录独立墙钟；这里累计模型与关联工具耗时，并行调用可能重叠。</p> : null}
+    </> : null}
+    {!toolsComplete ? <p className="muted small">部分工具缺少唯一关联，本步合计未知。</p> : null}
     {incompleteToolTiming ? <p className="muted small">关联工具的耗时未完整记录，本步合计未知。</p> : null}
     <div className="call-purpose-grid">
       <span><small>用途</small><b>{callTypeDescription(call)}</b></span>

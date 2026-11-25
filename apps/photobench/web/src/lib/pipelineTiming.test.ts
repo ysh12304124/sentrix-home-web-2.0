@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isCombinedImport, phaseElapsed, pipelineDuration, pipelineTimingView } from "./pipelineTiming.ts";
+import { elapsedDuration, isCombinedImport, phaseElapsed, pipelineDuration, pipelineTimingView } from "./pipelineTiming.ts";
+
+describe("阶段耗时显示", () => {
+  it.each([
+    [null, "未记录"], [0, "0秒"], [59.9, "59秒"], [60, "1分0秒"],
+    [3600, "1小时0秒"], [86400, "1天0秒"], [93784.9, "1天2小时3分4秒"],
+  ])("%s 秒显示为 %s", (value, expected) => {
+    expect(elapsedDuration(value)).toBe(expected);
+  });
+});
 
 describe("流水线计时口径", () => {
   it("完整起止与后端 total_seconds 不同，分别展示，不改原始数据", () => {

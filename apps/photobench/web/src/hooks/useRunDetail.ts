@@ -21,7 +21,7 @@
  *     再 onRejudgeStarted」以保持 1.0 的先后。
  */
 
-import { defaultScoring, newBatchNonce, scoringPayload } from '../lib/scoring.ts';
+import { defaultScoring, newBatchNonce, runScoring, scoringPayload } from '../lib/scoring.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, post } from "../api/client.ts";
@@ -113,6 +113,7 @@ const TERMINAL_STATUSES = new Set(["completed", "completed_with_errors", "failed
 // Full reads cover the entire run at reduced resolution. Between them, append
 // the new raw tail without replacing the beginning of the curve or stale-copying metrics.
 function retainFullHistory(previous: Run | null, payload: Run): Run {
+  if (payload.history_mode === "latest") return payload;
   if (payload.history_mode === "full" || previous?.run_id !== payload.run_id || previous.history_mode !== "full") return payload;
   const history = previous.telemetry_live?.history;
   const tail = payload.telemetry_live?.history;
@@ -170,14 +171,15 @@ export function useRunDetail(options: RunDetailOptions) {
   const [batchMode, setBatchMode] = useState<'auto' | 'resume' | 'new'>('auto');
   const [resumeBatches, setResumeBatches] = useState<Record<string,string>>({});
   const [batchNonce, setBatchNonce] = useState(newBatchNonce);
-  const [readProfile, setReadProfile] = useState('photobench_open_v1');
+  const [readProfile, setReadProfile] = useState('');
   const [readBatch, setReadBatch] = useState('');
   const initializedReadRun = useRef<string | null>(null);
   useEffect(() => {
     if (!activeRunId || activeRun?.run_id !== activeRunId || initializedReadRun.current === activeRunId) return;
     initializedReadRun.current = activeRunId;
-    const batches = Array.isArray(activeRun.scoring_batches) ? activeRun.scoring_batches as Array<{profile_id:string}> : [];
-    setReadProfile(batches[0]?.profile_id || 'photobench_open_v1');
+    const selection = runScoring(activeRun);
+    setScoring(selection);
+    setReadProfile(selection.profiles[0]);
     setReadBatch('');
   }, [activeRunId, activeRun]);
   const readQuery = readProfile ? new URLSearchParams({scoring_profile:readProfile, scoring_batch:readBatch}).toString() : '';
@@ -197,7 +199,7 @@ export function useRunDetail(options: RunDetailOptions) {
   // 1.0 用 ref 值做同步防重入（`reviewSaving.value` / `rejudgeSubmitting.value` 在
   // 同一 tick 内阻塞二次调用），state 只负责渲染。
   const detailRequest = useRef<{ controller: AbortController; runId: string } | null>(null);
-  const historyRead = useRef<{ runId: string; at: number; lastTime: number; terminal: boolean } | null>(null);
+  const historyRead = useRef<{ runId: string; at: number; lastTime: number; terminal: boolean; enabled: boolean } | null>(null);
   const analysisOpen = useRef(false);
   useEffect(() => () => detailRequest.current?.controller.abort(), []);
   const reviewSavingRef = useRef(false);
@@ -314,6 +316,7 @@ export function useRunDetail(options: RunDetailOptions) {
       const controller = new AbortController();
       const known = historyRead.current?.runId === runId ? historyRead.current : null;
       let full = includeHistory ?? (resetPage || !known || Date.now() - known.at >= FULL_HISTORY_REFRESH_MS);
+      if (known?.enabled === false) full = false;
       detailRequest.current = { controller, runId };
       let payload: Run;
       try {
@@ -325,7 +328,7 @@ export function useRunDetail(options: RunDetailOptions) {
         const firstTailTime = payload.telemetry_live?.history?.[0]?.t;
         // A suspended tab may have missed the rolling window. Re-read the whole
         // timeline rather than inventing a sampling gap. Always finish with a full read.
-        if (!full && ((TERMINAL_STATUSES.has(payload.status || "") && !known?.terminal) ||
+        if (payload.history_mode !== "latest" && !full && ((TERMINAL_STATUSES.has(payload.status || "") && !known?.terminal) ||
             (typeof firstTailTime === "number" && known && firstTailTime > known.lastTime + 3))) {
           full = true;
           payload = await read(true);
@@ -335,6 +338,7 @@ export function useRunDetail(options: RunDetailOptions) {
       }
       if (controller.signal.aborted || activeRunIdRef.current !== runId) return;
       historyRead.current = { runId, at: full ? Date.now() : known?.at ?? 0,
+        enabled: payload.history_mode !== "latest",
         lastTime: Number(payload.telemetry_live?.history?.at(-1)?.t ?? known?.lastTime ?? 0),
         terminal: full ? TERMINAL_STATUSES.has(payload.status || "") : known?.terminal ?? false };
       setActiveRun(previous => retainFullHistory(previous, payload));
@@ -353,8 +357,6 @@ export function useRunDetail(options: RunDetailOptions) {
         ...(resetPage || analysisOpen.current
           ? [loadKeyframeAnalysis(runId), loadMemoryEffectiveness(runId)]
           : []),
-        // 图质量面板始终展示在 run 详情中，不应依赖记忆分析面板是否展开。
-        // resetPage 表示刚切换到一条 run，此时立即读取一次；后续展开时再复用同一入口。
         ...(resetPage || analysisOpen.current ? [loadGraphQuality(runId)] : []),
         loadQaPage ? loadQaPage(resetPage ? 1 : undefined) : Promise.resolve(),
       ]);

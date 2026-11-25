@@ -15,12 +15,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from sentrix.application.identity.appearance_sampling import AppearanceSamplingExecutor
 from sentrix.application.identity.enroll_face import EnrollFace, EnrollFaces
 from sentrix.application.identity.extract_moments import ExtractMoments
 from sentrix.application.identity.family_graph_service import FamilyGraphService
+from sentrix.application.identity.observe_appearance import ObserveAppearance
 from sentrix.application.identity.run_insights import RunInsights
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes, VideoSceneExtraction
-from sentrix.application.media.import_assets import ImportAssets, ImportRequest, ImportResult, StagedImport
+from sentrix.application.media.import_assets import ImportAssets, ImportResult, StagedImport
 from sentrix.application.media.import_emails import ImportEmails
 from sentrix.application.media.index_place import IndexAssetPlace
 from sentrix.application.media.maintain_entities import MaintainObservationEntities
@@ -41,9 +43,12 @@ from sentrix.application.memories.sync_corrections import (
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.application.retrieval.text_memories import IndexTextMemories
+from sentrix.application.retrieval.text_memories import IndexTextMemories
 from sentrix.domain.media.import_jobs import ImportJob
 from sentrix.domain.media.models import AssetStatus, MediaType, Observation
 from sentrix.domain.memories.graph import GraphBuildStats
+from sentrix.infrastructure.media.source_address import read_source_address
+from sentrix.infrastructure.media.text_chunks import document_chunks
 from sentrix.runtime.work import import_work
 
 if TYPE_CHECKING:
@@ -91,36 +96,109 @@ def build_memory_graph(container: Container) -> BuildMemoryGraph:
         graph=container.memory_graph,
         causal_judge=container.causal_judge,
         vectors=container.vector_repository,
-        family=container.family_graph_repository,
         causal_batch_size=causal_batch_size,
+        build_lock=lambda: container.database.advisory_lock("graph-build"),
     )
 
 
-def _import_text_file(container: Container, request: ImportRequest) -> ImportResult:
-    size = request.source_path.stat().st_size if request.source_path else len(request.content)
-    if size > 20 * 1024 * 1024:
-        raise ValueError("文本文件不能超过20MB")
-    content = request.source_path.read_bytes() if request.source_path else request.content
-    body = content.decode("utf-8-sig")
-    if "\x00" in body:
-        raise ValueError("不能把二进制文件作为文本导入")
-    result = build_text_import(container).execute(
-        request.scope_id,
-        [{"text": body, "metadata": {"source_type": "document", "source_file": request.file_name}}],
+def build_correction_sync(container: Container) -> SyncCorrections:
+    reindex = ReindexCorrectedMemories(
+        container.observation_repository,
+        container.event_repository,
+        container.lexical_index,
+        container.text_embedder,
+        container.text_vector_repository,
+        container.memory_corrections,
+    ).reindex
+
+    def graph(scope: str) -> None:
+        stats = build_memory_graph(container).execute(scope)
+        if stats.causal_status == "degraded":
+            raise RuntimeError("因果边同步降级，请重试")
+
+    return SyncCorrections(container.memory_corrections, reindex, graph)
+
+
+def build_memory_sync(container: Container, *, strict_summary: bool = True) -> SyncCorrections:
+    """Wire the local synchronous correction path, including text memory and dependent prose."""
+    reindex = ReindexCorrectedMemories(
+        container.observation_repository,
+        container.event_repository,
+        container.lexical_index,
+        container.text_embedder,
+        container.text_vector_repository,
+        container.memory_corrections,
+        text_index=IndexTextMemories(container.text_chunks, container.text_embedder),
+    ).reindex
+
+    def graph(scope: str) -> None:
+        stats = build_memory_graph(container).execute(scope)
+        if stats.causal_status == "degraded":
+            raise RuntimeError("因果边同步降级，请重试")
+
+    def summaries(scope: str) -> None:
+        event_ids = container.memory_corrections.summary_events(scope)
+        if not event_ids:
+            return
+        summarizer = SummarizeEvent(
+            events=container.event_repository,
+            observations=container.observation_repository,
+            assets=container.asset_repository,
+            participants=container.event_participant_repository,
+            model=container.chat_model,
+        )
+        updates = container.memory_corrections.identity_updates(scope)
+        errors: list[str] = []
+
+        def summarize(event_id: str) -> None:
+            try:
+                observations = container.observation_repository.get_many(
+                    container.event_repository.observation_ids(event_id)
+                )
+                if not any(item.has_content for item in observations.values()):
+                    raise RuntimeError("事件尚无可用观察内容，请先完成媒体处理")
+                summarizer.execute(event_id, correction=strict_summary, identity_updates=updates)
+            except Exception as error:  # noqa: BLE001 - keep independent correction targets retryable
+                raise RuntimeError(f"{event_id}: {type(error).__name__}: {error}") from error
+
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory-correction") as pool:
+            for start in range(0, len(event_ids), 4):
+                futures = [pool.submit(summarize, event_id) for event_id in event_ids[start : start + 4]]
+                for future in futures:
+                    try:
+                        future.result()
+                    except Exception as error:  # noqa: BLE001 - report all failed event summaries
+                        errors.append(str(error))
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def dependent(scope: str) -> None:
+        if container.memory_corrections.dependent_text(scope):
+            RebuildDependentText(
+                container.memory_corrections,
+                container.observation_repository,
+                container.event_repository,
+                container.entity_repository,
+                container.chat_model,
+            ).execute(scope)
+
+    return SyncCorrections(container.memory_corrections, reindex, graph, summaries, dependent)
+
+
+def build_appearance_sampling(container: Container) -> AppearanceSamplingExecutor:
+    """确认 / 合并之后的外观取样：后台线程逐人调视觉模型（请求里只入队）。"""
+    observe = ObserveAppearance(
+        faces=container.face_repository,
+        entities=container.entity_repository,
+        observations=container.observation_repository,
+        appearances=container.appearance_repository,
+        crops=container.person_crop_renderer,
+        vision=container.person_vision,
     )
-    if result["status"] != "completed":
-        raise RuntimeError(f"文本已保存，索引待重试：{result['errors']}")
-    item = result["items"][0]
-    state = container.text_memory_repository.find(request.scope_id, item["external_id"])
-    return ImportResult(
-        asset_id=item["asset_id"],
-        observation_id=state["observation_id"],
-        media_type=MediaType.TEXT,
-        status=AssetStatus.PROCESSED,
-        indexed=True,
-        deduplicated=item["deduplicated"],
-        event_id=state["event_id"],
-        text_rows=0 if item["deduplicated"] else 3,
+    return AppearanceSamplingExecutor(
+        jobs=container.person_appearance_jobs,
+        entities=container.entity_repository,
+        observe=observe,
     )
 
 
@@ -443,7 +521,7 @@ def _build_importer(
         observations=container.observation_repository,
         storage=container.media_storage,
         metadata=container.metadata_reader,
-        resolve_capture_time=container.capture_time_resolver,
+        address_reader=read_source_address,
         visual_indexer=IndexAssetVisual(
             embedder=container.visual_embedder,
             vectors=container.vector_repository,
@@ -466,7 +544,6 @@ def _build_importer(
         face_enroller=_face_enroller(container),
         fact_maintainer=_fact_maintainer(container),
         text_indexer=_text_indexer(container),
-        text_importer=lambda request: _import_text_file(container, request),
         entity_extractor=_entity_extractor(container),
         lexical_index=container.lexical_index,
         spaces=container.spaces,
@@ -492,9 +569,21 @@ def _face_enroller(container: Container) -> EnrollFaces:
 
 
 def _text_indexer(container: Container) -> Callable[[Observation, str | None], int]:
-    index = IndexObservationText(embedder=container.text_embedder, vectors=container.vector_repository)
+    index = IndexObservationText(embedder=container.text_embedder, vectors=container.text_vector_repository)
 
     def run(observation: Observation, event_id: str | None) -> int:
+        if observation.source_text:
+            legacy = container.settings.embedding_scheme == "legacy"
+            chunks = document_chunks(
+                observation.source_text,
+                observation.caption,
+                tokenizer_path=container.settings.document_tokenizer_path,
+                endpoint=container.settings.text_embedder_url if legacy else container.settings.wemm_url,
+                token_budget=min(container.settings.document_chunk_tokens, 512)
+                if legacy
+                else container.settings.document_chunk_tokens,
+            )
+            return index.index_document(observation, chunks).rows
         return index.index(observation, event_id).rows
 
     return run
@@ -530,72 +619,5 @@ def _event_id(assigner: AssignEvents, observation: Observation) -> str:
 def _observation_event(container: Container, observation_id: str) -> str | None:
     """该观察已经挂到的事件（取第一个）。重放时直接复用，不再跑候选打分。"""
     mapping = container.event_repository.events_for_observations([observation_id])
-    return next((event_id for event_id, ids in mapping.items() if observation_id in ids), None)
-
-
-def build_memory_sync(container: Container, *, strict_summary: bool = True) -> SyncCorrections:
-    reindex = ReindexCorrectedMemories(
-        container.observation_repository,
-        container.event_repository,
-        container.lexical_index,
-        container.text_embedder,
-        container.text_vector_repository,
-        container.memory_corrections,
-        text_index=IndexTextMemories(container.text_chunks, container.text_embedder),
-    ).reindex
-
-    def graph(scope: str) -> None:
-        stats = build_memory_graph(container).execute(scope)
-        if stats.causal_status == "degraded":
-            raise RuntimeError("因果边同步降级，请重试")
-
-    def summaries(scope: str) -> None:
-        event_ids = container.memory_corrections.summary_events(scope)
-        if not event_ids:
-            return
-        summarizer = SummarizeEvent(
-            events=container.event_repository,
-            observations=container.observation_repository,
-            assets=container.asset_repository,
-            participants=container.event_participant_repository,
-            model=container.chat_model,
-        )
-        errors = []
-        updates = container.memory_corrections.identity_updates(scope)
-
-        def summarize(event_id: str) -> None:
-            try:
-                observations = container.observation_repository.get_many(
-                    container.event_repository.observation_ids(event_id)
-                )
-                if not any(item.has_content for item in observations.values()):
-                    raise RuntimeError("事件尚无可用观察内容，请先完成媒体处理")
-                summarizer.execute(event_id, correction=strict_summary, identity_updates=updates)
-            except Exception as error:  # noqa: BLE001 - one event must not block independent events
-                raise RuntimeError(f"{event_id}: {type(error).__name__}: {error}") from error
-
-        # Independent correction targets share no event writes. Submit at most
-        # four tasks at a time; do not build an unbounded executor queue.
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory-correction") as pool:
-            for start in range(0, len(event_ids), 4):
-                futures = [pool.submit(summarize, event_id) for event_id in event_ids[start : start + 4]]
-                for future in futures:
-                    try:
-                        future.result()
-                    except Exception as error:  # noqa: BLE001 - independent targets retain retry state
-                        errors.append(str(error))
-        if errors:
-            raise RuntimeError("; ".join(errors))
-
-    def dependent(scope: str) -> None:
-        if not container.memory_corrections.dependent_text(scope):
-            return
-        RebuildDependentText(
-            container.memory_corrections,
-            container.observation_repository,
-            container.event_repository,
-            container.entity_repository,
-            container.chat_model,
-        ).execute(scope)
-
-    return SyncCorrections(container.memory_corrections, reindex, graph, summaries, dependent)
+    event_ids = mapping.get(observation_id, ())
+    return event_ids[0] if event_ids else None

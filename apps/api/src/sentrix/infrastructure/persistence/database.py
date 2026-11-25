@@ -15,6 +15,8 @@ from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 
+import portalocker
+
 from sentrix.domain.media.capture_time import time_sort_key, within_time_bounds
 
 BUSY_TIMEOUT_MS = 30_000
@@ -45,6 +47,12 @@ class Database:
         # 图谱/家庭图谱会在同一线程嵌套读取，因此连接锁必须是可重入的 RLock。
         with _connection_locks_guard:
             self._connect_lock = _connection_locks.setdefault(self.path.resolve(), threading.RLock())
+
+    @contextmanager
+    def advisory_lock(self, purpose: str) -> Iterator[None]:
+        lock_path = self.path.resolve().with_suffix(f".{purpose}.lock")
+        with portalocker.Lock(lock_path, mode="a", flags=portalocker.LOCK_EX):
+            yield
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -132,6 +140,25 @@ class Database:
                 "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
             ).fetchone()
             record_version = version
+            # Published evaluation and main branches reused numeric migration revisions.
+            # Inspect those schemas before recording their distinct migration identity.
+            shared_revisions = {
+                "0019_media_cleanup.sql": ("media_cleanup_jobs", "asset_id"),
+                "0028_media_deletion_history.sql": ("media_cleanup_jobs", "scope_id"),
+                "0031_import_control.sql": ("import_jobs", "cancel_requested"),
+                "0032_text_sources.sql": ("observations", "source_text"),
+                "0033_pipeline_receipts.sql": ("pipeline_receipts", "operation_id"),
+            }
+            if script.name in shared_revisions:
+                table, column = shared_revisions[script.name]
+                schema_exists = Database._column_exists(connection, table, column)
+                if schema_exists:
+                    if done is None:
+                        connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                    connection.execute("COMMIT")
+                    return done is None
+                if done is not None:
+                    done, record_version = None, script.stem
             # A prior database can contain the numeric 0020 marker while
             # agent_result_sets still lacks the attempt ownership columns.
             # Validate the schema as well as the ledger and repair idempotently.
@@ -212,6 +239,14 @@ class Database:
                 and not Database._table_exists(connection, "memory_rotation_sequences")
             ):
                 done, record_version = None, "0018_memory_rotation"
+            if (
+                done is not None
+                and script.name == "0019_media_cleanup.sql"
+                and not Database._table_exists(connection, "media_cleanup_jobs")
+            ):
+                # Legacy import-control used 0019 for cancel_requested. Preserve
+                # that ledger entry and create the missing cleanup outbox once.
+                done, record_version = None, "0019_media_cleanup"
             if done is not None and script.name == "0015_text_vectors.sql":
                 text_table = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='text_vectors'"
@@ -298,6 +333,13 @@ class Database:
                     connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
                     connection.execute("COMMIT")
                     return True
+            if script.name == "0031_import_control.sql" and Database._column_exists(
+                connection, "import_jobs", "cancel_requested"
+            ):
+                # The same column was already added by legacy 0019_import_control.
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                connection.execute("COMMIT")
+                return True
             for statement in _statements(script.read_text(encoding="utf-8")):
                 connection.execute(statement)
             connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (record_version,))

@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator
-from contextlib import suppress
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
@@ -86,12 +87,7 @@ def _conversation_summary(conversation: Conversation) -> ConversationSummary:
 
 
 def _attachments(record: TurnRecord) -> list[AttachmentSummary]:
-    return [
-        AttachmentSummary(
-            handle=item.handle, asset_id=item.asset_id, file_name=item.file_name, media_type=item.media_type
-        )
-        for item in record.attachments
-    ]
+    return [AttachmentSummary(**asdict(item)) for item in record.attachments]
 
 
 def _turn_summary(record: TurnRecord) -> TurnSummary:
@@ -106,8 +102,8 @@ def _turn_summary(record: TurnRecord) -> TurnSummary:
     )
 
 
-def _run_turn(container: Container) -> RunTurn:
-    return build_run_turn(container)
+def _run_turn(container: Container, *, reasoning: bool = False) -> RunTurn:
+    return build_run_turn(container, reasoning=reasoning)
 
 
 @router.post("/assistant/conversations", status_code=201)
@@ -211,7 +207,7 @@ def start_turn(
     manage = ManageConversations(
         conversations=container.conversation_repository, turns=container.turn_repository
     )
-    run_turn = _run_turn(container)
+    run_turn = _run_turn(container, reasoning=payload.reasoning)
     # 回合的 scope 由会话决定，请求里没有这个字段可传。会话不存在时 ``start`` 抛
     # ``TurnNotFoundError``（带 404 的码），路由**只放行**——映射在 ``api/errors.py``。
     try:
@@ -221,7 +217,7 @@ def start_turn(
                 question=payload.message,
                 include_debug=payload.include_debug,
                 graph_enabled=payload.graph_enabled,
-                retrieval_mode=payload.retrieval_mode,
+                reasoning=payload.reasoning,
                 idempotency_key=idempotency_key.strip(),
             )
         )
@@ -234,8 +230,26 @@ def start_turn(
     manage.ensure_title(conversation_id, payload.message)
 
     broker = container.turn_event_broker
-    # 执行由进程内 TurnExecutor 认领；这里只登记 SSE channel，不自己起线程。
-    broker.open(record.id)
+    # 普通实例逐回合唤起持久执行器，保留测评并发；后台循环负责恢复未完成的回合。
+    if not record.status.is_terminal:
+        broker.open(record.id)
+    if not container.settings.experience_mode and record.status.value == "pending":
+        executor = container.build_turn_executor()
+
+        def worker() -> None:
+            try:
+                executor.run_pending(record.id)
+            except Exception:
+                log.exception("回合执行失败: %s", record.id)
+
+        try:
+            threading.Thread(target=worker, name=f"turn-{record.id}", daemon=True).start()
+        except Exception:
+            try:
+                run_turn.fail_start(record.id)
+            finally:
+                broker.finish(record.id)
+            raise
     return StartTurnResponse(turn_id=record.id, conversation_id=conversation_id, status=record.status.value)
 
 
@@ -260,15 +274,7 @@ def _complete_payload(record: TurnRecord) -> CompleteEventPayload:
         status=record.status.value,
         termination_reason=record.termination_reason,
         answer=record.answer,
-        attachments=[
-            AttachmentSummary(
-                handle=item.handle,
-                asset_id=item.asset_id,
-                file_name=item.file_name,
-                media_type=item.media_type,
-            )
-            for item in record.attachments
-        ],
+        attachments=[AttachmentSummary(**asdict(item)) for item in record.attachments],
         requirements=[dict(item) for item in record.requirements],
         retrieved_candidates=list(record.retrieved_candidates),
         trace=dict(record.trace),
@@ -319,6 +325,8 @@ async def turn_events(
             nonlocal cursor
             for seq, attempt_no, stored in turns.events_after(turn_id, from_seq):
                 cursor = seq
+                if stored.kind == "request_budget":
+                    continue
                 yield _format_progress(
                     ProgressEvent(
                         step_index=seq,
@@ -403,6 +411,8 @@ def get_turn(turn_id: str, container: Container = Depends(get_container)) -> Tur
     terminal = record.status.is_terminal
     progress = []
     for seq, attempt_no, event in container.turn_repository.events_after(turn_id, 0):
+        if event.kind == "request_budget":
+            continue
         progress.append(
             _progress_payload(
                 ProgressEvent(
@@ -485,8 +495,13 @@ async def cancel_turn(turn_id: str, request: Request) -> OperationCancellationRe
         raise HTTPException(status_code=404, detail="turn not found")
     # 取消标志持久化：进程重启后的恢复扫描不会认领已取消回合。
     container.turn_repository.request_cancel(turn_id, now=datetime.now(UTC))
-    with suppress(KeyError):
-        container.operation_control.request_cancel("turn:" + turn_id)
+    try:
+        cleanup = container.operation_control.request_cancel("turn:" + turn_id)
+    except KeyError:
+        # 执行线程不在本进程（例如回合尚未被认领）——标志已经落库，足够。
+        cleanup = {"cleanup_status": "stopped" if record.status.is_terminal else "pending"}
     return OperationCancellationResponse(
-        operation_id=turn_id, cancel_requested=True, cleanup_status="pending"
+        operation_id=turn_id,
+        cancel_requested=True,
+        cleanup_status="stopped" if cleanup["cleanup_status"] == "stopped" else "pending",
     )

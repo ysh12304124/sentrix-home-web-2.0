@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+from collections import Counter
+from html.parser import HTMLParser
 from typing import Any
 
 import pytest
@@ -10,6 +12,7 @@ from test_error_analysis import item, report
 
 from photobench.domain.error_analysis.exports import export_report
 from photobench.domain.error_analysis.html_dashboard import (
+    retrieval_heat,
     retrieval_quality,
     retrieval_quality_card,
     retrieval_quality_counts,
@@ -57,7 +60,8 @@ def test_candidate_and_delivery_use_distinct_saved_sets_and_conditional_denomina
     full = retrieval_quality_card(candidate, "candidate", partial=False)
     partial = retrieval_quality_card(candidate, "candidate", partial=True)
     assert 'aria-label="命中 · 满分：1题，占有效样本16.7%"' in full
-    assert 'aria-label="命中 · 未达标：2题，占有效样本33.3%"' in full
+    assert 'aria-label="命中 · 未满分：2题，占有效样本33.3%"' in full
+    assert "未达标" not in full
     assert "命中组满分率</span><b>33.3%</b><small>1 / 3题" in full
     assert "命中组正确率</span><b>66.7%</b><small>2 / 3题" in partial
     delivered = retrieval_quality_card(delivery, "delivery", partial=False)
@@ -104,7 +108,11 @@ def test_multiturn_pairs_only_the_primary_score_when_its_turn_is_selected():
 def test_html_export_respects_the_selected_profile_and_keeps_the_scope(profile):
     cases = samples()
     exported = export_report(report(cases, scoring_profile=profile), cases, "html", {})
-    assert exported.count('class="retrieval-matrix"') == (2 if profile == "atm_qs_v1" else 4)
+    assert exported.count('class="retrieval-matrix"') == (4 if profile == "atm_qs_v1" else 6)
+    assert "候选检索 × 满分率（any）" in exported
+    assert "最终交付 × 满分率（any）" in exported
+    assert "候选检索 × 满分率（all）" in exported
+    assert "最终交付 × 满分率（all）" in exported
     assert ("候选检索 × 含部分正确率" in exported) == (profile != "atm_qs_v1")
     assert "最终交付 × 满分率" in exported and "有效6题" in exported
 
@@ -126,11 +134,66 @@ def test_native_atm_and_projected_fractional_list_scores_only_report_full_credit
     )
     assert case["score"] == 1
     exported = retrieval_quality([case], {})
-    assert exported.count('class="retrieval-matrix"') == 1  # delivery has no saved counts
+    assert exported.count('class="retrieval-matrix"') == 2  # delivery has no saved counts
     assert "含部分正确率" not in exported
     assert 'aria-label="命中 · 满分：0题，占有效样本0.0%"' in exported
     case["evaluation_result"]["profile_id"] = "photobench_open_v1"
     assert "含部分正确率" in retrieval_quality([case], {})
+
+
+def test_all_coverage_uses_full_gt_coverage_in_each_channel_without_changing_any():
+    cases = samples()
+    before = copy.deepcopy(cases)
+    candidate = retrieval_quality_counts(cases, "candidate")
+    delivery = retrieval_quality_counts(cases, "delivery")
+    assert candidate["all_cells"] == {(True, 1): 1, (False, 2): 2, (False, 1): 1, (False, 0): 2}
+    assert delivery["all_cells"] == {(False, 2): 2, (False, 1): 2, (False, 0): 2}
+    for counts in (candidate, delivery):
+        assert sum(counts["all_cells"].values()) == sum(counts["cells"].values()) == counts["valid"]
+    rendered = retrieval_quality_card(candidate, "candidate", partial=False, match_mode="all")
+    assert 'aria-label="全部命中 · 未满分：1题，占有效样本16.7%"' in rendered
+    assert 'aria-label="未全部命中 · 满分：2题，占有效样本33.3%"' in rendered
+    assert "全部命中组满分率</span><b>0.0%</b><small>0 / 1题" in rendered
+    assert "未全部命中组满分率</span><b>40.0%</b><small>2 / 5题" in rendered
+    assert "未全部命中包含部分命中和零命中" in rendered
+    assert cases == before
+
+
+@pytest.mark.parametrize(
+    ("matched", "predicted", "gt", "any_hit", "all_hit"),
+    [
+        (0, 0, 2, False, False),
+        (1, 1, 2, True, False),
+        (2, 2, 2, True, True),
+        (2, 3, 2, True, True),
+        (1, 2, 1, True, True),
+    ],
+)
+def test_all_means_recall_of_one_not_exact_set_equality(matched, predicted, gt, any_hit, all_hit):
+    case = media_case(2, 0, 0)
+    case["retrieval_counts"]["candidate"].update(matched=matched, predicted=predicted, gt=gt)
+    counts = retrieval_quality_counts([case], "candidate")
+    assert counts["cells"] == {(any_hit, 2): 1}
+    assert counts["all_cells"] == {(all_hit, 2): 1}
+
+
+@pytest.mark.parametrize("channel", ["candidate", "delivery"])
+def test_all_excludes_invalid_gt_and_preserves_primary_turn_scope(channel):
+    valid = media_case(2, 2, 2)
+    invalid = copy.deepcopy(valid)
+    invalid["retrieval_counts"][channel].update(gt=0, matched=0)
+    out_of_scope = copy.deepcopy(valid)
+    out_of_scope.update(evaluation={"applies_to_turn": 1}, matched_turns=[0])
+    missing_score = copy.deepcopy(valid)
+    missing_score["score"] = None
+    counts = retrieval_quality_counts([valid, invalid, out_of_scope, missing_score], channel)
+    assert counts["valid"] == 1
+    assert counts["all_cells"] == counts["cells"] == {(True, 2): 1}
+    assert counts["excluded"] == {"缺少有效媒体计数或GT": 1, "主评分轮不在筛选范围": 1, "缺少有效主评分": 1}
+    empty = retrieval_quality_card(
+        retrieval_quality_counts([invalid], channel), channel, partial=False, match_mode="all"
+    )
+    assert "没有可配对" in empty and "0.0%" not in empty
 
 
 def test_zero_sample_and_empty_hit_group_remain_uncovered():
@@ -140,3 +203,75 @@ def test_zero_sample_and_empty_hit_group_remain_uncovered():
     rendered = retrieval_quality_card(counts, "candidate", partial=False)
     assert "命中组满分率</span><b>未覆盖</b><small>0 / 0题" in rendered
     assert "未命中组满分率</span><b>100.0%</b><small>1 / 1题" in rendered
+
+
+class Mosaic(HTMLParser):
+    def __init__(self, markup: str):
+        super().__init__()
+        self.matrix: dict[str, str | None] = {}
+        self.columns: list[dict[str, str | None]] = []
+        self.cells: list[dict[str, str | None]] = []
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        classes = values.get("class", "").split()
+        if "retrieval-matrix" in classes:
+            self.matrix = values
+        if "matrix-column" in classes:
+            self.columns.append(values)
+        if "matrix-cell" in classes:
+            self.cells.append(values)
+
+
+def test_mosaic_geometry_uses_group_width_and_conditional_height_with_main_diagonal():
+    counts = {
+        "cells": Counter({(True, 2): 177, (True, 0): 258, (False, 2): 11, (False, 0): 185}),
+        "valid": 631,
+        "excluded": {},
+    }
+    markup = retrieval_quality_card(counts, "candidate", partial=False)
+    mosaic = Mosaic(markup)
+    assert mosaic.matrix["style"] == "grid-template-columns:minmax(0,435fr) minmax(0,196fr)"
+    assert [c["style"] for c in mosaic.columns] == [
+        "grid-template-rows:minmax(0,177fr) minmax(0,258fr)",
+        "grid-template-rows:minmax(0,11fr) minmax(0,185fr)",
+    ]
+    # Column-major DOM order: hit/full at top left, miss/fail at bottom right.
+    assert [c["class"] for c in mosaic.cells] == [
+        "matrix-cell hit correct",
+        "matrix-cell hit wrong",
+        "matrix-cell miss correct",
+        "matrix-cell miss wrong",
+    ]
+    assert [c["data-count"] for c in mosaic.cells] == ["177", "258", "11", "185"]
+    assert mosaic.cells[2]["title"] == "未命中 · 满分：11题，占有效样本1.7%"
+    assert mosaic.cells[2]["aria-label"] == mosaic.cells[2]["title"]
+    assert mosaic.cells[2]["tabindex"] == "0"
+    assert 'class="matrix-legend"' not in markup
+
+
+def test_heat_darkens_with_share_and_is_shared_across_categories_and_cards():
+    colors = [retrieval_heat(i / 100) for i in range(101)]
+    channels = [tuple(int(color[i : i + 2], 16) for i in (1, 3, 5)) for color in colors]
+    assert colors[0] == "#eff6ff" and colors[-1] == "#164576"
+    assert all(
+        all(x >= y for x, y in zip(a, b, strict=True)) and sum(a) > sum(b)
+        for a, b in zip(channels, channels[1:], strict=False)
+    )
+    counts = {"cells": Counter({(True, 2): 1, (False, 0): 1}), "valid": 2, "excluded": {}}
+    candidate = Mosaic(retrieval_quality_card(counts, "candidate", partial=False))
+    delivery = Mosaic(retrieval_quality_card(counts, "delivery", partial=False))
+    assert candidate.cells[0]["style"] == candidate.cells[3]["style"] == delivery.cells[0]["style"]
+
+
+@pytest.mark.parametrize("hit", [True, False])
+def test_zero_groups_and_cells_have_zero_weight_and_no_keyboard_stop(hit):
+    counts = {"cells": Counter({(hit, 2): 1}), "valid": 1, "excluded": {}}
+    mosaic = Mosaic(retrieval_quality_card(counts, "candidate", partial=False))
+    assert sum(int(c["data-count"]) for c in mosaic.cells) == 1
+    assert sum(c.get("tabindex") == "0" for c in mosaic.cells) == 1
+    for cell in mosaic.cells:
+        if cell["data-count"] == "0":
+            assert "tabindex" not in cell
+    assert "0fr" in mosaic.matrix["style"]

@@ -1,0 +1,1501 @@
+"""写侧用例：建 run / 取消 / 删除 / 评审 / 重判 / 内存画像。
+
+对应 1.0 ``OrchestratorRepository`` 的 ``start_suite``（``:7306``）/ ``cancel_run``
+（``:6879``）/ ``delete_run``（``:7010``）/ ``save_reviews``（``:4988``）/
+``start_rejudge``（``:7061``）/ ``start_memory_profile``（``:5159``）。
+
+**这一层的假件比主链那两份更"薄"**：``start_suite`` 起的是后台线程，所以
+``new_execution`` 注入一个**可控的假执行体**——它让「run 还在跑的时候取消」这件事
+可复现（真实主链 1 秒跑完，取消永远赢不了那个竞态）。
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fakes_execution import FakeAlbums, FakeHttpClient, FakeResultWriter, judge_reply
+
+from photobench.application.config.service import ConfigService
+from photobench.application.run_execution.service import RunRequest
+from photobench.application.run_execution.state import RunState
+from photobench.application.runs.index import RunIndex
+from photobench.application.runs.suites import RunSuites
+from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
+from photobench.domain.errors import InvalidRequestError
+from photobench.domain.runs.analysis import run_list_entry
+from photobench.infrastructure.config.env import DotenvSecretStore
+from photobench.infrastructure.config.files import JsonConfigStore
+
+PROVIDERS = {
+    "default_provider_id": "cloud",
+    "providers": {"cloud": {"url": "http://judge:1/v1", "model": "judge-model", "api_key": ""}},
+}
+TARGETS = {
+    "default_target_id": "local",
+    "targets": {
+        "local": {
+            "label": "本机",
+            "manager_url": "http://manager:8500",
+            "model_base_url": "http://127.0.0.1:8100/v1",
+        }
+    },
+}
+MANIFEST = {
+    "album_id": "album-x",
+    "album_name": "测试相册",
+    "photos": ["photos/a.jpg"],
+    "videos": [],
+    "faces": [],
+    "qa_sets": {"qa-1": "qa1.jsonl"},
+}
+
+
+class FakeRunStore:
+    """``RunStore`` 的替身：只在内存里放一份 state。"""
+
+    def __init__(self, states: dict[str, dict[str, Any]] | None = None) -> None:
+        self.states = states or {}
+
+    def iter_entries(self) -> Iterator[dict[str, Any]]:
+        return iter([])
+
+    def load_state(self, run_id: str) -> dict[str, Any]:
+        if run_id not in self.states:
+            raise KeyError(run_id)
+        return self.states[run_id]
+
+    def read_reviews(self, run_id: str) -> dict[str, Any]:
+        if run_id not in self.states:
+            raise KeyError(run_id)
+        return {"reviews": {}}
+
+    def read_gpu_sample_lines(self, run_id: str) -> list[str]:
+        return []
+
+
+class FakeExecution:
+    """``RunExecution`` 的替身：``execute`` 可以被一个闸门卡住，好让取消有窗口。"""
+
+    def __init__(self, request: RunRequest, gate: threading.Event | None = None) -> None:
+        self.request = request
+        self.gate = gate
+        self.cancels: list[str] = []
+        self.state = _State({"run_id": request.run_id, "status": "running", "items": [], "phases": {}})
+
+    def prepare(self, request: RunRequest) -> _State:
+        return self.state
+
+    def cancel(self, source: str = "api") -> None:
+        self.cancels.append(source)
+        self.state.request_cancel(source)
+
+    def execute(self, request: RunRequest) -> dict[str, Any]:
+        if self.gate is not None:
+            self.gate.wait(timeout=5)
+        if self.state.cancelled:
+            self.state.set("status", "cancelled")
+        else:
+            self.state.set("status", "completed")
+        return self.state.data
+
+
+class _State:
+    """``RunState`` 的最小替身（只用到状态读写与取消信号）。"""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+        self.cancel_event = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+    def set(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.data.get(key, default)
+
+    def request_cancel(self, source: str = "api") -> None:
+        self.cancel_event.set()
+        self.data["cancel_source"] = source
+        self.data["status"] = "cancelling" if self.data.get("status") else "cancelled"
+
+
+def _suites(
+    tmp_path: Path,
+    *,
+    store: FakeRunStore | None = None,
+    writer: FakeResultWriter | None = None,
+    http: FakeHttpClient | None = None,
+    gate: threading.Event | None = None,
+    **overrides: Any,
+) -> RunSuites:
+    config_root = tmp_path / "config"
+    config_root.mkdir(exist_ok=True)
+    (config_root / "runtime_connection.json").write_text(
+        json.dumps({"sentrix_url": "http://sentrix:8191", "judge_provider_id": "cloud"}), encoding="utf-8"
+    )
+    (config_root / "judge_providers.json").write_text(json.dumps(PROVIDERS), encoding="utf-8")
+    (config_root / "vllm_targets.json").write_text(json.dumps(TARGETS), encoding="utf-8")
+    config = ConfigService(JsonConfigStore(config_root), DotenvSecretStore(config_root))
+    albums = FakeAlbums(manifest=MANIFEST)
+    kwargs: dict[str, Any] = {
+        "store": store or FakeRunStore(),
+        "writer": writer or FakeResultWriter(),
+        "index": RunIndex(),
+        "albums": albums,
+        "config": config,
+        "sentrix": _FakeSentrix(),
+        "http": http or FakeHttpClient(),
+        "new_execution": lambda request: FakeExecution(request, gate),
+        "lifecycle_for": lambda _url: _FakeLifecycle(),
+        "manager_telemetry_for": lambda _url: _FakeTelemetry(),
+        "detect_framework": lambda _value, _url: "generic",
+        "sleep": lambda _seconds: None,
+    }
+    kwargs.update(overrides)
+    return RunSuites(**kwargs)
+
+
+class _FakeSentrix:
+    def start_conversation(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"id": "conv_1"}
+
+    def start_turn(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"turn_id": "turn_1", "status": "running"}
+
+    def get_turn(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"turn_id": "turn_1", "status": "complete", "result": {"answer": "ok"}}
+
+
+class _FakeLifecycle:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def stop(self, _payload: Any = None, *, timeout: float = 90) -> dict[str, Any]:
+        self.calls.append("stop")
+        return {"status": "stopped"}
+
+    def start(self, _payload: Any, *, timeout: float = 120) -> dict[str, Any]:
+        self.calls.append("start")
+        return {"status": "starting"}
+
+    def state(self) -> dict[str, Any]:
+        return {"profile": "p", "served_model_name": "p"}
+
+
+class _FakeTelemetry:
+    def gpu_stats(self) -> dict[str, Any]:
+        return {"status": "available", "data": {"gpus": [{"index": 0, "temperature_c": 50.0}]}}
+
+    def process_memory(self) -> dict[str, Any]:
+        return {"status": "available", "data": {}}
+
+    def system_memory(self) -> dict[str, Any]:
+        return {"status": "available", "data": {}}
+
+    def kv_cache(self) -> dict[str, Any]:
+        return {"status": "not_applicable", "data": {}}
+
+
+def _payload(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {"album_id": "album-x", "qa_set": "qa-1", "models": ["qwen"]}
+    base.update(overrides)
+    return base
+
+
+def _wait_until(predicate: Any, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+# ---- 建 run ---------------------------------------------------------------
+
+
+def test_start_suite_rejects_a_mode_2_0_does_not_implement(tmp_path: Path):
+    """Unknown modes must still be rejected after build becomes supported."""
+    with pytest.raises(InvalidRequestError) as excinfo:
+        _suites(tmp_path).start_suite(_payload(mode="unknown"))
+    assert "mode must be" in str(excinfo.value)
+
+
+def test_reuse_requires_an_existing_scope(tmp_path: Path):
+    """``mode=reuse`` 没有 ``existing_scope_id`` 就是 400。
+
+    没有 scope id 就没有可复用的对象，而静默降级成 ``full`` 会建出一个新 scope
+    ——那正是调用方要避免的那件事（也是 1.0 ``scope_attach`` 存在的全部理由）。
+    """
+    with pytest.raises(InvalidRequestError) as excinfo:
+        _suites(tmp_path).start_suite(_payload(mode="reuse"))
+
+    assert "existing_scope_id" in str(excinfo.value)
+
+
+def test_reuse_is_accepted_with_an_existing_scope(tmp_path: Path):
+    """给了 scope id 就接受，并把 mode 与 scope 一路传下去。"""
+    suite = _suites(tmp_path).start_suite(
+        _payload(mode="reuse", existing_scope_id="PhotoBench-20260101-000000-album-qwen")
+    )
+
+    assert suite["mode"] == "reuse"
+    assert suite["existing_scope_id"] == "PhotoBench-20260101-000000-album-qwen"
+
+
+def test_active_run_list_uses_cached_projection_while_state_is_locked(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    state = RunState(
+        {
+            "run_id": "live-run",
+            "status": "running",
+            "started_at": "2026-11-18T00:00:00+08:00",
+            "qa_count": 2,
+            "items": [
+                {"qa_id": "q1", "judge": {"score": 2}, "execution_status": "completed"},
+                {"qa_id": "q2", "judge": {"score": 0}, "execution_status": "completed"},
+            ],
+            "phases": {"qa_eval": {"status": "running", "progress": {"agent_completed": 1}}},
+        }
+    )
+    suites = _suites(tmp_path)
+    with suites._lock:
+        suites._register_active("live-run", SimpleNamespace(state=state))
+    assert suites.active_states()["live-run"] == run_list_entry(state.data)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        state.lock.acquire()
+        try:
+            work_future = pool.submit(suites.work_status)
+            entries_future = pool.submit(suites.active_states)
+            work = work_future.result(timeout=1)
+            entries = entries_future.result(timeout=1)
+        finally:
+            state.lock.release()
+
+    assert work["work"][0]["status"] == "running"
+    assert work["cleanup_status"] == "pending"
+    assert entries["live-run"]["phases"]["qa_eval"]["progress"]["agent_completed"] == 1
+
+    state.record_phase("qa_eval", "progress", {"agent_completed": 2})
+    refreshed = suites.active_states()["live-run"]
+    assert refreshed["phases"]["qa_eval"]["progress"]["agent_completed"] == 2
+    assert refreshed["summary"]["judge_distribution"] == {"0": 1, "1": 0, "2": 1}
+    refreshed["phases"]["qa_eval"]["progress"]["agent_completed"] = 999
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        state.lock.acquire()
+        try:
+            cached = pool.submit(suites.active_states).result(timeout=1)
+        finally:
+            state.lock.release()
+    assert cached["live-run"]["phases"]["qa_eval"]["progress"]["agent_completed"] == 2
+
+
+class _StrictAlbums:
+    """只认识一个 album 的 ``AlbumSource``：manifest 查不到就 ``KeyError``。
+
+    ``FakeAlbums``（fakes_execution 那份）对任何 album_id 都返回同一份 manifest——
+    用它来测「未知 album 要报错」的用例**没有区分力**（实现完全不做校验也会通过）。
+    """
+
+    def __init__(self, album_id: str) -> None:
+        self.album_id = album_id
+
+    def manifest(self, album_id: str) -> dict[str, Any]:
+        if album_id != self.album_id:
+            raise KeyError(album_id)
+        return {**MANIFEST, "qa_sets": dict(MANIFEST["qa_sets"])}
+
+    def qa_rows(self, _album_id: str, _qa_set: str) -> list[dict[str, Any]]:
+        return []
+
+
+def test_start_suite_rejects_an_unknown_album(tmp_path: Path):
+    suites = _suites(tmp_path, albums=_StrictAlbums("album-x"))
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.start_suite(_payload(album_id="nope"))
+    assert "manifest not found" in str(excinfo.value)
+
+
+def test_start_suite_requires_at_least_one_model(tmp_path: Path):
+    with pytest.raises(InvalidRequestError):
+        _suites(tmp_path).start_suite(_payload(models=[]))
+
+
+def test_start_suite_registers_the_run_and_returns_its_id(tmp_path: Path):
+    # 闸门让 run 停在 running：否则后台线程会抢在断言之前把它跑完，而这条断言
+    # 要的是「刚建出来时它在注册表里」（用 ``_active`` 而不是 ``active_run_ids()``，
+    # 后者按状态过滤，会与那个竞态赛跑）。
+    gate = threading.Event()
+    suites = _suites(tmp_path, gate=gate)
+    result = suites.start_suite(_payload())
+    assert result["mode"] == "full"
+    assert len(result["run_ids"]) == 1
+    assert suites.active_run_ids() == result["run_ids"]
+    gate.set()
+
+
+def test_graph_switch_reaches_run_request_and_baseline(tmp_path: Path):
+    captured: list[RunRequest] = []
+
+    def factory(request: RunRequest) -> FakeExecution:
+        captured.append(request)
+        return FakeExecution(request)
+
+    for enabled in (False, True):
+        suites = _suites(tmp_path, new_execution=factory)
+        result = suites.start_suite(_payload(graph_enabled=enabled, graph_baseline_run_id="baseline-run"))
+        assert result["graph_enabled"] is enabled
+        assert captured[-1].graph_enabled is enabled
+        assert captured[-1].graph_baseline_run_id == ("baseline-run" if enabled else "")
+
+
+def test_graph_switch_rejects_non_boolean(tmp_path: Path):
+    with pytest.raises(InvalidRequestError, match="graph_enabled must be a boolean"):
+        _suites(tmp_path).start_suite(_payload(graph_enabled="false"))
+
+
+@pytest.mark.parametrize(
+    "options,enabled,timeout",
+    [
+        ({}, True, 3660),
+        ({"reasoning": False}, False, 900),
+        ({"reasoning": True, "turn_timeout": 42}, True, 42),
+    ],
+)
+def test_reasoning_default_and_override_are_frozen_in_run(tmp_path, options, enabled, timeout):
+    captured = []
+    suites = _suites(tmp_path, new_execution=lambda r: captured.append(r) or FakeExecution(r))
+    result = suites.start_suite(_payload(**options))
+    request = captured[0]
+    assert result["reasoning"] is request.reasoning is enabled
+    assert request.turn_timeout == timeout
+    budgets = request.runtime_snapshot.connection()["execution_budgets"]
+    assert budgets["reasoning"] is enabled and budgets["turn_timeout"] == timeout
+    assert _wait_until(lambda: not suites.work_status()["work"])
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, None])
+def test_reasoning_rejects_non_boolean(tmp_path, invalid):
+    with pytest.raises(InvalidRequestError, match="reasoning must be a boolean"):
+        _suites(tmp_path).start_suite(_payload(reasoning=invalid))
+
+
+# ---- 取消 -----------------------------------------------------------------
+
+
+def test_suite_worker_ownership_prevents_cleanup_while_execution_is_live(tmp_path):
+    from photobench.application.run_execution.service import RunExecution
+
+    gate, entered = threading.Event(), threading.Event()
+    refreshed = []
+
+    class ControlledExecution(RunExecution):
+        def __init__(self, request):
+            self._state = _State({"run_id": request.run_id, "status": "running"})
+
+        def execute(self, request):
+            entered.set()
+            assert gate.wait(5)
+            self._state.set("status", "completed")
+            return self._state.data
+
+        def refresh_cleanup(self):
+            refreshed.append(1)
+            return False
+
+    suites = _suites(tmp_path, new_execution=ControlledExecution)
+    try:
+        ids = suites.start_suite(_payload(models=["a", "b"]))["run_ids"]
+        assert entered.wait(3)
+        work = suites.work_status()["work"]
+        assert {w["id"] for w in work} == set(ids)
+        assert all(w["worker_alive"] for w in work)
+        assert suites.refresh_cleanup()["errors"] == {}
+        assert refreshed == []
+    finally:
+        gate.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+
+
+def test_cancel_run_cancels_a_running_run_and_the_chain_sees_it(tmp_path: Path):
+    """取消是**两个动作**：置信号（主链下一次检查就抛 ``RunCancelledError``）+ 回收模型。
+
+    **区分力**：只把 ``state["status"]`` 改成 ``cancelled`` 而没置事件的实现，会让
+    ``cancel_event.is_set()`` 为假——主链里正在等的那一段永远醒不过来。
+    """
+    gate = threading.Event()
+    suites = _suites(tmp_path, gate=gate)
+    run_id = suites.start_suite(_payload())["run_ids"][0]
+    assert suites.cancel_run(run_id) == {"cancelled": True, "run_id": run_id}
+    execution = suites._active[run_id]
+    assert execution.state.cancel_event.is_set() is True  # type: ignore[attr-defined]
+    assert execution.cancels == ["run_api"]  # type: ignore[attr-defined]
+    gate.set()
+
+
+def test_cancel_run_on_a_disk_only_run_says_it_is_not_active(tmp_path: Path):
+    """不在跑的 run 返回「没取消」而不是 404——1.0 对从磁盘加载的 run 就是这么答的。"""
+    store = FakeRunStore({"run-old": {"run_id": "run-old", "status": "completed"}})
+    suites = _suites(tmp_path, store=store)
+    assert suites.cancel_run("run-old") == {
+        "cancelled": False,
+        "run_id": "run-old",
+        "reason": "run not active (loaded from disk)",
+    }
+    with pytest.raises(KeyError):
+        suites.cancel_run("nope")
+
+
+def test_cancel_active_suite_cancels_every_running_run(tmp_path: Path):
+    gate = threading.Event()
+    suites = _suites(tmp_path, gate=gate)
+    run_ids = suites.start_suite(_payload(models=["a", "b"]))["run_ids"]
+    result = suites.cancel_active_suite()
+    assert sorted(result["cancelled"]) == sorted(run_ids)
+    assert result["total"] == 2
+    gate.set()
+    assert _wait_until(lambda: not suites.active_run_ids())
+
+
+# ---- 删除与评审 -----------------------------------------------------------
+
+
+def test_delete_run_removes_the_directory_and_the_index_entry(tmp_path: Path):
+    store = FakeRunStore({"run-old": {"run_id": "run-old", "status": "completed"}})
+    writer = FakeResultWriter()
+    suites = _suites(tmp_path, store=store, writer=writer)
+    assert suites.delete_run("run-old") == {"deleted": True, "run_id": "run-old"}
+    assert writer.deleted == ["run-old"]
+    with pytest.raises(KeyError):
+        suites.delete_run("nope")
+
+
+def test_save_reviews_filters_unknown_ids_and_bad_verdicts(tmp_path: Path):
+    """界面会整份提交；一条写坏不该让整批评审丢失（1.0 ``:5001``）。
+
+    **区分力**：断言 ``saved`` 计数与**留下的键**——一个不过滤的实现会把 3 条都存下去。
+    """
+    store = FakeRunStore(
+        {"run-1": {"run_id": "run-1", "status": "completed", "items": [{"qa_id": "q1"}, {"qa_id": "q2"}]}}
+    )
+    writer = FakeResultWriter()
+    suites = _suites(tmp_path, store=store, writer=writer)
+    result = suites.save_reviews(
+        "run-1",
+        {
+            "reviews": {
+                "q1": {"verdict": "correct", "note": "对"},
+                "q2": {"verdict": "bogus"},
+                "q9": {"verdict": "wrong"},
+            }
+        },
+    )
+    assert result["saved"] == 1
+    _run_id, stored = writer.reviews[-1]
+    assert set(stored["reviews"]) == {"q1"}
+
+
+def test_reviews_are_refused_while_the_run_is_running(tmp_path: Path):
+    store = FakeRunStore({"run-1": {"run_id": "run-1", "status": "running", "items": []}})
+    suites = _suites(tmp_path, store=store)
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.save_reviews("run-1", {"reviews": {}})
+    assert "while benchmark is running" in str(excinfo.value)
+
+
+def test_get_run_judge_prompt_returns_what_was_actually_sent(tmp_path: Path):
+    store = FakeRunStore(
+        {
+            "run-1": {
+                "run_id": "run-1",
+                "status": "completed",
+                "items": [
+                    {
+                        "qa_id": "q1",
+                        "judge": {
+                            "input": {
+                                "messages": [
+                                    {"role": "system", "content": "当时的提示词"},
+                                    {"role": "user", "content": "x"},
+                                ]
+                            }
+                        },
+                    },
+                ],
+            }
+        }
+    )
+    suites = _suites(tmp_path, store=store)
+    assert suites.get_run_judge_prompt("run-1") == {"system_prompt": "当时的提示词"}
+
+
+def test_get_run_judge_prompt_is_null_when_nothing_was_scored(tmp_path: Path):
+    store = FakeRunStore({"run-1": {"run_id": "run-1", "status": "completed", "items": [{"qa_id": "q1"}]}})
+    suites = _suites(tmp_path, store=store)
+    assert suites.get_run_judge_prompt("run-1") == {"system_prompt": None}
+
+
+# ---- 重判 -----------------------------------------------------------------
+
+
+def _judged_state() -> dict[str, Any]:
+    return {
+        "run_id": "run-1",
+        "status": "completed",
+        "scope_id": "PhotoBench-x",
+        "sentrix_url": "http://sentrix:8191",
+        "items": [
+            {
+                "qa_id": "q1",
+                "question": "海边的是哪张？",
+                "reference_answer": "a.jpg",
+                "answer": "a.jpg",
+                "expected_action": "answer",
+                "judge": {"score": 0, "reason": "旧的"},
+                "runtime_turns": [
+                    {
+                        "message": "海边的是哪张？",
+                        "answer": "a.jpg",
+                        "expected_action": "answer",
+                        "judge": {"score": 0, "reason": "旧的"},
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def test_rejudge_archives_the_old_score_and_writes_a_new_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """重判**必须归档旧分**（``judge_history``）——否则「换个提示词看看分怎么变」不可逆。
+
+    **区分力**：只断言「新分数写进去了」的用例对一个不归档的实现同样成立；
+    这条同时断言旧分还在 ``judge_history`` 里。
+    """
+    state = _judged_state()
+    store = FakeRunStore({"run-1": state})
+    writer = FakeResultWriter()
+    # 调用顺序是「回答质量 → 任务行为」：先质量、后任务（见 ``_run_rejudge``）。
+    http = FakeHttpClient(
+        [
+            judge_reply('{"score":2,"reason":"正确"}'),
+            judge_reply('{"actual_action":"answer","reason":"直接回答"}'),
+        ]
+    )
+    suites = _suites(tmp_path, store=store, writer=writer, http=http)
+    result = suites.start_rejudge("run-1", {"system_prompt": "新提示词"})
+    assert result["total"] == 1
+    assert _wait_until(lambda: (state.get("rejudge") or {}).get("status") == "completed")
+    item = state["items"][0]
+    assert item["judge"]["score"] == 2
+    assert item["judge_history"][0]["judge"]["score"] == 0
+    assert item["judge"]["rejudge_id"] == result["rejudge_id"]
+    # 任务行为判分跟着重判，item 级取最后一轮。
+    assert item["task_judge"]["actual_action"] == "answer"
+    assert item["runtime_turns"][0]["task_judge"]["actual_action"] == "answer"
+
+
+@pytest.mark.parametrize("with_turns", [True, False])
+def test_rejudge_replaces_failed_status_without_reusing_old_evidence(tmp_path, with_turns):
+    from copy import deepcopy
+
+    from photobench.domain.error_analysis.rules import case_from_item
+
+    state = _judged_state()
+    state["status"] = "completed_with_errors"
+    item = state["items"][0]
+    if not with_turns:
+        item.pop("runtime_turns")
+    failed = {"score": None, "judge_status": "failed", "reason": "judge_error: HTTP 401"}
+    for record in [item, *(item.get("runtime_turns") or [])]:
+        record.update(judge=deepcopy(failed), evidence_judge=deepcopy(failed), judge_status="failed")
+    http = FakeHttpClient(
+        [
+            judge_reply('{"score":2,"reason":"正确"}'),
+            judge_reply('{"actual_action":"answer","reason":"直接回答"}'),
+        ]
+    )
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    suites.start_rejudge("run-1", {"system_prompt": "评分"})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert item["judge_status"] == "completed"
+    assert item["evidence_judge_history"][0]["evidence_judge"] == failed
+    for record in [item, *(item.get("runtime_turns") or [])]:
+        assert record["evidence_judge"]["reason"] == "not_applicable"
+    assert not any(event["component"] == "judge" for event in case_from_item(item, 0)["events"])
+    assert state["status"] == "completed_with_errors"
+    assert item["judge_history"][0]["judge"] == failed
+
+
+def test_rejudge_refuses_while_the_run_is_active(tmp_path: Path):
+    store = FakeRunStore({"run-1": {**_judged_state(), "status": "running"}})
+    suites = _suites(tmp_path, store=store)
+    with pytest.raises(InvalidRequestError):
+        suites.start_rejudge("run-1", {"system_prompt": "x"})
+
+
+def test_rejudge_requires_a_prompt_and_at_least_one_answer(tmp_path: Path):
+    store = FakeRunStore(
+        {"run-1": _judged_state(), "run-2": {"run_id": "run-2", "status": "completed", "items": []}}
+    )
+    suites = _suites(tmp_path, store=store)
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.start_rejudge("run-1", {})
+    assert "system_prompt is required" in str(excinfo.value)
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.start_rejudge("run-2", {"system_prompt": "x"})
+    assert "no completed agent answers" in str(excinfo.value)
+
+
+# ---- 内存画像 -------------------------------------------------------------
+
+
+def test_memory_profile_requires_a_manager_and_known_runs(tmp_path: Path):
+    store = FakeRunStore({"run-1": _judged_state()})
+    suites = _suites(tmp_path, store=store)
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.start_memory_profile({})
+    assert "run_ids is required" in str(excinfo.value)
+    with pytest.raises(InvalidRequestError):
+        suites.start_memory_profile({"run_ids": ["nope"]})
+    # 配置里的 vllm_manager_url 是空的（runtime_connection.json 没写），而 payload 也没给
+    with pytest.raises(InvalidRequestError) as excinfo:
+        suites.start_memory_profile({"run_ids": ["run-1"]})
+    assert "model manager" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "options,enabled,timeout",
+    [
+        ({}, False, 900),
+        ({"reasoning": False}, False, 900),
+        ({"reasoning": True, "execution_budgets": {"turn_timeout": 4000}}, True, 4000),
+    ],
+)
+def test_memory_profile_replays_questions_without_touching_the_answers(
+    tmp_path: Path, monkeypatch, options, enabled, timeout
+):
+    """``items_sha256_before/after`` 相等是这条不变量的机械证据（1.0 ``:5175``）。
+
+    **区分力**：一个顺手把重放答案写回 items 的实现会让两个哈希不同——那时
+    ``items_integrity_ok`` 是 False，而这正是界面上要看到的那件事。
+    """
+    import photobench.application.runs.suites as suites_module
+
+    state = {**_judged_state(), **options}
+    calls, waits = [], []
+    client = _FakeSentrix()
+    monkeypatch.setattr(
+        client,
+        "start_turn",
+        lambda **kwargs: calls.append(kwargs) or {"turn_id": "turn_1", "status": "running"},
+    )
+    original_await = suites_module._await_turn
+
+    def await_turn(*args, **kwargs):
+        waits.append(args[2])
+        return original_await(*args, **kwargs)
+
+    monkeypatch.setattr(suites_module, "_await_turn", await_turn)
+    store = FakeRunStore({"run-1": state})
+    writer = FakeResultWriter()
+    suites = _suites(tmp_path, store=store, writer=writer, sentrix=client)
+    result = suites.start_memory_profile({"run_ids": ["run-1"], "vllm_manager_url": "http://manager:8500"})
+    assert result["status"] == "running"
+    assert _wait_until(lambda: (state.get("memory_profile") or {}).get("status") == "completed")
+    record = state["memory_profile"]
+    assert calls and all(call["reasoning"] is enabled for call in calls)
+    assert waits and all(value == timeout for value in waits)
+    assert record["items_integrity_ok"] is True
+    assert record["answers_persisted"] is False
+    # 内存画像这条路径仍然不换模型（1.0 的 bind-runtime 在 2.0 是「重启 2.0」，
+    # 见 application.deploy；这条路径没有端点来源），如实记 false 并写明原因。
+    assert record["gamma_sync"]["ok"] is False
+    assert "application.deploy" in record["gamma_sync"]["error"]
+
+
+# ---- resume（2026-10-15 恢复）-----------------------------------------------
+
+
+def _cancelled_state(**over: Any) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "status": "cancelled",
+        "scope_id": "PhotoBench-20260101-000000-album-x-qwen",
+        "album_id": "album-x",
+        "qa_set": "qa-1",
+        "model_profile": "qwen",
+        "sentrix_url": "http://sentrix:8191",
+        "items": [
+            {"qa_id": "q1", "execution_status": "completed"},
+            {"qa_id": "q2", "execution_status": "scheduled"},
+            {"qa_id": "q3", "execution_status": "running"},
+        ],
+    }
+    rows = [
+        {"qa_id": f"q{i}", "question": f"original question {i}", "answer": "original reference"}
+        for i in range(1, 4)
+    ]
+    state["qa_snapshot"] = {
+        "album_id": "album-x",
+        "qa_set": "qa-1",
+        "rows": rows,
+        "definition_sha256": qa_fingerprint(rows),
+    }
+    state.update(over)
+    return state
+
+
+def test_resume_rejects_a_run_that_is_not_resumable(tmp_path: Path):
+    """只有 ``interrupted`` / ``failed`` / ``cancelled`` / ``completed_with_errors``
+    能续跑（1.0 ``:7495``）。正在跑的 run 不该被再起一个。"""
+    store = FakeRunStore({"run-1": _cancelled_state(status="running")})
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        _suites(tmp_path, store=store).resume_run("run-1")
+
+    assert "cannot be resumed" in str(excinfo.value)
+
+
+def test_resume_rejects_a_run_without_a_scope_checkpoint(tmp_path: Path):
+    """没有 scope 就没有可复用的对象——1.0 ``:7513`` 同样拒绝。"""
+    store = FakeRunStore({"run-1": _cancelled_state(scope_id="")})
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        _suites(tmp_path, store=store).resume_run("run-1")
+
+    assert "no memory-space checkpoint" in str(excinfo.value)
+
+
+def test_resume_rejects_unfinished_pipeline_before_starting_agents(tmp_path):
+    saved = _cancelled_state(scope_build={"status": "incomplete"}, items=[])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="incomplete build"):
+        suites.resume_run("run-1")
+    assert not suites._active
+
+
+@pytest.mark.parametrize(
+    "checkpoint_fields",
+    [
+        {"scope_build": {"status": "incomplete"}},
+        {"status": "interrupted", "mode": "full"},
+        {"status": "interrupted", "mode": "build"},
+        {
+            "status": "interrupted",
+            "mode": "reuse",
+            "resume_context": {"finish_incomplete_build": True},
+        },
+    ],
+)
+def test_explicit_pipeline_recovery_freezes_source_ids_and_qa_without_touching_original(
+    tmp_path, checkpoint_fields
+):
+    import copy
+
+    saved = _cancelled_state(
+        pipeline_asset_ids=["a", "b"],
+        items=[],
+        phases={"identity_seed": {"status": "done"}, "photo_import": {"status": "done"}},
+        **checkpoint_fields,
+    )
+    original = copy.deepcopy(saved)
+    captured = []
+    gate = threading.Event()
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=(lambda request: captured.append(request) or FakeExecution(request, gate)),
+    )
+    try:
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+        request = captured[0]
+        assert request.recover_pipeline and request.recovery_asset_ids == ("a", "b")
+        assert request.frozen_qa_snapshot == original["qa_snapshot"]
+        assert saved == original
+    finally:
+        gate.set()
+
+
+def test_abrupt_full_build_interruption_requires_explicit_pipeline_recovery(tmp_path):
+    saved = _cancelled_state(status="interrupted", mode="full", items=[])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="incomplete build"):
+        suites.resume_run("run-1")
+    assert not suites._active
+
+
+@pytest.mark.parametrize("checkpoint", [[], ["a"]])
+def test_pipeline_recovery_requires_completed_import_checkpoint(tmp_path, checkpoint):
+    saved = _cancelled_state(scope_build={"status": "incomplete"}, pipeline_asset_ids=checkpoint)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    with pytest.raises(InvalidRequestError, match="complete asset import checkpoint"):
+        suites.resume_run("run-1", {"finish_incomplete_build": True})
+    assert not suites._active
+
+
+def test_resume_carries_only_the_finished_items_and_reuses_the_scope(tmp_path: Path):
+    """续跑只带**跑完的**题；``scheduled`` / ``running`` 的留给这一轮重跑。
+
+    判据逐条照 1.0 ``:3414-3417`` 的 ``execution_status not in {"scheduled", "running"}``。
+    这也正是取消掉的题必须标 ``scheduled`` 而不能标 ``failed`` 的原因——标 failed
+    会被当成「已跑完」，续跑时永远跳过。
+    """
+    store = FakeRunStore({"run-1": _cancelled_state()})
+
+    result = _suites(tmp_path, store=store, gate=threading.Event()).resume_run("run-1")
+
+    assert result["mode"] == "reuse"
+    assert result["scope_id"] == "PhotoBench-20260101-000000-album-x-qwen"
+    assert result["resumed_from"] == "run-1"
+    # 三题里只有 q1 是 completed；另外两题留给这一轮。
+    assert result["resumed_items"] == 1
+
+
+def test_explicit_service_resume_preserves_other_answers_scores_and_original(tmp_path):
+    import copy
+
+    from test_service_recovery import service_failure
+
+    kept = {"qa_id": "q1", "execution_status": "completed", "answer": "valid zero-score answer"}
+    retry = service_failure("q2")
+    saved = _cancelled_state(
+        items=[kept, retry, {"qa_id": "q3", "execution_status": "scheduled"}],
+        scoring_results={
+            "kept": {"qa_id": "q1", "status": "completed", "score": 0, "requests": [{"raw": "keep"}]},
+            # A service-error placeholder may itself receive 1; eligibility ignores the score.
+            "retry": {"qa_id": "q2", "status": "completed", "score": 1, "requests": [{"raw": "error"}]},
+        },
+        diagnostic_results={"d1": {"qa_id": "q1"}, "d2": {"qa_id": "q2"}},
+    )
+    before = copy.deepcopy(saved)
+    captured, gate = [], threading.Event()
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=lambda request: captured.append(request) or FakeExecution(request, gate),
+    )
+    try:
+        plan = suites.recovery_plan("run-1")
+        assert [r["qa_id"] for r in plan["retryable_service_failures"]] == ["q2"]
+        response = suites.resume_run(
+            "run-1", {"retry_qa_ids": ["q2"], "retry_reason": "provider quota error"}
+        )
+        request = captured[0]
+        assert request.run_id != "run-1"
+        assert response["resumed_items"] == 1
+        assert request.prior_items == (kept,)
+        assert request.prior_scoring["scoring_results"] == {"kept": saved["scoring_results"]["kept"]}
+        assert request.prior_scoring["diagnostic_results"] == {"d1": {"qa_id": "q1"}}
+        assert request.resume_context["retry_qa_ids"] == ["q2"]
+        assert request.resume_context["replaced_scoring_result_keys"] == ["retry"]
+        assert request.resume_context["source_retried_items_sha256"]["q2"]
+        assert request.frozen_qa_snapshot == saved["qa_snapshot"]
+        assert saved == before
+    finally:
+        gate.set()
+
+
+def test_service_failure_only_run_can_be_resumed_without_unstarted_rows(tmp_path):
+    from test_service_recovery import service_failure
+
+    saved = _cancelled_state(items=[service_failure(f"q{i}") for i in range(1, 4)])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}))
+    plan = suites.recovery_plan("run-1")
+    assert plan["remaining_qa_count"] == 0
+    assert len(plan["retryable_service_failures"]) == 3
+    assert plan["can_resume"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"retry_qa_ids": "q1"},
+        {"retry_qa_ids": ["q1", "q1"], "retry_reason": "x"},
+        {"retry_qa_ids": ["q1"]},
+        {"retry_qa_ids": ["q1"], "retry_reason": "x"},
+        {"retry_qa_ids": ["unknown"], "retry_reason": "x"},
+    ],
+)
+def test_explicit_service_resume_rejects_invalid_or_non_failure_selection(tmp_path, payload):
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": _cancelled_state()}))
+    with pytest.raises(InvalidRequestError):
+        suites.resume_run("run-1", payload)
+    assert not suites._active
+
+
+def test_queued_requests_freeze_topology_before_configuration_changes(tmp_path):
+    captured = []
+    gate = threading.Event()
+
+    def factory(request):
+        captured.append(request)
+        return FakeExecution(request, gate)
+
+    suites = _suites(tmp_path, new_execution=factory)
+    suites.start_suite(_payload(models=["a", "b"], model_base_url="http://127.0.0.1:8106/v1"))
+    try:
+        suites._config.persist_runtime_connection(
+            {
+                "sentrix_url": "http://127.0.0.1:8291",
+                "judge_url": "http://judge:8100/v1",
+                "judge_model": "judge",
+                "model_base_url": "http://127.0.0.1:8109/v1",
+            }
+        )
+        assert len(captured) == 2
+        for request in captured:
+            assert request.runtime_snapshot.connection()["model_base_url"] == "http://127.0.0.1:8106/v1"
+            assert request.runtime_snapshot.connection()["endpoint_model"] is None
+    finally:
+        gate.set()
+
+
+def test_build_accepts_album_without_qa_and_never_resolves_judge(tmp_path, monkeypatch):
+    suites = _suites(tmp_path, albums=FakeAlbums(manifest=dict(MANIFEST, qa_sets={})))
+    monkeypatch.setattr(suites, "_judge_settings", lambda *_: pytest.fail("build resolved Judge"))
+    assert suites.start_suite(_payload(mode="build", qa_set=""))["run_ids"]
+
+
+def test_resume_inherits_topology_and_budgets_instead_of_current_configuration(tmp_path):
+    captured = []
+    gate = threading.Event()
+    saved = _cancelled_state()
+    saved["runtime_snapshot"] = {
+        "sentrix_url": "http://original:8291",
+        "model_base_url": "http://original:8106/v1",
+        "vllm_manager_url": "",
+        "embedding": {"mode": "split_text_image", "image_url": "http://original:8103"},
+        "product_settings": {"deployment_profile": "mac"},
+        "product_build_revision": "original-product-release",
+        "execution_budgets": {
+            "import_timeout": 86400,
+            "pipeline_timeout": 43200,
+            "qa_concurrency": 2,
+            "turn_timeout": 700,
+        },
+    }
+
+    def factory(request):
+        captured.append(request)
+        return FakeExecution(request, gate)
+
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}), new_execution=factory)
+    try:
+        suites.resume_run("run-1")
+        request = captured[0]
+        assert request.sentrix_url == "http://original:8291"
+        assert request.runtime_snapshot.connection()["embedding"] == saved["runtime_snapshot"]["embedding"]
+        assert (request.import_timeout, request.qa_concurrency, request.turn_timeout) == (86400, 2, 700)
+        assert request.pipeline_timeout == 43200
+        assert request.reasoning is False
+        assert request.snapshot_source == "resumed_run"
+        assert request.runtime_snapshot.connection()["required_build_revision"] == "original-product-release"
+    finally:
+        gate.set()
+
+
+def test_resume_preserves_saved_reasoning_mode(tmp_path):
+    saved = _cancelled_state()
+    saved["reasoning"] = True
+    saved["runtime_snapshot"] = {
+        "sentrix_url": "http://original:8291",
+        "model_base_url": "http://original:8106/v1",
+        "execution_budgets": {"reasoning": True, "turn_timeout": 3660},
+    }
+    captured = []
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=lambda r: captured.append(r) or FakeExecution(r),
+    )
+    suites.resume_run("run-1")
+    assert captured[0].reasoning is True and captured[0].turn_timeout == 3660
+    assert _wait_until(lambda: not suites.work_status()["work"])
+
+
+def test_build_does_not_select_qa_even_when_manifest_has_qa(tmp_path):
+    captured = []
+
+    def factory(request):
+        captured.append(request)
+        return FakeExecution(request)
+
+    suites = _suites(tmp_path, new_execution=factory)
+    suites.start_suite(_payload(mode="build", qa_set="ignored"))
+    assert captured[0].qa_set == ""
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        {"status": "incomplete", "embedding": {}},
+        {"status": "ready", "embedding": {"mode": "different"}},
+    ],
+)
+def test_reuse_refuses_incomplete_build_or_changed_embedding(tmp_path, build):
+    suites = _suites(tmp_path)
+    suites._index.upsert({"run_id": "built", "scope_id": "scope-old", "scope_build": build})
+    with pytest.raises(InvalidRequestError, match="incomplete build|embedding configuration changed"):
+        suites.start_suite(_payload(mode="reuse", existing_scope_id="scope-old"))
+
+
+def test_unknown_qa_set_is_rejected_before_scheduling(tmp_path):
+    suites = _suites(tmp_path)
+    with pytest.raises(InvalidRequestError, match="unknown qa_set"):
+        suites.start_suite(_payload(qa_set="missing"))
+
+
+def test_cancel_all_broadcast_survives_one_run_failure(tmp_path):
+    from types import SimpleNamespace
+
+    seen = []
+
+    def broken(**_kwargs):
+        seen.append("first")
+        raise OSError("disk full")
+
+    suites = _suites(tmp_path)
+    suites._active = {
+        "first": SimpleNamespace(state={"status": "running"}, cancel=broken),
+        "second": SimpleNamespace(
+            state={"status": "running"}, cancel=lambda **_kwargs: seen.append("second")
+        ),
+    }
+    result = suites.cancel_active_suite()
+    assert seen == ["first", "second"]
+    assert result["cancelled"] == ["second"]
+    assert "disk full" in result["errors"]["first"]
+
+
+def test_cancel_all_includes_rejudge_and_blocks_admission_until_exit(tmp_path, monkeypatch):
+    from photobench.application.run_execution.judge import JudgeRunner
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def judge(*_args, **_kwargs):
+        calls.append(1)
+        entered.set()
+        assert release.wait(5)
+        return {"score": 1, "reason": "test"}
+
+    monkeypatch.setattr(JudgeRunner, "judge", judge)
+    monkeypatch.setattr(JudgeRunner, "judge_task_action", lambda *_a, **_kw: {})
+    state = _judged_state()
+    state["qa_concurrency"] = 1
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    try:
+        task = suites.start_rejudge("run-1", {"system_prompt": "test"})
+        assert entered.wait(3)
+        assert task["rejudge_id"] in suites.cancel_active_suite()["auxiliary"]
+        assert suites.work_status()["cleanup_status"] == "pending"
+        with pytest.raises(InvalidRequestError):
+            suites.start_suite(_payload())
+    finally:
+        release.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+    assert state["rejudge"]["status"] == "cancelled"
+    assert calls == [1]
+    assert state["items"][0]["judge"]["score"] is None
+    assert state["items"][0]["judge_history"][0]["judge"]["score"] == 0
+
+
+def test_cancel_all_includes_memory_profile_without_replaying_new_questions(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    def pause(seconds):
+        if seconds == 5:
+            entered.set()
+            assert release.wait(5)
+
+    state = _judged_state()
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), sleep=pause)
+    try:
+        task = suites.start_memory_profile({"run_ids": ["run-1"], "vllm_manager_url": "http://manager"})
+        assert entered.wait(3)
+        assert task["task_id"] in suites.cancel_active_suite()["auxiliary"]
+    finally:
+        release.set()
+    assert _wait_until(lambda: suites.work_status()["cleanup_status"] == "stopped")
+    assert state["memory_profile"]["status"] == "cancelled"
+    assert state["memory_profile"].get("requests_total_so_far", 0) == 0
+    assert state["memory_profile"]["items_integrity_ok"] is True
+
+
+@pytest.mark.parametrize("method", ["rejudge", "memory"])
+def test_auxiliary_thread_start_failure_is_terminal_and_releases_reservation(tmp_path, monkeypatch, method):
+    state = _judged_state()
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+
+    def failure(_thread):
+        raise RuntimeError("cannot start worker")
+
+    monkeypatch.setattr(threading.Thread, "start", failure)
+    with pytest.raises(RuntimeError, match="cannot start worker"):
+        if method == "rejudge":
+            suites.start_rejudge("run-1", {"system_prompt": "test"})
+        else:
+            suites.start_memory_profile({"run_ids": ["run-1"], "vllm_manager_url": "http://manager"})
+    assert suites.work_status()["cleanup_status"] == "stopped"
+    assert state["rejudge" if method == "rejudge" else "memory_profile"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "poll", "cancel"])
+def test_memory_wait_failure_retains_product_cleanup_ownership(failure):
+    from photobench.application.runs.suites import _await_turn
+    from photobench.domain.runs.execution import RunCancelledError
+
+    event = threading.Event()
+    if failure == "cancel":
+        event.set()
+    calls = []
+
+    class Client:
+        def get_turn(self, *, turn_id):
+            if failure == "poll":
+                raise ConnectionError("disconnected")
+            return {"status": "running"}
+
+        def cancel_operation(self, *, kind, operation_id, timeout):
+            calls.append((kind, operation_id))
+            return {"cleanup_status": "pending"}
+
+    cleanup = {}
+    expected = {"timeout": TimeoutError, "poll": ConnectionError, "cancel": RunCancelledError}[failure]
+    with pytest.raises(expected):
+        _await_turn(Client(), "turn-1", 0, lambda _: None, event, cleanup)
+    assert calls == [("turn", "turn-1")]
+    assert event.is_set()
+    assert cleanup["cancelled_operations"][0]["cleanup_status"] == "pending"
+    assert "wait_error" in cleanup["cancelled_operations"][0]
+
+
+def test_automatic_analysis_is_enqueued_only_after_execution_released(tmp_path: Path):
+    seen = []
+    service = _suites(tmp_path)
+
+    def finished(run_id):
+        assert not service._active
+        assert run_id not in service._threads
+        seen.append(run_id)
+
+    service._on_finished = finished
+    response = service.start_suite(_payload())
+    deadline = time.monotonic() + 2
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen == response["run_ids"]
+
+
+def test_resume_records_lineage_and_explicit_configured_product_revision(tmp_path, monkeypatch):
+    captured = []
+    gate = threading.Event()
+    saved = _cancelled_state()
+    saved["runtime_snapshot"] = {
+        "sentrix_url": "http://original:8291",
+        "model_base_url": "http://original:8100/v1",
+        "required_build_revision": "old-product",
+        "embedding": {"mode": "original"},
+    }
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": saved}),
+        new_execution=lambda request: captured.append(request) or FakeExecution(request, gate),
+    )
+    configured = {
+        **suites._config.public_runtime_connection_config(),
+        "product_build_revision": "reviewed-product",
+    }
+    monkeypatch.setattr(suites._config, "public_runtime_connection_config", lambda: configured)
+    try:
+        result = suites.resume_run("run-1", {"product_build_revision": "reviewed-product"})
+        request = captured[0]
+        assert result["resumed_from"] == "run-1"
+        assert request.repair_missing_judges is True
+        assert request.resume_context["source_runtime_snapshot"]["required_build_revision"] == "old-product"
+        assert request.runtime_snapshot.connection()["required_build_revision"] == "reviewed-product"
+        assert request.runtime_snapshot.connection()["embedding"] == {"mode": "original"}
+        assert saved["runtime_snapshot"]["required_build_revision"] == "old-product"
+    finally:
+        gate.set()
+
+
+def test_resume_rejects_unconfigured_product_revision_and_non_boolean_recovery(tmp_path):
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": _cancelled_state()}))
+    with pytest.raises(InvalidRequestError, match="configured product build"):
+        suites.resume_run("run-1", {"product_build_revision": "unchecked"})
+    with pytest.raises(InvalidRequestError, match="boolean"):
+        suites.resume_run("run-1", {"repair_missing_judges": "yes"})
+
+
+def test_missing_rejudge_preserves_valid_zero_and_only_repairs_failed_subscore(tmp_path):
+    import copy
+
+    state = _judged_state()
+    turn = state["items"][0]["runtime_turns"][0]
+    turn["reference_answer"] = "a.jpg"
+    turn["task_judge"] = {"correct": True, "actual_action": "answer", "raw_text": "original"}
+    turn["evidence_judge"] = {"score": 2, "reason": "original"}
+    zero = copy.deepcopy(turn["judge"])
+    task = copy.deepcopy(turn["task_judge"])
+    turn["judge"] = {"score": None, "judge_status": "failed", "raw_text": "invalid json"}
+    # A second valid zero-score turn must remain byte-for-byte unchanged.
+    second = copy.deepcopy(turn)
+    second["judge"] = zero
+    state["items"][0]["runtime_turns"].append(second)
+    before = copy.deepcopy(second)
+    second["reference_answer"] = "a.jpg"
+    before = copy.deepcopy(second)
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"回答正确"}')])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    response = suites.start_rejudge("run-1", {"system_prompt": "score", "scope": "missing"})
+    assert response["total"] == 1
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert state["items"][0]["runtime_turns"][1] == before
+    assert turn["task_judge"] == task
+    assert turn["judge"]["score"] == 2
+    assert turn["judge_history"][0]["judge"]["raw_text"] == "invalid json"
+    assert turn["evidence_judge"]["score"] == 2
+    assert len(http.payloads()) == 1
+    assert state["items"][0]["judge"] == zero
+
+
+@pytest.mark.parametrize("scope,selected", [("failed", (0,)), ("unscored", (1,)), ("missing", (0, 1))])
+def test_rejudge_scope_filters_each_turn_and_subscore(tmp_path, scope, selected):
+    import copy
+
+    state = _judged_state()
+    row = state["items"][0]
+    first = row["runtime_turns"][0]
+    first["task_judge"] = {"correct": False, "actual_action": "refuse"}
+    first["judge"] = {"score": None, "judge_status": "failed", "reason": "bad JSON"}
+    second = copy.deepcopy(first)
+    second["judge"] = {"score": None, "status": "pending"}
+    second["reference_answer"] = "a.jpg"
+    first["reference_answer"] = "a.jpg"
+    row["runtime_turns"].append(second)
+    before = copy.deepcopy(row["runtime_turns"])
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}') for _ in selected])
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), http=http)
+    assert suites.recovery_plan("run-1")["scoring"][scope]["turn_count"] == len(selected)
+    suites.start_rejudge("run-1", {"system_prompt": "p", "scope": scope})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    for index, turn in enumerate(row["runtime_turns"]):
+        assert turn["task_judge"] == before[index]["task_judge"]
+        if index not in selected:
+            assert turn == before[index]
+        else:
+            assert turn["judge"]["score"] == 2
+    assert len(http.payloads()) == len(selected)
+
+
+@pytest.mark.parametrize("body", [{"scope": "other"}, {"judge_use_gt_images": "false"}])
+def test_rejudge_rejects_invalid_controls_without_mutation(tmp_path, body):
+    import copy
+
+    state = _judged_state()
+    before = copy.deepcopy(state)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    with pytest.raises(InvalidRequestError):
+        suites.start_rejudge("run-1", {"system_prompt": "p", **body})
+    assert state == before
+
+
+def test_recovery_scope_skips_execution_failures_empty_answers_and_unlabeled(tmp_path):
+    import copy
+
+    state = _judged_state()
+    row = state["items"][0]
+    failed = copy.deepcopy(row)
+    failed["execution_status"] = "failed"
+    empty = copy.deepcopy(row)
+    empty["runtime_turns"][0]["answer"] = ""
+    unlabeled = copy.deepcopy(row)
+    unlabeled["expected_action"] = None
+    unlabeled["runtime_turns"][0]["expected_action"] = None
+    state["items"] = [failed, empty, unlabeled]
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    assert suites.recovery_plan("run-1")["scoring"]["missing"]["turn_count"] == 0
+    with pytest.raises(InvalidRequestError):
+        suites.start_rejudge("run-1", {"system_prompt": "p", "scope": "missing"})
+
+
+def test_review_scope_selects_only_review_primary_without_replacing_valid_subscores():
+    import copy
+
+    state = _judged_state()
+    row = state["items"][0]
+    first = row["runtime_turns"][0]
+    first["judge"] = {
+        "scorer": "choice_judge",
+        "score": None,
+        "judge_status": "needs_review",
+        "reason": "overlapping options",
+    }
+    first["task_judge"] = {"correct": True, "actual_action": "answer"}
+    second = copy.deepcopy(first)
+    second["judge"] = {"score": 0, "judge_status": "completed"}
+    row["runtime_turns"].append(second)
+    assert RunSuites._recovery_selection(state, "needs_review") == {(0, 0): ("judge",)}
+    assert RunSuites._recovery_selection(state, "missing") == {}
+
+
+def test_gt_rejudge_uses_frozen_gt_not_agent_predictions(tmp_path):
+    import copy
+    from types import SimpleNamespace
+
+    state = _judged_state()
+    frozen = {
+        "qa_id": "q1",
+        "answer": "海边",
+        "expected_action": "answer",
+        "answer_evidence_image_ids": ["a.jpg"],
+    }
+    state["qa_snapshot"] = {"rows": [frozen], "definition_sha256": qa_fingerprint([frozen])}
+    snapshot = copy.deepcopy(state["qa_snapshot"])
+    turn = state["items"][0]["runtime_turns"][0]
+    turn.update(
+        judge={"score": None, "judge_status": "failed"},
+        task_judge={"correct": True, "actual_action": "answer"},
+        predicted_images=[{"asset_id": "wrong"}],
+    )
+    refs = []
+
+    def inline(_url, images, _assets):
+        refs.extend(images)
+        return [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,dGVzdA=="}}]
+
+    http = FakeHttpClient([judge_reply('{"score":2,"reason":"正确"}')])
+    suites = _suites(
+        tmp_path,
+        store=FakeRunStore({"run-1": state}),
+        http=http,
+        inline_images=inline,
+        sentrix=SimpleNamespace(
+            list_assets=lambda **_: [{"id": "gt-only", "file_name": "a.jpg", "media_type": "image"}]
+        ),
+    )
+    suites.start_rejudge("run-1", {"system_prompt": "p", "scope": "missing", "judge_use_gt_images": True})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert [ref["asset_id"] for ref in refs] == ["gt-only"]
+    assert turn["judge"]["gt_images"]["source"] == "qa.answer_evidence"
+    assert state["qa_snapshot"] == snapshot
+    assert len(http.payloads()) == 1
+
+
+def test_unscored_early_turn_does_not_inherit_valid_last_turn_score(tmp_path):
+    state = _judged_state()
+    row = state["items"][0]
+    row["runtime_turns"].insert(
+        0, {"message": "第一轮", "answer": "回答", "expected_action": "answer", "reference_answer": "参考"}
+    )
+    row["runtime_turns"][1]["task_judge"] = {"correct": True, "actual_action": "answer"}
+    selection = RunSuites._recovery_selection(state, "unscored")
+    assert selection == {(0, 0): ("judge", "task_judge")}
+
+
+def test_recovery_plan_reads_legacy_frozen_required_product_revision(tmp_path):
+    state = _judged_state()
+    state["runtime_snapshot"] = {"required_build_revision": "original-product"}
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}))
+    plan = suites.recovery_plan("run-1")
+    assert plan["source_product_build_revision"] == "original-product"
+    assert plan["product_version_changed"] is True
+
+
+def test_typed_rejudge_keeps_final_turn_result_when_earlier_turn_finishes_last(tmp_path, monkeypatch):
+    import copy
+
+    from photobench.application.run_execution.judge import JudgeRunner
+    from photobench.domain.evaluation.contract import VERSION
+
+    state = _judged_state()
+    state["qa_concurrency"] = 2
+    row = state["items"][0]
+    row["evaluation"] = {"version": VERSION, "scorer": "open_judge", "answer_format": "open"}
+    first = row["runtime_turns"][0]
+    first.update(message="first", reference_answer="a.jpg")
+    second = copy.deepcopy(first)
+    second["message"] = "final"
+    row["runtime_turns"].append(second)
+    final_finished = threading.Event()
+
+    def judge(_self, question, *_args, **_kwargs):
+        if question == "first":
+            assert final_finished.wait(3)
+            time.sleep(0.05)
+        else:
+            final_finished.set()
+        score = 0 if question == "first" else 1
+        return {
+            "version": VERSION,
+            "scorer": "open_judge",
+            "answer_format": "open",
+            "score": score,
+            "max_score": 1,
+            "normalized_score": score,
+            "judge_status": "completed",
+            "reason": question,
+        }
+
+    monkeypatch.setattr(JudgeRunner, "judge", judge)
+    monkeypatch.setattr(JudgeRunner, "judge_task_action", lambda *_args, **_kw: {"correct": True})
+    sentrix = _FakeSentrix()
+    monkeypatch.setattr(sentrix, "list_assets", lambda **_kw: [], raising=False)
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": state}), sentrix=sentrix)
+    suites.start_rejudge("run-1", {"system_prompt": "p"})
+    assert _wait_until(lambda: state["rejudge"]["status"] == "completed")
+    assert [t["judge"]["score"] for t in row["runtime_turns"]] == [0, 1]
+    assert row["judge"]["reason"] == row["evaluation_result"]["reason"] == "final"
+    assert row["evaluation_result"]["normalized_score"] == 1
+
+
+def test_scoring_review_append_preserves_legacy_reviews_and_formal_scores(tmp_path):
+    from test_scoring_reviews import fixture
+
+    state, raw = fixture()
+    state.update(run_id="r", status="completed", items=[{"qa_id": "q"}])
+    store = FakeRunStore({"r": state})
+    previous = {"reviews": {"q": {"verdict": "wrong", "note": "保留旧审核"}}, "scoring_reviews": []}
+    store.read_reviews = lambda run_id: previous
+    writer = FakeResultWriter()
+    suites = _suites(tmp_path, store=store, writer=writer)
+    import copy
+
+    original = copy.deepcopy(state)
+    first = suites.save_reviews("r", {"scoring_reviews": [raw]})
+    assert first["reviews"]["q"]["note"] == "保留旧审核"
+    previous.update(writer.reviews[-1][1])
+    second = suites.save_reviews("r", {"scoring_reviews": [raw | {"note": "补充审核依据"}]})
+    assert len(second["scoring_reviews"]) == 2 and state == original
+    previous.update(writer.reviews[-1][1])
+    suites.save_reviews("r", {"reviews": {}})
+    assert len(writer.reviews[-1][1]["scoring_reviews"]) == 2
+    count = len(writer.reviews)
+    with pytest.raises(InvalidRequestError, match="fingerprint"):
+        suites.save_reviews("r", {"scoring_reviews": [raw | {"answer_fingerprint": "changed"}]})
+    assert len(writer.reviews) == count and state == original
+
+
+def test_invalid_media_definition_is_refused_before_any_work_is_registered(tmp_path):
+    albums = FakeAlbums(
+        manifest=MANIFEST,
+        qa_rows=[
+            {"qa_id": "bad", "retrieval_media_refs": [{"media_type": "image", "media_id": "unknown.jpg"}]}
+        ],
+    )
+    suites = _suites(tmp_path, albums=albums)
+    with pytest.raises(InvalidRequestError, match="QA bad retrieval_media_refs"):
+        suites.start_suite(_payload())
+    assert suites.active_run_ids() == []

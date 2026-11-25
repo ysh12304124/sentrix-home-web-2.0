@@ -21,7 +21,10 @@ from photobench.domain.error_analysis.query import filtered_view, select_case
 from photobench.domain.error_analysis.rules import RULE_VERSION, matches
 from photobench.domain.error_analysis.taxonomy import ABILITY_DISPLAY_PROJECTION, project_case_abilities
 from photobench.infrastructure.error_analysis.comparison_inputs import freeze_side
+from photobench.infrastructure.error_analysis.split_source import with_excerpts
 from photobench.infrastructure.error_analysis.worker import atomic, lines, revision, run_worker, source
+from photobench.infrastructure.results.encoding import snapshot_file
+from photobench.infrastructure.results.split_json import MANIFEST
 
 ACTIVE = {"queued", "running", "cancelling", "paused"}
 
@@ -32,6 +35,7 @@ class FileAnalysisBackend:
         self.root = root
         self.artifacts = root / ".analysis"
         self._lock = threading.RLock()
+        self._submit_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._busy: Callable[[], bool] = lambda: False
@@ -52,7 +56,7 @@ class FileAnalysisBackend:
         if not run_id or run_id in {".", ".."} or "/" in run_id or "\\" in run_id:
             raise KeyError(run_id)
         p = self.root / run_id
-        if not (p / "run.json").is_file():
+        if not (p / MANIFEST).is_file() and not snapshot_file(p, "run.json").is_file():
             raise KeyError(run_id)
         return p
 
@@ -106,10 +110,11 @@ class FileAnalysisBackend:
         while not self._stop.wait(0.1) or self._current is not None:
             if self._stop.is_set():
                 time.sleep(0.05)
+            busy = self._busy() if not self._stop.is_set() else False
             with self._lock:
                 if self._current:
                     key, process, cancel, pause = self._current
-                    if self._busy() and not self._stop.is_set():
+                    if busy and self.get(key)["kind"] in {"ai", "ai_compare"}:
                         pause.set()
                     else:
                         pause.clear()
@@ -125,9 +130,19 @@ class FileAnalysisBackend:
                         atomic(self._directory(key) / "job.json", job)
                     process.close()
                     self._current = None
-                if self._stop.is_set() or not self._queue or self._busy():
+                if self._stop.is_set() or not self._queue:
                     continue
-                key = self._queue.pop(0)
+                eligible = next(
+                    (
+                        i
+                        for i, key in enumerate(self._queue)
+                        if not busy or self.get(key)["kind"] not in {"ai", "ai_compare"}
+                    ),
+                    None,
+                )
+                if eligible is None:
+                    continue
+                key = self._queue.pop(eligible)
                 job = self.get(key)
                 cancel = self._context.Event()
                 pause = self._context.Event()
@@ -148,11 +163,15 @@ class FileAnalysisBackend:
         self._run(run_id)
         if self._thread is None:
             raise ValueError("analysis service not started")
-        with self._lock:
+        # Preparation reads frozen artifacts and GT images. Keep it outside the
+        # supervisor/status lock; submissions alone are serialized for deduplication.
+        with self._submit_lock:
             if len(self._queue) >= 32:
                 raise ValueError("analysis queue is full")
             values = dict(options)
             secret = values.pop("secret", {})
+            if kind in {"ai", "ai_compare"}:
+                values["results_root"] = str(self.root)
             if kind == "rules":
                 for pending in self.work():
                     if (
@@ -251,6 +270,7 @@ class FileAnalysisBackend:
                         self.albums,
                         set(values["indices"]),
                         include_raw=False,
+                        results_root=self.root,
                     )
                     if revision(self.root, run_id) != src["revision"]:
                         raise ValueError("source changed while pinning GT images")
@@ -296,15 +316,26 @@ class FileAnalysisBackend:
                         if side == "left"
                         else {p["right_index"] for p in values["pairs"] if p["right_index"] is not None}
                     )
-                    freeze_side(directory, side, parent, {**report["source"], **src}, self.albums, selected)
+                    freeze_side(
+                        directory,
+                        side,
+                        parent,
+                        {**report["source"], **src},
+                        self.albums,
+                        selected,
+                        results_root=self.root,
+                    )
                     if revision(self.root, src["run_id"]) != src["revision"]:
                         raise ValueError("source changed while pinning comparison inputs")
-            atomic(directory / "job.json", job)
-            self._secret[key] = secret
-            self._queue.append(key)
-            self._history.setdefault(run_id, []).append(key)
-            if kind == "rules":
-                self._latest[run_id] = key
+            with self._lock:
+                if self._stop.is_set():
+                    raise ValueError("analysis service stopped during preparation")
+                atomic(directory / "job.json", job)
+                self._secret[key] = secret
+                self._queue.append(key)
+                self._history.setdefault(run_id, []).append(key)
+                if kind == "rules":
+                    self._latest[run_id] = key
             return job
 
     def _stale(self, job: dict[str, Any]) -> bool:
@@ -421,13 +452,14 @@ class FileAnalysisBackend:
 
     def _cases(self, job_id: str) -> list[dict[str, Any]]:
         with self._lock:
-            if job_id not in self._case_cache:
-                if len(self._case_cache) >= 4:
-                    self._case_cache.pop(next(iter(self._case_cache)))
-                self._case_cache[job_id] = [
-                    project_case_abilities(case) for case in lines(self._directory(job_id) / "cases.jsonl")
-                ]
-            return self._case_cache[job_id]
+            cached = self._case_cache.get(job_id)
+        if cached is not None:
+            return cached
+        cases = [project_case_abilities(case) for case in lines(self._directory(job_id) / "cases.jsonl")]
+        with self._lock:
+            if len(self._case_cache) >= 4:
+                self._case_cache.pop(next(iter(self._case_cache)))
+            return self._case_cache.setdefault(job_id, cases)
 
     def view(self, job_id: str, filters: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
         job = self.get(job_id)
@@ -470,6 +502,7 @@ class FileAnalysisBackend:
             raise ValueError("此历史报告未保存证据快照，请重新生成规则报告")
         for i, item in enumerate(lines(path)):
             if i == index:
+                item = with_excerpts(self.root, item)
                 return {
                     "item": item,
                     "evidence_locations": {

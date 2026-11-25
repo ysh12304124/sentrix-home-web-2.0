@@ -23,11 +23,19 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from sentrix.application.identity.appearance_sampling import (
+    AppearanceSamplingExecutor,
+    QueueAppearance,
+)
 from sentrix.application.identity.observe_appearance import ObserveAppearance
 from sentrix.infrastructure.media.person_vision import PillowPersonCropRenderer
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.appearance import (
     SqliteAppearanceRepository,
+)
+from sentrix.infrastructure.persistence.repositories.appearance_jobs import (
+    MAX_ATTEMPTS,
+    SqlitePersonAppearanceJobs,
 )
 from sentrix.infrastructure.persistence.repositories.assets import SqliteObservationRepository
 from sentrix.infrastructure.persistence.repositories.entities import SqliteEntityRepository
@@ -452,3 +460,129 @@ def test_a_second_run_updates_instead_of_duplicating(album: Album, db: Database)
     build(db, ScriptedVision())(PERSON)
 
     assert len(evidence(db)) == 1
+
+
+# ---- 已采过的脸不再送模型（2026-11-20：取样移到后台、可增量）---------------------------
+
+
+def test_a_face_already_sampled_is_not_sent_to_the_model_again(album: Album, db: Database) -> None:
+    """重复确认、确认后再合并：已采过的事件不再付那十秒，只给新事件调模型。"""
+    album.add(event_id="event_a", quality=0.9)
+    build(db, ScriptedVision())(PERSON)
+
+    album.add(event_id="event_b", quality=0.9)
+    second = ScriptedVision()
+    build(db, second)(PERSON)
+
+    assert len(second.calls) == 1
+    assert len(evidence(db)) == 2
+
+
+def test_a_rejected_evidence_is_sampled_again(album: Album, db: Database) -> None:
+    """被驳回的证据不算「采过」：重新采到之后它应当重新生效（``record`` 的原样行为）。"""
+    album.add(event_id="event_a", quality=0.9)
+    build(db, ScriptedVision())(PERSON)
+    with db.connect() as connection, connection:
+        connection.execute("UPDATE person_appearance_evidence SET status = 'rejected'")
+
+    again = ScriptedVision()
+    build(db, again)(PERSON)
+
+    assert len(again.calls) == 1
+    assert [item.status for item in evidence(db)] == ["confirmed"]
+
+
+# ---- 后台取样：确认只入队，线程逐人调模型 -------------------------------------------------
+
+
+def _executor(db: Database, vision: ScriptedVision) -> AppearanceSamplingExecutor:
+    return AppearanceSamplingExecutor(
+        jobs=SqlitePersonAppearanceJobs(db),
+        entities=SqliteEntityRepository(db),
+        observe=build(db, vision),
+    )
+
+
+def test_queueing_does_not_call_the_model(album: Album, db: Database) -> None:
+    album.add(event_id="event_a", quality=0.9)
+    jobs = SqlitePersonAppearanceJobs(db)
+
+    QueueAppearance(jobs)(PERSON)
+
+    assert jobs.status(PERSON) == "pending"
+    assert evidence(db) == []
+
+
+def test_the_executor_samples_a_queued_person_and_clears_the_job(album: Album, db: Database) -> None:
+    album.add(event_id="event_a", quality=0.9)
+    album.add(event_id="event_b", quality=0.9)
+    jobs = SqlitePersonAppearanceJobs(db)
+    QueueAppearance(jobs)(PERSON)
+    QueueAppearance(jobs)(PERSON)  # 确认后马上合并：两次入队合并成一行
+
+    vision = ScriptedVision()
+    assert _executor(db, vision).run_once() == 1
+
+    assert len(vision.calls) == 2
+    assert len(evidence(db)) == 2
+    assert jobs.status(PERSON) is None
+
+
+def test_a_person_no_longer_confirmed_is_skipped(album: Album, db: Database) -> None:
+    """入队之后人被并走或驳回：不再给他采，任务照样清掉。"""
+    album.add(event_id="event_a", quality=0.9)
+    jobs = SqlitePersonAppearanceJobs(db)
+    QueueAppearance(jobs)(PERSON)
+    with db.connect() as connection, connection:
+        connection.execute("UPDATE entities SET status = 'superseded' WHERE id = ?", (PERSON,))
+
+    vision = ScriptedVision()
+    _executor(db, vision).run_once()
+
+    assert vision.calls == []
+    assert jobs.status(PERSON) is None
+
+
+def test_a_failure_backs_off_and_finally_marks_the_job_failed(album: Album, db: Database) -> None:
+    album.add(event_id="event_a", quality=0.9)
+    jobs = SqlitePersonAppearanceJobs(db)
+    QueueAppearance(jobs)(PERSON)
+
+    class Boom(ScriptedVision):
+        def analyze_person_appearance(self, path: str, metadata=None):
+            raise RuntimeError("model down")
+
+    executor = _executor(db, Boom())
+    for _ in range(MAX_ATTEMPTS):
+        executor.run_once()
+        assert jobs.status(PERSON) in {"pending", "failed"}
+        # 退避期间不会被再次取走；测试里直接把重试时间拨到现在。
+        with db.connect() as connection, connection:
+            connection.execute("UPDATE person_appearance_jobs SET next_attempt_at = ''")
+
+    assert jobs.status(PERSON) == "failed"
+    assert executor.run_once() == 0
+
+
+def test_a_job_queued_again_while_running_runs_once_more(album: Album, db: Database) -> None:
+    """跑到一半又入队（合并带来新的脸）：这一轮跑完不删行，下一轮再跑。"""
+    album.add(event_id="event_a", quality=0.9)
+    jobs = SqlitePersonAppearanceJobs(db)
+    QueueAppearance(jobs)(PERSON)
+
+    claimed = jobs.claim_next()
+    assert claimed is not None
+    QueueAppearance(jobs)(PERSON)
+    jobs.finish(*claimed)
+
+    assert jobs.status(PERSON) == "pending"
+
+
+def test_a_job_left_running_by_a_dead_process_is_requeued(album: Album, db: Database) -> None:
+    jobs = SqlitePersonAppearanceJobs(db)
+    QueueAppearance(jobs)(PERSON)
+    assert jobs.claim_next() is not None
+    assert jobs.claim_next() is None
+
+    assert jobs.requeue_running() == 1
+    assert jobs.status(PERSON) == "pending"

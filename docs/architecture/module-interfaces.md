@@ -184,16 +184,6 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 不掩盖已提交的权威修改。兼容旧身份/关系入口的事务边界及验证见
 [记忆修正传播](../refactor/memory-correction-deviations.md)。
 
-2026-11-19：同一端口增加依赖快照、自动摘要失效、关联文本重建及检查点写入。
-`DependentTextMemory` 仅描述自动派生目标；锁定/用户覆盖画像保留。修正专用模型路径失败
-保留 pending，原导入摘要降级不变。删除事务登记关联重建任务；既有 warnings/重试契约不变。
-
-人物页面提交改名后立即预览姓名，卡片与详情共用该预览；结束后读取权威数据并撤销预览，
-错误不冒称保存成功。同步期间每1.5秒读取已保存状态，旧读取不覆盖新结果。重试API新增
-可选person_id查询参数，验证人物和scope后登记当前依赖，即使无pending也能主动同步。
-修正专用的独立事件和派生文本目标分别按最多4项有界并行，不新增队列；同步HTTP响应、
-检查点事务、失败pending及图和索引后置顺序保留，不影响基线导入、检索与Agent工具。
-
 ### 3.1 可替换性分级
 
 | 级别 | 含义 | 典型端口 | 替换难度 |
@@ -223,7 +213,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `ConversationRepository` | 同文件 `:84` | `create/get/list_for_scope/rename/delete/add_message/list_messages/history_for_prompt` | `SqliteConversationRepository` | `conversation_repository` |
 | `TurnRepository` | `:111` | `create/get/claim/append_event/events_after/finish/list_for_conversation` | `SqliteTurnRepository` | `turn_repository` |
 | `ResultSetRepository` | `:144` | `add/get` | `SqliteResultSetRepository` | `result_set_repository` |
-| `PersonDirectory` | `:150` | `lookup(name, scope_id) -> PersonProfile \| None` | `EntityPersonDirectory` | `person_directory` |
+| `PersonDirectory` | `domain/assistant/ports.py` | `lookup(name, scope_id, include_portrait=False)`、`asset_ids(person)` | `EntityPersonDirectory` | `person_directory` |
 | `TurnEventBroker` | `:161` | `open/publish/finish/subscribe` | `InProcessTurnEventBroker` | `turn_event_broker` |
 | `ToolExecutor` | `:180` | `execute(call, arguments)` | **无实现/未装配** | — |
 
@@ -232,6 +222,11 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 - `ChatModel.complete` 必须抛 `ModelServiceError` 族；`PromptTooLongError` / `OutputTruncatedError` 是控制流，不是普通错误。
 - `TurnRepository.claim` 是并发闸门：`pending → running` 只能有一个执行者抢到。
 - `TurnEventBroker` 是进程内实时流；历史补偿必须由 `TurnRepository.events_after` 提供，两半合起来才是完整 SSE。
+- `PersonDirectory` 先查已确认的本名，再查生效别名。空相册范围保留未登记的旧相册，排除
+  `include_in_people=0` 的空间。无匹配返回 `None`，多个匹配抛 `AmbiguousPersonName`。
+  简单身份回答读取当前归属和关系。人物概述可按需读取叙事画像，早于姓名或家庭图谱修改的画像省略。
+- 普通问答把规划中的人物条件解析为人物 ID，并按照片提及记录筛选候选。合照使用共同出现的资产，
+  时间和地点继续参与检索。明确找图需要照片证据和实际交付。找图为零时保留缺口和完整候选轨迹。
 
 助手语音新增 `SpeechRecognizer`（同 `domain/assistant/ports.py`）：
 `load/available/load_error/transcribe/close`；Container 字段 `speech_recognizer`，
@@ -248,13 +243,13 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | 端口 | 定义 | 方法摘要 | 当前实现 |
 |---|---|---|---|
 | `OperationControl` | `domain/media/ports.py` | `start/request_cancel/check/finish`，有界登记与真实退出确认 | `InProcessOperationControl` |
-| `AssetRepository` | `domain/media/ports.py` | `add/get/list_by_scope/find_by_hash/update_status/get_or_add_text_source` | `SqliteAssetRepository` |
+| `AssetRepository` | `domain/media/ports.py` | `add/get/list_by_scope/find_by_hash/find_file_by_hash/update_status/get_or_add_text_source` | `SqliteAssetRepository` |
 | `MediaDeletionRepository` | `domain/media/ports.py` | `delete_asset/pending_cleanup/mark_cleanup/was_deleted/list_deletions` | `SqliteMediaDeletionRepository` |
 | `ObservationRepository` | `domain/media/ports.py` | `add/get/list_by_asset/list_scope/enrich/latest_ocr_text/latest_people_snapshot/has_source_text` | `SqliteObservationRepository` |
 | `VlmObserver` | `:184` | `model_id`、`observe(path) -> ObservationSemantics \| None` | `OpenAIVlmObserver` |
 | `PhotoInspector` | `:201` | `model_id`、`inspect(path, question, faces, target_person, crop)` | `OpenAIPhotoInspector` |
 | `AssetObserver` | `:242` | `prepare/commit/observe` | `ObserveAsset`（application） |
-| `MediaStorage` | `:264` | `store/read/path_for` | `FileSystemMediaStorage` |
+| `MediaStorage` | `domain/media/ports.py` | `store/move_from_path/copy_from_path/read/read_asset/delete_assets/cleanup_orphans` | `FileSystemMediaStorage` |
 | `MetadataReader` | `:272` | `read(path) -> (time, gps, camera)` | `PillowMetadataReader` |
 | `PreviewEncoder` | `:278` | `encode_jpeg/crop_jpeg` | `PillowPreviewEncoder` |
 | `VideoMetadataReader` | `:297` | `read(path) -> VideoMetadata` | `FfprobeVideoMetadataReader` |
@@ -277,12 +272,6 @@ make lint format-check typecheck arch photobench-check check-docs coverage
   导入及回读契约见 [文本资料适配说明](../refactor/2026-11-16-text-sources-deviations.md)。
 
 ### 3.4 Retrieval
-
-文本路径新增 `TextChunkRepository`（domain/retrieval/text_memory.py），由 Container
-装配SQLite实现。分块按观察revision原子替换，独立词法/文本向量RRF，先过滤scope、
-来源与记录时间；不调用视觉通道，不改媒体融合权重。修正时旧revision立即不可检索，
-删除由外键清除分块。来源引用和邮件P/R/F1、R@K的增量契约、历史缺失及验收边界见
-[独立文本检索](../refactor/text-retrieval-deviations.md)。
 
 | 端口 | 定义 | 方法摘要 | 当前实现 |
 |---|---|---|---|
@@ -357,6 +346,7 @@ make lint format-check typecheck arch photobench-check check-docs coverage
 | `EventParticipantRepository.rehome` | 必须在事件合并的 `DELETE` 之前完成（FK） |
 | `FamilyGraphRepository.set_relationship` | 先 supersede 旧边，再一次写正反两行 |
 | `FamilyGraphRepository` locked | 遇到 `locked=1` 静默跳过，不报错、不覆盖 |
+| `FamilyGraphRepository.latest_user_edit_at` | 查询人物最近的用户归属与关系变更时间，包含撤回 |
 | `EntityRepository` | 派生值永不覆盖用户值 |
 | `VideoRepository.save_probe` | 必须在资产行落库之后 |
 | `VideoRepository.cleanup_derivatives` | 先删随行，再删主行 |
@@ -620,13 +610,6 @@ legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`�
 
 ### 4.9 地理
 
-2026-11-24：生产装配通过既有 `PlaceResolver` 使用 OSM 离线索引，GeoNames 不再参与新解析，
-以下 GeoNames 半径仅描述历史适配器。OSM 区县优先，缺失时保留 PyGeoCN 粗行政区兜底。
-乡镇/村边界与附近点线证据分开持久化；附近证据不进入行政硬约束。部署、回填和验证见
-[OSM 离线地点解析](../runbooks/osm-places.md)。
-索引 v4 收录澳门特别行政区边界作为省级，地市可缺席。离线地点审计按原始参考地址和行政
-区划编码归一化层级，保留原始标注与归一化状态；这一路径只用于审计。
-
 **必须保持**
 
 - `AdminResolver` 与 `NearestResolver` 互补，不可互换；
@@ -727,6 +710,12 @@ AI辅助分析复用Judge的provider思考开关策略（豆包thinking.disabled
 重评分归档题目及逐轮原质量、行为和证据判分；当前Judge状态随新判分刷新。
 重评分仅覆盖回答质量和任务行为，证据统一标记not_applicable，原证据保留在history；
 原run终态及执行相位保持，错误分析新报告读取当前评分，历史报告仍可追溯。
+
+测评推理模式（2026-11-17）：新 full/reuse、重测和聊天请求默认 `reasoning=true`，
+显式 `false` 采用普通模式；聊天后续消息可切换，省略/null 继承会话设置。
+产品回合将模式存入 trace，持久执行器据此装配全工具和无次数上限的预算，墙钟至少一小时；
+其余模型角色与上下文配置保留。历史续跑/内存画像重放继承原模式，缺字段按原普通模式。
+接口、存储和验证说明见 `docs/refactor/2026-11-17-evaluation-reasoning.md`。
 
 #### 4.12.2 换推理后端
 
@@ -1203,11 +1192,6 @@ T006 指标 v2 的可选契约见 [photobench-metrics-contract.md](photobench-me
 
 ## 10. 附录
 
-2026-11-19 文本向量写入优化：新增可选 `AtomicVectorWriter.upsert_many(records)` 端口，
-由既有 SQLite 向量仓储实现。文本索引器将同一观察产生的有序向量组一次提交；
-不具备此端口的仓储仍走原逐条 upsert。批内异常回滚整组，单条 upsert 语义保持，
-不改变同步强度、嵌入身份、向量内容、API 或结果 schema。新增空输入不产生写入。
-
 ### 10.1 关键文件地图
 
 ```
@@ -1358,7 +1342,7 @@ Judge一致性v3进一步限定为明确“模型/助手的回答/答案/结论�
 
 ## PhotoBench 错误分析（2026-10-24）
 
-`AnalysisBackend`为独立派生任务端口，`ErrorAnalysis`编排，bootstrap装配。分析不改变测评状态/评分/GT，单spawn进程并发1、测评优先，纳入取消/退出确认与重启恢复。API、事件/案例/报告类型、分母与来源契约见[错误分析设计](photobench-error-analysis.md)。Agent的`ModelReply`和`ModelServiceError`追加可选diagnostics，调用投影追加唯一ID及恢复关联，不更改现有执行策略。
+`AnalysisBackend`为独立派生任务端口，`ErrorAnalysis`编排，bootstrap装配。分析不改变测评状态/评分/GT，单spawn进程并发1，纳入取消/退出确认与重启恢复。AI诊断/比较在测评使用共享模型时排队或于逐题边界暂停；不调用模型的规则分析与规则比较可以读取另一已结束任务，队首等待中的AI任务不挡后续规则任务。API、事件/案例/报告类型、分母与来源契约见[错误分析设计](photobench-error-analysis.md)。Agent的`ModelReply`和`ModelServiceError`追加可选diagnostics，调用投影追加唯一ID及恢复关联，不更改现有执行策略。
 
 ### 2026-10-28 resident memory formula version
 
@@ -1450,52 +1434,33 @@ AI双次对比不再提供HTML导出，export_auxiliary(kind=ai_compare, format=
 旧的未采用持久尝试编号的调用路径继续使用 OperationControl。
 
 
-### 2026-11-17 Windows 环境兼容
+### 2026-11-16 跨相册原始媒体文件共享
 
-主 API 规范化静态路径分隔符以保留未知 API 的 404；内存鉴权使用异步依赖，存活探针不等待工作线程池。PhotoBench 结果目录租约使用 portalocker 的非阻塞独占锁，Windows 使用可写文件 fsync 与真实目录句柄 FlushFileBuffers；错误仍抛出，原恢复与原子提交语义保持。端口和公开 schema 不作修改。验证与平台阻碍见 [Windows 修复记录](../refactor/windows-environment-deviations.md)。
+`AssetRepository.find_file_by_hash` 返回可复用原件路径或 `None`，不复用相册记录和处理结果。
+`MediaStorage` 的写入方法在同一实例内按 SHA256 共享内容，资产路径及原名保持；受管原件不可原地改写。
+`delete_assets` 只解除对应引用，最后引用消失后回收内容；`cleanup_orphans` 在宽限期后清理孤儿。
+外部源文件独立，上传配额按实际文件身份计一次。新实现及离线真实文件验证见
+[共享媒体存储](../runbooks/shared-media-storage.md)。该能力默认生效，无新配置、HTTP 或评分契约。
 
-2026-11-18：主产品媒体上传采用同一真实目录刷新方式；PhotoBench 冻结启动快照关闭
-临时句柄后发布，存活探针使用不发送信号的 psutil.pid_exists，避免 Windows 终止副作用。
-不变更端口、公开 schema、失败语义和模型装配边界。专项证据与完整 CI 未完成项见上述记录。
-主 API 视频任务恢复的 PID 探针采用相同的无信号查询，避免误终止仍在运行的 worker。
+### 2026-11-17 单题重测与聊天对话
 
-2026-11-18 QA 分页与 Windows 遥测：分页客户端按最新请求发布结果，相同在途读取合并，
-过期读取取消；失败保留已显示结果并提供重试。读取端不对活动快照作无用的缓存体积遍历，
-终态缓存仍受既有容量约束。Windows 物理内存来自 psutil 的 total-available，来源标识
-`windows_physical_total_minus_available_v1`；NVML 依赖支持 Windows x86_64。
-PSS、WSL 进程 GPU 归属未解析时保持 null 并披露原因，不替换为其他口径；历史缺失样本
-不回填。容器装配、原有 API/schema、Linux 资源口径不变，验证见 Windows 修复记录。
+`POST /runs/{id}/retest` 使用原任务冻结定义，仅选择指定 qa_id，复用 scope，显式切换所选模型，生成独立 run。`retest_context` 记录来源、源题号和评分规则；`GET /runs/{id}/retests` 返回关联记录。评分采用所选批次配置和 GT 元数据，执行使用当前产品与规则版本，原答卷和分数保留。
 
-2026-11-19 视频时间线恢复：视频源重新探测后，捕获时间和 GPS 投影由视频仓储原子保存；
-空源观察不进入事件总结，关键帧内容和可用原文件才进入场景事件。可用原文件的历史视频
-通过持久重处理任务恢复，空的自动占位事件只在无共享证据、无用户修正和无确认身份时归档，
-缺失原文件保持延期。具体平台限制与真实源视频验收见 Windows 修复记录。
+`ChatStore` 负责独立会话文件，`InteractiveSentrixClient` 在产品客户端上增加读取会话和取消回合。`ChatService` 与 RunSuites 共用任务占用和模型准备，固定会话的相册与模型；创建、发送、读取和取消接口位于 `/chat/sessions`。题库来源只发送问题，多轮顺序执行；标准答案及 GT 留在测评侧对照。恢复时对账已接受回合，保留调用事实，不重发生成请求。回合投影复用已有媒体与完整轨迹视图。HTTP会话GET默认`include_items=false`，仅返回本地消息和已存答案；兼容调用可显式请求全部回合。`/chat/sessions/{id}/turns/{index}`按回合生成/读取独立格式3派生缓存，`/trace`、`/trace/{node_id}`和`/content`分别分页读节点、单节点及正文。旧回合首次读取按引用ID调用`get_asset`，最多4并发，并补关键帧的父视频，不扫描相册。缓存失败保留回答，后续详情读取可重试，不重发生成。
 
-### 2026-11-20 文本全文检索与关联扩展
+`DELETE /api/v1/chat/sessions/{session_id}` 删除聊天及对应产品会话，成功204，不存在404；活动或执行状态未确认时409。产品删除成功或已不存在后才删除本地session，其他上游失败保留本地以便重试。产品 `DELETE /api/v1/assistant/conversations/{conversation_id}` 在同一事务检查活动回合并删除消息/轨迹，创建回合也在事务中确认会话仍有效。删除不影响相册资产或已保存测评答卷/评分。两端列表均提供二次确认。
 
-TextChunkRepository新增prepare_sources、lexical和related：prepare_sources仅补齐当前
-scope的FTS5和源关联投影；lexical按来源、发信时间和当前观察revision过滤后执行
-FTS5/BM25；related最多扩展3个种子、每个2个同scope来源，线程/预订标识为强链接，
-主题和实体词组链接要求30日窗口并排除高频枢纽。投影均从原文和来源元数据派生，不读取题库。
-写入分块时同事务更新全文与关联投影；旧revision、删除或异scope证据不可召回。
-删除源观察时一并清理全文行和级联关联键。检索保留RRF后再统一重排，工具最多6个源。
+测评发布可通过 `PHOTOBENCH_BUILD_REVISION` 独立声明已提交版本，优先于产品根的 build-info；产品版本仍从 diagnostics 单独冻结。
 
-Container.text_reranker依赖既有Reranker端口：配置了重排侧车时复用它，否则仅文本路径
-用已有ChatModel的结构化相关性评分。图片视频的Container.reranker与装配保持原语义。
-本机模型重排最多24个候选、输出512 token、单次超时至多60秒；分数数目/类型不符
-返回空表、warning并在工具轨迹标degraded，保留RRF顺序，不补造分数或清洗答案。
-原问题含日期的上下文传给文本重排；显式after/before仍只过滤发信时间，日期上界包含整日。
-来源复合别名email/document兼容为查全部文本，非法表达式报invalid_text_filter，不静默查空。
-trace.text_retrieval.stages增量记录FTS、向量、RRF、扩展与重排名单，未送达模型的池内来源
-不计工具召回；API/SSE强类型字段与评测既有计数保持。复用测评跳过文本重导入与构图。
+### 2026-11-19 活动测评共享不可变轨迹
 
-### 2026-11-20 文本规划与最终回答边界
+ReadRuns 通过装配点注入 RunSuites.active_snapshot。活动任务的评分选择、题目及详情读取
+复用 RunState.snapshot 的一致视图，共享已完成不可变轨迹；可变评分元数据保持隔离。
+同一历史任务的并发完整读取共用在途解析，终态缓存仍限制64MiB。无新HTTP或存储契约。
 
-文本规划schema限定4条短需求；仅文本OutputTruncatedError可纠错重试一次并保留失败轨迹，
-图片视频规划与其它服务错误仍按原约定处理。实际使用文本工具的回合预留最终回答/核验
-步骤，不增加max_steps或工具额度。文本完整回答通过原文L2核验，不用候选数证明字段存在。
-公开evidence_id可作为selected_text_handles中的显式引用，但只解析本回合已返回、同scope、
-当前仍存在的文本资产；photo_N保持最新结果集语义，qualified handle保持已授权结果集校验。
-与本文MUST NOT出口清洗一致：不改写答案、不从答案字符串推断引用、旧错误记录不覆盖。
-普通英文observations与assets仅在实际文本检索上下文中作为自然词处理；明确的内部表引用
-仍硬拦，纯图片视频的门禁不受这一适配影响。
+
+### 2026-11-20 节点耗时与格式3分析
+
+测评及聊天的`/trace/{node_id}?view=timing`读取本节点耗时、同轮模型metrics和唯一关联工具，跳过请求/响应正文。优先按`call_id/parent_call_id`绑定，旧数据仅在同轮成功步骤唯一时按`step_id`绑定；关联不完整时不展示本步合计。有独立`agent_loop_total_ms`时显示本步墙钟，其他记录显示模型与关联工具调用累计，并提示并行时长可能重叠。工具内部展示已存检索分量和内部模型观测，内部模型耗时包含在工具耗时内，不再次相加。
+
+格式3错误分析按固定manifest修订读取逐题规则事实，跳过模型与工具的输入输出正文，不调用整轮`state()`。题目定义和参考文本保持原文；证据查看或显式AI分析才按选中题读取片段，每条最多3000字符、每题合计最多32000字符。完整正文仍由固定修订的轨迹懒读接口提供。旧JSONL/run.json分析入口保持，规则分析不写原答卷或评分。

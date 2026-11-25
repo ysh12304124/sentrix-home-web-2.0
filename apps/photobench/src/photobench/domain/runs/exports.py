@@ -27,6 +27,9 @@ import ast
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from photobench.domain.error_analysis.process import process_for_qa
+from photobench.domain.evaluation.profile_view import item_profile_results
+from photobench.domain.evaluation.profiles import scoring_summary
 from photobench.domain.runs.analysis import (
     judge_bucket_for_summary,
     judge_score_for_summary,
@@ -34,7 +37,17 @@ from photobench.domain.runs.analysis import (
 )
 
 #: 1.0 ``:6530`` 的 ``retrieval`` 子对象取的字段清单，顺序照抄。
+_SOURCE_FIELDS = (
+    "retrieval_source_refs",
+    "answer_evidence_source_refs",
+    "retrieved_source_refs",
+    "read_source_refs",
+    "predicted_source_refs",
+    "source_metrics",
+    "source_mapping_complete",
+)
 _RETRIEVAL_FIELDS = (
+    *_SOURCE_FIELDS,
     "retrieval_metrics_applicable",
     "retrieval_metrics_reason",
     "retrieval_recall",
@@ -112,6 +125,7 @@ def export_traces(
     """1.0 ``:6724-6770``。返回一个 list，不是带信封的对象（1.0 原样如此）。"""
     include = set(scores) if scores else None
     items_out: list[dict[str, Any]] = []
+    scoring = scoring_summary(state)
     for item in state.get("items") or []:
         item_score = judge_score_for_summary(item.get("judge"))
         if include is not None and judge_bucket_for_summary(item.get("judge")) not in include:
@@ -174,7 +188,18 @@ def export_traces(
                 "scoring_profile": state.get("selected_scoring_profile"),
                 "scoring_batch": state.get("selected_scoring_batch"),
                 "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
+                "scoring": scoring,
+                "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
+                "process_diagnostics": process_for_qa(state, str(item.get("qa_id"))),
+                "scoring_reviews": [
+                    r for r in state.get("scoring_reviews") or [] if r.get("qa_id") == str(item.get("qa_id"))
+                ],
                 "final_trace": final_trace,
+                **(
+                    {"retrieval": {key: item.get(key) for key in _SOURCE_FIELDS}}
+                    if "source_mapping_complete" in item
+                    else {}
+                ),
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
                     if item.get("evaluation")
@@ -225,7 +250,7 @@ def export_sft(
             steps_out: list[dict[str, Any]] = []
             if debug_calls:
                 # 2.0 的完整轨迹：每条都是一次模型调用，自带 messages / tools / response。
-                steps_out = [dict(call) for call in debug_calls]
+                steps_out = list(debug_calls)
             else:
                 for step in turn.get("debug_trace") or []:
                     if not isinstance(step, Mapping):
@@ -288,6 +313,11 @@ def export_sft(
                 "question": item.get("question"),
                 "expected_action": item.get("expected_action"),
                 "answer": item.get("answer"),
+                "profile_scores": item_profile_results(state, str(item.get("qa_id"))),
+                "process_diagnostics": process_for_qa(state, str(item.get("qa_id"))),
+                "scoring_reviews": [
+                    r for r in state.get("scoring_reviews") or [] if r.get("qa_id") == str(item.get("qa_id"))
+                ],
                 "judge": item.get("judge"),
                 **(
                     {"evaluation": item["evaluation"], "evaluation_result": item.get("evaluation_result")}
@@ -309,9 +339,11 @@ def export_sft(
         )
     return {
         "run_id": state.get("run_id"),
+        **({"retest_context": state["retest_context"]} if state.get("retest_context") else {}),
         "scoring_profile": state.get("selected_scoring_profile"),
         "scoring_batch": state.get("selected_scoring_batch"),
         "scoring_summary": (state.get("summary") or {}).get("selected_scoring"),
+        "scoring": scoring_summary(state),
         "count": len(samples),
         "item_count": len(items_out),
         "items": items_out,

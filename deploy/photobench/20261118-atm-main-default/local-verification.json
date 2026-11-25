@@ -1,0 +1,22 @@
+{
+  "atm-bench": {
+    "count": 1013,
+    "errors": 0,
+    "warnings": 4
+  },
+  "atm-bench-hard": {
+    "count": 31,
+    "errors": 0,
+    "warnings": 1
+  },
+  "atm-bench-email": {
+    "count": 381,
+    "errors": 0,
+    "warnings": 0
+  },
+  "atm-bench-hard-email": {
+    "count": 8,
+    "errors": 0,
+    "warnings": 0
+  }
+}

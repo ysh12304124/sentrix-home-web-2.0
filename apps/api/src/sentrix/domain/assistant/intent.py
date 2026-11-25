@@ -95,6 +95,8 @@ place / time / duration / amount / count / person / media_set / description / bo
 例如“2017年那场婚礼一共花了多少钱”的 value_type 是 amount，不是 time。
 scope 的键只能是 event / time / place / person；能从问题确定的事件、地点、人物、时间必须写上，
 不确定就输出空对象 {{}}；time 只放时间表达式（年份/日期/季节），地名不能塞进 time。
+person 只填所问事实的主体或要求出镜的人，保留原姓名或别名；同张合照的多人用顿号连接。
+不同人物的独立问题用各自的需求；不把排除的人、拍摄者或尚待识别的人写成人物筛选。
 任何字段都禁止输出 <...> 占位符；scope 里禁止写“未知”“unknown”“n/a”。
 
 只声明回答问题所必需的最小证据集合，不要把检索步骤本身当成答案证据。规则：
@@ -114,8 +116,9 @@ scope 的键只能是 event / time / place / person；能从问题确定的事�
 不要调用工具，不要输出 SQL，不要直接回答用户。"""
 
 _PHOTO_SOURCE_RULE = (
-    "- 关于相册的真问题就声明 photo_set + delivered_photo（成对、不计额度）；\n"
-    "  只有与相册无关的闲聊或写作请求才不声明。"
+    "- 关于相册的真问题通常声明 photo_set + delivered_photo（成对、不计额度）。\n"
+    "  与相册无关的闲聊或写作不声明；仅问人物档案或相册统计时单独声明对应证据。\n"
+    "  需要依据照片回答场景、事件或人物活动时仍声明照片需求。"
 )
 _MIXED_SOURCE_RULE = (
     "- 当前范围含文本资料。邮件或文档中的内容用 source_text，保留原文的名字、编号和检索词。\n"

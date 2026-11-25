@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -106,6 +107,25 @@ class RequirementValueType(StrEnum):
 
 #: scope 只允许这四个键；时间/地点/人物是限定条件，不是需求本身。
 REQUIREMENT_SCOPE_KEYS = frozenset({"event", "time", "place", "person"})
+_PERSON_SEPARATOR = re.compile(r"\s*(?:[、，,/／]|和|与|及|\band\b)\s*")
+
+
+def clean_person_name(name: str) -> str:
+    name = name.strip()
+    if len(name) > 1 and (name[0], name[-1]) in {
+        ("“", "”"),
+        ("‘", "’"),
+        ("「", "」"),
+        ("『", "』"),
+        ('"', '"'),
+        ("'", "'"),
+    }:
+        return name[1:-1].strip()
+    return name
+
+
+def split_person_scope(value: str) -> tuple[str, ...]:
+    return tuple(clean_person_name(part) for part in _PERSON_SEPARATOR.split(value))
 
 
 @dataclass

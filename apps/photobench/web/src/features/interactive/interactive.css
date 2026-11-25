@@ -1,0 +1,94 @@
+.chat-view { background: #fff; border: 1px solid #dfe3ef; border-radius: 18px; padding: 24px; }
+.chat-controls, .interactive-model { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
+.chat-controls label, .interactive-model label { display: grid; gap: 6px; font-size: 13px; color: #65708e; }
+.chat-controls select, .interactive-model input, .interactive-model select { max-width: 100%; min-width: 180px; }
+.chat-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; margin-top: 24px; }
+.chat-history { border-right: 1px solid #e6e9f2; padding-right: 16px; }
+.chat-history-item, .chat-qa-option { display: block; width: 100%; border: 1px solid transparent; background: #f7f8fc; border-radius: 10px; padding: 12px; text-align: left; margin-bottom: 8px; cursor: pointer; color: #252d45; overflow-wrap: anywhere; }
+.chat-history-item strong, .chat-history-item small { display: block; }
+.chat-history-item small { margin-top: 6px; color: #758099; }
+.chat-history-item.selected, .chat-qa-option.selected { border-color: #918ac9; background: #f0eef9; }
+.chat-history-entry { position: relative; }
+.chat-history-entry .chat-history-item { padding-right: 54px; }
+.chat-history-delete { position: absolute; top: 8px; right: 6px; padding: 5px; border: none; border-radius: 5px; background: transparent; color: #a33542; cursor: pointer; font: inherit; font-size: 12px; }
+.chat-history-delete:hover:not(:disabled), .chat-history-delete:focus-visible { background: #fcecee; }
+.chat-history-delete:disabled { color: #8a93a9; cursor: not-allowed; }
+.chat-delete-confirm { padding: 10px; margin: -2px 0 10px; border: 1px solid #e7bcc2; border-radius: 8px; font-size: 12px; }
+.chat-delete-confirm p { margin: 0 0 8px; }
+.chat-delete-confirm > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-delete-confirm .danger { background: #a33542; color: #fff; border-color: #a33542; }
+.chat-main { min-width: 0; }
+.chat-state { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; font-size: 13px; color: #6d7790; }
+.chat-state details { width: 100%; }
+.chat-view pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto; }
+.chat-source { border: 1px solid #e6e0f2; border-radius: 12px; padding: 14px; margin-top: 18px; }
+.chat-source summary { cursor: pointer; font-weight: 600; }
+.chat-messages { min-height: 180px; padding: 16px 0; }
+.chat-question { padding: 14px 18px; background: #f1eff9; border-radius: 12px; margin: 14px 0; }
+.chat-answer { padding: 8px 4px 20px; border-bottom: 1px solid #eceef5; }
+.chat-messages p, .chat-source p, .chat-qa-preview p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.chat-messages small { color: #79829b; }
+.chat-empty { padding: 40px 16px; text-align: center; color: #8a93a9; }
+.chat-composer { display: grid; gap: 10px; }
+.chat-composer textarea { resize: vertical; min-height: 90px; width: 100%; padding: 14px; border: 1px solid #dce1ee; border-radius: 12px; box-sizing: border-box; font: inherit; }
+.chat-composer-actions { display: flex; justify-content: space-between; gap: 10px; }
+.interactive-dialog { margin: 5vh auto; width: min(1000px, calc(100vw - 32px)); max-height: 90vh; overflow: auto; background: #fff; padding: 24px; border-radius: 16px; box-shadow: 0 16px 70px #28314c30; box-sizing: border-box; }
+.interactive-dialog .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.interactive-dialog > .btn { margin: 16px 0; }
+.interactive-dialog input { padding: 10px; border: 1px solid #dce1ee; border-radius: 8px; }
+.interactive-table { overflow-x: auto; }
+.interactive-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.interactive-table th, .interactive-table td { padding: 12px 8px; border-bottom: 1px solid #e8ebf3; text-align: left; max-width: 260px; overflow-wrap: anywhere; }
+.interactive-media { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
+.chat-qa-list { max-height: 260px; overflow-y: auto; margin: 16px 0; }
+.chat-qa-preview { border-top: 1px solid #e8ebf3; padding-top: 12px; }
+.retest-origin { padding: 10px 16px; background: #f2eff9; border-radius: 10px; }
+@media(max-width: 700px) {
+  .chat-view { padding: 16px; }
+  .chat-layout { grid-template-columns: 1fr; gap: 14px; }
+  .chat-history { border-right: none; border-bottom: 1px solid #e6e9f2; padding: 0 0 12px; max-height: 160px; overflow-y: auto; }
+  .chat-controls > label, .chat-controls > .interactive-model, .interactive-model > label { min-width: 0; width: 100%; }
+  .chat-controls select, .interactive-model input, .interactive-model select { width: 100%; min-width: 0; }
+  .interactive-dialog { padding: 16px; }
+}
+
+.interactive-modal-backdrop { box-sizing: border-box; position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(20,22,31,.55); }
+.interactive-modal-backdrop .interactive-dialog { display: flex; flex-direction: column; width: min(1200px, 100%); max-height: calc(100dvh - 40px); margin: 0; padding: 0; overflow: hidden; background: var(--surface); color: var(--text); }
+.interactive-modal-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.interactive-modal-header h3 { margin: 0; }
+.interactive-modal-content { min-height: 0; overflow: auto; padding: 20px; overscroll-behavior: contain; }
+.interactive-modal-content > .btn { margin: 16px 0; }
+.item-footer { flex-wrap: wrap; gap: 10px; }
+.unified-media { margin: 16px 0; min-width: 0; }
+.source-grid { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.source-grid .source-card { padding:0; margin:0; border:1px solid var(--border); border-radius:6px; background:var(--surface); min-width:0; overflow:hidden; }
+.source-grid .source-card>summary { display:flex; align-items:baseline; gap:8px; cursor:pointer; padding:7px 10px; line-height:1.5; font-size:12px; }
+.source-card>summary::before { content:'▸'; flex:none; color:var(--muted); }
+.source-card[open]>summary::before { content:'▾'; }
+.source-card>summary .source-card-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.source-card>summary time { flex:none; font-size:10px; color:var(--muted); }
+.source-grid .source-card-body { border-top:1px solid var(--border); padding:8px 10px; font-size:12px; overflow-wrap:anywhere; }
+.source-card-body p { margin:4px 0; }
+.source-card-body .source-card-id { font-size:10px; color:var(--muted); }
+.source-grid .source-card-body pre { max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; font-size:11px; line-height:1.6; }
+.execution-view { margin: 18px 0; min-width: 0; }
+.execution-state { color: var(--muted); font-size: 13px; }
+.execution-answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+.execution-phases { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; margin: 12px 0; color: var(--muted); }
+.execution-event-log { margin: 16px 0; }
+.execution-events { max-height: 240px; overflow: auto; background: var(--surface2); padding: 8px 12px; border-radius: 8px; }
+.execution-events p { margin: 5px 0; font-size: 12px; overflow-wrap: anywhere; }
+.execution-events time { color: var(--muted); }
+@media(max-width:700px) {
+  .interactive-modal-backdrop { padding: 8px; }
+  .interactive-modal-backdrop .interactive-dialog { max-height: calc(100dvh - 16px); }
+  .interactive-modal-header, .interactive-modal-content { padding: 12px; }
+  .item-footer { flex-direction: row; }
+}
+
+.lightbox { z-index: 1100; }
+.interactive-modal-content pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+.chat-composer-actions { flex-wrap: wrap; align-items: center; }
+.interactive-model-message { flex-basis: 100%; margin: 0; }
+.retest-execution { scroll-margin-top: 12px; outline: none; }
+.interactive-table time, .execution-events time { white-space: nowrap; font-variant-numeric: tabular-nums; }

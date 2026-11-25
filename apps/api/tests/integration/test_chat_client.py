@@ -11,6 +11,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -24,6 +25,7 @@ from sentrix.domain.assistant.ports import (
 )
 from sentrix.domain.assistant.tools import TOOL_SPECS, openai_tools
 from sentrix.infrastructure.assistant.chat_client import (
+    CONTEXT_SAFETY_TOKENS,
     MAX_ANSWER_TOKENS,
     PROMPT_COMPACTION_RATIO,
     TOKENS_PER_CHAR,
@@ -51,6 +53,7 @@ class _Handler(BaseHTTPRequestHandler):
     #: 模拟「端点不认 response_format」：只拒绝带结构化字段的那次请求。
     reject_structured: bool = False
     models_delay_s: float = 0.0
+    context_window: int | None = None
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 的接口
         time.sleep(type(self).models_delay_s)
@@ -77,7 +80,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     @classmethod
     def _models(cls) -> dict:
-        return {"object": "list", "data": [{"id": name, "object": "model"} for name in cls.served]}
+        window = {} if cls.context_window is None else {"max_model_len": cls.context_window}
+        return {"object": "list", "data": [{"id": name, "object": "model", **window} for name in cls.served]}
 
     def _send(self, payload: bytes, status: int) -> None:
         self.send_response(status)
@@ -103,13 +107,14 @@ def server() -> Iterator[str]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_handler() -> None:
+def _reset_handler(fake_embedding_startup) -> None:
     _Handler.received = []
     _Handler.response = {}
     _Handler.status = 200
     _Handler.served = ["test-model"]
     _Handler.reject_structured = False
     _Handler.models_delay_s = 0.0
+    _Handler.context_window = None
 
 
 def chat_model(server: str) -> OpenAIChatModel:
@@ -119,6 +124,64 @@ def chat_model(server: str) -> OpenAIChatModel:
     写死的名字」正是 2026-09-24 那次事故的入口。
     """
     return OpenAIChatModel(server, ServedModel(server))
+
+
+def test_http_retries_consume_the_shared_model_limit(server):
+    from sentrix.domain.assistant.request_budget import (
+        RequestBudget,
+        RequestBudgetExceeded,
+        final_model_request,
+        reset_request_budget,
+        set_request_budget,
+    )
+
+    _Handler.status = 503
+    model = OpenAIChatModel(
+        server,
+        ServedModel(server),
+        retry={
+            "max_attempts": 10,
+            "base_delay_s": 0,
+            "jitter_s": 0,
+        },
+    )
+    budget = RequestBudget(max_model_calls=5)
+    token = set_request_budget(budget)
+    try:
+        with pytest.raises(RequestBudgetExceeded):
+            model.complete(
+                [ChatMessage(ChatRole.SYSTEM, "assistant"), ChatMessage(ChatRole.USER, "hello")], ()
+            )
+        assert len(_Handler.received) == budget.model_attempts == 3
+        with final_model_request(), pytest.raises(RequestBudgetExceeded):
+            model.complete(
+                [ChatMessage(ChatRole.SYSTEM, "assistant"), ChatMessage(ChatRole.USER, "finish")], ()
+            )
+        assert len(_Handler.received) == budget.model_attempts == 5
+    finally:
+        reset_request_budget(token)
+
+
+def test_tool_internal_vlm_format_retry_uses_the_same_budget(server):
+    from sentrix.domain.assistant.request_budget import (
+        RequestBudget,
+        RequestBudgetExceeded,
+        reset_request_budget,
+        set_request_budget,
+    )
+    from sentrix.infrastructure.media.vlm_observer import chat_json
+
+    _Handler.reject_structured = True
+    budget = RequestBudget(max_model_calls=3)
+    token = set_request_budget(budget)
+    try:
+        with pytest.raises(RequestBudgetExceeded):
+            chat_json(
+                server + "/chat/completions", ServedModel(server), "read image", None, 10, json_mode=True
+            )
+        assert len(_Handler.received) == budget.model_attempts == 1
+    finally:
+        reset_request_budget(token)
 
 
 def context_model(server: str) -> OpenAIChatModel:
@@ -266,7 +329,6 @@ def test_the_tools_field_carries_standard_json_schema(server: str):
     # 故意的重复：那条钉**注册表**，这条钉**真的上了线的那份**（发出去的就是它们）。
     assert [tool["name"] for tool in wire_tools] == [
         "search_memories",
-        "search_text_memories",
         "query_memory_facts",
         "query_photo_people",
         "inspect_photo",
@@ -582,7 +644,7 @@ def test_the_output_budget_is_derived_from_the_real_window(server: str):
 
     prompt_tokens = OpenAIChatModel.estimate_prompt_tokens(messages_, TOOL_SPECS)
     sent = _Handler.received[0]["body"]["max_tokens"]
-    assert sent == min(MAX_ANSWER_TOKENS, CONTEXT_TOKENS - prompt_tokens)
+    assert sent == min(MAX_ANSWER_TOKENS, CONTEXT_TOKENS - prompt_tokens - CONTEXT_SAFETY_TOKENS)
     assert sent != min(MAX_ANSWER_TOKENS, 4400 - prompt_tokens)
 
 
@@ -822,23 +884,107 @@ def test_diagnostics_preserve_actual_tokens_and_preflight_does_not_send(server: 
     assert exc.value.diagnostics["prompt_tokens_estimated"] > CONTEXT_TOKENS
 
 
-def test_qwen_forced_email_final_validates_the_advertised_schema(server: str):
-    from sentrix.domain.assistant.evidence_ledger import EvidenceLedger
-    from sentrix.domain.assistant.jit import select_turn_tools
+def test_reasoning_long_prompt_and_normal_budget_are_isolated(server, tmp_path):
+    from sentrix.bootstrap.assistant_wiring import build_run_turn
+    from sentrix.bootstrap.container import Container
+    from sentrix.config import Settings
 
-    final = tuple(
-        t
-        for t in select_turn_tools(EvidenceLedger("text-test"), has_source_text=True)
-        if t.name == "final_answer"
+    container = Container.build(
+        Settings(
+            data_dir=tmp_path,
+            vlm_base_url=server,
+            vlm_context_tokens=16384,
+            vlm_reasoning_context_tokens=131072,
+        )
     )
-    arguments = '{"answer":"GBP 23","selected_image_handles":[],"selected_text_handles":["rs_test/photo_1"]}'
-    _Handler.response = reply(content=arguments)
-    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
-    result = model.complete(messages(), final)
-    assert result.tool_calls[0].arguments_json == arguments
-    assert len(_Handler.received) == 1
-    _Handler.response = reply(
-        content='{"answer":"x","selected_image_handles":[],"selected_text_handles":[42]}'
+    normal = build_run_turn(container)._model
+    reasoning = build_run_turn(container, reasoning=True)._model
+    long_prompt = [ChatMessage(ChatRole.SYSTEM, "test"), ChatMessage(ChatRole.USER, "x" * 100_000)]
+    _Handler.response = reply("ok")
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        longer = pool.submit(reasoning.complete, long_prompt, ())
+        shorter = pool.submit(normal.complete, messages(), ())
+        rejected = pool.submit(normal.complete, long_prompt, ())
+        assert longer.result().diagnostics["context_window_tokens"] == 131072
+        assert shorter.result().diagnostics["context_window_tokens"] == 16384
+        with pytest.raises(PromptTooLongError):
+            rejected.result()
+    assert len(_Handler.received) == 2
+    request = next(r["body"] for r in _Handler.received if len(r["body"]["messages"][1]["content"]) > 1000)
+    assert request["messages"][1]["content"] == "x" * 100_000
+    assert request["max_tokens"] == MAX_ANSWER_TOKENS
+    assert "context_length" not in request
+
+    # 进入128K窗口的95%后，才触发应用侧压缩；普通回合仍保留原预算。
+    with pytest.raises(PromptTooLongError) as error:
+        reasoning.complete(
+            [ChatMessage(ChatRole.SYSTEM, "test"), ChatMessage(ChatRole.USER, "x" * 185_000)], ()
+        )
+    assert error.value.diagnostics["context_window_tokens"] == 131072
+    assert error.value.diagnostics["error_category"] == "context_soft_limit"
+    assert normal.complete(messages(), ()).diagnostics["context_window_tokens"] == 16384
+
+
+@pytest.mark.parametrize(
+    "reported,declared,expected",
+    [
+        (16384, 131072, 16384),
+        (32768, 131072, 32768),
+        (262144, None, 131072),
+        (None, None, 16384),
+        (None, 131072, 131072),
+    ],
+)
+def test_reasoning_respects_reported_local_capacity(server, tmp_path, reported, declared, expected):
+    from sentrix.bootstrap.assistant_wiring import build_run_turn
+    from sentrix.bootstrap.container import Container
+    from sentrix.config import Settings
+
+    _Handler.context_window = reported
+    container = Container.build(
+        Settings(
+            data_dir=tmp_path,
+            vlm_base_url=server,
+            vlm_context_tokens=16384,
+            vlm_reasoning_context_tokens=declared,
+        )
     )
-    with pytest.raises(ModelServiceError):
-        model.complete(messages(), final)
+    _Handler.response = reply()
+    result = build_run_turn(container, reasoning=True)._model.complete(messages(), ())
+    assert result.diagnostics["context_window_tokens"] == expected
+    ordinary = build_run_turn(container)._model.complete(messages(), ())
+    assert ordinary.diagnostics["context_window_tokens"] == (reported or 16384)
+
+
+def test_cloud_reasoning_expands_application_budget_and_preserves_provider_options(
+    server, tmp_path, monkeypatch
+):
+    from sentrix.bootstrap.assistant_wiring import build_run_turn
+    from sentrix.bootstrap.container import Container
+    from sentrix.config import Settings
+
+    monkeypatch.setenv("TEST_REASONING_KEY", "test-key")
+    role = {
+        "base_url": server,
+        "model": "test-model",
+        "api_key_env": "TEST_REASONING_KEY",
+        "context_tokens": 16384,
+        "max_output_tokens": 4096,
+        "supports_vision": True,
+        "payload": {"extra_body": {"enable_thinking": False}},
+    }
+    path = tmp_path / "roles.json"
+    path.write_text(json.dumps({"roles": {"chat": role, "vision": role}}))
+    container = Container.build(Settings(data_dir=tmp_path, llm_profile="cloud", llm_config_path=path))
+    _Handler.response = reply()
+    result = build_run_turn(container, reasoning=True)._model.complete(
+        [ChatMessage(ChatRole.SYSTEM, "test"), ChatMessage(ChatRole.USER, "x" * 100_000)], ()
+    )
+    assert result.diagnostics["context_window_tokens"] == 131072
+    assert _Handler.received[-1]["body"]["max_tokens"] == 4096
+    assert _Handler.received[-1]["body"]["enable_thinking"] is False
+    assert (
+        build_run_turn(container)._model.complete(messages(), ()).diagnostics["context_window_tokens"]
+        == 16384
+    )

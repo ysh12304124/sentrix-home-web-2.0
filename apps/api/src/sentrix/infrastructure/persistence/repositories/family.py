@@ -46,7 +46,10 @@ from sentrix.domain.identity.family import (
     FamilyPortraitRecord,
     FamilyRelationshipRecord,
 )
-from sentrix.domain.identity.family_graph import validate_relationship_pair
+from sentrix.domain.identity.family_graph import (
+    validate_custom_relationship_pair,
+    validate_relationship_pair,
+)
 from sentrix.domain.identity.models import entity_display_name
 from sentrix.domain.identity.ports import EntityRepository
 from sentrix.infrastructure.persistence.database import Database
@@ -348,6 +351,8 @@ class SqliteFamilyGraphRepository:
                             appearance_count=int((count or {"count": 0})["count"] or 0),
                             representative_media=tuple(dict(row) for row in media),
                             status=entity.status,
+                            aliases=self._entities.person_aliases(entity.id),
+                            hidden=self._entities.person_hidden(entity.id),
                         )
                     )
         return people
@@ -471,7 +476,11 @@ class SqliteFamilyGraphRepository:
         inverse_predicate = str(inverse_predicate or "").strip()
         if not predicate or not inverse_predicate:
             raise ValueError("family relationship requires both predicates")
-        validate_relationship_pair(predicate, inverse_predicate)
+        # 用户建的边允许自定义称谓；模型推断仍过亲属白名单。
+        if source == SOURCE_USER_OVERRIDE:
+            validate_custom_relationship_pair(predicate, inverse_predicate)
+        else:
+            validate_relationship_pair(predicate, inverse_predicate)
 
         with self._database.connect() as connection, connection:
             self._family_entity(connection, scope_id, subject_entity_id)
@@ -594,6 +603,38 @@ class SqliteFamilyGraphRepository:
         return [_row_to_relationship(row) for row in rows]
 
     # ---- 家庭画像 --------------------------------------------------------------
+
+    def latest_user_edit_at(self, scope_id: str, entity_id: str) -> datetime | None:
+        with self._database.connect() as connection:
+            stamps = connection.execute(
+                "SELECT updated_at FROM family_person_memberships"
+                " WHERE scope_id=? AND entity_id=? AND source=?"
+                " UNION ALL SELECT updated_at FROM family_relationships"
+                " WHERE scope_id=? AND (subject_entity_id=? OR object_entity_id=?) AND source=?"
+                " UNION ALL SELECT updated_at FROM family_relationship_blocks"
+                " WHERE scope_id=? AND (left_entity_id=? OR right_entity_id=?) AND source=?",
+                (
+                    scope_id,
+                    entity_id,
+                    SOURCE_USER_OVERRIDE,
+                    scope_id,
+                    entity_id,
+                    entity_id,
+                    SOURCE_USER_OVERRIDE,
+                    scope_id,
+                    entity_id,
+                    entity_id,
+                    SOURCE_USER_OVERRIDE,
+                ),
+            ).fetchall()
+        return max(
+            (
+                stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+                for row in stamps
+                if (stamp := _timestamp(row[0])) is not None
+            ),
+            default=None,
+        )
 
     def get_active_portrait(self, scope_id: str, entity_id: str) -> FamilyPortraitRecord | None:
         with self._database.connect() as connection:

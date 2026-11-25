@@ -36,6 +36,14 @@ async def current_model(request: Request) -> dict[str, Any]:
     return get_container(request).model_profiles.current_model(payload)
 
 
+@router.get("/current-deployed-model")
+def current_deployed_model(request: Request) -> dict[str, Any]:
+    """Query the product's actual model endpoint without changing its deployment."""
+    container = get_container(request)
+    base, model = container.run_suites.interactive_models.deployed_endpoint()
+    return container.model_profiles.current_model({"model_base_url": base, "model": model})
+
+
 @router.post("/test-model")
 async def test_model(request: Request) -> dict[str, Any]:
     """1.0 ``:7965``：「测试模型端点」按钮。

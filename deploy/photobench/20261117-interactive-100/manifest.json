@@ -1,0 +1,386 @@
+{
+  "8772": {
+    "files": {
+      "apps/photobench/src/photobench/api/interactive_schema.py": {
+        "before": null,
+        "after": "25140d7417cc18fb90c4353c4ff36fbbb5d13d2c392981db748a397e3206530f"
+      },
+      "apps/photobench/src/photobench/api/metrics_schema.py": {
+        "before": "e92c57e55d802048e1f0fb298ecf54564c61623a045d3535084bc2915577f644",
+        "after": "41ce015fda0378274c3e68baffae4acf2fadf4c1e50b1c8ba1cc5da7075a9b53"
+      },
+      "apps/photobench/src/photobench/api/routes/chat.py": {
+        "before": null,
+        "after": "48fd79b2dce97208ffc8e05b8c0d52a79f2db649d4909a78e32ba32c906407ce"
+      },
+      "apps/photobench/src/photobench/api/routes/suites.py": {
+        "before": "5cf3b036ce36ff735ae0428d003b77fa63d122f6155989813f28cf08f5ea322b",
+        "after": "3c9a050562f4ab8b695180458c4bada62fef48f3be8dfd3c004278c24d3d06b9"
+      },
+      "apps/photobench/src/photobench/application/interactive/chat.py": {
+        "before": null,
+        "after": "86ffe10ba0ad649c8afd604eea2fcbfd8585ba0f602d4f650e8cd62f54a382e2"
+      },
+      "apps/photobench/src/photobench/application/interactive/models.py": {
+        "before": null,
+        "after": "ea598f4477071a4271cb9e9a48787ce8f794a087c504689a58381d96f4a17048"
+      },
+      "apps/photobench/src/photobench/application/run_execution/service.py": {
+        "before": "d2252ed82dfb7dd32bbfbbe73fb08ca9408dbdef93d70972072e2ba901755e9e",
+        "after": "b99b10055b8b8ac0896869e8e2ded9e500c45b1fc8f06adf892bcdd17840c85a"
+      },
+      "apps/photobench/src/photobench/application/runs/suites.py": {
+        "before": "5187c3c120e5360096cf45062c080c7bf058ad1a0e9a15b3cd3957b6c3c75b32",
+        "after": "7eaf78f3fe66e1185fcd3ada19f70aab3f0e03f1caa4d252166e1ffb06bc0823"
+      },
+      "apps/photobench/src/photobench/bootstrap/container.py": {
+        "before": "c1bd82f2148946c1f9df3ec33b43c2f39b6a4a65d75250df4987214484f9bd9a",
+        "after": "268515a5ae515d110ccfa6aea8348fd1d357a6a2e7b5d8b432e02c2b164e846b"
+      },
+      "apps/photobench/src/photobench/domain/chat/ports.py": {
+        "before": null,
+        "after": "eedc3aae42062ef70939a50039bfd37679ac59ad85cf949d2fecedc7cb969f45"
+      },
+      "apps/photobench/src/photobench/domain/chat/projection.py": {
+        "before": null,
+        "after": "1399c363ee9a3c21c88a166606a67943370959d2e7de9a27cb62e169af5e20e7"
+      },
+      "apps/photobench/src/photobench/domain/datasets/ports.py": {
+        "before": "da4d2b67439e665b14279a13e972b9c9a423ce58278a2bdccfeb65a789fa3569",
+        "after": "2f88a94c8059565a59cf05a703ff44b287429916ddd43f535d8e5351b4b424bd"
+      },
+      "apps/photobench/src/photobench/domain/runs/analysis.py": {
+        "before": "7b73a1bd7bc17032aadff2bf58af915d69f0d897a5cc5327bf5e11c0323c1957",
+        "after": "9fe8c451e07616d47d9537da7cafacabd169bd5daff21b89139bc089281b6e14"
+      },
+      "apps/photobench/src/photobench/domain/runs/exports.py": {
+        "before": "bb4f3ba5d7e2a3c20164bd45242823d604805b8574a47475eb186b7ceb18d6c6",
+        "after": "4cc555d08971ed8cfea68c3bf89f5261994831825497ec96ea555d3ed977ef99"
+      },
+      "apps/photobench/src/photobench/domain/sentrix/ports.py": {
+        "before": "8c0434c32e8028b4ee1bb4628379ff3959e1f12a24a862ed9325512299d3f110",
+        "after": "773d97d3570fb7e705b357dd6a129fd6e3dec42ee891c00ecde595eaf1f206e4"
+      },
+      "apps/photobench/src/photobench/infrastructure/chat/store.py": {
+        "before": null,
+        "after": "962930827786829e4081a167729965917e9bce53d68c8c0fe3f0d34bcc443d58"
+      },
+      "apps/photobench/src/photobench/infrastructure/config/files.py": {
+        "before": "ae28332ed09ccfb9963c93a4034a7da3d4bb57aa9decc26d1acb27fbf6189ca9",
+        "after": "a47ea78bc5edf6731386ff626896d99667a4ef004bd7f17d15b78150b87e5586"
+      },
+      "apps/photobench/src/photobench/infrastructure/datasets/albums.py": {
+        "before": "26a811c405caea25cd791982258290ee5148fa9f8f6f77a5289c663ef92a2b06",
+        "after": "b83eee993c1b6c75b297a8b344de183f320a8af1a6c7742e0e0622107c0920e6"
+      },
+      "apps/photobench/src/photobench/infrastructure/sentrix/client.py": {
+        "before": "0b33e2ccb1acd288d69f55f2d41f855e64e6dfeb7d65561e16b6a380e170aac8",
+        "after": "e0ca49ea69615c9569a0d6ed8161b4166f4937b418e3cd3960ae00d05c16b8d8"
+      },
+      "apps/photobench/src/photobench/main.py": {
+        "before": "a1cd7756733444dffd5f779c2031cd73c8bdaee88942999a36a67c22e7c86755",
+        "after": "c4b22092b279b5cd6866f5d0bf05e6a794ac0105956ea327d3ce832101926a2b"
+      },
+      "apps/photobench/web/src/App.tsx": {
+        "before": "4cfe541d206bd76fd5618e87bcf13a745fe88086b39dbfc5bf5bd4e397744ca5",
+        "after": "b326e1bb5c2e507484e89421012d7ab5eb60f3af538085e612bd0f51d861ad79"
+      },
+      "apps/photobench/web/src/api/types.ts": {
+        "before": "a59854e9ee149359393fc491019b1a8d2105a05bad16145f4083905cd0bdee2c",
+        "after": "25ddc296ab52167d64c34188e5c36b378138e991634ad833394c8c9b72c3d79d"
+      },
+      "apps/photobench/web/src/components/ViewTabs.tsx": {
+        "before": "a84407372a17cd76932021625724fb4758364f48936ef908ff661da531e44877",
+        "after": "23da7f3f0d442d94631d59b51a37b4be39163dcd2dcd0f40bda6cb9f4829f725"
+      },
+      "apps/photobench/web/src/features/chat/ChatView.tsx": {
+        "before": null,
+        "after": "276f42da166162a0fe1a536c092d04be0cf73f84197008965e941da59ba5c9ef"
+      },
+      "apps/photobench/web/src/features/interactive/MediaGrid.tsx": {
+        "before": null,
+        "after": "da01922ba84e6b8f1b7a5b0de8470759a1804c2e111f822333ee20c7bc349734"
+      },
+      "apps/photobench/web/src/features/interactive/ModelSelect.tsx": {
+        "before": null,
+        "after": "ab220ba27b8193bbc02ee740d2b4e5da821a5bea85c5d93d7b86605de8d2e759"
+      },
+      "apps/photobench/web/src/features/interactive/RetestDialog.tsx": {
+        "before": null,
+        "after": "e52384785c1b9d7e95120b24fd284c757d851005253c96102d7700fef8a302fb"
+      },
+      "apps/photobench/web/src/features/interactive/interactive.css": {
+        "before": null,
+        "after": "b4fab925e244f1f5ea8844199115326ef82c30912310da9059a6db2413b7cccd"
+      },
+      "apps/photobench/web/src/features/qa/QaItemCard.tsx": {
+        "before": "32535b481eda356c34ad56a0c80619902cd983d5c31ea671f13a952c0d462e97",
+        "after": "26d61eb3078a4eaa0c5774289e61030b8456fd18733a1974f53840514eee07e2"
+      },
+      "apps/photobench/web/src/features/qa/QaResults.tsx": {
+        "before": "a0c68bc66415125345a071f3917e044654ceffe6a734e8dd6c9357ae7f543eb1",
+        "after": "5c73ecb262ac8303fd4ce02ed6883712899337de0ec245d94c1d01a80046abea"
+      },
+      "apps/photobench/web/src/features/runs/RunsTable.tsx": {
+        "before": "1a93a4c54421dd062c60bc42c27ed770bbb16d4881aee9bf1c5ee28fd46210e8",
+        "after": "10870199f8b1c1dbe1532088db53f3f149f718a79f6539dc64977e5c12903523"
+      }
+    }
+  },
+  "8872": {
+    "files": {
+      "apps/photobench/src/photobench/api/interactive_schema.py": {
+        "before": null,
+        "after": "25140d7417cc18fb90c4353c4ff36fbbb5d13d2c392981db748a397e3206530f"
+      },
+      "apps/photobench/src/photobench/api/metrics_schema.py": {
+        "before": "e92c57e55d802048e1f0fb298ecf54564c61623a045d3535084bc2915577f644",
+        "after": "41ce015fda0378274c3e68baffae4acf2fadf4c1e50b1c8ba1cc5da7075a9b53"
+      },
+      "apps/photobench/src/photobench/api/routes/chat.py": {
+        "before": null,
+        "after": "48fd79b2dce97208ffc8e05b8c0d52a79f2db649d4909a78e32ba32c906407ce"
+      },
+      "apps/photobench/src/photobench/api/routes/suites.py": {
+        "before": "5cf3b036ce36ff735ae0428d003b77fa63d122f6155989813f28cf08f5ea322b",
+        "after": "3c9a050562f4ab8b695180458c4bada62fef48f3be8dfd3c004278c24d3d06b9"
+      },
+      "apps/photobench/src/photobench/application/interactive/chat.py": {
+        "before": null,
+        "after": "86ffe10ba0ad649c8afd604eea2fcbfd8585ba0f602d4f650e8cd62f54a382e2"
+      },
+      "apps/photobench/src/photobench/application/interactive/models.py": {
+        "before": null,
+        "after": "ea598f4477071a4271cb9e9a48787ce8f794a087c504689a58381d96f4a17048"
+      },
+      "apps/photobench/src/photobench/application/run_execution/service.py": {
+        "before": "c1b34ea10bc4797a428b765b834dbecdba686a2358d30b41a995fab0aba5e740",
+        "after": "052eb29c5c3f04e6eba9c11a6a0ad701f926d49a3d51c4557a8bb2bc691b697a"
+      },
+      "apps/photobench/src/photobench/application/runs/suites.py": {
+        "before": "de3830cb954896262dfb51d621cf14e93b3bc415abc00fb330ab41e604bda725",
+        "after": "be95a8ed7429b8b3d945bec329d3f2bff61839cabfda0190a4e079a49fc48aa5"
+      },
+      "apps/photobench/src/photobench/bootstrap/container.py": {
+        "before": "c1bd82f2148946c1f9df3ec33b43c2f39b6a4a65d75250df4987214484f9bd9a",
+        "after": "268515a5ae515d110ccfa6aea8348fd1d357a6a2e7b5d8b432e02c2b164e846b"
+      },
+      "apps/photobench/src/photobench/domain/chat/ports.py": {
+        "before": null,
+        "after": "eedc3aae42062ef70939a50039bfd37679ac59ad85cf949d2fecedc7cb969f45"
+      },
+      "apps/photobench/src/photobench/domain/chat/projection.py": {
+        "before": null,
+        "after": "1399c363ee9a3c21c88a166606a67943370959d2e7de9a27cb62e169af5e20e7"
+      },
+      "apps/photobench/src/photobench/domain/datasets/ports.py": {
+        "before": "da4d2b67439e665b14279a13e972b9c9a423ce58278a2bdccfeb65a789fa3569",
+        "after": "2f88a94c8059565a59cf05a703ff44b287429916ddd43f535d8e5351b4b424bd"
+      },
+      "apps/photobench/src/photobench/domain/runs/analysis.py": {
+        "before": "6af533a44b589cda4c4dddf8ff7a219d83ffb76c0c42faf346ef0cd532ade688",
+        "after": "bdb9cf9a2b794aafe274afc548c767d0c4479d88265e2e815af26e0ef38f874e"
+      },
+      "apps/photobench/src/photobench/domain/runs/exports.py": {
+        "before": "bb4f3ba5d7e2a3c20164bd45242823d604805b8574a47475eb186b7ceb18d6c6",
+        "after": "4cc555d08971ed8cfea68c3bf89f5261994831825497ec96ea555d3ed977ef99"
+      },
+      "apps/photobench/src/photobench/domain/sentrix/ports.py": {
+        "before": "6a95ee46a63448658ab5cf8d2d662ce23befe090a4e96dad50d39a3b65c2de53",
+        "after": "7a9e84534e74f456d91ad4198cb2e2680d6630e49f60b2b5c3fd3ab0f092429b"
+      },
+      "apps/photobench/src/photobench/infrastructure/chat/store.py": {
+        "before": null,
+        "after": "962930827786829e4081a167729965917e9bce53d68c8c0fe3f0d34bcc443d58"
+      },
+      "apps/photobench/src/photobench/infrastructure/config/files.py": {
+        "before": "ae28332ed09ccfb9963c93a4034a7da3d4bb57aa9decc26d1acb27fbf6189ca9",
+        "after": "a47ea78bc5edf6731386ff626896d99667a4ef004bd7f17d15b78150b87e5586"
+      },
+      "apps/photobench/src/photobench/infrastructure/datasets/albums.py": {
+        "before": "26a811c405caea25cd791982258290ee5148fa9f8f6f77a5289c663ef92a2b06",
+        "after": "b83eee993c1b6c75b297a8b344de183f320a8af1a6c7742e0e0622107c0920e6"
+      },
+      "apps/photobench/src/photobench/infrastructure/sentrix/client.py": {
+        "before": "85ea3a341043421f748c73cee9b294aa7f768072dc00a81d31e8f9795a2c9b48",
+        "after": "ee2592b1b83629b56faf1185620dd1a1005ba392e38d97b4431df851739912ea"
+      },
+      "apps/photobench/src/photobench/main.py": {
+        "before": "a1cd7756733444dffd5f779c2031cd73c8bdaee88942999a36a67c22e7c86755",
+        "after": "c4b22092b279b5cd6866f5d0bf05e6a794ac0105956ea327d3ce832101926a2b"
+      },
+      "apps/photobench/web/src/App.tsx": {
+        "before": "05cf19cb4481b6823d51c166ad2e42833f5669507f2cd10fb6b1e6b5f6550b81",
+        "after": "a12262af9a4ff890cd111cbb2dfc8418ed63eb01a7cae6b30fc4c6e385a2363a"
+      },
+      "apps/photobench/web/src/api/types.ts": {
+        "before": "bea46a316e0ad56001c46022ee315f5a6130cc7f0a3aa9488aba5422110b333e",
+        "after": "7de613b22228a4edbe7038adbf1be1976fdeb887faddcf8dc7dd2956971bd83d"
+      },
+      "apps/photobench/web/src/components/ViewTabs.tsx": {
+        "before": "a84407372a17cd76932021625724fb4758364f48936ef908ff661da531e44877",
+        "after": "23da7f3f0d442d94631d59b51a37b4be39163dcd2dcd0f40bda6cb9f4829f725"
+      },
+      "apps/photobench/web/src/features/chat/ChatView.tsx": {
+        "before": null,
+        "after": "276f42da166162a0fe1a536c092d04be0cf73f84197008965e941da59ba5c9ef"
+      },
+      "apps/photobench/web/src/features/interactive/MediaGrid.tsx": {
+        "before": null,
+        "after": "da01922ba84e6b8f1b7a5b0de8470759a1804c2e111f822333ee20c7bc349734"
+      },
+      "apps/photobench/web/src/features/interactive/ModelSelect.tsx": {
+        "before": null,
+        "after": "ab220ba27b8193bbc02ee740d2b4e5da821a5bea85c5d93d7b86605de8d2e759"
+      },
+      "apps/photobench/web/src/features/interactive/RetestDialog.tsx": {
+        "before": null,
+        "after": "e52384785c1b9d7e95120b24fd284c757d851005253c96102d7700fef8a302fb"
+      },
+      "apps/photobench/web/src/features/interactive/interactive.css": {
+        "before": null,
+        "after": "b4fab925e244f1f5ea8844199115326ef82c30912310da9059a6db2413b7cccd"
+      },
+      "apps/photobench/web/src/features/qa/QaItemCard.tsx": {
+        "before": "32535b481eda356c34ad56a0c80619902cd983d5c31ea671f13a952c0d462e97",
+        "after": "26d61eb3078a4eaa0c5774289e61030b8456fd18733a1974f53840514eee07e2"
+      },
+      "apps/photobench/web/src/features/qa/QaResults.tsx": {
+        "before": "a0c68bc66415125345a071f3917e044654ceffe6a734e8dd6c9357ae7f543eb1",
+        "after": "5c73ecb262ac8303fd4ce02ed6883712899337de0ec245d94c1d01a80046abea"
+      },
+      "apps/photobench/web/src/features/runs/RunsTable.tsx": {
+        "before": "1a93a4c54421dd062c60bc42c27ed770bbb16d4881aee9bf1c5ee28fd46210e8",
+        "after": "10870199f8b1c1dbe1532088db53f3f149f718a79f6539dc64977e5c12903523"
+      }
+    }
+  },
+  "8874": {
+    "files": {
+      "apps/photobench/src/photobench/api/interactive_schema.py": {
+        "before": null,
+        "after": "25140d7417cc18fb90c4353c4ff36fbbb5d13d2c392981db748a397e3206530f"
+      },
+      "apps/photobench/src/photobench/api/metrics_schema.py": {
+        "before": "e92c57e55d802048e1f0fb298ecf54564c61623a045d3535084bc2915577f644",
+        "after": "41ce015fda0378274c3e68baffae4acf2fadf4c1e50b1c8ba1cc5da7075a9b53"
+      },
+      "apps/photobench/src/photobench/api/routes/chat.py": {
+        "before": null,
+        "after": "48fd79b2dce97208ffc8e05b8c0d52a79f2db649d4909a78e32ba32c906407ce"
+      },
+      "apps/photobench/src/photobench/api/routes/suites.py": {
+        "before": "5cf3b036ce36ff735ae0428d003b77fa63d122f6155989813f28cf08f5ea322b",
+        "after": "3c9a050562f4ab8b695180458c4bada62fef48f3be8dfd3c004278c24d3d06b9"
+      },
+      "apps/photobench/src/photobench/application/interactive/chat.py": {
+        "before": null,
+        "after": "86ffe10ba0ad649c8afd604eea2fcbfd8585ba0f602d4f650e8cd62f54a382e2"
+      },
+      "apps/photobench/src/photobench/application/interactive/models.py": {
+        "before": null,
+        "after": "ea598f4477071a4271cb9e9a48787ce8f794a087c504689a58381d96f4a17048"
+      },
+      "apps/photobench/src/photobench/application/run_execution/service.py": {
+        "before": "c1b34ea10bc4797a428b765b834dbecdba686a2358d30b41a995fab0aba5e740",
+        "after": "052eb29c5c3f04e6eba9c11a6a0ad701f926d49a3d51c4557a8bb2bc691b697a"
+      },
+      "apps/photobench/src/photobench/application/runs/suites.py": {
+        "before": "19f0e587425e4baa7f88d48e9db4946cd8002e886092c71e2c8218fbee9b9d3b",
+        "after": "0ba01c494a55bdd97e9d345996c669a4bdd900c7c0e22d1d9ab507667f8eb5ca"
+      },
+      "apps/photobench/src/photobench/bootstrap/container.py": {
+        "before": "c1bd82f2148946c1f9df3ec33b43c2f39b6a4a65d75250df4987214484f9bd9a",
+        "after": "268515a5ae515d110ccfa6aea8348fd1d357a6a2e7b5d8b432e02c2b164e846b"
+      },
+      "apps/photobench/src/photobench/domain/chat/ports.py": {
+        "before": null,
+        "after": "eedc3aae42062ef70939a50039bfd37679ac59ad85cf949d2fecedc7cb969f45"
+      },
+      "apps/photobench/src/photobench/domain/chat/projection.py": {
+        "before": null,
+        "after": "1399c363ee9a3c21c88a166606a67943370959d2e7de9a27cb62e169af5e20e7"
+      },
+      "apps/photobench/src/photobench/domain/datasets/ports.py": {
+        "before": "da4d2b67439e665b14279a13e972b9c9a423ce58278a2bdccfeb65a789fa3569",
+        "after": "2f88a94c8059565a59cf05a703ff44b287429916ddd43f535d8e5351b4b424bd"
+      },
+      "apps/photobench/src/photobench/domain/runs/analysis.py": {
+        "before": "6af533a44b589cda4c4dddf8ff7a219d83ffb76c0c42faf346ef0cd532ade688",
+        "after": "bdb9cf9a2b794aafe274afc548c767d0c4479d88265e2e815af26e0ef38f874e"
+      },
+      "apps/photobench/src/photobench/domain/runs/exports.py": {
+        "before": "bb4f3ba5d7e2a3c20164bd45242823d604805b8574a47475eb186b7ceb18d6c6",
+        "after": "4cc555d08971ed8cfea68c3bf89f5261994831825497ec96ea555d3ed977ef99"
+      },
+      "apps/photobench/src/photobench/domain/sentrix/ports.py": {
+        "before": "6a95ee46a63448658ab5cf8d2d662ce23befe090a4e96dad50d39a3b65c2de53",
+        "after": "7a9e84534e74f456d91ad4198cb2e2680d6630e49f60b2b5c3fd3ab0f092429b"
+      },
+      "apps/photobench/src/photobench/infrastructure/chat/store.py": {
+        "before": null,
+        "after": "962930827786829e4081a167729965917e9bce53d68c8c0fe3f0d34bcc443d58"
+      },
+      "apps/photobench/src/photobench/infrastructure/config/files.py": {
+        "before": "ae28332ed09ccfb9963c93a4034a7da3d4bb57aa9decc26d1acb27fbf6189ca9",
+        "after": "a47ea78bc5edf6731386ff626896d99667a4ef004bd7f17d15b78150b87e5586"
+      },
+      "apps/photobench/src/photobench/infrastructure/datasets/albums.py": {
+        "before": "26a811c405caea25cd791982258290ee5148fa9f8f6f77a5289c663ef92a2b06",
+        "after": "b83eee993c1b6c75b297a8b344de183f320a8af1a6c7742e0e0622107c0920e6"
+      },
+      "apps/photobench/src/photobench/infrastructure/sentrix/client.py": {
+        "before": "85ea3a341043421f748c73cee9b294aa7f768072dc00a81d31e8f9795a2c9b48",
+        "after": "ee2592b1b83629b56faf1185620dd1a1005ba392e38d97b4431df851739912ea"
+      },
+      "apps/photobench/src/photobench/main.py": {
+        "before": "a1cd7756733444dffd5f779c2031cd73c8bdaee88942999a36a67c22e7c86755",
+        "after": "c4b22092b279b5cd6866f5d0bf05e6a794ac0105956ea327d3ce832101926a2b"
+      },
+      "apps/photobench/web/src/App.tsx": {
+        "before": "05cf19cb4481b6823d51c166ad2e42833f5669507f2cd10fb6b1e6b5f6550b81",
+        "after": "a12262af9a4ff890cd111cbb2dfc8418ed63eb01a7cae6b30fc4c6e385a2363a"
+      },
+      "apps/photobench/web/src/api/types.ts": {
+        "before": "bea46a316e0ad56001c46022ee315f5a6130cc7f0a3aa9488aba5422110b333e",
+        "after": "7de613b22228a4edbe7038adbf1be1976fdeb887faddcf8dc7dd2956971bd83d"
+      },
+      "apps/photobench/web/src/components/ViewTabs.tsx": {
+        "before": "a84407372a17cd76932021625724fb4758364f48936ef908ff661da531e44877",
+        "after": "23da7f3f0d442d94631d59b51a37b4be39163dcd2dcd0f40bda6cb9f4829f725"
+      },
+      "apps/photobench/web/src/features/chat/ChatView.tsx": {
+        "before": null,
+        "after": "276f42da166162a0fe1a536c092d04be0cf73f84197008965e941da59ba5c9ef"
+      },
+      "apps/photobench/web/src/features/interactive/MediaGrid.tsx": {
+        "before": null,
+        "after": "da01922ba84e6b8f1b7a5b0de8470759a1804c2e111f822333ee20c7bc349734"
+      },
+      "apps/photobench/web/src/features/interactive/ModelSelect.tsx": {
+        "before": null,
+        "after": "ab220ba27b8193bbc02ee740d2b4e5da821a5bea85c5d93d7b86605de8d2e759"
+      },
+      "apps/photobench/web/src/features/interactive/RetestDialog.tsx": {
+        "before": null,
+        "after": "e52384785c1b9d7e95120b24fd284c757d851005253c96102d7700fef8a302fb"
+      },
+      "apps/photobench/web/src/features/interactive/interactive.css": {
+        "before": null,
+        "after": "b4fab925e244f1f5ea8844199115326ef82c30912310da9059a6db2413b7cccd"
+      },
+      "apps/photobench/web/src/features/qa/QaItemCard.tsx": {
+        "before": "32535b481eda356c34ad56a0c80619902cd983d5c31ea671f13a952c0d462e97",
+        "after": "26d61eb3078a4eaa0c5774289e61030b8456fd18733a1974f53840514eee07e2"
+      },
+      "apps/photobench/web/src/features/qa/QaResults.tsx": {
+        "before": "a0c68bc66415125345a071f3917e044654ceffe6a734e8dd6c9357ae7f543eb1",
+        "after": "5c73ecb262ac8303fd4ce02ed6883712899337de0ec245d94c1d01a80046abea"
+      },
+      "apps/photobench/web/src/features/runs/RunsTable.tsx": {
+        "before": "1a93a4c54421dd062c60bc42c27ed770bbb16d4881aee9bf1c5ee28fd46210e8",
+        "after": "10870199f8b1c1dbe1532088db53f3f149f718a79f6539dc64977e5c12903523"
+      }
+    }
+  }
+}

@@ -94,24 +94,141 @@ export const parentRelations = new Set(["父亲", "母亲", "祖父", "祖母", 
 /** 配偶。1.0 声明了但布局没用它；留着是因为词表是唯一来源，别处要问「是不是配偶」时不该自己再列一遍。 */
 export const partnerRelations = new Set(["丈夫", "妻子"]);
 
+/**
+ * 口语称谓 → 亲属表里的标准称谓。称谓由用户自己写之后（2026-11-12），「爸爸」「外婆」也要
+ * 能参与辈分排序、去重优先级与连线长度；只用于界面计算，不改写库里的称谓。
+ */
+const KINSHIP_SYNONYMS: Readonly<Record<string, string>> = {
+  爸爸: "父亲", 爸: "父亲", 老爸: "父亲", 爹: "父亲",
+  妈妈: "母亲", 妈: "母亲", 老妈: "母亲", 娘: "母亲",
+  爷爷: "祖父", 奶奶: "祖母", 外公: "外祖父", 姥爷: "外祖父", 外婆: "外祖母", 姥姥: "外祖母",
+  老公: "丈夫", 先生: "丈夫", 老婆: "妻子", 太太: "妻子",
+};
+
+export function canonicalKinship(label: string): string {
+  const clean = label.trim();
+  return Object.hasOwn(KINSHIP_SYNONYMS, clean) ? KINSHIP_SYNONYMS[clean] : clean;
+}
+
 /** 朋友。同上：词表留全，布局只用 membership 判行。 */
 export const friendRelations = new Set(["朋友", "密友"]);
 
-export interface RelationChoice {
+/**
+ * 合法的正反称谓，**与后端 `domain/identity/family_graph.py` 的 `RELATION_INVERSES` 同表**：
+ * 键是「对方是我的什么人」，值是「那我是对方的什么人」的可选项。后端会再校验一次，
+ * 这里多一份是为了在提交前就只给出合法组合，并由 `membership.test.ts` 钉住两边一致。
+ */
+export const RELATION_INVERSES: Readonly<Record<string, readonly string[]>> = {
+  丈夫: ["妻子"],
+  妻子: ["丈夫"],
+  父亲: ["儿子", "女儿"],
+  母亲: ["儿子", "女儿"],
+  儿子: ["父亲", "母亲"],
+  女儿: ["父亲", "母亲"],
+  哥哥: ["哥哥", "姐姐", "弟弟", "妹妹"],
+  姐姐: ["哥哥", "姐姐", "弟弟", "妹妹"],
+  弟弟: ["哥哥", "姐姐", "弟弟", "妹妹"],
+  妹妹: ["哥哥", "姐姐", "弟弟", "妹妹"],
+  祖父: ["孙子", "孙女"],
+  祖母: ["孙子", "孙女"],
+  外祖父: ["外孙", "外孙女"],
+  外祖母: ["外孙", "外孙女"],
+  孙子: ["祖父", "祖母"],
+  孙女: ["祖父", "祖母"],
+  外孙: ["外祖父", "外祖母"],
+  外孙女: ["外祖父", "外祖母"],
+  叔叔: ["侄子", "侄女"],
+  伯伯: ["侄子", "侄女"],
+  姑姑: ["侄子", "侄女"],
+  舅舅: ["外甥", "外甥女"],
+  姨妈: ["外甥", "外甥女"],
+  姨母: ["外甥", "外甥女"],
+  侄子: ["叔叔", "伯伯", "姑姑"],
+  侄女: ["叔叔", "伯伯", "姑姑"],
+  外甥: ["舅舅", "姨妈", "姨母"],
+  外甥女: ["舅舅", "姨妈", "姨母"],
+  朋友: ["朋友"],
+  密友: ["密友"],
+  其他亲属: ["其他亲属"],
+};
+
+export interface RoleGroup {
   readonly label: string;
-  readonly predicate: string;
-  readonly inversePredicate: string;
+  readonly roles: readonly string[];
 }
 
-/** 建关系下拉里的十一条，1.0 `people_graph.js:17-23` 逐字。 */
-export function relationChoices(): RelationChoice[] {
-  return [
-    ["父亲", "儿子"], ["父亲", "女儿"], ["母亲", "儿子"], ["母亲", "女儿"],
-    ["丈夫", "妻子"], ["妻子", "丈夫"], ["哥哥", "弟弟"], ["姐姐", "妹妹"],
-    ["朋友", "朋友"], ["密友", "密友"], ["其他亲属", "其他亲属"],
-  ].map(([predicate, inversePredicate]) => ({
-    label: `${predicate} → ${inversePredicate}`,
-    predicate,
-    inversePredicate,
-  }));
+/**
+ * 建关系时「对方是我的 ___」的下拉分组。`姨母` 与 `姨妈` 同义，下拉只给 `姨妈`；
+ * 库里已有的 `姨母` 照常显示。
+ */
+export const RELATION_ROLE_GROUPS: readonly RoleGroup[] = [
+  { label: "长辈", roles: ["父亲", "母亲", "祖父", "祖母", "外祖父", "外祖母", "叔叔", "伯伯", "姑姑", "舅舅", "姨妈"] },
+  { label: "同辈", roles: ["丈夫", "妻子", "哥哥", "姐姐", "弟弟", "妹妹"] },
+  { label: "晚辈", roles: ["儿子", "女儿", "孙子", "孙女", "外孙", "外孙女", "侄子", "侄女", "外甥", "外甥女"] },
+  { label: "其他", roles: ["朋友", "密友", "其他亲属"] },
+];
+
+/** 自定义称谓的长度上限，与后端 `MAX_CUSTOM_LABEL_LENGTH` 一致。 */
+export const MAX_RELATION_LABEL_LENGTH = 16;
+
+/** 常用但不在亲属表里的称谓：只作输入建议，用户写什么都可以。 */
+const EXTRA_LABEL_SUGGESTIONS = ["同事", "同学", "邻居", "老师", "学生", "干妈", "干爹"];
+
+/**
+ * 称谓输入框的建议：这个相册里已经用过的称谓在前（用户自己的说法），再是常用称谓。
+ */
+export function relationLabelSuggestions(used: readonly string[]): string[] {
+  const common = [...RELATION_ROLE_GROUPS.flatMap((group) => group.roles), ...EXTRA_LABEL_SUGGESTIONS];
+  return [...new Set([...used.map((item) => item.trim()).filter((item) => item !== ""), ...common])];
+}
+
+/**
+ * 对方是我的 `role` 时，反向称谓的默认值：亲属表里只有一种可能就填它（父亲 → 不确定，
+ * 朋友 → 朋友）；有几种可能（儿子 / 女儿）就留空让用户点选；不认识的称谓默认同一个词
+ * ——同事、同学、邻居这类自定义关系多是对称的。用户随时可以改。
+ */
+export function suggestReverse(role: string): string {
+  const clean = role.trim();
+  if (clean === "") return "";
+  const options = myRoleOptions(clean);
+  if (options.length === 1) return options[0];
+  return options.length > 1 ? "" : clean;
+}
+
+/** 一个称谓的问题；空串不算错（只是还没填），返回 `null`。 */
+export function relationLabelError(label: string): string | null {
+  const clean = label.trim();
+  if (/\p{C}/u.test(clean)) return "称谓不能包含控制字符";
+  return Array.from(clean).length > MAX_RELATION_LABEL_LENGTH ? `称谓不能超过 ${MAX_RELATION_LABEL_LENGTH} 个字` : null;
+}
+
+/**
+ * 对方是我的 `role` 时，我可以是对方的什么人。
+ *
+ * 后端对兄弟姐妹四个称谓互相放行（`哥哥 ↔ 哥哥` 也合法），但「对方是我哥哥」时我只可能
+ * 是弟弟或妹妹，所以这里按长幼收窄；其余与 `RELATION_INVERSES` 一致。只有一项时界面
+ * 直接用它，不再多问。
+ */
+export function myRoleOptions(role: string): readonly string[] {
+  if (role === "哥哥" || role === "姐姐") return ["弟弟", "妹妹"];
+  if (role === "弟弟" || role === "妹妹") return ["哥哥", "姐姐"];
+  return Object.hasOwn(RELATION_INVERSES, role) ? RELATION_INVERSES[role] : [];
+}
+
+/**
+ * 站在 `selfId` 这个人的角度，读一条（已归并的）关系：对方是谁、对方是我的什么人。
+ *
+ * 一条边 `subject —predicate→ object` 的意思是「subject 是 object 的 predicate」，
+ * `inverse_predicate` 是「object 是 subject 的什么人」。所以我是 subject 时，对方的
+ * 称谓是 `inverse_predicate`；我是 object 时，对方的称谓是 `predicate`。
+ * 此前详情把这两者对调了，B 的档案里 A 显示成「儿子」，看起来像关系只写了一边。
+ */
+export function relationFromSelf(
+  edge: { subject_entity_id: string; object_entity_id: string; predicate: string; inverse_predicate: string },
+  selfId: string,
+): { otherId: string; otherRole: string; selfRole: string } {
+  const selfIsSubject = edge.subject_entity_id === selfId;
+  return selfIsSubject
+    ? { otherId: edge.object_entity_id, otherRole: edge.inverse_predicate, selfRole: edge.predicate }
+    : { otherId: edge.subject_entity_id, otherRole: edge.predicate, selfRole: edge.inverse_predicate };
 }

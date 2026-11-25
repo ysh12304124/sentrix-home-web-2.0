@@ -1,0 +1,26 @@
+diff --git a/apps/photobench/src/photobench/application/runs/suites.py b/apps/photobench/src/photobench/application/runs/suites.py
+index 5f0a9ac..128db6b 100644
+--- a/apps/photobench/src/photobench/application/runs/suites.py
++++ b/apps/photobench/src/photobench/application/runs/suites.py
+@@ -876,6 +876,21 @@ class RunSuites:
+                 or prior_snapshot.get("required_build_revision")
+                 or (self._build_revision if self._build_revision != "development" else None),
+             )
++            if target_revision and request.reasoning:
++                configured = self._config.public_runtime_connection_config().get("product_settings") or {}
++                inherited["product_settings"] = {
++                    **(prior_snapshot.get("product_settings") or {}),
++                    **{
++                        key: configured[key]
++                        for key in (
++                            "reasoning_max_model_calls",
++                            "reasoning_max_tool_calls",
++                            "reasoning_max_search_calls",
++                            "reasoning_max_other_tool_calls",
++                        )
++                        if key in configured
++                    },
++                }
+             request = replace(
+                 request,
+                 sentrix_url=str(inherited["sentrix_url"]),

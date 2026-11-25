@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -49,6 +51,7 @@ class AssetSummary(BaseModel):
     parent_asset_id: str | None = None
     source_timestamp_sec: float | None = None
     external_source_id: str | None = None
+    source_metadata: dict[str, Any] = {}
 
 
 class AssetListResponse(BaseModel):

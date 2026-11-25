@@ -101,7 +101,7 @@ def test_searchable_text_never_contains_coordinates():
 def test_precision_enum_has_city_level():
     """``city`` 是相对设计 §3.2 的有意增补——1.0 ``geocoding.py:121`` 本来就有这一级。"""
     assert PlacePrecision.CITY.value == "city"
-    assert {item.value for item in PlacePrecision} == {"district", "city", "township", "locality"}
+    assert {item.value for item in PlacePrecision} == {"district", "city", "township", "locality", "address"}
 
 
 def test_gps_distance_km_matches_known_pair():

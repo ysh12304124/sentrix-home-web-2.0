@@ -60,6 +60,10 @@ class AlbumSource(Protocol):
         """
         ...
 
+    def qa_question(self, album_id: str, qa_set: str, qa_id: str) -> dict[str, Any]:
+        """Load and validate one selected question with dataset defaults and version checks."""
+        ...
+
     def gt_metadata_snapshot(self, album_id: str) -> dict[str, Any]:
         """Load versioned Judge-only capture context; absence is recorded explicitly."""
         ...

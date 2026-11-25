@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router";
+import { BrowserRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../shared/api/client", async (importOriginal) => {
@@ -7,6 +7,7 @@ vi.mock("../../shared/api/client", async (importOriginal) => {
   return {
     ...actual,
     fetchTimeline: vi.fn(),
+    fetchTimelineCalendar: vi.fn(),
     fetchEvent: vi.fn(),
     listMemorySpaces: vi.fn(),
   };
@@ -16,15 +17,6 @@ import * as client from "../../shared/api/client";
 import type { TimelineEvent } from "../../shared/api/client";
 import { ScopeProvider } from "../../app/ScopeProvider";
 import { TimelinePage } from "./TimelinePage";
-
-const NoopIntersectionObserver = class {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-  takeRecords(): never[] {
-    return [];
-  }
-};
 
 const EVENT: TimelineEvent = {
   id: "event1",
@@ -46,18 +38,24 @@ function LocationProbe() {
 }
 
 function renderPage(initialEntry: string) {
+  window.history.replaceState(null, "", initialEntry);
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <BrowserRouter>
       <ScopeProvider>
         <TimelinePage />
         <LocationProbe />
       </ScopeProvider>
-    </MemoryRouter>,
+    </BrowserRouter>,
   );
 }
 
 beforeEach(() => {
-  vi.stubGlobal("IntersectionObserver", NoopIntersectionObserver);
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+  vi.mocked(client.fetchTimelineCalendar).mockResolvedValue({
+    scope_id: "", unknown_count: 0, years: [{ year: 2026, count: 1, months: [{
+      month: 1, count: 1, days: [{ date: "2026-01-02", count: 1 }],
+    }] }],
+  });
   vi.mocked(client.listMemorySpaces).mockResolvedValue([
     { id: "album1", name: "第一册", kind: "benchmark", status: "active" },
   ]);
@@ -75,6 +73,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("时间线页面", () => {
@@ -84,35 +83,36 @@ describe("时间线页面", () => {
     const dialog = await screen.findByRole("dialog");
     expect(await screen.findByRole("heading", { name: "湖边散步" })).not.toBeNull();
     await waitFor(() =>
-      expect(document.getElementById("timeline-event-event1")?.className).toContain("focused"),
+      expect(document.getElementById("timeline-event-event1")?.querySelector(".timeline-event.focused")).toBeTruthy(),
     );
-    expect(document.getElementById("timeline-event-event1")?.closest("details")?.hasAttribute("open")).toBe(
-      true,
-    );
+    expect(screen.getByRole("button", { name: /01 \/ 02/ }).getAttribute("aria-expanded")).toBe("true");
+    expect(new URLSearchParams(window.location.search).get("date")).toBe("2026-01-02");
     expect(dialog).not.toBeNull();
   });
 
-  it("关闭详情会从 URL 里删掉 event 参数", async () => {
-    renderPage("/timeline?event=event1");
-    await screen.findByRole("dialog");
+  it("关闭详情只删除 event 参数，保留日期及其他查询条件", async () => {
+    renderPage("/timeline?event=event1&date=2026-01-02&view=all");
+    await screen.findByRole("heading", { name: "湖边散步" });
 
     fireEvent.click(screen.getByRole("button", { name: "关闭事件详情" }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/timeline"),
+      expect(screen.getByTestId("location").textContent).toBe("/timeline?date=2026-01-02&view=all"),
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("点击卡片会把事件写进 URL，再按 URL 打开详情", async () => {
     renderPage("/timeline");
+    fireEvent.click(await screen.findByRole("button", { name: /1 月/ }));
+    fireEvent.click(screen.getByRole("button", { name: /01 \/ 02/ }));
     await screen.findByText("湖边散步");
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "查看详情 →" }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe("/timeline?event=event1"),
+      expect(screen.getByTestId("location").textContent).toBe("/timeline?date=2026-01-02&event=event1"),
     );
     expect(await screen.findByRole("dialog")).not.toBeNull();
   });

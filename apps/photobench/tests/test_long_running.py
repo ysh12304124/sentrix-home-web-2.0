@@ -88,10 +88,10 @@ def test_snapshot_uses_state_lock_and_writer_error_still_stops():
     state = RunState({}, run_id="r", debounce=0)
 
     class Probe:
-        def __deepcopy__(self, memo):
+        def __reduce__(self):
             entered.set()
             assert state.lock._is_owned()
-            return "consistent"
+            return str, ("consistent",)
 
     class Writer:
         def write_snapshot(self, run_id, snapshot):
@@ -130,18 +130,96 @@ def test_directory_flush_preserves_errors(tmp_path):
 def test_result_pair_failure_leaves_previous_committed_state(tmp_path, monkeypatch):
     writer = FileResultWriter(tmp_path)
     writer.write_snapshot("r", {"run_id": "r", "items": [{"answer": "before"}]})
-    original = Path.write_text
+    original = Path.open
 
     def fail_results(path, *args, **kwargs):
-        if "results" in path.name:
+        if "results" in path.name and args and args[0].startswith("w"):
             raise OSError("synthetic second-file failure")
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", fail_results)
+    monkeypatch.setattr(Path, "open", fail_results)
     with pytest.raises(OSError):
         writer.write_snapshot("r", {"run_id": "r", "items": [{"answer": "after"}]})
     assert FileRunStore(tmp_path).load_state("r")["items"] == [{"answer": "before"}]
     assert json.loads((tmp_path / "r/results.jsonl").read_text()) == {"answer": "before"}
+
+
+def test_snapshot_detaches_shared_nested_trace_data():
+    trace = {"events": [{"message": "原始证据", "values": [None, True, 3, 0.5]}]}
+    state = RunState({"items": [{"trace": trace, "trace_bundle": trace}]})
+    saved = state.snapshot()
+    state.data["items"][0]["trace"]["events"][0]["message"] = "changed"
+    assert saved["items"][0]["trace"]["events"][0]["message"] == "原始证据"
+    assert saved["items"][0]["trace"] is saved["items"][0]["trace_bundle"]
+    saved["items"][0]["trace"]["events"].append({})
+    assert len(trace["events"]) == 1
+
+
+@pytest.mark.parametrize("items", [None, [], [{"answer": '中文\\n"引号"', "score": 0}]])
+def test_streamed_snapshot_pair_preserves_json_contract(tmp_path, items):
+    state = {"run_id": "r", "before": True, "items": items, "after": {"value": None}}
+    FileResultWriter(tmp_path).write_snapshot("r", state)
+    assert FileRunStore(tmp_path).load_state("r") == state
+    assert [json.loads(line) for line in (tmp_path / "r/results.jsonl").read_text().splitlines()] == (
+        items or []
+    )
+
+
+def test_gzip_checkpoint_roundtrip_overview_analysis_and_orphan_recovery(tmp_path, monkeypatch):
+    from photobench.application.runs.reports import RunReports
+    from photobench.infrastructure.error_analysis.worker import lines, source
+    from photobench.infrastructure.results.encoding import read_snapshot
+    from photobench.infrastructure.results.recovery import FileRunStartupRecovery
+    from photobench.infrastructure.results.store import committed_path
+
+    monkeypatch.setenv("PHOTOBENCH_COMPRESS_SNAPSHOTS", "1")
+    state = _state("r", status="running")
+    state["items"][0]["trace"] = [{"text": "完整轨迹" * 10000}]
+    writer = FileResultWriter(tmp_path)
+    writer.write_snapshot("r", state)
+    path = committed_path(tmp_path / "r", "run.json")
+    assert path.name == "run.json.gz"
+    assert path.stat().st_size < 5000
+    assert FileRunStore(tmp_path).load_state("r") == state
+    assert FileRunStore(tmp_path).load_overview("r")["item_count"] == 2
+    assert list(FileRunStore(tmp_path).iter_entries())[0]["status"] == "running"
+    reports = RunReports(FileRunStore(tmp_path), SimpleNamespace(), lambda: "http://unused")
+    assert len(reports.export_traces("r")) == 2
+    assert len(reports.export_sft("r")["items"]) == 2
+    pinned = tmp_path / "pinned.jsonl"
+    result = source(tmp_path, "r", pinned=pinned)
+    assert result["format"] == "jsonl"
+    assert list(lines(pinned)) == state["items"]
+    assert list(lines(Path(result["path"]))) == state["items"]
+    lease = FileRunStartupRecovery(tmp_path)
+    try:
+        assert lease.acquire_and_recover() == 1
+        recovered = FileRunStore(tmp_path).load_state("r")
+        assert recovered["status"] == "interrupted"
+        assert recovered["items"] == state["items"]
+        assert read_snapshot(tmp_path / "r" / recovered["recovery"]["backup"]) == state
+    finally:
+        lease.close()
+    assert committed_path(tmp_path / "r", "run.json").suffix == ".gz"
+
+
+def test_failed_compressed_pair_preserves_prior_commit(tmp_path, monkeypatch):
+    monkeypatch.setenv("PHOTOBENCH_COMPRESS_SNAPSHOTS", "1")
+    writer = FileResultWriter(tmp_path)
+    state = _state("r")
+    writer.write_snapshot("r", state)
+    original = Path.open
+
+    def fail_results(path, mode="r", **kwargs):
+        if path.name == "results.jsonl.gz" and mode.startswith("w"):
+            raise OSError("compressed second-file failure")
+        return original(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_results)
+    with pytest.raises(OSError, match="compressed second-file failure"):
+        writer.write_snapshot("r", {**state, "status": "failed"})
+    assert FileRunStore(tmp_path).load_state("r") == state
+    assert len(list((tmp_path / "r/.snapshots").iterdir())) == 1
 
 
 def test_parsing_a_detached_generation_does_not_block_new_commits(tmp_path, monkeypatch):
@@ -407,12 +485,46 @@ def test_resumed_execution_also_releases_registry(tmp_path):
     assert resumed["run_id"] not in suites._active
 
 
+def test_delete_run_after_persistence_failure_uses_terminal_process_state(tmp_path):
+    FileResultWriter(tmp_path).write_snapshot("r", {**_state("r"), "status": "running"})
+    index = RunIndex()
+    index.upsert({"run_id": "r", "status": "failed", "persistence": {"status": "failed"}})
+    suites = _suites(tmp_path, store=FileRunStore(tmp_path), writer=FileResultWriter(tmp_path), index=index)
+
+    assert suites.delete_run("r") == {"deleted": True, "run_id": "r"}
+    assert not (tmp_path / "r").exists()
+    assert index.entry("r") is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {},
+        {"status": "failed"},
+        {"status": "failed", "persistence": {"status": "stop_pending"}},
+        {"status": "running", "persistence": {"status": "failed"}},
+        {"status": "failed", "persistence": {"status": "failed"}, "cleanup": {"status": "stop_pending"}},
+    ],
+)
+def test_delete_does_not_treat_unconfirmed_or_unstopped_runs_as_terminal(tmp_path, entry):
+    from photobench.domain.errors import InvalidRequestError
+
+    FileResultWriter(tmp_path).write_snapshot("r", {**_state("r"), "status": "running"})
+    index = RunIndex()
+    index.upsert({"run_id": "r", **entry})
+    suites = _suites(tmp_path, store=FileRunStore(tmp_path), writer=FileResultWriter(tmp_path), index=index)
+    with pytest.raises(InvalidRequestError):
+        suites.delete_run("r")
+    assert (tmp_path / "r").exists()
+
+
 def test_active_workers_prevent_deletion(tmp_path):
     from photobench.domain.errors import InvalidRequestError
 
     gate = threading.Event()
     suites = _suites(tmp_path, gate=gate)
     run_id = suites.start_suite({"album_id": "album-x", "qa_set": "qa-1", "models": ["qwen"]})["run_ids"][0]
+    suites._index.upsert({"run_id": run_id, "status": "failed", "persistence": {"status": "failed"}})
     try:
         with pytest.raises(InvalidRequestError, match="workers have stopped"):
             suites.delete_run(run_id)

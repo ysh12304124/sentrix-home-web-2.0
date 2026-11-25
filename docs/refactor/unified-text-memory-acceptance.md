@@ -44,7 +44,7 @@
 
 ## 兼容迁移
 
-`0033_unified_text_memory.sql`：
+`0037_unified_text_memory.sql`（并入 main 的流水线、来源地址、人物同步和外观任务迁移后顺延）：
 
 - 将旧邮件观察转换为text，保留email来源标签。
 - 将旧通信事件转换为text_record，保留原来源信息；它是文本记录，不是正文活动本身。

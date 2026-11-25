@@ -28,6 +28,7 @@ from photobench.domain.error_analysis.diagnosis import (
 from photobench.domain.error_analysis.query import issue_groups
 from photobench.domain.error_analysis.rules import fingerprint
 from photobench.domain.runs.judge import judge_chat_url, thinking_kwargs
+from photobench.infrastructure.error_analysis.split_source import with_excerpts
 
 
 def run_ai(
@@ -197,6 +198,8 @@ def run_ai(
                 continue
             check()
             case = by_index[index]
+            if options.get("results_root"):
+                source = with_excerpts(Path(options["results_root"]), source)
             package = evidence_package(case, source)
             remaining.remove(index)
             gt = gt_inputs[index]

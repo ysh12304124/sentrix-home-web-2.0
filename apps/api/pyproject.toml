@@ -59,6 +59,7 @@ dependencies = [
     # 控制服务的内部 HTTP 转发与轻量主机采样。控制进程不构造产品 Container，
     # 因此这里必须是运行期依赖，不能只在 dev 组里。
     "httpx>=0.28,<1",
+    "portalocker>=2.8,<5",
     "psutil>=6,<8",
     "pyyaml>=6,<7",
     # Shot boundaries come from adjacent-frame appearance changes; Katna then

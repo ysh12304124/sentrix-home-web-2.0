@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sentrix.domain.media.import_jobs import (
     IdempotencyConflict,
@@ -31,18 +32,36 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def _unique_original_bytes(connection) -> int:
-    """按唯一原件路径计配额；空路径的作业各自单独计数。"""
-    unique = connection.execute(
-        "SELECT COALESCE(SUM(size), 0) AS n FROM ("
-        "  SELECT MAX(size_bytes) AS size FROM import_jobs"
-        "  WHERE original_path <> '' GROUP BY original_path"
-        ")"
-    ).fetchone()["n"]
+def _unique_original_bytes(connection: sqlite3.Connection, extra: tuple[str, int] | None = None) -> int:
+    """硬链接按设备和 inode 计一次；遗失原件仍保留配额，空路径作业各自计数。"""
+    originals = dict(
+        connection.execute(
+            "SELECT original_path, MAX(size_bytes) FROM import_jobs"
+            " WHERE original_path <> '' GROUP BY original_path"
+        ).fetchall()
+    )
     empty = connection.execute(
         "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM import_jobs WHERE original_path = ''"
     ).fetchone()["n"]
-    return int(unique) + int(empty)
+    total = int(empty)
+    if extra is not None:
+        path, size = extra
+        if path:
+            originals[path] = max(originals.get(path, 0), size)
+        else:
+            total += size
+    seen: set[tuple[int, int]] = set()
+    for path, size in originals.items():
+        try:
+            stat = Path(path).stat()
+        except FileNotFoundError:
+            total += int(size)
+            continue
+        identity = stat.st_dev, stat.st_ino
+        if identity not in seen:
+            total += int(size)
+            seen.add(identity)
+    return total
 
 
 class SqliteImportJobRepository:
@@ -121,12 +140,12 @@ class SqliteImportJobRepository:
                         raise IdempotencyConflict("idempotency key reused for different content")
                     return _job(existing), False
 
-                original = _unique_original_bytes(connection)
+                original = _unique_original_bytes(connection, (job.original_path, job.size_bytes))
                 reserved_other = connection.execute(
                     "SELECT COALESCE(SUM(expected_bytes), 0) AS n FROM upload_reservations WHERE id <> ?",
                     (reservation_id or "",),
                 ).fetchone()["n"]
-                if int(original) + int(reserved_other) + job.size_bytes > quota_bytes:
+                if int(original) + int(reserved_other) > quota_bytes:
                     raise UploadQuotaExceeded("original media quota exceeded")
 
                 sequence = connection.execute(

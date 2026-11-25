@@ -57,7 +57,7 @@ class TurnExecutor:
         self,
         *,
         turns,
-        run_turn_factory: Callable[[], object],
+        run_turn_factory: Callable[[bool], object],
         broker,
         dependencies_ready: Callable[[], tuple[bool, str]],
         operation_control=None,
@@ -124,6 +124,14 @@ class TurnExecutor:
                 if not submitted:
                     self._stop.wait(POLL_S)
 
+    def run_pending(self, turn_id: str) -> bool:
+        """立即认领指定回合；与后台恢复循环共用租约和围栏。"""
+        record = self._turns.claim_due(now=self._clock(), lease_s=LEASE_S, turn_id=turn_id)
+        if record is None:
+            return False
+        self._execute(record)
+        return True
+
     def _run_once(self) -> bool:
         now = self._clock()
         record = self._turns.claim_due(now=now, lease_s=LEASE_S)
@@ -159,7 +167,7 @@ class TurnExecutor:
                 return
             if self._result_sets is not None:
                 self._result_sets.purge_other_attempts(turn_id, record.attempt_no)
-            runner = self._run_turn_factory()
+            runner = self._run_turn_factory(record.trace.get("reasoning") is True)
             with turn_attempt(turn_id, record.attempt_no):
                 runner.run(
                     turn_id,

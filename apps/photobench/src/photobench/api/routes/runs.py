@@ -11,9 +11,11 @@ run-execution，要么属于 S9b-3 的 judge。
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request
+from starlette.concurrency import run_in_threadpool
 
 from photobench.api.deps import get_container
 from photobench.api.metrics_schema import RunItemResponse, RunItemsResponse, RunMetricsResponse
@@ -40,7 +42,7 @@ def list_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunMetricsResponse, response_model_exclude_unset=True)
-def get_run(
+async def get_run(
     request: Request,
     run_id: str,
     include_history: bool = True,
@@ -48,16 +50,43 @@ def get_run(
     scoring_batch: str = "",
 ) -> dict[str, Any]:
     """1.0 ``:7739``。run 不存在时 ``KeyError`` → 404（handler 在 ``api/errors.py``）。"""
-    if scoring_profile or scoring_batch:
-        return get_container(request).runs.get_run(
-            run_id,
-            include_history=include_history,
-            scoring_profile=scoring_profile,
-            scoring_batch=scoring_batch,
-        )
-    if include_history:
-        return get_container(request).runs.get_run(run_id)
-    return get_container(request).runs.get_run(run_id, include_history=False)
+    # Duplicate polls await one task on the event loop. Waiting inside each
+    # HTTP worker consumes all 40 slots when one large checkpoint is slow.
+    state = request.app.state
+    if not hasattr(state, "run_detail_reads"):
+        state.run_detail_reads = {}
+    reads: dict[tuple[str, bool, str, str], asyncio.Task[dict[str, Any]]] = state.run_detail_reads
+    key = (run_id, include_history, scoring_profile, scoring_batch)
+
+    def read() -> dict[str, Any]:
+        if scoring_profile or scoring_batch:
+            return get_container(request).runs.get_run(
+                run_id,
+                include_history=include_history,
+                scoring_profile=scoring_profile,
+                scoring_batch=scoring_batch,
+            )
+        if include_history:
+            return get_container(request).runs.get_run(run_id)
+        return get_container(request).runs.get_run(run_id, include_history=False)
+
+    async def shared_read() -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(read)
+        finally:
+            reads.pop(key, None)
+
+    task = reads.get(key)
+    if task is None:
+        task = reads[key] = asyncio.create_task(shared_read())
+    return await asyncio.shield(task)
+
+
+@router.get("/runs/{run_id}/process-diagnostics")
+def get_process_diagnostics(
+    request: Request, run_id: str, scoring_profile: str = "", scoring_batch: str = ""
+) -> dict[str, Any]:
+    return get_container(request).runs.get_process_diagnostics(run_id, scoring_profile, scoring_batch)
 
 
 @router.get("/runs/{run_id}/items", response_model=RunItemsResponse, response_model_exclude_unset=True)
@@ -120,6 +149,88 @@ def get_run_item(
         raise InvalidRequestError(f"invalid item index: {item_index}") from exc
     return get_container(request).runs.get_run_item(
         run_id, index, scoring_profile=scoring_profile, scoring_batch=scoring_batch
+    )
+
+
+@router.get("/runs/{run_id}/items/{item_index}/trace")
+def get_trace_nodes(
+    request: Request,
+    run_id: str,
+    item_index: str,
+    turn: int = 0,
+    kind: str = "",
+    offset: str = "0",
+    limit: str = "50",
+    revision: str = "",
+) -> dict[str, Any]:
+    try:
+        index, page, size = int(item_index), int(offset), int(limit)
+    except ValueError as exc:
+        raise InvalidRequestError("trace pagination must be integers") from exc
+    return get_container(request).runs.get_trace_nodes(
+        run_id,
+        index,
+        turn=turn,
+        kind=kind,
+        offset=page,
+        limit=size,
+        revision=revision,
+        scoring_profile="",
+        scoring_batch="",
+    )
+
+
+@router.get("/runs/{run_id}/items/{item_index}/trace/{node_id}")
+def get_trace_node_content(
+    request: Request,
+    run_id: str,
+    item_index: str,
+    node_id: str,
+    field: str = "",
+    offset: str = "0",
+    limit: str = "65536",
+    revision: str = "",
+    view: str = "content",
+) -> dict[str, Any]:
+    if view not in {"content", "timing"}:
+        raise InvalidRequestError("unknown trace view")
+    try:
+        index, page, size = int(item_index), int(offset), int(limit)
+    except ValueError as exc:
+        raise InvalidRequestError("trace content pagination must be integers") from exc
+    return get_container(request).runs.get_trace_content(
+        run_id,
+        index,
+        node_id,
+        field=field,
+        offset=page,
+        limit=size,
+        revision=revision,
+        scoring_profile="",
+        scoring_batch="",
+        view=view,
+    )
+
+
+@router.get("/runs/{run_id}/items/{item_index}/content")
+def get_item_content(
+    request: Request,
+    run_id: str,
+    item_index: str,
+    path: str,
+    offset: str = "0",
+    limit: str = "65536",
+    revision: str = "",
+) -> dict[str, Any]:
+    try:
+        index, page, size = int(item_index), int(offset), int(limit)
+        keys: list[str | int] = []
+        for part in filter(None, path.split(".")):
+            keys.append(int(part) if part.isdigit() else part)
+    except ValueError as exc:
+        raise InvalidRequestError("item content path and pagination are invalid") from exc
+    return get_container(request).runs.get_item_content(
+        run_id, index, path=keys, offset=page, limit=size, revision=revision
     )
 
 

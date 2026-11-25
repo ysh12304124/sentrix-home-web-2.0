@@ -1,0 +1,89 @@
+diff --git a/apps/api/src/sentrix/config.py b/apps/api/src/sentrix/config.py
+index 7774756..86c1664 100644
+--- a/apps/api/src/sentrix/config.py
++++ b/apps/api/src/sentrix/config.py
+@@ -201,7 +201,8 @@ class Settings(BaseSettings):
+     # 没跟着改——于是 ``4400 - prompt`` 在 ``prompt > 4336`` 时给负数、被下限抬成 64，
+     # 发出去一个注定被截断的请求。这和「模型名不写死」是同一条理由：**窗口是部署事实，
+     # 不是代码事实**（见本模块开头对 126 个 env flag 的那段）。
+-    vlm_context_tokens: int = 6144
++    vlm_context_tokens: int = 16384
++    chat_context_contract: Path | None = None
+     # 推理回合的目标窗口；云端默认128K。单端点未自报容量时，可在这里声明
+     # 云端代理的窗口；本地端点仍以探测到的容量和精确计数合同为上限。
+     vlm_reasoning_context_tokens: int | None = Field(default=None, ge=1)
+diff --git a/apps/api/src/sentrix/bootstrap/container.py b/apps/api/src/sentrix/bootstrap/container.py
+index 2f83c98..a289835 100644
+--- a/apps/api/src/sentrix/bootstrap/container.py
++++ b/apps/api/src/sentrix/bootstrap/container.py
+@@ -109,6 +109,7 @@ from sentrix.infrastructure.assistant.model_endpoint import (
+     ServedModel,
+     probe_context_tokens,
+ )
++from sentrix.infrastructure.assistant.context_contract import load_contract
+ from sentrix.infrastructure.build import read_build_revision
+ from sentrix.infrastructure.media.audio_metadata import FfprobeAudioMetadataReader
+ from sentrix.infrastructure.media.audio_transcription import QwenAudioTranscriber
+@@ -521,6 +522,7 @@ class Container:
+                 reasoning_context,
+                 served_context or settings.vlm_reasoning_context_tokens or settings.vlm_context_tokens,
+             )
++        chat_context_contract = load_contract(settings.chat_context_contract, chat_budget.context_tokens)
+         # **嵌入方案是整方案原子切换**（``scheme.SCHEMES``）。默认 wemm；legacy 是
+         # 16 GB Mac mini 的回退（chinese-clip 768d + bge-m3 1024d）。两个分支都只
+         # 构造 HTTP 客户端，API 进程不 import torch。
+@@ -724,6 +726,7 @@ class Container:
+                 payload_config=chat_payload,
+                 retry=chat_retry,
+                 reasoning_context_tokens=reasoning_context,
++                context_contract=chat_context_contract,
+             ),
+             vlm_observer=OpenAIVlmObserver(
+                 vision_base_url,
+diff --git a/apps/api/src/sentrix/infrastructure/assistant/chat_client.py b/apps/api/src/sentrix/infrastructure/assistant/chat_client.py
+index a1b9c6b..081ea3c 100644
+--- a/apps/api/src/sentrix/infrastructure/assistant/chat_client.py
++++ b/apps/api/src/sentrix/infrastructure/assistant/chat_client.py
+@@ -118,7 +118,7 @@ TOOLS_TOKENS_PER_CHAR = 0.48
+ 
+ # 不传 ``context_tokens`` 时用的窗口。**只是为了测试与本地起得来**，生产必须由
+ # ``Settings.vlm_context_tokens`` 给——窗口是部署事实（见该字段的注释）。
+-DEFAULT_CONTEXT_TOKENS = 6144
++DEFAULT_CONTEXT_TOKENS = 16384
+ REASONING_CONTEXT_TOKENS = 131072
+ 
+ 
+@@ -366,6 +366,7 @@ class OpenAIChatModel:
+         payload_config: Mapping[str, Any] | None = None,
+         retry: Mapping[str, Any] | None = None,
+         reasoning_context_tokens: int | None = None,
++        context_contract: dict[str, Any] | None = None,
+     ) -> None:
+         self._base_url = base_url.rstrip("/")
+         self._model = model
+@@ -382,8 +383,25 @@ class OpenAIChatModel:
+         # 云端 payload 能力与重试策略；local 留空 = 现有行为。
+         self._payload_config = dict(payload_config or {})
+         self._retry = dict(retry or {})
++        self._context_contract = None
++        if context_contract is not None:
++            from .context_contract import validate_contract
++            self._context_contract = validate_contract(context_contract, context_tokens)
++            self._context_tokens = self._context_contract['context_window_tokens']
++            self._budget = replace(self._budget, context_tokens=self._context_tokens)
+         self._reasoning_context_tokens = reasoning_context_tokens or self._context_tokens
+ 
++    def runtime_context_configuration(self) -> dict[str, Any]:
++        return {
++            "source": "live_chat_model_object",
++            "context_window_tokens": self._context_tokens,
++            "prompt_soft_limit": int(self._context_tokens * self._budget.compaction_ratio),
++            "max_output_tokens": self._budget.max_output_tokens,
++            "safety_tokens": self._budget.safety_tokens,
++            "min_usable_output_tokens": self._budget.min_usable_output_tokens,
++            "fixed_contract_enabled": self._context_contract is not None,
++        }
++
+     def for_reasoning(self) -> OpenAIChatModel:
+         """每回合持有独立预算，保留端点、输出上限与请求参数。"""
+         context_tokens = self._reasoning_context_tokens

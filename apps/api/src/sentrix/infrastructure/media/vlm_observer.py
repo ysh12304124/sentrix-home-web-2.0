@@ -50,6 +50,7 @@ from PIL import Image, ImageOps
 
 from sentrix.domain.assistant.intent import json_output_fact
 from sentrix.domain.assistant.ports import ModelServiceError
+from sentrix.domain.assistant.request_budget import admit_model_attempt
 from sentrix.domain.assistant.request_context import request_slot
 from sentrix.domain.media.models import MODEL_FACT_CONFIDENCE, ObservationFact
 from sentrix.domain.media.ports import ObservationSemantics
@@ -291,11 +292,13 @@ def chat_json(
             body["response_format"] = {"type": "json_object"}
         fact["diagnostics"].update(model.apply_output_budget(body, timeout_s=timeout_s))
         fact["diagnostics"]["request_sent"] = None
-        response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers(api_key))
+        timeout = admit_model_attempt(timeout_s, kind="tool_vlm")
+        response = httpx.post(endpoint, json=body, timeout=timeout, headers=model_auth_headers(api_key))
         if response.status_code in {400, 422} and "response_format" in body:
             # 端点不认 response_format 时退回普通提示；只退回一次。
             body.pop("response_format", None)
-            response = httpx.post(endpoint, json=body, timeout=timeout_s, headers=model_auth_headers(api_key))
+            timeout = admit_model_attempt(timeout_s, kind="tool_vlm")
+            response = httpx.post(endpoint, json=body, timeout=timeout, headers=model_auth_headers(api_key))
         fact["diagnostics"].update(request_sent=True, http_status=response.status_code)
         response.raise_for_status()
         payload = response.json()

@@ -72,3 +72,11 @@ def test_invalid_deployment_profile_rejected():
 
     with pytest.raises(ValueError):
         Settings(deployment_profile="unknown")
+
+
+def test_reasoning_context_can_be_declared_for_cloud_proxy(monkeypatch):
+    monkeypatch.setenv("SENTRIX_VLM_REASONING_CONTEXT_TOKENS", "131072")
+    settings = Settings(vlm_context_tokens=16384)
+    assert settings.vlm_reasoning_context_tokens == 131072
+    assert settings.runtime_configuration()["vlm_reasoning_context_tokens"] == 131072
+    assert settings.vlm_context_tokens == 16384

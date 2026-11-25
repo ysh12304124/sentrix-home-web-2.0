@@ -18,6 +18,8 @@ from typing import Any
 
 def read_build_revision(repo_root: Path) -> str:
     """A release records its committed revision at packaging time, once at boot."""
+    if revision := os.environ.get("PHOTOBENCH_BUILD_REVISION"):
+        return revision
     try:
         value = json.loads((repo_root / "build-info.json").read_text(encoding="utf-8"))
         return str(value["revision"])

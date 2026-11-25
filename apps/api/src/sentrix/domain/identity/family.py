@@ -168,6 +168,10 @@ class FamilyPersonProjection:
     # 实体自己的 ``status``（``pending`` / ``confirmed``）。名录与详情据此决定给「确认身份」
     # 还是「改名」：只改名不确认，问答与按人找照片都看不到这个人（2026-11-11 王王事故）。
     status: str = ENTITY_STATUS_PENDING
+    # 用户起的其他称呼。名录与选人列表按别名也能搜到人，不必再逐个拉 ``GET /people/{id}``。
+    aliases: tuple[str, ...] = ()
+    # 用户标成「路人」的人：名录把他收进偶遇面孔区，不删任何数据。
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)

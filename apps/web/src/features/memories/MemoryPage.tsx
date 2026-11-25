@@ -171,7 +171,7 @@ export function MemoryPage() {
     if (fullscreen) {
       void fullscreenRef.current?.requestFullscreen?.().catch(() => undefined);
     } else if (document.fullscreenElement !== null) {
-      void document.exitFullscreen().catch(() => undefined);
+      void document.exitFullscreen?.().catch(() => undefined);
     }
   }, [fullscreen]);
 

@@ -21,16 +21,61 @@ from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
 
 from photobench.api.deps import get_container, json_body
+from photobench.api.interactive_schema import RetestRequest, RetestResponse
 from photobench.api.metrics_schema import WorkStatusResponse
 
 router = APIRouter(tags=["suites"])
 
 
-@router.post("/runs", status_code=202)
+@router.post("/runs/{run_id}/retest", status_code=202, response_model=RetestResponse)
+async def start_retest(request: Request, run_id: str, payload: RetestRequest) -> dict[str, Any]:
+    return await run_in_threadpool(
+        get_container(request).run_suites.start_retest, run_id, payload.model_dump(exclude_defaults=True)
+    )
+
+
+@router.get("/runs/{run_id}/retests")
+def list_retests(request: Request, run_id: str, qa_id: str = "") -> dict[str, Any]:
+    return get_container(request).run_suites.list_retests(run_id, qa_id)
+
+
+@router.post(
+    "/runs",
+    status_code=202,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "reasoning": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "是否开启推理模式；开放全工具与调用次数，默认开启",
+                            },
+                            "turn_timeout": {
+                                "type": "integer",
+                                "description": "单回合等待秒数；推理模式默认3660，关闭时默认900",
+                            },
+                        },
+                        "additionalProperties": True,
+                    }
+                }
+            },
+        }
+    },
+)
 async def start_suite(request: Request) -> dict[str, Any]:
     """``POST /api/runs``（1.0 ``:7854`` 分支 → ``start_suite`` ``:7306``）。"""
     payload = await json_body(request)
     return await run_in_threadpool(get_container(request).run_suites.start_suite, payload)
+
+
+@router.get("/runs/{run_id}/progress")
+def get_retest_progress(request: Request, run_id: str) -> dict[str, Any]:
+    return get_container(request).run_suites.get_retest_progress(run_id)
 
 
 @router.post("/runs/{run_id}/cancel")

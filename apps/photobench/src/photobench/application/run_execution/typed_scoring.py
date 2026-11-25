@@ -11,6 +11,7 @@ from photobench.domain.evaluation.atm.scoring import deterministic_accuracy, lis
 from photobench.domain.evaluation.contract import choice_result, result_record
 from photobench.domain.evaluation.media import media_metrics_for_sets
 from photobench.domain.evaluation.prompts import evaluation_prompts
+from photobench.domain.evaluation.sources import source_metrics_for_record, source_set_metrics
 from photobench.domain.runs.execution import RunCancelledError, resolve_predicted_media
 from photobench.domain.runs.judge import parse_judge_json, thinking_kwargs
 
@@ -160,10 +161,19 @@ def score_typed(
         elif scorer in {"media_set", "atm_list"}:
             media_metrics = media_metrics_for_turn(effective, row, record, turns, assets)
             delivered = media_metrics["delivery"]
-            prediction = record.get("predicted_media")
+            source_list = bool(effective.get("target_source_refs"))
+            prediction = record.get("predicted_source_refs") if source_list else record.get("predicted_media")
+            if source_list:
+                delivered = source_set_metrics(
+                    effective["target_source_refs"],
+                    prediction or [],
+                    available=record.get("source_mapping_complete") is True,
+                )
             score = delivered["jaccard"]
             serialized = ", ".join(
-                PurePosixPath(str(r.get("media_id") or r.get("file_name") or "")).stem
+                str(r.get("source_id"))
+                if source_list
+                else PurePosixPath(str(r.get("media_id") or r.get("file_name") or "")).stem
                 for r in prediction or []
             )
             if score is not None:
@@ -257,6 +267,7 @@ def score_typed(
         result["media_metrics"] = media_metrics_for_turn(effective, row, record, turns, assets)
     return {
         **result,
+        "source_metrics": source_metrics_for_record(row, record),
         "call_observations": calls,
         "attempts": attempts,
         "judge_model": model,

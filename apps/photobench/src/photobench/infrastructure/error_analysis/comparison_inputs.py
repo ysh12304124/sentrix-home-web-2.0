@@ -12,6 +12,7 @@ from typing import Any
 from photobench.domain.datasets.ports import AlbumSource
 from photobench.domain.runs.analysis import media_key
 from photobench.domain.runs.judge_recovery import gt_image_refs
+from photobench.infrastructure.error_analysis.split_source import with_excerpts
 
 
 def image_catalog(albums: AlbumSource | None, album: str) -> dict[tuple[str, str], list[str]]:
@@ -57,6 +58,7 @@ def freeze_side(
     indices: set[int],
     *,
     include_raw: bool = True,
+    results_root: Path | None = None,
 ) -> None:
     rows = source.pop("_qa_rows", [])
     counts = Counter(str(r.get("qa_id") or "") for r in rows)
@@ -70,6 +72,8 @@ def freeze_side(
             if not line.strip() or index not in indices:
                 continue
             item = json.loads(line)
+            if include_raw and results_root is not None:
+                item = with_excerpts(results_root, item)
             qa = definitions.get(str(item.get("qa_id") or ""))
             package: dict[str, Any] = {
                 "index": index,
@@ -83,7 +87,10 @@ def freeze_side(
                     if item.get(k)
                 ],
                 "trace_completeness": (
-                    "all_saved_fields_included; original_unrecorded_calls_cannot_be_reconstructed"
+                    "rule_facts_and_bounded_original_excerpts; "
+                    "full IO available at pinned trace_storage revision"
+                    if item.get("analysis_projection")
+                    else "all_saved_fields_included; original_unrecorded_calls_cannot_be_reconstructed"
                 ),
             }
             if not package["trace_fields_recorded"]:

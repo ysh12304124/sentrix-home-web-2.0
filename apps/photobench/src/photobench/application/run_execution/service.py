@@ -1789,21 +1789,8 @@ class RunExecution:
         observed_image_count = 0
 
         def read_target_assets(timeout: int) -> list[dict[str, Any]]:
-            page_size = 1000
-            page = self.client.list_assets(scope_id=scope_id, limit=page_size, timeout=timeout)
-            found: dict[str, dict[str, Any]] = {}
-            offset = 0
-            while True:
-                for item in page:
-                    asset_id = str(item.get("id") or "")
-                    if asset_id in target_ids:
-                        found[asset_id] = item
-                if len(target_ids) <= page_size or len(found) == len(target_ids) or len(page) < page_size:
-                    return list(found.values())
-                offset += len(page)
-                page = self.client.list_assets(
-                    scope_id=scope_id, limit=page_size, timeout=timeout, offset=offset
-                )
+            assets = self.client.list_assets(scope_id=scope_id, limit=None, timeout=timeout)
+            return [item for item in assets if str(item.get("id") or "") in target_ids]
 
         state.record_phase(
             "pipeline_processing",
@@ -2411,15 +2398,7 @@ class RunExecution:
         if health_error:
             raise RuntimeError(f"model service is unhealthy before QA evaluation: {health_error}")
         scope_id = str(state.get("scope_id"))
-        assets = self.client.list_assets(scope_id=scope_id, limit=1000)
-        while len(assets) and len(assets) % 1000 == 0:
-            page = self.client.list_assets(scope_id=scope_id, limit=1000, offset=len(assets))
-            known = {str(a.get("id")) for a in assets}
-            if any(str(a.get("id")) in known for a in page):
-                raise RuntimeError("Asset pagination repeated IDs; QA evidence mapping is incomplete")
-            assets.extend(page)
-            if len(page) < 1000:
-                break
+        assets = self.client.list_assets(scope_id=scope_id, limit=None)
         assets_by_name = index_assets_by_name(assets)
         snapshot = state.get("qa_snapshot")
         if not snapshot or "rows" not in snapshot:
@@ -2602,7 +2581,6 @@ class RunExecution:
                                 scope_id,
                                 assets_by_name,
                                 request,
-                                str((state.get("qa_snapshot") or {}).get("retrieval_mode") or "auto"),
                             )
                         ] = index
 
@@ -2763,7 +2741,6 @@ class RunExecution:
         scope_id: str,
         assets_by_name: dict[str, list[dict[str, Any]]],
         request: RunRequest,
-        retrieval_mode: str = "auto",
     ) -> dict[str, Any]:
         """1.0 ``_evaluate_one``（``:3357``）去掉 judge。
 
@@ -2834,7 +2811,6 @@ class RunExecution:
                     conversation_id=conversation_id,
                     message=message,
                     include_debug=True,
-                    retrieval_mode=retrieval_mode,
                     **({"graph_enabled": False} if not request.graph_enabled else {}),
                     timeout=300,
                 )

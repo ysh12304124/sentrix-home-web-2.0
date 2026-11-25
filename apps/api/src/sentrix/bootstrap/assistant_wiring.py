@@ -20,8 +20,8 @@ from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
 from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
-from sentrix.application.retrieval.text_memories import RetrieveTextMemories
-from sentrix.domain.assistant.profile import CLOUD_PROFILE, DEFAULT_PROFILE, TurnProfile
+from sentrix.domain.assistant.ports import ReasoningChatModel
+from sentrix.domain.assistant.profile import CLOUD_PROFILE, DEFAULT_PROFILE, REASONING_PROFILE, TurnProfile
 
 if TYPE_CHECKING:
     from sentrix.bootstrap.container import Container
@@ -129,37 +129,52 @@ def _tool_limits(container: Container) -> ToolLimits:
     )
 
 
-def build_run_turn(container: Container) -> RunTurn:
+def build_run_turn(container: Container, *, reasoning: bool = False) -> RunTurn:
+    profile = _turn_profile(container)
+    model = container.chat_model
+    if reasoning:
+        if isinstance(model, ReasoningChatModel):
+            model = model.for_reasoning()
+        profile = replace(
+            profile,
+            name=REASONING_PROFILE.name,
+            max_steps=container.settings.reasoning_max_model_calls,
+            max_model_calls=container.settings.reasoning_max_model_calls,
+            max_tool_calls=container.settings.reasoning_max_tool_calls,
+            max_search_calls=container.settings.reasoning_max_search_calls,
+            max_other_tool_calls=container.settings.reasoning_max_other_tool_calls,
+            max_page_calls=REASONING_PROFILE.max_page_calls,
+            max_inspections=REASONING_PROFILE.max_inspections,
+            wall_time_s=max(profile.wall_time_s, REASONING_PROFILE.wall_time_s),
+        )
+    toolbox = AssistantToolbox(
+        retrieval=build_retrieve_evidence(container),
+        assets=container.asset_repository,
+        result_sets=container.result_set_repository,
+        people=container.person_directory,
+        memory_facts=QueryMemoryFacts(
+            structured=container.structured_query_repository,
+            people=container.person_directory,
+        ),
+        spaces=container.spaces,
+        faces=container.face_repository,
+        observations=container.observation_repository,
+        photo_inspector=container.photo_inspector,
+        person_crops=container.person_crop_renderer,
+        events=container.event_repository,
+        asset_places=container.asset_place_repository,
+        limits=_tool_limits(container),
+    )
     return RunTurn(
-        model=container.chat_model,
+        model=model,
         operation_control=container.operation_control,
         conversations=container.conversation_repository,
         turns=container.turn_repository,
-        toolbox=AssistantToolbox(
-            retrieval=build_retrieve_evidence(container),
-            assets=container.asset_repository,
-            result_sets=container.result_set_repository,
-            people=container.person_directory,
-            memory_facts=QueryMemoryFacts(
-                structured=container.structured_query_repository,
-                entities=container.entity_repository,
-            ),
-            faces=container.face_repository,
-            observations=container.observation_repository,
-            photo_inspector=container.photo_inspector,
-            person_crops=container.person_crop_renderer,
-            events=container.event_repository,
-            asset_places=container.asset_place_repository,
-            limits=_tool_limits(container),
-            text_retrieval=RetrieveTextMemories(
-                container.text_chunks,
-                container.text_embedder,
-                reranker=container.text_reranker,
-                rerank_top_k=container.settings.rerank_top_k,
-            ),
-        ),
+        toolbox=toolbox,
+        known_person_answer=toolbox.known_person_answer,
         observations=container.observation_repository,
-        profile=_turn_profile(container),
+        profile=profile,
+        use_all_tools=reasoning,
     )
 
 

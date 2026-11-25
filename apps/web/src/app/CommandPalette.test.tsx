@@ -28,7 +28,7 @@ describe("resolveCommand", () => {
   });
 
   it("命中导航 id（1.0 的 includes(item.id) 语义）", () => {
-    const result = resolveCommand("search", ITEMS);
+    const result = resolveCommand("open ASSISTANT", ITEMS);
     expect(result.kind).toBe("nav");
     expect(result.kind === "nav" && result.item.path).toBe("/assistant");
   });
@@ -91,8 +91,8 @@ describe("CommandPalette", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByText("设备与隐私"));
-    expect(screen.getByTestId("location").textContent).toBe("/settings");
+    fireEvent.click(screen.getByRole("button", { name: "添加资料" }));
+    expect(screen.getByTestId("location").textContent).toBe("/imports");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

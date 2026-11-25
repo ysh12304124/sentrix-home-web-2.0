@@ -93,6 +93,10 @@ class AssetRepository(Protocol):
 
     def find_by_hash(self, scope_id: str, content_sha256: str) -> Asset | None: ...
 
+    def find_file_by_hash(self, content_sha256: str) -> str | None:
+        """仅定位可复用的原件路径；相册资产和记忆仍分别创建。"""
+        ...
+
     def update_status(self, asset_id: str, status: AssetStatus) -> None: ...
 
 
@@ -351,6 +355,10 @@ class MediaStorage(Protocol):
 
     def delete_assets(self, asset_ids: Sequence[str], paths: Sequence[str]) -> tuple[str, ...]:
         """Remove managed media and derivatives; return unmanaged external paths left intact."""
+        ...
+
+    def cleanup_orphans(self, referenced: set[str], cutoff: float) -> int:
+        """回收早于 cutoff 且无人引用的媒体，返回移除的资产路径数；IO 失败抛 OSError。"""
         ...
 
 

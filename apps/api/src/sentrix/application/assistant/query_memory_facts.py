@@ -3,7 +3,7 @@
 纯规则那一半在 ``domain/retrieval/fact_query.py``（参数校验与 spec 派生），
 SQL 在 ``infrastructure/.../structured.py``。这里只剩需要 IO 的三件事：
 
-    人名 → entity_id          ``EntityRepository.find_confirmed_person_by_name``
+    人名 → entity_id          ``PersonDirectory.lookup``
     按操作分派到仓储           ``StructuredQueryRepository`` 的四个方法
     组装 value / unit / coverage
 
@@ -34,7 +34,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sentrix.domain.identity.ports import EntityRepository
+from sentrix.domain.assistant.models import AmbiguousPersonName
+from sentrix.domain.assistant.ports import PersonDirectory
 from sentrix.domain.retrieval.fact_query import (
     FactOperation,
     FactRejection,
@@ -62,6 +63,7 @@ class FactAnswer:
     rows: tuple[Mapping[str, Any], ...] = ()
     samples: tuple[Mapping[str, Any], ...] = ()
     filters_applied: Mapping[str, Any] = field(default_factory=dict)
+    person_names: tuple[str, ...] = ()
 
     @property
     def coverage(self) -> Mapping[str, Any]:
@@ -110,9 +112,9 @@ def _unit(request: FactRequest) -> str:
 
 
 class QueryMemoryFacts:
-    def __init__(self, *, structured: StructuredQueryRepository, entities: EntityRepository) -> None:
+    def __init__(self, *, structured: StructuredQueryRepository, people: PersonDirectory) -> None:
         self._structured = structured
-        self._entities = entities
+        self._people = people
 
     def execute(
         self,
@@ -127,19 +129,26 @@ class QueryMemoryFacts:
         parsed = parse_fact_arguments(arguments)
         if isinstance(parsed, FactRejection):
             return parsed
-        if not scope_id:
+        if not scope_id and not parsed.person:
             # 相册范围由系统注入，模型不许自己传（``ARGUMENT_KEYS`` 里没有 scope_id）。
             # 走到这里说明装配错了，不是模型错了。
             return FactRejection("unavailable", "missing_runtime_scope")
 
         entity_id: str | None = None
+        person_names: tuple[str, ...] = ()
         if parsed.person:
-            entity_id = self._resolve_person(parsed.person, scope_id)
-            if entity_id is None:
+            try:
+                profile = self._people.lookup(parsed.person, scope_id)
+            except AmbiguousPersonName:
+                return FactRejection("unresolved_person", "ambiguous_person")
+            if profile is None or not profile.entity_id or not profile.confirmed:
                 # 「这个名字在本相册里没被确认过」。**与「这个人不存在」不同**——
                 # 所以是 unresolved_person 而不是一个 0 条的统计结果：返回 0 会让
                 # 模型理直气壮地说「没有他/她的照片」。
                 return FactRejection("unresolved_person", "person_not_named_in_current_album")
+            entity_id = profile.entity_id
+            scope_id = profile.scope_id
+            person_names = (profile.name, *profile.aliases)
 
         person = parsed.person
         spec = fact_query_spec(
@@ -156,13 +165,11 @@ class QueryMemoryFacts:
         )
         # 传 ``spec.scope_id`` 而不是入参 ``scope_id``：``scope_mode`` 为
         # all_authorized 时它是 None（跨全部相册），那时候「传进来的那个相册」是错的。
-        return self._dispatch(parsed, derive_filter(spec, scope_id=spec.scope_id))
+        return self._dispatch(parsed, derive_filter(spec, scope_id=spec.scope_id), person_names)
 
-    def _resolve_person(self, name: str, scope_id: str) -> str | None:
-        match = self._entities.find_confirmed_person_by_name(scope_id, name)
-        return match.entity_id if match else None
-
-    def _dispatch(self, request: FactRequest, structured_filter: StructuredFilter) -> FactAnswer:
+    def _dispatch(
+        self, request: FactRequest, structured_filter: StructuredFilter, person_names: tuple[str, ...]
+    ) -> FactAnswer:
         rows: tuple[Mapping[str, Any], ...] = ()
         samples: tuple[Mapping[str, Any], ...] = ()
 
@@ -197,6 +204,7 @@ class QueryMemoryFacts:
             unit=_unit(request),
             rows=rows,
             samples=samples,
+            person_names=person_names,
             filters_applied={
                 **structured_filter.applied,
                 "scope_id": structured_filter.scope_id,

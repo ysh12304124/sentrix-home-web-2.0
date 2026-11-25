@@ -1,0 +1,2293 @@
+"""写侧用例：建 run / 取消 / 删除 / 评审写入 / 重判 / 内存画像。
+
+对应 1.0 ``OrchestratorRepository`` 里**会写**的那几个入口：``start_suite``
+（``:7306``）/ ``cancel_run``（``:6879``）/ ``cancel_active_suite``（``:6975``）/
+``delete_run``（``:7010``）/ ``save_reviews``（``:4988``）/ ``get_run_judge_prompt``
+（``:6543``）/ ``start_rejudge``（``:7061``）/ ``start_memory_profile``（``:5159``）。
+
+**为什么是独立的一个「注册表」而不是 ``RunExecution`` 上的方法。** 1.0 的
+``OrchestratorRepository`` 同时是「磁盘读侧」（270 个 run 的索引）与「活跃 run 的
+注册表」，2.0 把读侧拆给了 ``ReadRuns`` + ``RunIndex``（S9b-1，理由是启动阻塞），
+写侧就落在这里。它**只持有正在跑的 run**——磁盘上的 run 由 ``RunStore`` 按需读，
+不再常驻内存。
+
+**一处与 1.0 的刻意差异：``mode``。** 1.0 支持 ``full`` / ``reuse`` / ``build``：
+``reuse`` 复用历史 scope（读侧 ``_build_reuse_bases`` 那套名字解析），``build`` 只
+导入不问答。2.0 的 ``scope_attach`` 相位在 S9b-2 就删了（它依赖写侧路由，而 2.0 的
+scope 由导入内部 ensure），所以 **2.0 只接 ``full``**。其余两种明确报错而不是静默
+降级：静默把 ``reuse`` 当成 ``full`` 会建出一个新 scope，而那正是调用方想避免的。
+这条登记在行为基线的 S9b-3 一节里。
+
+**内存画像（``start_memory_profile``）的一处诚实留空**：1.0 在装载模型之后调
+``POST /api/model-profiles/bind-runtime`` 把 Sentrix 指到新模型；2.0 没有那个端点
+（换模型=重启 2.0，裁决③，S9c 的 T923）。这里照 ``_phase_model_deploy`` 的先例
+**跳过并写明原因**，不假装同步过。
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import contextlib
+import copy
+import hashlib
+import json
+import logging
+import threading
+import time
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Any
+
+from photobench.application.config.service import (
+    ConfigService,
+    BIG_MODEL_PROFILE_ID,
+    BIG_MODEL_ENABLED,
+    BIG_MODEL_MODEL,
+    normalize_model_base_url,
+    normalize_service_url,
+)
+from photobench.application.interactive.models import InteractiveModels
+from photobench.application.run_execution.gpu_sampler import GpuSampler
+from photobench.application.run_execution.judge import InlineImages, JudgeRunner
+from photobench.application.run_execution.profile_scoring import prepare_batches
+from photobench.application.run_execution.service import (
+    DEFAULT_TURN_TIMEOUT,
+    REASONING_TURN_TIMEOUT,
+    JudgeSettings,
+    RunExecution,
+    RunRequest,
+    freeze_runtime_request,
+)
+from photobench.application.runs.index import RunIndex
+from photobench.application.runs.scoring import preview as scoring_preview
+from photobench.application.runs.scoring import run_scoring
+from photobench.config import default_import_timeout
+from photobench.domain.datasets.ports import AlbumSource
+from photobench.domain.datasets.qa_taxonomy import qa_fingerprint
+from photobench.domain.errors import InvalidRequestError
+from photobench.domain.evaluation.contract import scoring_options
+from photobench.domain.evaluation.profiles import (
+    LABELS,
+    profile_configs,
+    scoring_targets,
+    summarize_batches,
+    uses_readable_metadata,
+)
+from photobench.domain.evaluation.prompts import evaluation_prompts as default_evaluation_prompts
+from photobench.domain.http.ports import JsonHttpClient
+from photobench.domain.results.ports import RunResultWriter, RunStore
+from photobench.domain.runs import analysis
+from photobench.domain.runs.analysis import now_iso
+from photobench.domain.runs.execution import RunCancelledError, index_assets_by_name, safe_slug
+from photobench.domain.runs.judge import judge_chat_url
+from photobench.domain.runs.judge_recovery import RECOVERY_SCOPES, recovery_fields
+from photobench.domain.runs.service_recovery import service_retry_evidence
+from photobench.domain.runtime.ports import LifecycleProvider, RunRuntimeSnapshot, TelemetryProvider
+from photobench.domain.sentrix.ports import CancellableOperations, SentrixClient
+
+#: 2.0 支持的模式。``build`` 仍不在其中（只导入不问答，尚无调用方要它）。
+#:
+#: **``reuse`` 于 2026-10-15 恢复。** S9b-2 删掉 ``scope_attach`` 时它一并被移除，
+#: 理由是「scope 由导入内部 ensure，没有可复用的入口」。但 2.0 自己跑过的每一轮都会
+#: 在库里留下一个 scope（``_default_scope_id`` 生成的名字同时是 id），
+#: ``GET /api/v1/memory-spaces`` 的 ``reuse_bases`` 一直在列它们、前端 ``useReuseMode``
+#: 也一直在让用户选——**只有写侧不接**。代价是一轮评测必须重跑 66 分钟的导入。
+RUN_MODES = ("full", "reuse", "build")
+
+#: 1.0 ``:2043`` 的 ``dirty_statuses``。
+DIRTY_STATUSES = {"running", "pending", "cancelling"}
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SuiteDeps:
+    """一次 suite 用到的装配件。收成一个值对象只为让 ``start_suite`` 的签名可读。"""
+
+    sentrix_url: str
+    manager_url: str
+    model_base_url: str
+    runtime_framework: str
+    judge: JudgeSettings
+
+
+class RunSuites:
+    """活跃 run 的注册表 + 写侧用例。"""
+
+    def __init__(
+        self,
+        *,
+        store: RunStore,
+        writer: RunResultWriter,
+        index: RunIndex,
+        albums: AlbumSource,
+        config: ConfigService,
+        sentrix: SentrixClient,
+        http: JsonHttpClient,
+        new_execution: Callable[[RunRequest], RunExecution],
+        lifecycle_for: Callable[[str], LifecycleProvider],
+        manager_telemetry_for: Callable[[str], TelemetryProvider],
+        detect_framework: Callable[[str, str], str],
+        build_revision: str = "development",
+        budget_defaults: Mapping[str, Any] | None = None,
+        inline_images: InlineImages | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        on_finished: Callable[[str], None] | None = None,
+    ) -> None:
+        self._on_finished = on_finished
+        self._build_revision = build_revision
+        self._budget_defaults = dict(budget_defaults or {})
+        self._store = store
+        self._writer = writer
+        self._index = index
+        self._albums = albums
+        self._config = config
+        self.interactive_models = InteractiveModels(
+            config, build_revision, self._budget_defaults, lambda: sentrix.diagnostics()
+        )
+        self._sentrix = sentrix
+        self._http = http
+        self._new_execution = new_execution
+        self._lifecycle_for = lifecycle_for
+        #: 内存画像**只要 Manager 那一路遥测**（1.0 是 `ManagerTelemetryProvider(manager_url)`）
+        #: ——它测的就是被管模型的内存，端点是不是本机与这件事无关。所以这里不走
+        #: ``select_runtime_providers``（那条在端点非本机时会回 ``Unavailable``）。
+        self._manager_telemetry_for = manager_telemetry_for
+        self._detect_framework = detect_framework
+        #: 证据判分要用的「召回图 → data URL」（PIL 在 infrastructure，见 JudgeRunner）。
+        self._inline_images = inline_images
+        self._sleep = sleep
+        self._lock = threading.RLock()
+        self._active: dict[str, RunExecution] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._memory_thread: threading.Thread | None = None
+        self._auxiliary: dict[str, tuple[threading.Thread, threading.Event]] = {}
+        self._reservations: dict[str, threading.Event] = {}
+        self._auxiliary_cleanup: dict[str, list[dict[str, Any]]] = {}
+        self._auxiliary_samplers: dict[str, list[GpuSampler]] = {}
+
+    # ---- 内部 ---------------------------------------------------------------
+
+    def _active_ids(self) -> list[str]:
+        return [
+            rid
+            for rid, run in self._active.items()
+            if run.state is None or run.state.get("status") in DIRTY_STATUSES
+        ]
+
+    @staticmethod
+    def _stop_pending(state: Mapping[str, Any]) -> bool:
+        return bool(
+            (state.get("cleanup") or {}).get("status") == "stop_pending"
+            or (state.get("persistence") or {}).get("status") == "stop_pending"
+            or (state.get("phases") or {})
+            .get("photo_import", {})
+            .get("progress", {})
+            .get("observer_stop_pending")
+            or (state.get("phases") or {})
+            .get("gpu_metrics", {})
+            .get("sampling_integrity", {})
+            .get("stop_pending_threads")
+        )
+
+    def _execute_and_release(self, run_id: str, request: RunRequest) -> None:
+        with self._lock:
+            execution = self._active.get(run_id)
+        if execution is None:
+            return
+        finished: dict[str, Any] = {}
+        try:
+            finished = execution.execute(request)
+        except Exception as exc:  # noqa: BLE001 — execution/storage failure stays visible
+            log.exception("Run execution/cleanup failed: %s", run_id)
+            if execution.state is not None:
+                with execution.state.lock:
+                    execution.state.data.update(status="failed", fatal_error=str(exc), finished_at=now_iso())
+                    finished = dict(execution.state.data)
+            else:
+                finished = {"run_id": run_id, "status": "failed", "fatal_error": str(exc)}
+        finally:
+            try:
+                self._index.upsert(analysis.run_list_entry(finished))
+            finally:
+                with self._lock:
+                    if not self._stop_pending(finished):
+                        self._active.pop(run_id, None)
+                        self._threads.pop(run_id, None)
+            if self._on_finished is not None and not self._stop_pending(finished):
+                self._on_finished(run_id)
+
+    def _require_inactive(self) -> None:
+        # A timed-out cleanup can finish after execute() returns. Reap only
+        # terminal executions whose worker and all cleanup guards are finished.
+        for rid, run in list(self._active.items()):
+            thread = self._threads.get(rid)
+            if (
+                run.state is not None
+                and run.state.get("status") not in DIRTY_STATUSES
+                and (thread is None or not thread.is_alive())
+                and not self._stop_pending(run.state.data)
+            ):
+                self._active.pop(rid, None)
+        busy = self._active_ids()
+        if (
+            busy
+            or self._reservations
+            or self._auxiliary_cleanup
+            or any(
+                sampler.pending_work()
+                for samplers in self._auxiliary_samplers.values()
+                for sampler in samplers
+            )
+            or any(thread.is_alive() for thread, _ in self._auxiliary.values())
+            or (self._memory_thread is not None and self._memory_thread.is_alive())
+            or any(thread.is_alive() for thread in self._threads.values())
+            or any(
+                run.state is not None and self._stop_pending(run.state.data) for run in self._active.values()
+            )
+        ):
+            occupied = sorted(set(busy) | set(self._active) | {
+                rid for rid, thread in self._threads.items() if thread.is_alive()
+            })
+            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(occupied)}")
+
+    def _state_if_exists(self, run_id: str) -> dict[str, Any] | None:
+        try:
+            return self._store.load_state(run_id)
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _gt_image_option(payload: Mapping[str, Any], default: bool = False) -> bool:
+        value = payload.get("judge_use_gt_images", default)
+        if not isinstance(value, bool):
+            raise InvalidRequestError("judge_use_gt_images must be a boolean")
+        return value
+
+    def _judge_settings(self, payload: Mapping[str, Any]) -> JudgeSettings:
+        """1.0 ``start_suite`` 的 judge 解析（``:7330``）：请求体 > provider 解析出的值。"""
+        custom = self._config.load_custom_judge_prompts()
+        provider_id = str(payload.get("judge_provider_id") or self._config.judge_provider_id)
+        _, provider_url, provider_model, provider_key = self._config.resolve_judge_provider(provider_id)
+        return JudgeSettings(
+            judge_provider_id=provider_id,
+            judge_url=str(payload.get("judge_url") or provider_url).rstrip("/"),
+            judge_model=str(payload.get("judge_model") or provider_model),
+            judge_api_key=str(payload.get("judge_api_key") or provider_key),
+            answer_quality_prompt=custom.get("answer_quality"),
+            task_judge_prompt=payload.get("task_system_prompt") or custom.get("task_decision"),
+            evidence_judge_prompt=payload.get("evidence_system_prompt") or custom.get("evidence"),
+            judge_use_gt_images=self._gt_image_option(payload),
+        )
+
+    def _frozen_judge_settings(self, frozen: Mapping[str, Any]) -> JudgeSettings:
+        provider_id, url, _, _ = self._config.resolve_judge_provider(frozen.get("provider_id"))
+        if frozen.get("url") and judge_chat_url(str(frozen["url"])) != judge_chat_url(url):
+            raise InvalidRequestError("原Judge地址与当前供应商配置不同，请恢复原供应商地址，或新建评分批次")
+        return self._judge_settings(
+            {
+                "judge_provider_id": provider_id,
+                "judge_url": frozen.get("url"),
+                "judge_model": frozen.get("model"),
+            }
+        )
+
+    # ---- start_suite --------------------------------------------------------
+
+    def start_suite(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """``POST /api/runs``（1.0 ``start_suite`` ``:7306``）。"""
+        mode = str(payload.get("mode") or "full").strip().lower()
+        if mode not in RUN_MODES:
+            raise InvalidRequestError(f"mode must be one of {sorted(RUN_MODES)}, got: {mode!r}")
+        # reuse 复用的是**一个已经导入好的 scope**。没有 scope id 就没有可复用的对象——
+        # 静默降级成 full 会建出一个新 scope，而那正是调用方想避免的（1.0 的
+        # ``scope_attach`` 相位做的也正是「绑定」这一件事）。
+        existing_scope_id = str(payload.get("existing_scope_id") or "").strip()
+        if mode == "reuse" and not existing_scope_id:
+            raise InvalidRequestError("mode=reuse requires existing_scope_id")
+        album_id = str(payload.get("album_id") or "album3-14")
+        try:
+            manifest = self._albums.manifest(album_id)
+        except KeyError as exc:
+            raise InvalidRequestError(f"manifest not found for album: {album_id}") from exc
+        qa_set = (
+            ""
+            if mode == "build"
+            else str(payload.get("qa_set") or next(iter(manifest.get("qa_sets") or {}), ""))
+        )
+        if not qa_set and mode != "build":
+            raise InvalidRequestError(f"album {album_id} has no qa_sets in manifest")
+        if mode != "build" and qa_set not in (manifest.get("qa_sets") or {}):
+            raise InvalidRequestError(f"unknown qa_set for album {album_id}: {qa_set}")
+        if mode != "build":
+            from photobench.domain.datasets.validation import require_valid_targets
+
+            try:
+                require_valid_targets(self._albums.qa_rows(album_id, qa_set), manifest)
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+        models = payload.get("models", [])
+        if not isinstance(models, list) or not models:
+            raise InvalidRequestError("models must contain at least one model")
+        graph_enabled = payload.get("graph_enabled", True)
+        if not isinstance(graph_enabled, bool):
+            raise InvalidRequestError("graph_enabled must be a boolean")
+        reasoning = payload.get("reasoning", True)
+        if not isinstance(reasoning, bool):
+            raise InvalidRequestError("reasoning must be a boolean")
+        graph_baseline_run_id = str(payload.get("graph_baseline_run_id") or "").strip()
+        model_base_url = normalize_model_base_url(str(payload.get("model_base_url") or ""))
+        manager_url = normalize_service_url(str(payload.get("vllm_manager_url") or ""))
+        runtime_framework = self._detect_framework(
+            str(payload.get("runtime_framework") or ""), model_base_url
+        )
+        endpoint_model = str(payload.get("endpoint_model") or "").strip()
+        if not manager_url and not model_base_url:
+            # 没有 Manager 也没有直连端点时退回配置里的端点（与 container 的 run_execution
+            # 同一条兜底）——但**不**替调用方填 Manager：那是「要不要管模型」的决定。
+            model_base_url = self._config.model_base_url
+        sentrix_url = str(payload.get("sentrix_url") or self._config.sentrix_url)
+        judge = JudgeSettings() if mode == "build" else self._judge_settings(payload)
+        try:
+            configs = (
+                profile_configs(
+                    payload.get("scoring_profiles"),
+                    payload.get("scoring_configs"),
+                    self._config.load_custom_judge_prompts(),
+                )
+                if mode != "build"
+                else {}
+            )
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        self._require_inactive()
+        deps = _SuiteDeps(
+            sentrix_url=sentrix_url,
+            manager_url=manager_url,
+            model_base_url=model_base_url,
+            runtime_framework=runtime_framework,
+            judge=judge,
+        )
+        suite_id = f"suite-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        created: list[str] = []
+        requests: dict[str, RunRequest] = {}
+        connection = self._config.public_runtime_connection_config()
+        connection["product_settings"] = connection.get("product_settings") or dict(
+            self._budget_defaults.get("product_settings", {})
+        )
+        if mode == "reuse":
+            builds = [
+                entry.get("scope_build")
+                for entry in self._index.entries()
+                if entry.get("scope_id") == existing_scope_id and entry.get("scope_build")
+            ]
+            for build in builds:
+                if not isinstance(build, dict):
+                    continue
+                if build.get("status") != "ready":
+                    raise InvalidRequestError("selected scope has an incomplete build")
+                if build.get("embedding") is not None and build["embedding"] != connection.get("embedding"):
+                    raise InvalidRequestError(
+                        "embedding configuration changed; build a new scope before reuse"
+                    )
+        if payload.get("endpoint_model"):
+            connection["endpoint_model"] = str(payload["endpoint_model"])
+            connection["model_base_url"] = model_base_url
+        with self._lock:
+            self._require_inactive()
+            for model in models:
+                run_id = (
+                    f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
+                    f"{safe_slug(str(model))}-{uuid.uuid4().hex[:6]}"
+                )
+                cloud = str(model) == BIG_MODEL_PROFILE_ID
+                if cloud and not BIG_MODEL_ENABLED:
+                    raise InvalidRequestError("cloud model profile is disabled")
+                run_connection = dict(connection)
+                if cloud:
+                    # Auth remains in the loopback gateway, never in run snapshots.
+                    run_connection.update(model_base_url="http://127.0.0.1:18106/v1",
+                                          vllm_manager_url="", endpoint_model=BIG_MODEL_MODEL)
+                request = RunRequest(
+                    album_id=album_id,
+                    qa_set=qa_set,
+                    model_profile=str(model),
+                    sentrix_url=sentrix_url,
+                    manager_url="" if cloud else deps.manager_url,
+                    model_base_url="http://127.0.0.1:18106/v1" if cloud else deps.model_base_url,
+                    endpoint_model=BIG_MODEL_MODEL if cloud else endpoint_model,
+                    run_id=run_id,
+                    mode=mode,
+                    qa_concurrency=int(
+                        payload.get("qa_concurrency", self._budget_defaults.get("qa_concurrency", 0))
+                    ),
+                    judge_backpressure=payload.get("judge_backpressure", True) is not False,
+                    turn_timeout=int(
+                        payload.get("turn_timeout")
+                        or (REASONING_TURN_TIMEOUT if reasoning else DEFAULT_TURN_TIMEOUT)
+                    ),
+                    # 整册导入在 Mac/CPU 上可能远超默认 2h；允许按 run 放宽客户端超时。
+                    import_timeout=int(
+                        payload.get("import_timeout") or self._budget_defaults.get("import_timeout") or 0
+                    )
+                    or default_import_timeout(),
+                    pipeline_timeout=int(payload.get("pipeline_timeout") or 86400),
+                    # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
+                    scope_id=existing_scope_id,
+                    runtime_framework="generic" if cloud else deps.runtime_framework,
+                    judge_provider_id=deps.judge.judge_provider_id,
+                    judge_url=deps.judge.judge_url,
+                    judge_model=deps.judge.judge_model,
+                    judge_api_key=deps.judge.judge_api_key,
+                    scoring_configs=configs,
+                    evaluation_options=scoring_options(payload.get("evaluation_options")),
+                    graph_enabled=graph_enabled,
+                    reasoning=reasoning,
+                    graph_baseline_run_id=graph_baseline_run_id if graph_enabled else "",
+                    judge_prompts={
+                        "answer_quality": deps.judge.answer_quality_prompt,
+                        "task_decision": deps.judge.task_judge_prompt,
+                        "evidence": deps.judge.evidence_judge_prompt,
+                    },
+                    evidence_judge_enabled=deps.judge.evidence_enabled,
+                    judge_use_gt_images=deps.judge.judge_use_gt_images,
+                )
+                request = freeze_runtime_request(request, run_connection, self._build_revision)
+                requests[run_id] = request
+                execution = self._new_execution(request)
+                execution.prepare(request)
+                self._active[run_id] = execution
+                created.append(run_id)
+
+        def _run_sequentially() -> None:
+            try:
+                for run_id in created:
+                    self._execute_and_release(run_id, requests[run_id])
+            finally:
+                with self._lock:
+                    self._threads.pop(suite_id, None)
+
+        thread = threading.Thread(target=_run_sequentially, name=f"suite-{suite_id}", daemon=True)
+        with self._lock:
+            self._threads[suite_id] = thread
+            # Each run is owned by the sequential suite worker. Status and
+            # cleanup look up run IDs, so retain the same thread under those
+            # IDs as well; otherwise a live import appears safe to clean up.
+            for run_id in created:
+                self._threads[run_id] = thread
+        thread.start()
+        return {
+            "suite_id": suite_id,
+            "run_ids": created,
+            "album_id": album_id,
+            "models": [str(model) for model in models],
+            "qa_set": qa_set,
+            "mode": mode,
+            "graph_enabled": graph_enabled,
+            "reasoning": reasoning,
+            # 回显复用的那个 scope（1.0 ``start_suite`` 的响应形状）。full 模式为 None。
+            "existing_scope_id": existing_scope_id or None,
+            "current_model_snapshot": None,
+        }
+
+    def frozen_questions(self, saved: Mapping[str, Any]) -> dict[str, Any]:
+        album_id, qa_set = str(saved.get("album_id") or ""), str(saved.get("qa_set") or "")
+        snapshot = saved.get("qa_snapshot")
+        if not isinstance(snapshot, dict) or "rows" not in snapshot:
+            manifest = self._albums.manifest(album_id)
+            digest = (saved.get("input_integrity") or {}).get("qa_sha256")
+            current = self._albums.integrity(album_id, manifest, qa_set)
+            if (
+                not digest
+                or digest != current.get("qa_sha256")
+                or (saved.get("input_integrity") or {}).get("task_action_policy_sha256")
+                != current.get("task_action_policy_sha256")
+            ):
+                raise InvalidRequestError("原测评缺少QA快照，且无法确认题库版本一致，不能续跑")
+            rows = self._albums.qa_rows(album_id, qa_set)
+            snapshot = {
+                "album_id": album_id,
+                "qa_set": qa_set,
+                "rows": rows,
+                "definition_sha256": qa_fingerprint(rows),
+                "source": "verified_legacy_file",
+            }
+        if snapshot.get("definition_sha256") != qa_fingerprint(snapshot["rows"]):
+            raise InvalidRequestError("原测评QA快照校验失败，不能续跑")
+        return copy.deepcopy(snapshot)
+
+    def reserve_interactive(self, key: str, cancel: threading.Event, *, recovery: bool = False) -> None:
+        with self._lock:
+            retained = self._reservations.pop(key, None) if recovery else None
+            try:
+                self._require_inactive()
+            except Exception:
+                if retained is not None:
+                    self._reservations[key] = retained
+                raise
+            self._reservations[key] = cancel
+
+    def release_interactive(self, key: str) -> None:
+        with self._lock:
+            self._reservations.pop(key, None)
+
+    def start_retest(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_inactive()
+        saved = self._store.load_state(run_id)
+        if saved.get("status") in DIRTY_STATUSES:
+            raise InvalidRequestError("请等待原任务结束后重测")
+        if str(saved.get("sentrix_url") or "").rstrip("/") != self._config.sentrix_url.rstrip("/"):
+            raise InvalidRequestError("请先将产品连接指向原测评实例")
+        scope_id = str(saved.get("scope_id") or "")
+        if not scope_id or (saved.get("scope_build") or {}).get("status") == "incomplete":
+            raise InvalidRequestError("原相册尚未完成构建")
+        connection = self._config.public_runtime_connection_config()
+        embedding = (saved.get("scope_build") or {}).get("embedding")
+        if embedding is not None and embedding != connection.get("embedding"):
+            raise InvalidRequestError("嵌入配置已变化，请使用原相册的嵌入配置")
+        snapshot = self.frozen_questions(saved)
+        qa_id = str(payload.get("qa_id") or "")
+        selected = [(i, r) for i, r in enumerate(snapshot["rows"]) if str(r.get("qa_id")) == qa_id]
+        if len(selected) != 1:
+            raise InvalidRequestError("请选择原任务中的一道题")
+        source_index, row = selected[0]
+        batch_id = str(payload.get("scoring_batch") or "")
+        profile = str(payload.get("scoring_profile") or "")
+        batches = saved.get("scoring_batches") or []
+        if batch_id:
+            selected_batches = [b for b in batches if b["batch_id"] == batch_id]
+        elif profile:
+            selected_batches = [b for b in batches if b["profile_id"] == profile][-1:]
+        else:
+            selected_batches = [
+                b for b in batches if b["batch_id"] in (saved.get("primary_scoring_batch_ids") or [])
+            ]
+            if not selected_batches and batches:
+                selected_batches = [batches[-1]]
+        if (batch_id or profile) and not selected_batches:
+            raise InvalidRequestError("所选评分批次不存在")
+        judges = {json.dumps(b["judge"], sort_keys=True) for b in selected_batches}
+        if len(judges) > 1:
+            raise InvalidRequestError("请选择同一Judge配置的评分批次")
+        primary = selected_batches[0] if selected_batches else None
+        judge = self._frozen_judge_settings(
+            primary["judge"]
+            if primary
+            else {
+                "provider_id": saved.get("judge_provider_id"),
+                "url": saved.get("judge_url"),
+                "model": saved.get("judge_model"),
+            }
+        )
+        context = {
+            "source_run_id": run_id,
+            "qa_id": qa_id,
+            "source_item_index": source_index,
+            "source_qa_definition_sha256": snapshot["definition_sha256"],
+            "source_scoring_batch_ids": [b["batch_id"] for b in selected_batches],
+            "source_rule_versions": [b.get("rule_version") for b in selected_batches],
+        }
+        single = {**snapshot, "rows": [row], "definition_sha256": qa_fingerprint([row])}
+        new_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-retest-{uuid.uuid4().hex[:8]}"
+        diagnostics = (primary or {}).get("diagnostics") or {}
+        request = self.interactive_models.resolve(
+            payload,
+            album_id=str(saved["album_id"]),
+            qa_set=str(saved["qa_set"]),
+            run_id=new_id,
+            mode="reuse",
+            scope_id=scope_id,
+            frozen_qa_snapshot=single,
+            retest_context=context,
+            graph_enabled=saved.get("graph_enabled") is not False,
+            judge_url=judge.judge_url,
+            judge_model=judge.judge_model,
+            judge_provider_id=judge.judge_provider_id,
+            judge_api_key=judge.judge_api_key,
+            judge_prompts={
+                **(saved.get("judge_prompts") or {}),
+                **{k: diagnostics[k] for k in ("task_decision", "evidence") if k in diagnostics},
+            },
+            scoring_configs={b["profile_id"]: b["config"] for b in selected_batches},
+            prior_scoring={
+                "gt_metadata_snapshot": copy.deepcopy(
+                    (primary or {}).get("gt_metadata_snapshot") or saved.get("gt_metadata_snapshot")
+                )
+            },
+            judge_use_gt_images=bool(saved.get("judge_use_gt_images")),
+            evidence_judge_enabled=bool(
+                diagnostics.get("evidence_enabled", saved.get("evidence_judge_enabled"))
+            ),
+            evaluation_options=saved.get("evaluation_options") or {},
+            evaluation_prompts=saved.get("evaluation_prompts") or default_evaluation_prompts(),
+        )
+        with self._lock:
+            self._require_inactive()
+            execution = self._new_execution(request)
+            execution.prepare(request)
+            self._active[new_id] = execution
+            thread = threading.Thread(
+                target=self._execute_and_release, args=(new_id, request), name=new_id, daemon=True
+            )
+            self._threads[new_id] = thread
+            thread.start()
+        return {"run_id": new_id, "retest_context": context}
+
+    def list_retests(self, run_id: str, qa_id: str) -> dict[str, Any]:
+        entries = {str(e["run_id"]): e for e in self._index.entries()}
+        entries.update({s["run_id"]: analysis.run_list_entry(s) for s in self.active_states().values()})
+        rows = [
+            e
+            for e in entries.values()
+            if (e.get("retest_context") or {}).get("source_run_id") == run_id
+            and (not qa_id or (e.get("retest_context") or {}).get("qa_id") == qa_id)
+        ]
+        return {"items": sorted(rows, key=lambda e: str(e.get("created_at") or ""), reverse=True)}
+
+    # ---- resume -------------------------------------------------------------
+
+    def resume_run(self, run_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """``POST /api/runs/{id}/resume``（1.0 ``resume_run`` ``:7488``）。
+
+        **与 ``reuse`` 共用同一块地基**：两者都是「绑到一个已经存在的 scope 上、
+        不重新导入」。差别只在题目集——``reuse`` 从头跑全部，``resume`` 跳过已跑完的。
+
+        默认只续跑「没跑过」的题，判据逐条照 1.0 ``:3414-3417``：
+        ``execution_status not in {"scheduled", "running"}`` 的算已完成。
+        这也正是取消掉的题必须标 ``scheduled`` 而不能标 ``failed`` 的原因——
+        标 failed 的话它们会被当成「已跑完」，续跑时永远跳过（2026-10-15 改的）。
+
+        同时按轮次补缺失的 Judge 结果，成功子评分和失败尝试保留。
+        显式 ``retry_qa_ids`` 只允许恢复有结构化服务故障、未交付答案的单轮题，
+        必须填写 ``retry_reason``；原 run 保留完整故障与评分历史。
+        ``product_build_revision`` 可显式选择已配置的产品版本；原版本来源存入
+        ``resume_context``，运行前仍须通过产品配置与版本核验。
+        """
+        self._require_inactive()
+        payload = payload or {}
+        recover_pipeline = payload.get("finish_incomplete_build", False)
+        if not isinstance(recover_pipeline, bool):
+            raise InvalidRequestError("finish_incomplete_build must be a boolean")
+        repair_missing = payload.get("repair_missing_judges", True)
+        if not isinstance(repair_missing, bool):
+            raise InvalidRequestError("repair_missing_judges must be a boolean")
+        target_revision = str(payload.get("product_build_revision") or "").strip()
+        if target_revision and target_revision != self._config.public_runtime_connection_config().get(
+            "product_build_revision"
+        ):
+            raise InvalidRequestError("resume product_build_revision must match the configured product build")
+        try:
+            saved = self._store.load_state(run_id)
+        except KeyError as exc:
+            raise InvalidRequestError(f"run not found: {run_id}") from exc
+        status = str(saved.get("status") or "")
+        if status not in {"interrupted", "failed", "cancelled", "completed_with_errors"}:
+            raise InvalidRequestError(f"run cannot be resumed while status is {status or 'unknown'}")
+        scope_id = str(saved.get("scope_id") or "").strip()
+        if not scope_id:
+            raise InvalidRequestError("the saved run has no memory-space checkpoint")
+        phases = saved.get("phases") or {}
+        interrupted_build = (
+            status == "interrupted"
+            and not saved.get("scope_build")
+            and (
+                saved.get("mode") in {"full", "build"}
+                or (saved.get("resume_context") or {}).get("finish_incomplete_build") is True
+            )
+            and (phases.get("pipeline_processing") or {}).get("status") != "done"
+        )
+        incomplete = (saved.get("scope_build") or {}).get("status") == "incomplete" or interrupted_build
+        if incomplete and not recover_pipeline:
+            raise InvalidRequestError(
+                "selected scope has an incomplete build; confirm the original pipeline has stopped "
+                "and finish the build before resuming QA"
+            )
+        if recover_pipeline:
+            imported = bool((saved.get("resume_context") or {}).get("asset_import_complete")) or all(
+                (phases.get(key) or {}).get("status") == "done" for key in ("identity_seed", "photo_import")
+            )
+            if not incomplete or not saved.get("pipeline_asset_ids") or not imported:
+                raise InvalidRequestError("pipeline recovery requires a complete asset import checkpoint")
+        album_id = str(saved.get("album_id") or "")
+        qa_set = str(saved.get("qa_set") or "")
+        if not album_id or not qa_set:
+            raise InvalidRequestError("the saved run is missing album_id or qa_set")
+        try:
+            self._albums.manifest(album_id)
+        except KeyError as exc:
+            raise InvalidRequestError(f"manifest not found for album: {album_id}") from exc
+
+        snapshot = self.frozen_questions(saved)
+        retry_ids = payload.get("retry_qa_ids", [])
+        if (
+            not isinstance(retry_ids, list)
+            or any(not isinstance(q, str) or not q.strip() for q in retry_ids)
+            or len(set(retry_ids)) != len(retry_ids)
+        ):
+            raise InvalidRequestError("retry_qa_ids must be a list of unique QA IDs")
+        reason = payload.get("retry_reason", "")
+        if retry_ids and (not isinstance(reason, str) or not reason.strip()):
+            raise InvalidRequestError("retry_reason is required for explicit service recovery")
+        frozen_ids = {str(row.get("qa_id")) for row in snapshot["rows"]}
+        items_by_id = {str(item.get("qa_id")): item for item in saved.get("items") or []}
+        retry_evidence = {}
+        for qa_id in retry_ids:
+            evidence = service_retry_evidence(items_by_id.get(qa_id) or {})
+            if qa_id not in frozen_ids or evidence is None:
+                raise InvalidRequestError(f"QA has no retryable undelivered service failure: {qa_id}")
+            retry_evidence[qa_id] = evidence
+        retry_set = set(retry_ids)
+        prior_items = tuple(
+            item
+            for item in (saved.get("items") or [])
+            if isinstance(item, dict)
+            and str(item.get("execution_status") or "") not in {"scheduled", "running"}
+            and str(item.get("qa_id")) not in retry_set
+        )
+        prior_ids = [str(item.get("qa_id")) for item in prior_items]
+        if len(prior_ids) != len(set(prior_ids)) or not set(prior_ids) <= frozen_ids:
+            raise InvalidRequestError("saved results do not uniquely match the frozen QA snapshot")
+        model_profile = str(saved.get("model_profile") or "")
+        new_run_id = (
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
+            f"{safe_slug(model_profile)}-resume-{uuid.uuid4().hex[:6]}"
+        )
+        frozen_batches = saved.get("scoring_batches") or []
+        primary = next(
+            (b for b in frozen_batches if b["batch_id"] in (saved.get("primary_scoring_batch_ids") or [])),
+            None,
+        )
+        frozen_judge = (
+            primary["judge"]
+            if primary
+            else {
+                "provider_id": saved.get("judge_provider_id"),
+                "url": saved.get("judge_url"),
+                "model": saved.get("judge_model"),
+            }
+        )
+        resumed_judge = self._frozen_judge_settings(frozen_judge)
+        prior_scoring = {
+            k: copy.deepcopy(saved[k])
+            for k in (
+                "gt_metadata_snapshot",
+                "scoring_batches",
+                "scoring_results",
+                "scoring_summaries",
+                "diagnostic_results",
+                "primary_scoring_batch_ids",
+            )
+            if k in saved
+        }
+        replaced_scoring_keys = []
+        if retry_set:
+            for key in ("scoring_results", "diagnostic_results"):
+                records = prior_scoring.get(key) or {}
+                if key == "scoring_results":
+                    replaced_scoring_keys = [k for k, r in records.items() if r.get("qa_id") in retry_set]
+                prior_scoring[key] = {k: r for k, r in records.items() if r.get("qa_id") not in retry_set}
+            prior_scoring["scoring_summaries"] = summarize_batches(
+                {**saved, **prior_scoring, "items": list(prior_items)}
+            )
+        request = RunRequest(
+            album_id=album_id,
+            qa_set=qa_set,
+            model_profile=model_profile,
+            sentrix_url=str(saved.get("sentrix_url") or self._config.sentrix_url),
+            manager_url=str(saved.get("manager_url") or ""),
+            model_base_url=str(saved.get("model_base_url") or self._config.model_base_url),
+            endpoint_model=str(saved.get("endpoint_model") or ""),
+            run_id=new_run_id,
+            mode="reuse",
+            recover_pipeline=recover_pipeline,
+            recovery_asset_ids=tuple(saved.get("pipeline_asset_ids") or ()) if recover_pipeline else (),
+            scope_id=scope_id,
+            runtime_framework=str(saved.get("runtime_framework") or ""),
+            judge_url=resumed_judge.judge_url,
+            judge_model=resumed_judge.judge_model,
+            judge_provider_id=resumed_judge.judge_provider_id,
+            judge_api_key=resumed_judge.judge_api_key,
+            judge_prompts=copy.deepcopy(saved.get("judge_prompts") or {}),
+            prior_items=prior_items,
+            scoring_configs=saved.get("scoring_configs") or {},
+            prior_scoring=prior_scoring,
+            repair_missing_judges=repair_missing and not bool(saved.get("scoring_profiles")),
+            evaluation_options=scoring_options(saved.get("evaluation_options")),
+            graph_enabled=saved.get("graph_enabled") is not False,
+            graph_baseline_run_id=str(saved.get("graph_baseline_run_id") or ""),
+            reasoning=saved.get("reasoning") is True,
+            turn_timeout=DEFAULT_TURN_TIMEOUT,
+            evaluation_prompts=saved.get("evaluation_prompts") or default_evaluation_prompts(),
+            judge_use_gt_images=self._gt_image_option(payload, bool(saved.get("judge_use_gt_images"))),
+            evidence_judge_enabled=bool(saved.get("evidence_judge_enabled")),
+            resume_context={
+                "resumed_from": run_id,
+                "finish_incomplete_build": recover_pipeline,
+                "asset_import_complete": recover_pipeline,
+                "source_status": status,
+                "source_build_revision": saved.get("build_revision"),
+                "source_runtime_snapshot": saved.get("runtime_snapshot"),
+                "source_input_integrity": saved.get("input_integrity"),
+                "qa_definition_sha256": snapshot["definition_sha256"],
+                "inherited_qa_ids": [item.get("qa_id") for item in prior_items],
+                "retry_qa_ids": retry_ids,
+                "retry_reason": reason.strip() if retry_ids else None,
+                "retry_evidence": retry_evidence,
+                "source_retried_items_sha256": {
+                    q: hashlib.sha256(
+                        json.dumps(items_by_id[q], sort_keys=True, ensure_ascii=False).encode()
+                    ).hexdigest()
+                    for q in retry_ids
+                },
+                "replaced_scoring_result_keys": replaced_scoring_keys,
+                "repair_missing_judges": repair_missing,
+                "selected_product_build_revision": target_revision or None,
+                "source_judge_use_gt_images": saved.get("judge_use_gt_images"),
+                "selected_judge_use_gt_images": self._gt_image_option(
+                    payload, bool(saved.get("judge_use_gt_images"))
+                ),
+            },
+            frozen_qa_snapshot=snapshot,
+        )
+        prior_snapshot = saved.get("runtime_snapshot")
+        if (
+            isinstance(prior_snapshot, dict)
+            and prior_snapshot.get("model_base_url")
+            and prior_snapshot.get("sentrix_url")
+        ):
+            budgets = prior_snapshot.get("execution_budgets") or {}
+            # A resumed run is a new execution/build, with the original dependency/budget facts.
+            inherited = dict(
+                prior_snapshot,
+                product_build_revision=target_revision or prior_snapshot.get("product_build_revision"),
+                required_build_revision=target_revision
+                or prior_snapshot.get("product_build_revision")
+                or prior_snapshot.get("required_build_revision")
+                or (self._build_revision if self._build_revision != "development" else None),
+            )
+            request = replace(
+                request,
+                sentrix_url=str(inherited["sentrix_url"]),
+                model_base_url=str(inherited["model_base_url"]),
+                manager_url=str(inherited.get("vllm_manager_url") or ""),
+                import_timeout=int(budgets.get("import_timeout") or 7200),
+                pipeline_timeout=int(budgets.get("pipeline_timeout") or 86400),
+                turn_timeout=int(budgets.get("turn_timeout") or 900),
+                qa_concurrency=int(budgets.get("qa_concurrency") or 0),
+                judge_backpressure=budgets.get("judge_backpressure", True) is not False,
+                runtime_snapshot=RunRuntimeSnapshot(json.dumps(inherited), self._build_revision),
+                snapshot_source="resumed_run",
+            )
+        else:
+            request = freeze_runtime_request(
+                replace(request, snapshot_source="legacy_resume_current_config"),
+                self._config.public_runtime_connection_config(),
+                self._build_revision,
+            )
+        with self._lock:
+            self._require_inactive()
+            execution = self._new_execution(request)
+            execution.prepare(request)
+            self._active[new_run_id] = execution
+
+        def _run_resumed() -> None:
+            try:
+                self._execute_and_release(new_run_id, request)
+            finally:
+                with self._lock:
+                    self._threads.pop(new_run_id, None)
+
+        thread = threading.Thread(target=_run_resumed, name=f"resume-{new_run_id}", daemon=True)
+        with self._lock:
+            self._threads[new_run_id] = thread
+        thread.start()
+        return {
+            "run_id": new_run_id,
+            "resumed_from": run_id,
+            "mode": "reuse",
+            "scope_id": scope_id,
+            # 带回来的题数——调用方据此判断续跑到底省了多少。
+            "resumed_items": len(prior_items),
+            "retried_qa_ids": retry_ids,
+            "repair_missing_judges": repair_missing,
+        }
+
+    # ---- 取消 / 删除 --------------------------------------------------------
+
+    def get_retest_progress(self, run_id: str) -> dict[str, Any]:
+        """Read the current retest projection without changing run selection or scores."""
+        state: dict[str, Any] | None
+        with self._lock:
+            execution = self._active.get(run_id)
+            if execution is not None and execution.state is not None:
+                with execution.state.lock:
+                    state = {
+                        key: copy.deepcopy(execution.state.data.get(key))
+                        for key in (
+                            "run_id",
+                            "status",
+                            "current_phase",
+                            "phases",
+                            "interactive_item",
+                            "retest_context",
+                            "model_profile",
+                            "model_name",
+                            "endpoint_model",
+                        )
+                    }
+            else:
+                state = self._state_if_exists(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        if not state.get("retest_context"):
+            raise InvalidRequestError("progress view requires a single-question retest")
+        return {
+            "run_id": run_id,
+            "status": state.get("status"),
+            "current_phase": state.get("current_phase"),
+            "phases": state.get("phases") or {},
+            "item": state.get("interactive_item"),
+            "model": {key: state.get(key) for key in ("model_profile", "model_name", "endpoint_model")},
+        }
+
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        """``POST /api/runs/{id}/cancel``（1.0 ``cancel_run`` ``:6879``）。"""
+        with self._lock:
+            execution = self._active.get(run_id)
+            if execution is not None and execution.state is not None:
+                status = execution.state.get("status")
+                if status not in DIRTY_STATUSES:
+                    return {"cancelled": False, "run_id": run_id, "reason": f"run status is {status}"}
+        if execution is not None:
+            if isinstance(execution, RunExecution):
+                execution.request_cancel(source="run_api")
+            else:
+                execution.cancel(source="run_api")
+            return {"cancelled": True, "run_id": run_id}
+        if self._state_if_exists(run_id) is None:
+            raise KeyError(run_id)
+        return {"cancelled": False, "run_id": run_id, "reason": "run not active (loaded from disk)"}
+
+    def cancel_active_suite(self) -> dict[str, Any]:
+        """``POST /api/cancel-active``（1.0 ``cancel_active_suite`` ``:6975``）。
+
+        取消**所有**还在跑的 run，不只最近一个 suite——1.0 的注释说明了为什么：
+        崩溃重启后会留下孤儿 run，而运维点「全部取消」时想要的是全部。
+        """
+        cancelled: list[str] = []
+        skipped: list[str] = []
+        errors: dict[str, str] = {}
+        with self._lock:
+            targets = list(self._active.items())
+            auxiliary = list(self._auxiliary.items())
+            for event in self._reservations.values():
+                event.set()
+            for _, (_, event) in auxiliary:
+                event.set()
+            for run_id, execution in targets:
+                state = execution.state
+                if state is None or state.get("status") in DIRTY_STATUSES:
+                    try:
+                        if isinstance(execution, RunExecution):
+                            execution.request_cancel(source="cancel_all")
+                        else:
+                            execution.cancel(source="cancel_all")
+                        cancelled.append(run_id)
+                    except Exception as error:
+                        errors[run_id] = str(error)
+                else:
+                    skipped.append(run_id)
+        result: dict[str, Any] = {"cancelled": cancelled, "skipped": skipped, "total": len(targets)}
+        if auxiliary or errors:
+            result.update(auxiliary=[key for key, _ in auxiliary], errors=errors, cleanup_status="pending")
+        return result
+
+    def work_status(self) -> dict[str, Any]:
+        with self._lock:
+            runs = []
+            for run_id, execution in self._active.items():
+                thread = self._threads.get(run_id)
+                runs.append(
+                    {
+                        "id": run_id,
+                        "kind": "run",
+                        "worker_alive": bool(thread and thread.is_alive()),
+                        "status": execution.state.get("status") if execution.state else "pending",
+                        "cleanup": dict(execution.state.get("cleanup") or {}) if execution.state else {},
+                    }
+                )
+            auxiliary = [
+                {
+                    "id": key,
+                    "kind": "auxiliary",
+                    "worker_alive": thread.is_alive(),
+                    "cancel_requested": event.is_set(),
+                }
+                for key, (thread, event) in self._auxiliary.items()
+            ]
+            reserved = [
+                {
+                    "id": key,
+                    "kind": "chat" if key.startswith("chat-") else "starting",
+                    "worker_alive": True,
+                    "cancel_requested": event.is_set(),
+                }
+                for key, event in self._reservations.items()
+            ]
+            cleanup = [
+                {"id": key, "kind": "auxiliary_cleanup", "worker_alive": False, "operations": operations}
+                for key, operations in self._auxiliary_cleanup.items()
+            ]
+            probes = [
+                {
+                    "id": key,
+                    "kind": "auxiliary_probes",
+                    "worker_alive": False,
+                    "pending_work": sampler.pending_work(),
+                }
+                for key, samplers in self._auxiliary_samplers.items()
+                for sampler in samplers
+                if sampler.pending_work()
+            ]
+            return {
+                "work": [*runs, *auxiliary, *reserved, *cleanup, *probes],
+                "cleanup_status": "pending"
+                if runs or auxiliary or reserved or cleanup or probes
+                else "stopped",
+            }
+
+    def refresh_cleanup(self) -> dict[str, Any]:
+        with self._lock:
+            retained = [
+                (key, execution)
+                for key, execution in self._active.items()
+                if not (self._threads.get(key) and self._threads[key].is_alive())
+            ]
+        errors = {}
+        for key, execution in retained:
+            if not isinstance(execution, RunExecution):
+                continue
+            try:
+                if execution.refresh_cleanup():
+                    if execution.state is not None:
+                        self._index.upsert(analysis.run_list_entry(execution.state.snapshot()))
+                    with self._lock:
+                        self._active.pop(key, None)
+                        self._threads.pop(key, None)
+                    if self._on_finished is not None:
+                        self._on_finished(key)
+            except Exception as error:
+                errors[key] = str(error)
+        with self._lock:
+            auxiliary_cleanup = list(self._auxiliary_cleanup.items())
+        for key, operations in auxiliary_cleanup:
+            try:
+                for operation in operations:
+                    if (
+                        isinstance(self._sentrix, CancellableOperations)
+                        and operation.get("cleanup_status") != "stopped"
+                    ):
+                        operation.update(
+                            self._sentrix.cancel_operation(
+                                kind=str(operation["kind"]),
+                                operation_id=str(operation["operation_id"]),
+                                timeout=1,
+                            )
+                        )
+                if all(operation.get("cleanup_status") == "stopped" for operation in operations):
+                    with self._lock:
+                        self._auxiliary_cleanup.pop(key, None)
+            except Exception as error:
+                errors[key] = str(error)
+        with self._lock:
+            for key, samplers in list(self._auxiliary_samplers.items()):
+                if not any(sampler.pending_work() for sampler in samplers):
+                    self._auxiliary_samplers.pop(key, None)
+        return {**self.work_status(), "errors": errors}
+
+    def delete_run(self, run_id: str) -> dict[str, Any]:
+        """``DELETE /api/runs/{id}``（1.0 ``delete_run`` ``:7010``）。"""
+        with self._lock:
+            state = self._state_if_exists(run_id)
+            if state is None and run_id not in self._active:
+                raise KeyError(run_id)
+            if isinstance(state, dict) and (state.get("rejudge") or {}).get("status") == "running":
+                raise InvalidRequestError("cannot delete a run while rejudge is running")
+            execution = self._active.get(run_id)
+            if execution is not None:
+                raise InvalidRequestError("cannot delete a run until its workers have stopped")
+            entry = self._index.entry(run_id) or {}
+            # A failed write leaves an active checkpoint on disk. The current process
+            # records the terminal failure in its index after execution has stopped.
+            failed_write = (
+                entry.get("status") == "failed"
+                and (entry.get("persistence") or {}).get("status") == "failed"
+                and not self._stop_pending(entry)
+            )
+            if state is not None and state.get("status") in DIRTY_STATUSES and not failed_write:
+                raise InvalidRequestError("cannot delete an active run")
+            self._writer.delete_run(run_id)
+            self._index.remove(run_id)
+        return {"deleted": True, "run_id": run_id}
+
+    # ---- 评审 ---------------------------------------------------------------
+
+    def save_reviews(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            return self._save_reviews(run_id, payload)
+
+    def _save_reviews(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """``POST /api/runs/{id}/reviews``（1.0 ``save_reviews`` ``:4988``）。
+
+        **筛选规则照搬**：未知 ``qa_id``、非对象的条目、白名单外的 ``verdict`` 一律
+        丢弃而不是报错——界面会整份提交，其中一条写坏不该让整批评审丢失。
+        """
+        state = self._state_if_exists(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        if state.get("status") in {"running", "pending"}:
+            raise InvalidRequestError("cannot change reviews while benchmark is running")
+        if "reviews" not in payload and "scoring_reviews" not in payload:
+            raise InvalidRequestError("reviews or scoring_reviews is required")
+        previous = self._store.read_reviews(run_id)
+        provided = payload.get("reviews", previous.get("reviews") or {})
+        if not isinstance(provided, dict):
+            raise InvalidRequestError("reviews must be an object keyed by qa_id")
+        valid_ids = {str(item.get("qa_id")) for item in state.get("items") or [] if item.get("qa_id")}
+        reviews: dict[str, Any] = {}
+        for qa_id, review in provided.items():
+            if str(qa_id) not in valid_ids or not isinstance(review, dict):
+                continue
+            verdict = str(review.get("verdict") or "")
+            note = str(review.get("note") or "").strip()
+            if verdict not in {"correct", "partial", "wrong"}:
+                continue
+            reviews[str(qa_id)] = {"verdict": verdict, "note": note, "updated_at": now_iso()}
+        from photobench.domain.evaluation.reviews import scoring_review
+
+        audits = list(previous.get("scoring_reviews") or [])
+        incoming = payload.get("scoring_reviews", [])
+        if not isinstance(incoming, list) or any(not isinstance(v, dict) for v in incoming):
+            raise InvalidRequestError("scoring_reviews must be a list of scoring audit records")
+        try:
+            for raw in incoming:
+                audits.append(scoring_review(state, raw, now_iso()))
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        stored = {**previous, "updated_at": now_iso(), "reviews": reviews, "scoring_reviews": audits}
+        self._writer.save_reviews(run_id, stored)
+        return {"saved": len(reviews), **stored}
+
+    def get_run_judge_prompt(self, run_id: str) -> dict[str, Any]:
+        """``GET /api/runs/{id}/judge-prompt``（1.0 ``:6543``）：从落盘的判分输入里
+        反查当时真正发出去的 system 提示词。"""
+        state = self._state_if_exists(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        for item in state.get("items") or []:
+            messages = ((item.get("judge") or {}).get("input") or {}).get("messages")
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "system":
+                    return {"system_prompt": str(message.get("content") or "")}
+        return {"system_prompt": None}
+
+    # ---- 重判 ---------------------------------------------------------------
+
+    @staticmethod
+    def _rejudge_targets(items: Sequence[dict[str, Any]]) -> list[tuple[int, int | None]]:
+        """1.0 ``_rejudge_targets``（``:4906``）：每个可判分的 (item, turn)。
+
+        **一处与 1.0 的形状差异**：1.0 数的是 ``item["conversation"]``（题面声明的轮次），
+        2.0 数的是 ``item["runtime_turns"]``（实际跑过的轮次）。2.0 的 item 不保存
+        ``conversation``——它是 QA 行的输入，不是 run 的产物；而重判要判的是**当时
+        实际发生的那些回合**。两者混用会让 item 级分数取到一个没有 judge 的轮次
+        （见 ``_run_rejudge`` 里 ``turns[-1]`` 那一行）。
+        """
+        targets: list[tuple[int, int | None]] = []
+        for item_index, item in enumerate(items):
+            if item.get("question") is None or item.get("reference_answer") is None or "answer" not in item:
+                continue
+            turns = item.get("runtime_turns") or []
+            targets.extend(
+                (item_index, turn_index) for turn_index in (range(len(turns)) if turns else [None])
+            )
+        return targets
+
+    @staticmethod
+    def _recovery_selection(
+        state: Mapping[str, Any], scope: str
+    ) -> dict[tuple[int, int | None], tuple[str, ...]]:
+        definitions = {str(row["qa_id"]): row for row in (state.get("qa_snapshot") or {}).get("rows") or []}
+        selected: dict[tuple[int, int | None], tuple[str, ...]] = {}
+        for index, turn_index in RunSuites._rejudge_targets(state.get("items") or []):
+            item = state["items"][index]
+            if item.get("execution_status") in {"failed", "scheduled", "running"}:
+                continue
+            record = item["runtime_turns"][turn_index] if turn_index is not None else item
+            row = definitions.get(str(item.get("qa_id")), item)
+            turns = row.get("conversation") or []
+            gt = turns[turn_index] if turn_index is not None and turn_index < len(turns) else row
+            fields = recovery_fields(
+                {
+                    **record,
+                    "expected_action": gt.get(
+                        "expected_action", record.get("expected_action", row.get("expected_action"))
+                    ),
+                },
+                scope,
+                evidence=bool(state.get("evidence_judge_enabled")) and scope != "all",
+            )
+            if fields:
+                selected[index, turn_index] = fields
+        return selected
+
+    def recovery_plan(self, run_id: str) -> dict[str, Any]:
+        state = self._state_if_exists(run_id)
+        if state is None:
+            raise KeyError(run_id)
+        rows = (state.get("qa_snapshot") or {}).get("rows") or []
+        done = {
+            str(item.get("qa_id"))
+            for item in state.get("items") or []
+            if item.get("execution_status") not in {"scheduled", "running"}
+        }
+        remaining = sum(str(row.get("qa_id")) not in done for row in rows)
+        counts = {}
+        for scope in sorted(RECOVERY_SCOPES):
+            fields = self._recovery_selection(state, scope)
+            counts[scope] = {
+                "qa_count": len({key[0] for key in fields}),
+                "turn_count": len(fields),
+                "subscore_count": sum(map(len, fields.values())),
+            }
+        source_runtime = state.get("runtime_snapshot") or {}
+        old_revision = source_runtime.get("product_build_revision") or source_runtime.get(
+            "required_build_revision"
+        )
+        current_revision = self._config.public_runtime_connection_config().get("product_build_revision")
+        retryable_failures = [
+            {"qa_id": item["qa_id"], **evidence}
+            for item in state.get("items") or []
+            if (evidence := service_retry_evidence(item)) is not None
+        ]
+        return {
+            "run_id": run_id,
+            "retryable_service_failures": retryable_failures,
+            "inherited_qa_count": len(done),
+            "remaining_qa_count": remaining,
+            "can_resume": bool(
+                (remaining or retryable_failures)
+                and state.get("scope_id")
+                and state.get("status") in {"failed", "cancelled", "interrupted", "completed_with_errors"}
+            ),
+            "scope_id": state.get("scope_id"),
+            "scoring": counts,
+            "frozen_scoring_profiles": state.get("scoring_profiles") or [],
+            "scoring_profiles": {
+                profile: {
+                    "batch_id": batch.get("batch_id") if batch else None,
+                    "pending": len(scoring_targets(state, batch, "missing")) if batch else None,
+                    "status": "available" if batch else "not_collected",
+                }
+                for profile in LABELS
+                for batch in [
+                    next(
+                        (
+                            b
+                            for b in reversed(state.get("scoring_batches") or [])
+                            if b["profile_id"] == profile
+                        ),
+                        None,
+                    )
+                ]
+            },
+            "source_product_build_revision": old_revision,
+            "current_product_build_revision": current_revision,
+            "product_version_changed": old_revision != current_revision,
+            "judge_use_gt_images": bool(state.get("judge_use_gt_images")),
+        }
+
+    def _profile_request(
+        self, state: dict[str, Any], payload: Mapping[str, Any]
+    ) -> tuple[list[dict[str, Any]], JudgeSettings, str, list[str] | None]:
+        snapshot = state.get("qa_snapshot") or {}
+        if not snapshot or snapshot.get("definition_sha256") != qa_fingerprint(snapshot.get("rows")):
+            raise InvalidRequestError("原测评冻结QA快照校验失败，不能评分")
+        scope = str(payload.get("scope") or "missing")
+        if scope not in RECOVERY_SCOPES:
+            raise InvalidRequestError("Unknown scoring scope")
+        custom = self._config.load_custom_judge_prompts()
+        resume_ids = payload.get("resume_batch_ids")
+        if resume_ids is not None:
+            if (
+                not isinstance(resume_ids, list)
+                or not resume_ids
+                or any(not isinstance(v, str) for v in resume_ids)
+                or len(set(resume_ids)) != len(resume_ids)
+            ):
+                raise InvalidRequestError("请选择要续评的批次")
+            batches = [b for b in state.get("scoring_batches") or [] if b["batch_id"] in resume_ids]
+            if len(batches) != len(resume_ids) or len({b["profile_id"] for b in batches}) != len(batches):
+                raise InvalidRequestError("每套标准只能续评一个已有批次")
+            if (
+                len(
+                    {(b["judge"]["url"], b["judge"]["model"], b["judge"].get("provider_id")) for b in batches}
+                )
+                != 1
+            ):
+                raise InvalidRequestError("Judge配置不同的批次请分别续评")
+            if any(b["qa_definition_sha256"] != snapshot["definition_sha256"] for b in batches):
+                raise InvalidRequestError("评分批次与原题库快照不一致")
+            frozen = batches[0]["judge"]
+            judge = self._frozen_judge_settings(frozen)
+            configs = {b["profile_id"]: b["config"] for b in batches}
+        else:
+            batches = []
+            judge = self._judge_settings(payload)
+        try:
+            if resume_ids is None:
+                configs = profile_configs(
+                    payload.get("scoring_profiles"), payload.get("scoring_configs"), custom
+                )
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        if any(
+            c["use_gt_images"] or (c["use_gt_metadata"] and not uses_readable_metadata(c))
+            for c in configs.values()
+        ) and str(state.get("sentrix_url") or "").rstrip("/") != self._config.sentrix_url.rstrip("/"):
+            raise InvalidRequestError("GT辅助评分需先将产品连接指向原测评服务")
+        if not judge.judge_url or not judge.judge_model:
+            raise InvalidRequestError("请选择有效的Judge配置")
+        diagnostics = {
+            "task_decision": payload.get("task_system_prompt") or judge.task_judge_prompt,
+            "evidence": payload.get("evidence_system_prompt") or judge.evidence_judge_prompt,
+            "evidence_enabled": bool(state.get("evidence_judge_enabled")),
+        }
+        metadata_snapshot = None
+        if resume_ids is None and any(uses_readable_metadata(c) for c in configs.values()):
+            try:
+                metadata_snapshot = self._albums.gt_metadata_snapshot(str(state["album_id"]))
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+        batches = batches or prepare_batches(
+            state,
+            configs,
+            {
+                "url": judge.judge_url,
+                "model": judge.judge_model,
+                "provider_id": judge.judge_provider_id,
+                "diagnostics": diagnostics,
+            },
+            scope,
+            str(payload.get("batch_nonce") or ""),
+            metadata_snapshot=metadata_snapshot,
+        )
+        qa_ids = payload.get("qa_ids")
+        if qa_ids is not None:
+            valid = {str(row["qa_id"]) for row in snapshot["rows"]}
+            if not isinstance(qa_ids, list) or not qa_ids or any(q not in valid for q in qa_ids):
+                raise InvalidRequestError("qa_ids必须包含冻结题库中的题目ID")
+        return batches, judge, scope, qa_ids
+
+    def preview_profile_scoring(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        saved = self._state_if_exists(run_id)
+        if saved is None:
+            raise KeyError(run_id)
+        state = copy.deepcopy(saved)
+        batches, _, scope, qa_ids = self._profile_request(state, payload)
+        return {
+            **scoring_preview(state, batches, scope, qa_ids),
+            "batch_ids": [b["batch_id"] for b in batches],
+        }
+
+    def start_profile_scoring(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._require_inactive()
+            state = self._state_if_exists(run_id)
+            if state is None:
+                raise KeyError(run_id)
+            if state.get("status") in DIRTY_STATUSES:
+                raise InvalidRequestError("测评仍在运行，暂不能补评")
+            batches, settings, scope, qa_ids = self._profile_request(state, payload)
+            selected = scoring_preview(state, batches, scope, qa_ids)
+            if not selected["subscore_count"]:
+                state["scoring_summaries"] = summarize_batches(state)
+                self._writer.write_snapshot(run_id, state)
+                self._index.upsert(analysis.run_list_entry(state))
+                return {"run_id": run_id, "status": "completed", "total": 0, **selected}
+            rejudge_id = "scoring-" + uuid.uuid4().hex
+            if (state.get("rejudge") or {}).get("rejudge_id"):
+                state.setdefault("rejudge_history", []).append(copy.deepcopy(state["rejudge"]))
+            state["rejudge"] = {
+                "rejudge_id": rejudge_id,
+                "task_type": "scoring",
+                "source_run_id": run_id,
+                "status": "running",
+                "started_at": now_iso(),
+                "scope": scope,
+                "completed": 0,
+                "failed": 0,
+                "results": [],
+                "error_details": [],
+                "total": selected["subscore_count"],
+                "batch_ids": [b["batch_id"] for b in batches],
+                "unit": "scoring_item",
+                **selected,
+            }
+            self._writer.write_snapshot(run_id, state)
+            self._index.upsert(analysis.run_list_entry(state))
+            cancel = threading.Event()
+            self._reservations[rejudge_id] = cancel
+        lock = threading.RLock()
+
+        def checkpoint() -> None:
+            with lock:
+                self._writer.write_snapshot(run_id, state)
+
+        def worker() -> None:
+            try:
+                runner = JudgeRunner(
+                    http=self._http,
+                    cancel=cancel,
+                    judge_url=settings.judge_url,
+                    judge_model=settings.judge_model,
+                    judge_api_key=settings.judge_api_key,
+                    sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
+                    inline_images=self._inline_images,
+                )
+                assets = {}
+                if any(
+                    b["config"]["use_gt_images"]
+                    or (b["config"]["use_gt_metadata"] and not uses_readable_metadata(b["config"]))
+                    or b["diagnostics"].get("evidence_enabled")
+                    for b in batches
+                ):
+                    assets = index_assets_by_name(
+                        self._sentrix.list_assets(scope_id=str(state.get("scope_id") or ""), limit=1000)
+                    )
+                run_scoring(
+                    state, batches, scope, runner, assets, checkpoint, cancel, lock=lock, qa_ids=qa_ids
+                )
+            except Exception as exc:
+                with lock:
+                    state["rejudge"].update(status="failed", error=str(exc), finished_at=now_iso())
+                checkpoint()
+            finally:
+                with lock:
+                    state["summary"] = analysis.effective_summary(state)
+                    checkpoint()
+                    self._index.upsert(analysis.run_list_entry(state))
+                with self._lock:
+                    self._auxiliary.pop(rejudge_id, None)
+                if self._on_finished is not None:
+                    self._on_finished(run_id)
+
+        thread = threading.Thread(target=worker, name=rejudge_id, daemon=True)
+        with self._lock:
+            self._auxiliary[rejudge_id] = (thread, cancel)
+            try:
+                thread.start()
+            except Exception as exc:
+                self._auxiliary.pop(rejudge_id, None)
+                state["rejudge"].update(status="failed", error=str(exc), finished_at=now_iso())
+                checkpoint()
+                raise
+            finally:
+                self._reservations.pop(rejudge_id, None)
+        return {
+            "run_id": run_id,
+            "rejudge_id": rejudge_id,
+            "status": "running",
+            "total": selected["subscore_count"],
+            **selected,
+        }
+
+    @staticmethod
+    def _finish_pending_rejudge(state: dict[str, Any], rejudge_id: str, status: str, reason: str) -> None:
+        for item in state.get("items") or []:
+            for record in [item, *(item.get("runtime_turns") or [])]:
+                for field in ("judge", "task_judge", "evidence_judge"):
+                    result = record.get(field) or {}
+                    if result.get("rejudge_id") == rejudge_id and result.get("status") == "pending":
+                        result.update(status=status, reason=reason)
+                        item["judge_status"] = status
+
+    def start_rejudge(self, run_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """``POST /api/runs/{id}/rejudge``（1.0 ``start_rejudge`` ``:7061``）。
+
+        **它重判的是已落盘的答案，不重跑 Agent**——所以能在一轮很贵的评测跑完之后，
+        换一个 judge 模型/提示词重新打分。这也意味着它必须**归档旧分数**
+        （``judge_history``），否则「改一个字看看分数怎么变」就变成不可逆的。
+        """
+        if "scoring_profiles" in payload or "resume_batch_ids" in payload:
+            return self.start_profile_scoring(run_id, payload)
+        scope = str(payload.get("scope") or "all")
+        if scope not in RECOVERY_SCOPES:
+            raise InvalidRequestError("scope must be missing, failed, unscored, needs_review or all")
+        use_gt_images = self._gt_image_option(payload)
+        system_prompt = str(payload.get("system_prompt") or "").strip()
+        if not system_prompt:
+            raise InvalidRequestError("system_prompt is required")
+        if len(system_prompt) > 50000:
+            raise InvalidRequestError("system_prompt is too long")
+        provider_id = str(payload.get("judge_provider_id") or self._config.judge_provider_id)
+        _, resolved_url, resolved_model, resolved_key = self._config.resolve_judge_provider(provider_id)
+        judge_url = str(payload.get("judge_url") or resolved_url).rstrip("/")
+        judge_model = str(payload.get("judge_model") or resolved_model)
+        judge_api_key = str(payload.get("judge_api_key") or resolved_key)
+        saved_custom = self._config.load_custom_judge_prompts()
+        task_prompt = str(payload.get("task_system_prompt") or "").strip() or saved_custom.get(
+            "task_decision"
+        )
+        evidence_prompt = str(payload.get("evidence_system_prompt") or "").strip() or saved_custom.get(
+            "evidence"
+        )
+
+        with self._lock:
+            self._require_inactive()
+            state = self._state_if_exists(run_id)
+            if state is None:
+                raise KeyError(run_id)
+            if state.get("status") in {"running", "pending"}:
+                raise InvalidRequestError("cannot rejudge while the benchmark run is active")
+            if (state.get("rejudge") or {}).get("status") == "running":
+                raise InvalidRequestError("rejudge is already running")
+            evaluation_options = scoring_options(
+                payload.get("evaluation_options", state.get("evaluation_options"))
+            )
+            selection = self._recovery_selection(state, scope)
+            targets = list(selection)
+            if not targets:
+                raise InvalidRequestError("run has no completed agent answers to rejudge")
+            snapshot = state.get("qa_snapshot") or {}
+            if use_gt_images and str(state.get("sentrix_url") or self._config.sentrix_url).rstrip(
+                "/"
+            ) != self._config.sentrix_url.rstrip("/"):
+                raise InvalidRequestError("GT图片评分需先将产品连接配置指向原测评服务")
+            if use_gt_images and not snapshot:
+                raise InvalidRequestError("GT图片评分需要原测评冻结QA快照")
+            definitions = {str(row["qa_id"]): row for row in snapshot.get("rows") or []}
+            if snapshot and snapshot.get("definition_sha256") != qa_fingerprint(snapshot.get("rows")):
+                raise InvalidRequestError("原测评QA快照校验失败，不能重评分")
+            for index, turn_index in targets:
+                item = state["items"][index]
+                if snapshot:
+                    definition = definitions.get(str(item.get("qa_id")))
+                    if definition is None or (
+                        turn_index is not None
+                        and turn_index >= (len(definition.get("conversation") or []) or 1)
+                    ):
+                        raise InvalidRequestError("原测评QA快照缺少对应题目或对话轮定义")
+                elif turn_index is not None and len(item["runtime_turns"]) > 1:
+                    if not str(item["runtime_turns"][turn_index].get("reference_answer") or "").strip():
+                        raise InvalidRequestError("原测评未记录逐轮参考答案，不能重评分")
+            rejudge_id = f"rejudge-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            previous = state.get("rejudge")
+            if previous:
+                state.setdefault("rejudge_history", []).append(previous)
+            state["rejudge"] = {
+                "rejudge_id": rejudge_id,
+                "evaluation_options": evaluation_options,
+                "evaluation_prompts": default_evaluation_prompts(),
+                "status": "running",
+                "started_at": now_iso(),
+                "finished_at": None,
+                "total": len(targets),
+                "completed": 0,
+                "failed": 0,
+                "unit": "conversation_turn",
+                "scope": scope,
+                "judge_use_gt_images": use_gt_images,
+                "qa_count": len({index for index, _ in targets}),
+                "judge_model": judge_model,
+                "judge_url": judge_url,
+                "current_item_index": None,
+                "current_turn_index": None,
+            }
+            for (index, turn_index), fields in selection.items():
+                item = state["items"][index]
+                item["judge_status"] = "pending"
+                record = item["runtime_turns"][turn_index] if turn_index is not None else item
+                for field in fields:
+                    prior = record.get(field)
+                    if prior:
+                        record.setdefault(f"{field}_history", []).append(
+                            {"archived_at": now_iso(), field: copy.deepcopy(prior)}
+                        )
+                    record[field] = {"score": None, "status": "pending", "rejudge_id": rejudge_id}
+                if scope == "all":
+                    if record.get("evidence_judge"):
+                        record.setdefault("evidence_judge_history", []).append(
+                            {
+                                "archived_at": now_iso(),
+                                "evidence_judge": copy.deepcopy(record["evidence_judge"]),
+                            }
+                        )
+                    record["evidence_judge"] = {"score": None, "reason": "not_applicable"}
+            for index in sorted({index for index, _ in targets}):
+                item = state["items"][index]
+                if item.get("runtime_turns"):
+                    # Archive the public last-turn projection before synchronizing it.
+                    for field in ("judge", "task_judge", "evidence_judge"):
+                        if (index, len(item["runtime_turns"]) - 1) in selection and (
+                            field in selection[index, len(item["runtime_turns"]) - 1]
+                            or (scope == "all" and field == "evidence_judge")
+                        ):
+                            if item.get(field):
+                                item.setdefault(f"{field}_history", []).append(
+                                    {"archived_at": now_iso(), field: copy.deepcopy(item[field])}
+                                )
+                            item[field] = item["runtime_turns"][-1].get(field) or {}
+                    item["task_judges"] = [turn.get("task_judge") or {} for turn in item["runtime_turns"]]
+            state["summary"] = analysis.effective_summary(state)
+            self._writer.write_snapshot(run_id, state)
+            self._index.upsert(analysis.run_list_entry(state))
+            cancel_event = threading.Event()
+            self._reservations[rejudge_id] = cancel_event
+
+        #: 跨条目并发的上限，与 ``_resolve_judge_concurrency`` 同一个口径
+        #: （``min(8, qa_concurrency)``）。**rejudge 此前是纯串行**：qa_eval 阶段按
+        #: 这个数并行判，重判却一条一条来，561 个 turn 要跑近两小时。
+        #:
+        #: **worker 只算不写。** ``_state_if_exists`` 每次读整个 run.json（本轮 34MB），
+        #: 让 561 个 worker 各读一遍既慢、又可能读到别人写了一半的状态。所以输入在
+        #: 提交前一次性拍平成不可变元组，**状态回写全部留在主线程**——与并发前的
+        #: 「先读当前 state、改、再整份写回」保持同一个形状。
+        runner: JudgeRunner
+
+        snapshot = state.get("qa_snapshot") or {}
+        definitions = {str(row["qa_id"]): row for row in snapshot.get("rows") or []}
+        gt_source = "frozen_qa_snapshot" if definitions else "saved_run_item"
+
+        def _payload(index: int, turn_index: int | None) -> tuple[Any, ...]:
+            item = (state.get("items") or [])[index]
+            turns = item.get("runtime_turns") or []
+            record = turns[turn_index] if turn_index is not None else item
+            definition = definitions.get(str(item.get("qa_id")), item)
+            definition_turns = definition.get("conversation") or []
+            if turn_index is not None:
+                gt = definition_turns[turn_index] if definition_turns else definition if snapshot else record
+                if not snapshot and len(turns) == 1:
+                    gt = {
+                        **item,
+                        **record,
+                        "reference_answer": record.get("reference_answer") or item["reference_answer"],
+                    }
+            else:
+                gt = definition
+            expected = gt.get("expected_action")
+            reference = str(
+                gt.get("reference_answer") if "reference_answer" in gt else gt.get("answer") or ""
+            )
+            if not reference and expected == "clarify":
+                reference = "应要求用户提供至少一个具体、可用于后续检索的锚点；询问形式不限。"
+            return (
+                index,
+                turn_index,
+                str(record.get("message") or item.get("question") or ""),
+                reference,
+                str(record.get("answer") or ""),
+                expected,
+                gt.get("task_type"),
+                gt.get("question_type"),
+                gt.get("answerability"),
+                turns[: turn_index + 1] if turn_index is not None else None,
+                record.get("agent_status") or item.get("agent_status"),
+                record.get("termination_reason") or item.get("termination_reason") or "",
+                definition,
+                definition_turns[turn_index] if turn_index is not None and definition_turns else {},
+                copy.deepcopy(record),
+            )
+
+        def _judge_one(payload: tuple[Any, ...]) -> dict[str, dict[str, Any]]:
+            (
+                index,
+                turn_index,
+                message,
+                reference,
+                answer,
+                expected,
+                task_type,
+                question_type,
+                answerability,
+                conversation,
+                agent_status,
+                termination,
+                definition,
+                gt,
+                record,
+            ) = payload
+            if cancel_event.is_set():
+                raise RunCancelledError("rejudge cancelled")
+            results: dict[str, dict[str, Any]] = {}
+            fields = selection[index, turn_index]
+            if "judge" in fields:
+                results["judge"] = runner.judge(
+                    message,
+                    reference,
+                    answer,
+                    expected_action=expected,
+                    task_type=task_type,
+                    question_type=question_type,
+                    answerability=answerability,
+                    conversation=conversation,
+                    gt_row=definition,
+                    gt_turn=gt,
+                    assets_by_name=assets_by_name,
+                )
+            # 任务行为判分跟着一起重判（1.0 ``:7200`` 的两个 future）——只重判
+            # 回答质量会让 ``task_judges`` 停在上一次的结论上，而界面上它们
+            # 看起来是同一批次的产物。
+            if "task_judge" in fields:
+                results["task_judge"] = runner.judge_task_action(
+                    message,
+                    answer,
+                    expected,
+                    agent_status,
+                    termination,
+                    task_type=task_type,
+                    question_type=question_type,
+                    answerability=answerability,
+                    reference=reference,
+                    conversation=conversation,
+                )
+            if "evidence_judge" in fields:
+                results["evidence_judge"] = runner.judge_evidence(
+                    message,
+                    answer,
+                    record.get("predicted_images") or [],
+                    assets_by_name,
+                    conversation=conversation,
+                )
+            return results
+
+        assets_by_name: dict[str, list[dict[str, Any]]] = {}
+
+        def _run_rejudge() -> None:
+            nonlocal runner
+            try:
+                runner = JudgeRunner(
+                    http=self._http,
+                    cancel=cancel_event,
+                    judge_url=judge_url,
+                    judge_model=judge_model,
+                    judge_api_key=judge_api_key,
+                    answer_quality_prompt=system_prompt,
+                    task_judge_prompt=task_prompt,
+                    evidence_judge_prompt=evidence_prompt,
+                    sentrix_url=str(state.get("sentrix_url") or self._config.sentrix_url),
+                    inline_images=self._inline_images,
+                    judge_use_gt_images=use_gt_images,
+                    evaluation_options=evaluation_options,
+                    evaluation_prompts=state["rejudge"]["evaluation_prompts"],
+                )
+                if (
+                    use_gt_images
+                    or any("evidence_judge" in fields for fields in selection.values())
+                    or any(bool(r.get("evaluation")) for r in definitions.values())
+                ):
+                    assets_by_name.update(
+                        index_assets_by_name(
+                            self._sentrix.list_assets(scope_id=str(state.get("scope_id") or ""), limit=1000)
+                        )
+                    )
+                concurrency = max(1, min(8, int(state.get("qa_concurrency") or 4)))
+                prepared = [_payload(index, turn_index) for index, turn_index in targets]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+                    queue = iter(prepared)
+                    futures: dict[
+                        concurrent.futures.Future[dict[str, dict[str, Any]]],
+                        tuple[Any, ...],
+                    ] = {}
+                    completed = 0
+
+                    def fill_slots() -> None:
+                        while len(futures) < concurrency and not cancel_event.is_set():
+                            payload = next(queue, None)
+                            if payload is None:
+                                break
+                            futures[pool.submit(_judge_one, payload)] = payload
+
+                    fill_slots()
+                    while futures:
+                        if cancel_event.is_set():
+                            for pending in futures:
+                                pending.cancel()
+                        done, _ = concurrent.futures.wait(
+                            futures, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
+                        )
+                        if not done:
+                            continue
+                        future = next(iter(done))
+                        payload = futures.pop(future)
+                        if cancel_event.is_set():
+                            continue
+                        completed += 1
+                        fill_slots()
+                        current = state
+                        index, turn_index = int(payload[0]), payload[1]
+                        try:
+                            results = future.result()
+                        except Exception as exc:
+                            results = {
+                                field: {
+                                    "score": None,
+                                    "correct": None,
+                                    "judge_status": "failed",
+                                    "reason": f"judge_error: {exc}",
+                                }
+                                for field in selection[index, turn_index]
+                            }
+                        item = current["items"][index]
+                        turns = item.get("runtime_turns") or []
+                        record = turns[turn_index] if turn_index is not None else item
+                        for field, result in results.items():
+                            result.update(
+                                ground_truth_source=gt_source,
+                                qa_definition_sha256=snapshot.get("definition_sha256"),
+                                judged_at=now_iso(),
+                                rejudge_id=rejudge_id,
+                            )
+                            result["status"] = (
+                                "completed" if JudgeRunner._valid_result(result, field) else "failed"
+                            )
+                            if field in record:
+                                record.setdefault("scoring_history", []).append(
+                                    {
+                                        "field": field,
+                                        "previous": copy.deepcopy(record[field]),
+                                        "rejudge_id": rejudge_id,
+                                    }
+                                )
+                            record[field] = result
+                        if turns:
+                            item["judge"] = turns[-1].get("judge") or {}
+                            item["task_judges"] = [turn.get("task_judge") or {} for turn in turns]
+                            item["task_judge"] = turns[-1].get("task_judge") or {}
+                            item["evidence_judge"] = turns[-1].get("evidence_judge") or {
+                                "score": None,
+                                "reason": "not_applicable",
+                            }
+                        final_judge = item.get("judge") or {}
+                        if final_judge.get("scorer"):
+                            item["evaluation_result"] = copy.deepcopy(final_judge)
+                        else:
+                            item.pop("evaluation_result", None)
+                        # Current scoring state follows every judged turn; execution history stays unchanged.
+                        records = turns or [item]
+                        qualities = [entry.get("judge") or {} for entry in records]
+                        tasks = [entry.get("task_judge") or {} for entry in records]
+                        item["judge_status"] = (
+                            "pending"
+                            if any(value.get("status") == "pending" for value in qualities)
+                            else "failed"
+                            if any(value.get("status") == "failed" for value in qualities)
+                            or any(
+                                value.get("judge_status") == "failed" or value.get("status") == "failed"
+                                for value in tasks
+                            )
+                            or any(
+                                (entry.get("evidence_judge") or {}).get("status") == "failed"
+                                for entry in records
+                            )
+                            else "completed"
+                        )
+                        current["rejudge"]["completed"] = completed
+                        if any(result.get("status") == "failed" for result in results.values()):
+                            current["rejudge"]["failed"] += 1
+                        current["summary"] = analysis.effective_summary(current)
+                        self._writer.write_snapshot(run_id, current)
+                final = self._state_if_exists(run_id)
+                if final is not None:
+                    final["rejudge"]["status"] = "cancelled" if cancel_event.is_set() else "completed"
+                    final["rejudge"]["finished_at"] = now_iso()
+                    final["rejudge"]["not_completed"] = len(targets) - int(
+                        final["rejudge"].get("completed") or 0
+                    )
+                    if cancel_event.is_set():
+                        self._finish_pending_rejudge(
+                            final, rejudge_id, "cancelled", "rejudge cancelled before scoring completed"
+                        )
+                    final["summary"] = analysis.effective_summary(final)
+                    self._writer.write_snapshot(run_id, final)
+                    self._index.upsert(analysis.run_list_entry(final))
+            except Exception as exc:  # noqa: BLE001 —— 重判线程的兜底：状态要能被读出来
+                failed = self._state_if_exists(run_id)
+                if failed is not None:
+                    failed.setdefault("rejudge", {})["status"] = "failed"
+                    failed["rejudge"]["finished_at"] = now_iso()
+                    failed["rejudge"]["error"] = str(exc)
+                    self._finish_pending_rejudge(failed, rejudge_id, "failed", str(exc))
+                    self._writer.write_snapshot(run_id, failed)
+                    self._index.upsert(analysis.run_list_entry(failed))
+
+        def rejudge_worker() -> None:
+            try:
+                _run_rejudge()
+            finally:
+                with self._lock:
+                    self._auxiliary.pop(rejudge_id, None)
+                if self._on_finished is not None:
+                    self._on_finished(run_id)
+
+        thread = threading.Thread(target=rejudge_worker, name=rejudge_id, daemon=True)
+        with self._lock:
+            self._auxiliary[rejudge_id] = (thread, cancel_event)
+            try:
+                thread.start()
+            except Exception as error:
+                self._auxiliary.pop(rejudge_id, None)
+                state["rejudge"].update(status="failed", finished_at=now_iso(), error=str(error))
+                self._finish_pending_rejudge(state, rejudge_id, "failed", "worker_start_failed")
+                state["summary"] = analysis.effective_summary(state)
+                self._writer.write_snapshot(run_id, state)
+                self._index.upsert(analysis.run_list_entry(state))
+                raise
+            finally:
+                self._reservations.pop(rejudge_id, None)
+        return {"run_id": run_id, "rejudge_id": rejudge_id, "total": len(targets), "status": "running"}
+
+    # ---- 内存画像 -----------------------------------------------------------
+
+    def start_memory_profile(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """``POST /api/memory-profile``（1.0 ``start_memory_profile`` ``:5159``）。
+
+        重放已存的题目来测「同等负载下模型占多少内存」，**不改动任何问答结果**——
+        1.0 用 ``items_sha256_before/after`` 两个哈希把这条不变量钉在 run.json 里。
+
+        **与 1.0 的两处差异**：
+
+        1. 1.0 在装载前调 ``bind-runtime`` 把 Sentrix 指向新模型；2.0 没有那个端点
+           （换模型=重启 2.0），所以**留空并记原因**——与 ``_phase_model_deploy`` 的
+           ``gamma_sync`` 同一条处置。
+        2. 1.0 的 ``model_source == "cloud_api"`` 检查没有了（2.0 没有云端模型）。
+        """
+        run_ids = [str(value) for value in payload.get("run_ids") or []]
+        if not run_ids:
+            raise InvalidRequestError("run_ids is required")
+        with self._lock:
+            self._require_inactive()
+            if self._memory_thread is not None and self._memory_thread.is_alive():
+                raise InvalidRequestError("memory profiling is already running")
+            states: dict[str, dict[str, Any]] = {}
+            for rid in run_ids:
+                state = self._state_if_exists(rid)
+                if state is None:
+                    raise InvalidRequestError(f"run not found: {rid}")
+                states[rid] = state
+            manager_url = str(payload.get("vllm_manager_url") or self._config.vllm_manager_url or "")
+            if not manager_url:
+                raise InvalidRequestError("memory profiling requires a model manager")
+            task_id = f"memory-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            for rid, state in states.items():
+                state["memory_profile"] = {
+                    "task_id": task_id,
+                    "status": "pending",
+                    "source_run_id": rid,
+                    "method": "saved_question_replay",
+                    "created_at": now_iso(),
+                    "answers_persisted": False,
+                    "album_reused": True,
+                    "items_sha256_before": _items_digest(state.get("items") or []),
+                }
+                self._writer.write_snapshot(rid, state)
+            cancel_event = threading.Event()
+            self._reservations[task_id] = cancel_event
+
+        owned_samplers: list[GpuSampler] = []
+
+        def execute() -> None:
+            lifecycle = self._lifecycle_for(manager_url)
+            telemetry = self._manager_telemetry_for(manager_url)
+            for rid, state in states.items():
+                sampler = GpuSampler(telemetry, interval=0.1)
+                owned_samplers.append(sampler)
+                record = state["memory_profile"]
+                record.update({"status": "running", "started_at": now_iso()})
+                completed = failed = request_count = 0
+                try:
+                    # 没在跑的模型本来就停不掉——卸载失败不阻断装载（1.0 ``:2547`` 的
+                    # 同一条处置）。
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
+                    with contextlib.suppress(Exception):
+                        lifecycle.stop({"timeout": 60}, timeout=90)
+                    if cancel_event.wait(0):
+                        raise RunCancelledError("memory profile cancelled")
+                    if self._sleep is time.sleep:
+                        cancel_event.wait(5)
+                    else:
+                        self._sleep(5)
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
+                    lifecycle.start(
+                        {"profile": state.get("model_profile"), "wait_ready": True, "ready_timeout": 600},
+                        timeout=700,
+                    )
+                    if cancel_event.is_set():
+                        raise RunCancelledError("memory profile cancelled")
+                    model_state = lifecycle.state()
+                    # 1.0 在这里调 bind-runtime；2.0 的等价物是「重启 2.0」
+                    # （``application.deploy.SentrixModelSwitch``，S9c · T923）。
+                    # **这里仍然留空**：内存画像要指向哪个端点，1.0 是从 target 配置推的，
+                    # 而这条路径的请求体里只有 ``vllm_manager_url``，没有可用的端点来源。
+                    # 与其猜一个端点去重启主 API（代价是可能把正在跑的评测指歪），不如
+                    # 如实记下「没做」，并把模块指向真正的实现点。
+                    record["gamma_sync"] = {
+                        "ok": False,
+                        "error": "not_applicable: 内存画像路径没有端点来源；换模型重启见 application.deploy",
+                    }
+                    sampler.start()
+                    self._sleep(2)
+                    replay_timeout = int(
+                        (state.get("execution_budgets") or {}).get("turn_timeout")
+                        or (
+                            REASONING_TURN_TIMEOUT if state.get("reasoning") is True else DEFAULT_TURN_TIMEOUT
+                        )
+                    )
+                    for item in state.get("items") or []:
+                        if cancel_event.is_set():
+                            raise RunCancelledError("memory profile cancelled")
+                        messages = [
+                            str(turn.get("message") or "")
+                            for turn in (item.get("conversation") or [])
+                            if turn.get("message")
+                        ]
+                        if not messages and item.get("question"):
+                            messages = [str(item["question"])]
+                        conversation_id = ""
+                        item_ok = True
+                        for message in messages:
+                            if cancel_event.is_set():
+                                raise RunCancelledError("memory profile cancelled")
+                            request_count += 1
+                            try:
+                                if not conversation_id:
+                                    conversation_id = str(
+                                        self._sentrix.start_conversation(
+                                            scope_id=str(state.get("scope_id") or ""),
+                                            title=str(item.get("qa_id") or "memory"),
+                                        ).get("id")
+                                        or ""
+                                    )
+                                if cancel_event.is_set():
+                                    raise RunCancelledError("memory profile cancelled")
+                                started = self._sentrix.start_turn(
+                                    conversation_id=conversation_id,
+                                    message=message,
+                                    reasoning=state.get("reasoning") is True,
+                                    timeout=300,
+                                )
+                                _await_turn(
+                                    self._sentrix,
+                                    str(started.get("turn_id") or ""),
+                                    replay_timeout,
+                                    self._sleep,
+                                    cancel_event,
+                                    record,
+                                )
+                            except RunCancelledError:
+                                raise
+                            except Exception:  # noqa: BLE001 —— 单题失败不中断整段画像
+                                if any(
+                                    operation.get("cleanup_status") != "stopped"
+                                    for operation in record.get("cancelled_operations", [])
+                                ):
+                                    raise
+                                item_ok = False
+                                failed += 1
+                        if item_ok:
+                            completed += 1
+                        record.update(
+                            {
+                                "questions_completed": completed,
+                                "questions_total": len(state.get("items") or []),
+                                "requests_completed": request_count - failed,
+                                "requests_total_so_far": request_count,
+                                "failed_requests": failed,
+                            }
+                        )
+                        self._writer.write_snapshot(rid, state)
+                    self._sleep(1)
+                    sampler.stop()
+                    record.update(
+                        {
+                            **sampler.aggregate(),
+                            "status": "completed",
+                            "finished_at": now_iso(),
+                            "model_profile": state.get("model_profile"),
+                            "model_state": {
+                                key: model_state.get(key)
+                                for key in (
+                                    "dtype",
+                                    "quantization",
+                                    "load_format",
+                                    "gpu_memory_utilization",
+                                    "max_model_len",
+                                    "max_num_seqs",
+                                    "default_max_tokens",
+                                    "tensor_parallel_size",
+                                    "enable_lora",
+                                )
+                            },
+                            "answers_persisted": False,
+                            "original_items_untouched": True,
+                        }
+                    )
+                except RunCancelledError as exc:
+                    sampler.stop()
+                    record.update(
+                        **sampler.aggregate(), status="cancelled", finished_at=now_iso(), error=str(exc)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    sampler.stop()
+                    record.update(
+                        {
+                            **sampler.aggregate(),
+                            "status": "failed",
+                            "finished_at": now_iso(),
+                            "error": str(exc),
+                            "answers_persisted": False,
+                        }
+                    )
+                finally:
+                    record["items_sha256_after"] = _items_digest(state.get("items") or [])
+                    record["items_integrity_ok"] = record.get("items_sha256_before") == record.get(
+                        "items_sha256_after"
+                    )
+                    self._writer.write_snapshot(rid, state)
+
+        def memory_worker() -> None:
+            try:
+                execute()
+            except Exception as error:
+                for rid, state in states.items():
+                    record = state["memory_profile"]
+                    if record.get("status") in {"pending", "running"}:
+                        record.update(status="failed", finished_at=now_iso(), error=str(error))
+                        self._writer.write_snapshot(rid, state)
+            finally:
+                for sampler in owned_samplers:
+                    sampler.stop()
+                with self._lock:
+                    operations = [
+                        operation
+                        for state in states.values()
+                        for operation in (state.get("memory_profile") or {}).get("cancelled_operations", [])
+                        if operation.get("cleanup_status") != "stopped"
+                    ]
+                    if operations:
+                        self._auxiliary_cleanup[task_id] = operations
+                    pending_samplers = [sampler for sampler in owned_samplers if sampler.pending_work()]
+                    if pending_samplers:
+                        self._auxiliary_samplers[task_id] = pending_samplers
+                    self._auxiliary.pop(task_id, None)
+
+        thread = threading.Thread(target=memory_worker, name=task_id, daemon=True)
+        with self._lock:
+            self._memory_thread = thread
+            self._auxiliary[task_id] = (thread, cancel_event)
+            try:
+                thread.start()
+            except Exception as error:
+                self._auxiliary.pop(task_id, None)
+                for rid, state in states.items():
+                    state["memory_profile"].update(status="failed", finished_at=now_iso(), error=str(error))
+                    self._writer.write_snapshot(rid, state)
+                raise
+            finally:
+                self._reservations.pop(task_id, None)
+        return {"task_id": task_id, "run_ids": run_ids, "status": "running"}
+
+    # ---- 供路由用的只读投影 -------------------------------------------------
+
+    def active_states(self) -> dict[str, dict[str, Any]]:
+        """还在跑的 run 的**活状态**，给 ``GET /api/runs`` 的列表叠加用。
+
+        **索引里没有它们。** 写侧只在 run 结束时 ``upsert``（``RunIndex.upsert``：
+        「一次 suite 只会新增几个 run，重扫 267 个 ``run.json`` 是 75 秒的工作」），
+        而在那之前索引根本不知道这一轮存在。于是整轮评测期间列表页是空的——而前端
+        **没有 URL 路由**（``App.tsx`` 用 ``useState`` 选 run，没有 deep link），
+        所以那一轮在界面上**完全够不着**：看不到进度，也点不到取消。
+
+        实测 2026-10-09：一轮 487 题的评测跑了一个多小时，界面上一直什么都没有。
+        """
+        with self._lock:
+            states: dict[str, dict[str, Any]] = {}
+            for run_id in self.active_run_ids():
+                execution = self._active.get(run_id)
+                if execution is None or execution.state is None:
+                    continue
+                # 浅拷贝：调用方（列表页）不该拿到执行体正在改的那只 dict。
+                # 取 ``.data`` 而不是 ``dict(state)``——``RunState`` 是带锁的**包装**，
+                # 它本身不是 dict。
+                with execution.state.lock:
+                    states[run_id] = analysis.run_list_entry(execution.state.data)
+            return states
+
+    def active_run_ids(self) -> list[str]:
+        """Still executing runs; stopped executions are released, stop-pending blocks admission."""
+        with self._lock:
+            return [
+                run_id
+                for run_id, execution in self._active.items()
+                if execution.state is not None and execution.state.get("status") in DIRTY_STATUSES
+            ]
+
+
+def _items_digest(items: Sequence[dict[str, Any]]) -> str:
+    """1.0 ``:5175`` 的 ``items_sha256``：排序键 + 紧凑分隔符，跨进程可比。"""
+    return hashlib.sha256(
+        json.dumps(list(items), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _await_turn(
+    client: SentrixClient,
+    turn_id: str,
+    timeout: int,
+    sleep: Callable[[float], None],
+    cancel_event: threading.Event | None = None,
+    cleanup: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """内存画像用的回合等待。与 ``RunExecution._await_turn`` 同一条判据
+    （非 ``pending`` / ``running`` 即终态），但**不共享实现**：那条挂在有状态的主链上，
+    这条只服务画像重放，硬凑一个共享函数会把两条生命周期绑在一起。"""
+    deadline = time.monotonic() + timeout
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RunCancelledError("memory profile cancelled")
+        polled = client.get_turn(turn_id=turn_id)
+        while str(polled.get("status") or "") in {"pending", "running"}:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RunCancelledError("memory profile cancelled")
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"assistant turn {turn_id} did not complete within {timeout}s")
+            sleep(0.5)
+            polled = client.get_turn(turn_id=turn_id)
+        return polled
+    except Exception as error:
+        facts: dict[str, Any] = {
+            "kind": "turn",
+            "operation_id": turn_id,
+            "cleanup_status": "pending",
+            "wait_error": f"{type(error).__name__}: {error}",
+        }
+        if isinstance(client, CancellableOperations):
+            try:
+                facts.update(client.cancel_operation(kind="turn", operation_id=turn_id, timeout=3))
+            except Exception as cancel_error:
+                facts["error"] = str(cancel_error)
+        if cleanup is not None:
+            cleanup.setdefault("cancelled_operations", []).append(facts)
+        # A terminal turn record can precede worker exit; only the cancellation
+        # ownership endpoint may confirm stopped. Do not overlap a new replay.
+        if facts.get("cleanup_status") != "stopped" and cancel_event is not None:
+            cancel_event.set()
+        raise
+
+
+__all__ = ["DIRTY_STATUSES", "RUN_MODES", "RunSuites"]

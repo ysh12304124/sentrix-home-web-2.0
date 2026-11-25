@@ -10,12 +10,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
+from photobench.domain.evaluation.contract import media_key
 from photobench.domain.evaluation.prompts import ATM_OPEN_PROMPT, CHOICE_PROMPT, NUMBER_MATCH_PROMPT
+from photobench.domain.evaluation.sources import source_set_metrics
 from photobench.domain.runs.judge import JUDGE_PROMPT, JUDGE_PROMPT_KINDS
 
 OPEN = "photobench_open_v1"
 ATM = "atm_qs_v1"
-RULE_VERSION = "scoring-2026.11.06-v4"
+RULE_VERSION = "scoring-2026.11.12-v5"
 READABLE_METADATA_MODES = {"readable_v1", "image_metadata_v1"}
 LABELS = {OPEN: "开放式回答（0/1/2，历史口径）", ATM: "ATM-Bench式QS"}
 PROMPTS = {
@@ -68,6 +70,7 @@ def profile_configs(
             "use_gt_metadata",
             "gt_metadata_mode",
             "quality_input_version",
+            "atm_input_version",
         }:
             raise ValueError("Invalid scoring profile configuration")
         prompts = dict(PROMPTS[profile])
@@ -87,9 +90,16 @@ def profile_configs(
         if any(type(v) is not bool for v in flags.values()):
             raise ValueError("GT flags must be booleans")
         result[profile] = {"prompts": prompts, **flags}
+        if profile == ATM:
+            version = raw.get("atm_input_version", "native_v2")
+            if version not in {"legacy_v1", "native_v2"}:
+                raise ValueError("Unknown ATM input version")
+            result[profile]["atm_input_version"] = version
+        elif "atm_input_version" in raw:
+            raise ValueError("ATM input version is only valid for ATM")
         if profile == OPEN:
-            version = raw.get("quality_input_version", "task_v3")
-            if version not in {"legacy_v1", "task_v2", "task_v3"}:
+            version = raw.get("quality_input_version", "task_v4")
+            if version not in {"legacy_v1", "task_v2", "task_v3", "task_v4"}:
                 raise ValueError("Unknown answer quality input version")
             result[profile]["quality_input_version"] = version
         elif "quality_input_version" in raw:
@@ -111,12 +121,14 @@ def uses_readable_metadata(config: Mapping[str, Any]) -> bool:
 
 
 def answer_fingerprint(record: Mapping[str, Any]) -> str:
-    return digest(
-        {
-            k: record.get(k)
-            for k in ("message", "answer", "predicted_media", "media_mapping_complete", "turn_id")
-        }
-    )
+    value = {
+        k: record.get(k)
+        for k in ("message", "answer", "predicted_media", "media_mapping_complete", "turn_id")
+    }
+    for key in ("predicted_source_refs", "source_mapping_complete"):
+        if key in record:
+            value[key] = record[key]
+    return digest(value)
 
 
 def evaluation_turn(row: Mapping[str, Any]) -> int:
@@ -274,6 +286,53 @@ def request_history(result: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def tool_list_score(definition: Mapping[str, Any], value: Mapping[str, Any]) -> float | None:
+    """Compare recorded tool candidates with this question's frozen QS target set."""
+    metrics = (value.get("media_metrics") or {}).get("tools") or {}
+    prediction = metrics.get("predicted")
+    target = {media_key(ref) for ref in definition.get("target_media_refs") or []}
+    if not target or metrics.get("status") != "available" or not isinstance(prediction, list):
+        return None
+    if any(not isinstance(key, str) or not key.startswith(("image:", "video:")) for key in prediction):
+        return None
+    predicted = set(prediction)
+    return len(target & predicted) / len(target | predicted)
+
+
+def tool_list_qs(
+    values: Mapping[str, Mapping[str, Any]], definitions: Mapping[str, Mapping[str, Any]], total: int
+) -> dict[str, Any]:
+    """Use the frozen list GT and recorded tool candidates, within one batch/evaluation turn."""
+    scores: list[float] = []
+    list_count = list_scored = 0
+    for qa_id, row in definitions.items():
+        definition = row.get("evaluation") or {}
+        value = values.get(qa_id) or {}
+        if definition.get("scorer") in {"media_set", "atm_list"}:
+            list_count += 1
+            score = tool_list_score(definition, value)
+            if score is None:
+                continue
+            scores.append(score)
+            list_scored += 1
+        elif valid_result(value):
+            scores.append(value["score"])
+    scored = len(scores)
+    mean = sum(scores) / scored if scored else None
+    return {
+        "metric_version": "atm-tool-list-qs-v1",
+        "list_source": "tools",
+        "total": total,
+        "scored": scored,
+        "coverage": scored / total if total else 0,
+        "scored_mean": mean,
+        "total_score": mean if total and scored == total else None,
+        "status": "completed" if total and scored == total else "incomplete",
+        "list_count": list_count,
+        "list_scored": list_scored,
+    }
+
+
 def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
     rows = (state.get("qa_snapshot") or {}).get("rows") or []
     definitions = {str(row["qa_id"]): row for row in rows}
@@ -295,6 +354,15 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
         normalized = mean / maximum if mean is not None else None
         requests = [q for r in batch_results for q in request_history(r) if q.get("dispatch_started")]
         summaries[batch["batch_id"]] = {
+            **(
+                {
+                    "tool_list_qs": tool_list_qs(values, definitions, total),
+                    "list_source": "model_delivery",
+                    "text_ids_are_diagnostic_only": True,
+                }
+                if batch["profile_id"] == ATM
+                else {}
+            ),
             "batch_id": batch["batch_id"],
             "profile_id": batch["profile_id"],
             "label": LABELS[batch["profile_id"]],
@@ -333,6 +401,28 @@ def summarize_batches(state: Mapping[str, Any]) -> dict[str, Any]:
     return summaries
 
 
+def scoring_source_metadata(summary: Mapping[str, Any], *, latest: bool = False) -> dict[str, Any]:
+    """Annotate both persisted overviews and recomputed summaries without loading answers."""
+    if latest:
+        profiles = dict(summary.get("profiles") or {})
+        for batch in (summary.get("batches") or {}).values():
+            profiles[batch["profile_id"]] = batch
+        summary = {**summary, "profiles": profiles}
+    return {
+        **summary,
+        **{
+            group: {
+                key: {**batch, "list_source": "model_delivery", "text_ids_are_diagnostic_only": True}
+                if batch.get("profile_id") == ATM
+                else batch
+                for key, batch in (summary.get(group) or {}).items()
+            }
+            for group in ("profiles", "batches")
+            if group in summary
+        },
+    }
+
+
 def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
     batches = summarize_batches(state) if "scoring_results" in state else state.get("scoring_summaries") or {}
     latest = {p: {"profile_id": p, "label": LABELS[p], "status": "not_collected"} for p in LABELS}
@@ -346,7 +436,9 @@ def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
         for q in request_history(r)
         if q.get("dispatch_started")
     ]
-    return {"profiles": latest, "batches": batches, "diagnostic_judge_calls": len(diagnostic_requests)}
+    return scoring_source_metadata(
+        {"profiles": latest, "batches": batches, "diagnostic_judge_calls": len(diagnostic_requests)}
+    )
 
 
 def stable_media_key(ref: Mapping[str, Any]) -> str:
@@ -385,6 +477,11 @@ class MediaIndex:
 def list_score(
     target: Sequence[Mapping[str, Any]], record: Mapping[str, Any], universe: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
+    if target and target[0].get("source_type"):
+        if record.get("source_mapping_complete") is not True:
+            raise ValueError("Source delivery mapping incomplete")
+        metrics = source_set_metrics(target, record.get("predicted_source_refs") or [])
+        return {**metrics, "score": metrics["jaccard"], "formula": "|P ∩ GT| / |P ∪ GT|"}
     prediction = record.get("predicted_media")
     if not isinstance(prediction, list) or record.get("media_mapping_complete") is not True:
         raise ValueError("Delivery record missing or media mapping incomplete")

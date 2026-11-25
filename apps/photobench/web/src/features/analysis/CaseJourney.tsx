@@ -6,6 +6,8 @@ import type { RunItemDetail } from "../../api/types.ts";
 import { runtimeTurns } from "../../lib/agentTrace.ts";
 import { actionLabel } from "../../lib/format.ts";
 import { atPath, cleanNotes, evidenceName, journeyNodes, object, text, type JourneyNode } from "./journey.ts";
+import { TraceNodeDetails } from "../qa/TraceNodeDetails.tsx";
+import { traceDurationLabel } from "../../lib/traceNodes.ts";
 
 type Diagnosis = DiagnosisReport["cases"][number];
 type Evidence = { item: RunItemDetail; evidence_locations?: Record<string,string> };
@@ -13,15 +15,11 @@ const pretty = (v: unknown) => typeof v === "string" ? v : JSON.stringify(v, nul
 function Claim({ claim }: {claim:AnalysisClaim}) {
   return <div className={`journey-finding ${claim.kind}`}><span>{claim.kind === "hypothesis" ? "可能原因 · 待核实" : claim.kind === "recommendation" ? "核查建议" : "AI 观察"}</span><p>{claim.text}</p>{cleanNotes(claim.limitations).map((note,i)=><small key={i}>{note}</small>)}</div>;
 }
-export function NodeRecord({ node }: {node:JourneyNode}) {
-  const e=node.entry, raw=e.call || e.tool || {};
+export function NodeRecord({ node, item }: {node:JourneyNode;item:RunItemDetail}) {
+  const e=node.entry;
   if(e.kind === "event" && e.event?._recorded_execution) return <><p>{text(e.event.error)}</p><p className="analysis-hint">来自本题保存的错误；内部调用轨迹未记录时无法进一步拆解。</p></>;
-  if(e.kind === "answer") return <p className="journey-answer">{e.answer?.trim() || "未保存回答正文"}</p>;
-  const output = e.tool ? raw.result ?? raw.observation : raw.response;
-  return <><p className="analysis-hint">{node.status}{raw.step_id ? ` · 步骤 ${raw.step_id}` : ""}{raw.attempt != null ? ` · 尝试 ${raw.attempt}` : ""}{e.unbound ? " · 父调用未确定" : ""}</p>
-    <details><summary>{e.tool ? "工具输入" : "模型输入"}</summary><pre>{pretty(e.tool ? raw.arguments ?? "未记录" : raw.messages ?? "未记录")}</pre></details>
-    <details><summary>{e.tool ? "工具输出" : "模型输出"}</summary><pre>{pretty(output ?? "未记录")}</pre></details>
-    {!!raw.error && <details><summary>错误原文</summary><pre>{pretty(raw.error)}</pre></details>}
+  return <><p className="analysis-hint">{node.status} · {traceDurationLabel(e)}{e.unbound ? " · 父调用未确定" : ""}</p>
+    <TraceNodeDetails key={node.id} detail={item} turnIndex={node.turn} entry={e} initialTab="output" />
   </>;
 }
 function SourceRecord({item,refId,path}:{item:RunItemDetail|undefined;refId:string;path:string|undefined}) {
@@ -71,11 +69,11 @@ export function CaseJourney({diagnosis,jobId,navigate}:{diagnosis:Diagnosis;jobI
       {diagnosis.result.diagnosis && <CaseDiagnosis diagnosis={diagnosis.result.diagnosis} locate={locate}/>}
       <div className="journey-workspace">
         <section className="journey-route"><h5>执行路径 <small>点击节点查看</small></h5><p className="analysis-hint">按已保存调用及父步骤关联展示；原始事件见完整记录。</p>
-          <ol>{nodes.map((n,i)=><li key={n.id}><button aria-pressed={!source && selected?.id===n.id} className={n.failed ? "has-error" : ""} onClick={()=>{setSelection(n.id);setSource(null);}}><span className="journey-number">{i+1}</span><span><strong>{n.title}</strong><small>第{n.turn+1}轮 · {n.status}</small></span>{n.refs.some(r=>claims.some(c=>c.evidence_refs.includes(r))) && <em>AI 注解</em>}</button></li>)}</ol>
+          <ol>{nodes.map((n,i)=><li key={n.id}><button aria-pressed={!source && selected?.id===n.id} className={n.failed ? "has-error" : ""} onClick={()=>{setSelection(n.id);setSource(null);}}><span className="journey-number">{i+1}</span><span><strong>{n.title}</strong><small>第{n.turn+1}轮 · {n.status} · {traceDurationLabel(n.entry)}</small>{n.entry.call?.step_id != null ? <small>{String(n.entry.call.step_id)}{n.entry.call.attempt != null ? ` · attempt ${String(n.entry.call.attempt)}` : ""}</small> : null}</span>{n.refs.some(r=>claims.some(c=>c.evidence_refs.includes(r))) && <em>AI 注解</em>}</button></li>)}</ol>
           {data && !nodes.length && <p>此存档没有可展示的调用轨迹。</p>}
         </section>
         <section className="journey-detail" aria-label="节点详情" aria-live="polite">
-          {source ? <><h5>{evidenceName(source,nodes)}</h5>{image ? <><p>第{image.turn+1}轮 · {image.media_id}</p><p>来源：{image.source} · {image.status === "attached" ? "创建分析时已冻结" : "图片不可用"}</p><p className="analysis-hint">这是标注参考图片，不是 Agent 调用节点；未核实与原测评图片字节一致。</p><details><summary>图片来源记录</summary><pre>{pretty(image)}</pre></details></> : <><p className="analysis-hint">此引用未唯一关联到调用节点，保留原始来源供核对。</p><SourceRecord item={item} refId={source} path={path}/></>}</> : selected && <><h5>{selected.title} <small>第{selected.turn+1}轮</small></h5><NodeRecord node={selected}/>{associated.length ? <div className="journey-node-analysis"><h5>AI 对此节点的分析</h5>{associated.map((c,i)=><Claim key={i} claim={c}/>)}</div> : <p className="analysis-hint">AI 未单独引用此节点；上方结论与下方完整分析保留。</p>}</>}
+          {source ? <><h5>{evidenceName(source,nodes)}</h5>{image ? <><p>第{image.turn+1}轮 · {image.media_id}</p><p>来源：{image.source} · {image.status === "attached" ? "创建分析时已冻结" : "图片不可用"}</p><p className="analysis-hint">这是标注参考图片，不是 Agent 调用节点；未核实与原测评图片字节一致。</p><details><summary>图片来源记录</summary><pre>{pretty(image)}</pre></details></> : <><p className="analysis-hint">此引用未唯一关联到调用节点，保留原始来源供核对。</p><SourceRecord item={item} refId={source} path={path}/></>}</> : selected && item && <><h5>{selected.title} <small>第{selected.turn+1}轮</small></h5><NodeRecord node={selected} item={item}/>{associated.length ? <div className="journey-node-analysis"><h5>AI 对此节点的分析</h5>{associated.map((c,i)=><Claim key={i} claim={c}/>)}</div> : <p className="analysis-hint">AI 未单独引用此节点；上方结论与下方完整分析保留。</p>}</>}
         </section>
       </div>
       <details className="journey-answer-pair"><summary>对照参考答案与最终回答</summary><div><article><h5>参考答案（GT）</h5><p>{text(item?.reference_answer) || "题级参考答案未记录，逐轮内容见完整记录"}</p></article><article><h5>最终回答</h5><p>{text(item?.answer) || "题级回答未记录，逐轮内容见执行节点"}</p></article></div></details>

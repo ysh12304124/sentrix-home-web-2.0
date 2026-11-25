@@ -742,3 +742,14 @@ describe("2.0 调用对齐与时延", () => {
     expect(qaLatencySegments(item)).toEqual([]);
   });
 });
+
+it('节点未加载时不用空数组伪造零时延，也不把整个Agent墙钟标为其他',()=>{
+  const item={metrics_contract_version:2,trace_storage:{version:3},wall_clock_ms:328079.6,model_call_metrics:[],tool_trace:[]};
+  expect(itemTimingBreakdown(item).model_ms).toBeNull();
+  expect(itemTimingBreakdown(item).tool_ms).toBeNull();
+  expect(qaLatencySegments(item)).toEqual([]);
+  const measured={...item,trace_read_summary:{model_call_count:25,tool_call_count:16,model_ms:100000,tool_ms:200000,timing_complete:true}};
+  expect(qaLatencySegments(measured).map(s=>s.kind)).toEqual(['model-request','tool','other']);
+  expect(qaLatencySegments(measured).reduce((sum,s)=>sum+s.ms,0)).toBeCloseTo(328079.6);
+  expect(qaLatencySegments({...measured,trace_read_summary:{...measured.trace_read_summary,tool_ms:300000}})).toEqual([]);
+});

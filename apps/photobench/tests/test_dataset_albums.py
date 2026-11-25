@@ -32,7 +32,7 @@ def _source(tmp_path: Path, *, policy: dict | None = None) -> JsonAlbumSource:
     (album / "photos" / "a.jpg").write_bytes(b"A")
     (album / "photos" / "b.jpg").write_bytes(b"B")
     # album 目录里混一个非媒体文件：``import_target`` 必须**不数它**
-    (album / "photos" / "notes.txt").write_text("x", encoding="utf-8")
+    (album / "photos" / "notes.pdf").write_text("x", encoding="utf-8")
     (album / "faces" / "1.jpg").write_bytes(b"F")
     (album / "qa" / "one.jsonl").write_text(
         json.dumps({"qa_id": "q1", "question": "谁?", "answer": "明明"}, ensure_ascii=False) + "\n",
@@ -56,7 +56,7 @@ def test_qa_rows_get_the_task_action_default_applied(tmp_path: Path):
 def test_import_target_counts_media_files_only(tmp_path: Path):
     """``limit`` 数的是**会被导入的后缀**，不是「目录里的文件数」。
 
-    夹具在 ``photos/`` 里放了一个 ``notes.txt``：一个按全部文件数给的实现会返回 3，
+    夹具在 ``photos/`` 里放了一个 ``notes.pdf``：一个按全部文件数给的实现会返回 3，
     而正确答案是 2。这条差异在真机上表现为「limit 比实际多一点」——**无害**，
     但那说明它不是「这个目录会被导入几张」，而这条数据的唯一用途就是那个。
     """
@@ -191,3 +191,27 @@ def test_build_integrity_without_qa_still_hashes_media_and_face_seeds(tmp_path):
     assert integrity["qa_sha256"] is None
     assert integrity["files_checked"] == 4
     assert integrity["missing_files"] == []
+
+
+def test_selected_question_isolated_from_other_invalid_gt(tmp_path: Path):
+    source = _source(tmp_path)
+    path = tmp_path / "album-x/qa/one.jsonl"
+    with path.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "qa_id": "bad",
+                    "question": "other",
+                    "answer": "other",
+                    "retrieval_media_refs": [{"media_type": "image", "media_id": "missing.jpg"}],
+                }
+            )
+            + "\n"
+        )
+    assert source.qa_question("album-x", "qa-1", "q1")["expected_action"] == "answer"
+    with pytest.raises(ValueError):
+        source.qa_question("album-x", "qa-1", "bad")
+    with pytest.raises(ValueError):
+        source.qa_rows("album-x", "qa-1")
+    with pytest.raises(KeyError):
+        source.qa_question("album-x", "qa-1", "missing")

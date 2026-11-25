@@ -98,6 +98,7 @@ def test_test_model_probes_the_endpoint_once(client: TestClient):
     assert body["ok"] is True
     assert body["model"] == "gemma"
     assert body["model_base_url"] == "http://endpoint:8100/v1"
+
     assert isinstance(body["latency_ms"], float)
     assert body["verified_at"]
     # 第三步那一发 payload 逐字段照搬 1.0。
@@ -110,6 +111,22 @@ def test_test_model_probes_the_endpoint_once(client: TestClient):
             "stream": False,
         }
     ]
+
+
+def test_deployed_model_reads_live_product_endpoint_without_inference(client: TestClient):
+    inference = FakeInference(models=["actual-model"])
+    _with_inference(client, inference)
+    models = client.app.state.container.run_suites.interactive_models
+    models.config.public_runtime_connection_config = lambda: {
+        "model_base_url": "http://saved:8100/v1",
+        "endpoint_model": "old-model",
+    }
+    models.diagnostics = lambda: {"runtime_configuration": {"vlm_base_url": "http://actual:8100/v1"}}
+    response = client.get("/api/v1/current-deployed-model")
+    assert response.status_code == 200
+    assert response.json()["model_base_url"] == "http://actual:8100/v1"
+    assert response.json()["served_model_name"] == "actual-model"
+    assert inference.chat_payloads == []
 
 
 def test_test_model_without_a_served_model_is_a_400(client: TestClient):

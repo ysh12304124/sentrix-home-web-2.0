@@ -2,6 +2,9 @@
 
 家庭相册记忆系统：照片/视频导入 → 记忆构建 → 自然语言检索与问答 → PhotoBench 评测。
 
+同一实例中，相同原始媒体在不同相册间共享一份文件内容，相册记录和记忆独立。
+反复测评导入会复用原件；已有重复副本的整理方式见[共享媒体存储](docs/runbooks/shared-media-storage.md)。
+
 ---
 
 ## ⚠️ 修改代码前必读（强制）
@@ -121,6 +124,154 @@ PHOTOBENCH_QA_CONCURRENCY=4 ...
 
 153 不设 profile（默认 `server`）；158 只需在启动时设
 `SENTRIX_DEPLOYMENT_PROFILE=mac`，再补齐上面这些部署项。
+
+### 模型与测评配置
+
+拉取代码后，需在部署机器上补齐实际配置。仓库保留 `.example` 模板；本机配置和密钥单独保存。
+模型接入方式由 `SENTRIX_LLM_PROFILE=local|cloud` 选择，与上面的 `server|mac` 部署形态分别设置。
+
+| 配置 | 作用 | 生效方式 |
+|---|---|---|
+| 产品环境变量 | 模型接入方式、端点、推理预算与上下文 | 主 API 启动时读取 |
+| `SENTRIX_LLM_CONFIG` 指定的 JSON | 按 `chat` / `vision` 角色设置模型与请求参数 | 仅 `SENTRIX_LLM_PROFILE=cloud` 时读取 |
+| `apps/photobench/config/runtime_connection.json` | PhotoBench 连接哪个产品、模型服务及嵌入服务 | 测评服务启动时读取；也可在页面保存连接设置 |
+| `apps/photobench/config/judge_providers.json` | 测评评分模型，独立于被测模型 | 从 `judge_providers.example.json` 复制后配置 |
+| `apps/photobench/config/vllm_targets.json` | 可选模型管理服务的目标列表 | 从 `vllm_targets.example.json` 复制后配置；已有模板可提供默认值 |
+
+下文将产品配置放在 `data/product.env.local`，角色 JSON 放在 `data/llm-profile.json`；
+`data/` 已被 Git 忽略。PhotoBench 的上述三份实际 JSON 也已忽略。
+环境文件需由启动命令显式加载；主 API 不会自动扫描这些文件。
+
+#### 本地 Qwen3.5 Q4
+
+可从已提交的 [Qwen 环境模板](deploy/experience/qwen35-q4km.env.example) 建立本机配置。
+以下命令用于首次配置，在仓库根目录执行；已有配置请编辑原文件，保留现有数据与嵌入地址。
+
+```bash
+mkdir -p data
+cp deploy/experience/qwen35-q4km.env.example data/product.env.local
+```
+
+在 `data/product.env.local` 中补上实际端点和每槽上下文，例如：
+
+```dotenv
+SENTRIX_VLM_BASE_URL=http://127.0.0.1:8100/v1
+SENTRIX_VLM_CONTEXT_TOKENS=16384
+SENTRIX_VLM_REASONING_CONTEXT_TOKENS=16384
+```
+
+模板已设置 `SENTRIX_LLM_PROFILE=local` 和
+`SENTRIX_VLM_GENERATION_PROFILE=qwen35_nonthinking`，并保留四项推理调用上界。
+该采样预设向聊天、结构化规划和视觉请求传入 `temperature=0.7`、`seed=42`、
+`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`，以及
+`chat_template_kwargs.enable_thinking=false`。其他模型按各自部署选择参数。
+
+`local` 使用单个端点，模型名默认通过 `/v1/models` 获取；可用 `SENTRIX_VLM_MODEL` 显式指定。
+此模式不读取角色 JSON。此前部署目录里的 `q4km.json` 也不会仅因文件存在就生效。
+153 的配置核查记录见 [psh 配置对齐](docs/refactor/2026-11-19-psh-formal-config.md)。
+
+#### 按角色配置模型（cloud）
+
+`cloud` 可分别连接聊天和视觉服务，端点需兼容 OpenAI 请求格式。
+首次配置先复制 [角色配置模板](deploy/cloud/model-profiles.example.json)：
+
+```bash
+cp deploy/cloud/model-profiles.example.json data/llm-profile.json
+```
+
+在 `data/product.env.local` 中选择该文件，路径使用本机绝对路径：
+
+```dotenv
+SENTRIX_LLM_PROFILE=cloud
+SENTRIX_LLM_CONFIG=/absolute/path/to/repo/data/llm-profile.json
+```
+
+按实际模型修改 JSON；模板中的模型名和窗口大小是示例值。
+
+| JSON 字段 | 填写内容 |
+|---|---|
+| `roles.chat` / `roles.vision` 的 `base_url`、`model` | 实际服务地址和模型 ID；建议两角色显式填写，避免继承启动环境中的默认值 |
+| 各角色的 `context_tokens`、`max_output_tokens` | 输入与输出共用的上下文窗口、单次输出上限；均为正整数 |
+| `api_key_env` | 存放密钥的环境变量名，如 `SENTRIX_CLOUD_API_KEY`；密钥由启动环境提供 |
+| `roles.vision.supports_vision` | 设为 `true`，并确认端点支持图片输入 |
+| 各角色的 `payload`、`retry`、`timeout_s` | 服务支持的请求字段、重试次数和单次请求超时 |
+| `agent` | 普通回合的调用预算，以及历史消息、工具预览和压缩设置 |
+| `vision` / `memory` | 图片尺寸和记忆构建参数，可沿用模板后按部署调整 |
+
+模板中 `agent.max_steps`、`max_tool_calls`、`max_search_calls`、`max_page_calls` 和
+`max_inspections` 的 `null` 表示普通 cloud 回合不限制对应次数；需要限制的字段应填写正整数。
+正式测评可开启下节推理模式，使用共享请求计数，默认执行 `100/600/100/500` 的上界。
+
+#### 启动并核对连接
+
+PhotoBench 首次配置可建立 `apps/photobench/config/runtime_connection.json`，
+下面是同机 WeMM 的连接示例，端口按实际部署替换：
+
+```json
+{
+  "sentrix_url": "http://127.0.0.1:8191",
+  "model_base_url": "http://127.0.0.1:8100/v1",
+  "vllm_manager_url": "",
+  "embedding": {
+    "mode": "unified_multimodal",
+    "wemm_url": "http://127.0.0.1:8102"
+  }
+}
+```
+
+`PHOTOBENCH_CONFIG_ROOT` 可指定独立配置目录；`BENCH_SENTRIX_URL` 和
+`BENCH_VLLM_BASE_URL` 等环境变量优先于 PhotoBench 连接文件。
+使用独立目录时，同时放入 Judge 和模型目标配置；可复制仓库中的
+`judge_providers.example.json`、`vllm_targets.example.json` 后修改，保留这两个模板文件名也可加载。
+`start_api.sh` 也会从这份连接文件导入主模型和嵌入地址，覆盖同名环境变量，需保持两处一致。
+cloud 模式的角色端点以 `SENTRIX_LLM_CONFIG` 中的角色配置为准。
+
+连接配置与所选模型配置对齐后，加载产品环境并启动主 API：
+
+```bash
+set -a
+source data/product.env.local
+set +a
+./scripts/deploy/start_api.sh
+```
+
+systemd 部署应在对应单元的 `EnvironmentFile` 中加载同一份配置，密钥另由受控环境提供。
+产品环境变量或角色 JSON 修改后，需在该实例的导入和对话空闲时重启主 API。
+
+启动后通过 `GET /api/v1/diagnostics` 核对产品的 `runtime_configuration`，
+通过 PhotoBench 的 `GET /api/v1/config` 核对连接。
+正式任务再检查 `runtime_snapshot` 中的实际模型与 `product_settings`；运行任务保留冻结参数，
+修改配置文件不会追溯改变历史任务。已有服务由对应服务单元管理，避免重复运行启动脚本。
+
+### 推理模式
+
+推理模式放宽 Agent 的普通回合预算，让它能继续检索和调用工具，适合需要多轮取证的测评。
+默认单题最多发起 100 次生成模型请求和 600 次工具请求。
+搜索属于工具请求，总额内分为搜索 100 次、其他工具 500 次，两类额度互不借用。
+
+| 产品环境变量 | 默认值 | 计数范围 |
+|---|---|---|
+| `SENTRIX_REASONING_MAX_MODEL_CALLS` | 100 | 规划、聊天及工具内部生成模型请求，重试也计数 |
+| `SENTRIX_REASONING_MAX_TOOL_CALLS` | 600 | 所有获准处理的工具请求，包含搜索 |
+| `SENTRIX_REASONING_MAX_SEARCH_CALLS` | 100 | `search_memories` 请求 |
+| `SENTRIX_REASONING_MAX_OTHER_TOOL_CALLS` | 500 | 除搜索外的工具请求，包含收尾 |
+
+以上参数在主 API 的启动环境中设置。系统从总预算中预留 2 次模型与工具收尾额度，
+收尾仍计入总上限；额度用尽后拒绝超额请求并记录原因。推理回合的墙钟预算至少为 3600 秒，
+PhotoBench 默认等待单题 3660 秒，留出结果读取时间。
+
+PhotoBench 启动设置中的“开启推理模式”默认开启；交互对话和单题重测也支持该开关。
+产品对话 API 默认关闭，可在创建回合的请求中传 `"reasoning": true` 开启。
+关闭后，本地默认回到 8 步、6 次工具往返的普通预算；cloud 普通预算取角色 JSON 的 `agent` 设置。
+
+Agent 推理模式与模型的原生 thinking 开关分别控制。
+例如 Qwen 的 `qwen35_nonthinking` 仍可开启 Agent 推理模式，模型请求继续使用 `enable_thinking=false`。
+
+local 普通窗口由 `SENTRIX_VLM_CONTEXT_TOKENS` 设置，cloud 普通窗口取 `roles.chat.context_tokens`。
+`SENTRIX_VLM_REASONING_CONTEXT_TOKENS` 可单独设置推理窗口。
+本地窗口受端点实际容量和精确计数配置约束；cloud 推理窗口默认 131072 token，需与实际端点能力匹配。
+上下文由输入和输出共用，不能把 `max_tokens` 直接填成窗口大小。
+详细规则见 [推理模式上下文](docs/refactor/2026-11-18-reasoning-context.md)。
 
 ### llama.cpp 启动参数（缓存/端侧速度已验证）
 

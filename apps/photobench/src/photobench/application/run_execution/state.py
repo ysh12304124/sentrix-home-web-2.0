@@ -34,17 +34,25 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import pickle
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
-from photobench.domain.results.ports import RunResultWriter
+from photobench.domain.results.ports import CommittedTraceCompactor, RunResultWriter
 from photobench.domain.runs.analysis import now_iso
+from photobench.domain.runs.frozen_trace import freeze_item_traces
 
 #: 1.0 ``:211`` 的 ``PERSIST_DEBOUNCE_SECONDS``。合并同一短窗口里的多次快照请求。
 log = logging.getLogger(__name__)
 
 PERSIST_DEBOUNCE_SECONDS = max(0.05, float(os.environ.get("PHOTOBENCH_PERSIST_DEBOUNCE_SECONDS", "0.25")))
+
+#: 单次快照落盘的等待上限。**10s 对 487 题的大 run 不够**：2026-10-30 那轮
+#: ``run.json`` 约 271 MB，写完时收尾线程等不到提交就超时，整轮被误判成 failed，
+#: 而 487 条 results 其实一条不少。落盘是后台线程，调大它只影响收尾等待，不影响
+#: 评测墙钟；需要时可用 ``PHOTOBENCH_PERSIST_TIMEOUT_SECONDS`` 覆盖。
+PERSIST_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("PHOTOBENCH_PERSIST_TIMEOUT_SECONDS", "300")))
 
 
 class RunState:
@@ -57,7 +65,7 @@ class RunState:
         run_id: str = "",
         writer: RunResultWriter | None = None,
         debounce: float = PERSIST_DEBOUNCE_SECONDS,
-        persist_timeout: float = 60.0,
+        persist_timeout: float = PERSIST_TIMEOUT_SECONDS,
     ) -> None:
         self._lock = threading.RLock()
         self.data = initial
@@ -75,6 +83,10 @@ class RunState:
         self._persist_stopping = False
         self._persist_error: Exception | None = None
         self._persist_thread: threading.Thread | None = None
+        self._reuse_traces = (
+            os.environ.get("PHOTOBENCH_REUSE_TRACE_CHECKPOINTS") == "1"
+            or os.environ.get("PHOTOBENCH_SPLIT_RESULTS") == "1"
+        )
 
     @property
     def lock(self) -> threading.RLock:
@@ -185,9 +197,30 @@ class RunState:
         self._persist_thread.start()
 
     def snapshot(self) -> dict[str, Any]:
-        """Detach a consistent state; never hold the condition while taking state.lock."""
-        with self._lock:
-            return copy.deepcopy(self.data)
+        """Detach a consistent state; never hold the condition while taking state.lock.
+
+        ``telemetry_live`` 是唯一一块**在锁外被采样线程改写**的嵌套字典
+        （``service._sample_writer`` 拿到 ``mutate`` 的返回值后自己更新）。收尾时
+        采样线程可能还有一个在飞的回调，``deepcopy`` 会撞上
+        ``dictionary changed size during iteration``——2026-10-31 那轮 487 题全部
+        跑完、就是最后这一下把整轮判成 failed。重试几次即可；持续失败才向上抛。
+        """
+        for attempt in range(10):
+            try:
+                with self._lock:
+                    if self._reuse_traces:
+                        freeze_item_traces(self.data.get("items") or [])
+                        return copy.deepcopy(self.data)
+                    # State is a JSON tree. The C implementation preserves shared
+                    # trace references while avoiding deepcopy's per-node Python
+                    # dispatch. Only bytes made here are decoded; pickle is never
+                    # used to read persisted or externally supplied data.
+                    return cast(dict[str, Any], pickle.loads(pickle.dumps(self.data, protocol=5)))
+            except RuntimeError as error:
+                if "changed size during iteration" not in str(error) or attempt == 9:
+                    raise
+                time.sleep(0.05)
+        raise AssertionError("unreachable")
 
     def _persist_loop(self) -> None:
         try:
@@ -196,10 +229,10 @@ class RunState:
                     self._persist_condition.wait_for(
                         lambda: self._persist_stopping or self._persist_requested > self._persist_written
                     )
-                    if self._persist_stopping:
+                    if self._persist_stopping and self._persist_requested <= self._persist_written:
                         return
                     self._persist_condition.wait_for(lambda: self._persist_stopping, timeout=self.debounce)
-                    if self._persist_stopping:
+                    if self._persist_stopping and self._persist_requested <= self._persist_written:
                         return
                 try:
                     began = time.monotonic()
@@ -213,15 +246,24 @@ class RunState:
                     writer = self._writer
                     assert writer is not None
                     writer.write_snapshot(self.run_id, stored)
+                    committed = time.monotonic()
+                    compact_locked = committed
+                    if isinstance(writer, CommittedTraceCompactor):
+                        with self._lock:
+                            compact_locked = time.monotonic()
+                            writer.compact_committed_traces(self.run_id, self.data, stored)
                     elapsed = time.monotonic() - began
                     if elapsed >= 5:
                         log.warning(
-                            "Slow run snapshot: run=%s revision=%d items=%d copy=%.3fs write=%.3fs",
+                            "Slow run snapshot: run=%s revision=%d items=%d copy=%.3fs "
+                            "write=%.3fs compact_wait=%.3fs compact=%.3fs",
                             self.run_id,
                             target,
                             len(stored.get("items") or []),
                             copied - began,
-                            elapsed - (copied - began),
+                            committed - copied,
+                            compact_locked - committed,
+                            time.monotonic() - compact_locked,
                         )
                 except Exception as exc:  # noqa: BLE001 — publish failure and stop, never mark as written
                     log.exception("Run snapshot failed: %s", self.run_id)
@@ -235,6 +277,12 @@ class RunState:
                     self._persist_written = target
                     self._persist_condition.notify_all()
         finally:
+            with self._lock:
+                if (self.data.get("persistence") or {}).get("status") == "stop_pending":
+                    self.data["persistence"] = {
+                        "status": "failed" if self._persist_error else "stopped",
+                        "error": str(self._persist_error) if self._persist_error else None,
+                    }
             with self._persist_condition:
                 if not self._persist_stopping and self._persist_error is None:
                     self._persist_error = RuntimeError("persist writer exited unexpectedly")
@@ -246,7 +294,11 @@ class RunState:
         if writer is None:
             return
         if self._persist_thread is None:
-            writer.write_snapshot(self.run_id, self.snapshot())
+            stored = self.snapshot()
+            writer.write_snapshot(self.run_id, stored)
+            if isinstance(writer, CommittedTraceCompactor):
+                with self._lock:
+                    writer.compact_committed_traces(self.run_id, self.data, stored)
             return
         deadline = time.monotonic() + self.persist_timeout
         with self._persist_condition:
@@ -275,20 +327,30 @@ class RunState:
 
     def stop_persist_writer(self) -> None:
         """Signal stop even on persistence failure; report any writer still holding resources."""
-        deadline = time.monotonic() + self.persist_timeout
+        flush_error: Exception | None = None
         try:
             self.persist(wait=True)
+        except Exception as exc:
+            flush_error = exc
         finally:
             with self._persist_condition:
                 self._persist_stopping = True
                 self._persist_condition.notify_all()
             thread = self._persist_thread
             if thread is not None:
-                thread.join(timeout=max(0, deadline - time.monotonic()))
-                if thread.is_alive():
-                    with self._lock:
+                # Flushing and joining have independent budgets. On timeout the
+                # writer drains requested revisions before exiting.
+                thread.join(timeout=self.persist_timeout)
+                with self._lock:
+                    if thread.is_alive():
                         self.data["persistence"] = {"status": "stop_pending", "error": "writer_stop_timeout"}
-                    raise TimeoutError("benchmark state writer did not stop before deadline")
+                        raise TimeoutError("benchmark state writer did not stop before deadline")
+                    if (self.data.get("persistence") or {}).get("status") == "stop_pending":
+                        self.data["persistence"] = {"status": "stopped"}
+        if self._persist_error is not None:
+            raise RuntimeError(f"benchmark state persistence failed: {self._persist_error}")
+        if flush_error is not None and self._persist_written < self._persist_requested:
+            raise flush_error
 
 
 __all__ = ["PERSIST_DEBOUNCE_SECONDS", "RunState"]

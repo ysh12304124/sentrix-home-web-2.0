@@ -1,7 +1,7 @@
 /**
  * 人物与关系。对应 1.0 `src/app.js:648` 的 `peopleView()`。
  *
- * 三个 tab：**人物（默认） / 关系 / 人物介绍**。默认是名录不是图谱，依据是实测：
+ * 两个 tab：**人物（默认） / 关系**（原「人物介绍」tab 2026-11-12 取消）。默认是名录不是图谱，依据是实测：
  * 刚导入的相册跑出来的图是 8 个孤点（计划书 §0）；1.0 的默认恰恰是图谱，这是 F7
  * 要改的第一件事。
  *
@@ -14,7 +14,7 @@
  * 就要动那条门禁；查询参数同样能刷新保持、能后退、能分享，代价为零。
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { newOperationId, reportClientEvent } from "../../shared/clientEvents";
 import { useSearchParams } from "react-router";
@@ -25,28 +25,32 @@ import { useScope } from "../../app/ScopeProvider";
 import { FamilyGraphView } from "./family/FamilyGraphView";
 import { FamilyRoster } from "./family/FamilyRoster";
 import { confirmedRelationships } from "./family/graphLayout";
-import { PersonDetail } from "./family/PersonDetail";
+import { PersonDetail, type MergeConfirmation } from "./family/PersonDetail";
 import { personDisplayName } from "./family/membership";
+import { splitByTier } from "./family/strangers";
 import { useFamilyGraph } from "./family/useFamilyGraph";
-import { PersonInsights } from "./PersonInsights";
+import { PeopleWritesContext, usePeopleWriteState } from "./family/usePeopleWrites";
 
-type View = "roster" | "graph" | "insights";
+/**
+ * 两个 tab：人物 / 关系。原「人物介绍」tab 已取消（2026-11-12）：它用另一套分层（核心 /
+ * 常见 / 偶发）重复列了一遍人，画像也与详情里的重复；画像反馈挪进了人物详情的「介绍」段。
+ */
+type View = "roster" | "graph";
 
 const TABS: readonly { value: View; label: string }[] = [
   { value: "roster", label: "人物" },
   { value: "graph", label: "关系" },
-  { value: "insights", label: "人物介绍" },
 ];
 
 export function PeoplePage() {
   const { scopeId } = useScope();
-  const { state, people, relationships, error, refresh } = useFamilyGraph(scopeId);
-  const [namePreviews, setNamePreviews] = useState<Record<string, string>>({});
-  const visiblePeople = people.map((person) => namePreviews[person.id] === undefined
-    ? person : { ...person, display_name: namePreviews[person.id] });
+  const { state, people, relationships, error, refresh, applyPersonPatch, applyRelationships } = useFamilyGraph(scopeId);
   const [view, setView] = useState<View>("roster");
   const [searchParams, setSearchParams] = useSearchParams();
-  const [relateTo, setRelateTo] = useState<string | null>(null);
+  const [drop, setDrop] = useState<{ subject: string; target: string; attempt: number } | null>(null);
+  const dropSequence = useRef(0);
+  const [confirmation, setConfirmation] = useState<MergeConfirmation | null>(null);
+  const writes = usePeopleWriteState();
 
   /**
    * **一条关系在库里是两行**（正向 + 反向）。后端 `set_relationship` 一次写两行，
@@ -54,8 +58,10 @@ export function PeoplePage() {
    * 显示成「2 条」。布局与详情面板都走了 `dedupeRelationships`，这里对齐它们。
    */
   const edgeCount = confirmedRelationships(relationships).length;
+  // 数字跟着各自的 tab 走：「人物」数认出来的人，「关系」数已确认的关系。
+  const tabCounts: Record<View, number> = { roster: splitByTier(people).known.length, graph: edgeCount };
   const selectedId = searchParams.get("person");
-  const selected = visiblePeople.find((person) => person.id === selectedId) ?? null;
+  const selected = people.find((person) => person.id === selectedId) ?? null;
 
   /**
    * 改 `?person=`。
@@ -85,7 +91,9 @@ export function PeoplePage() {
         entityId: personId,
       });
     }
-    setRelateTo(relate);
+    setDrop(personId !== null && relate !== null
+      ? { subject: personId, target: relate, attempt: ++dropSequence.current }
+      : null);
     const next = new URLSearchParams(window.location.search);
     if (personId === null) next.delete("person");
     else next.set("person", personId);
@@ -93,9 +101,10 @@ export function PeoplePage() {
   }
 
   const banner = state === "error" ? error : null;
+  const selectedDrop = drop?.subject === selectedId ? drop : null;
 
   return (
-    <>
+    <PeopleWritesContext.Provider value={writes}>
       <PageHeader
         kicker="家庭人物"
         title="人物与关系"
@@ -113,11 +122,9 @@ export function PeoplePage() {
             onClick={() => changeView(tab.value)}
           >
             {tab.label}
+            {state === "loading" ? null : <span className="family-tab-count">{tabCounts[tab.value]}</span>}
           </button>
         ))}
-        <span className="family-tabs-note">
-          {state === "loading" ? "正在读取…" : `${people.length} 人 · ${edgeCount} 条已确认关系`}
-        </span>
       </div>
 
       {banner === null ? null : (
@@ -132,13 +139,10 @@ export function PeoplePage() {
             <p className="empty">正在读取人物…</p>
           ) : (
             <FamilyRoster
-              people={visiblePeople}
+              people={people}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
-              onMerged={async (targetId) => {
-                await refresh();
-                selectPerson(targetId);
-              }}
+              onChanged={refresh}
             />
           )}
 
@@ -151,38 +155,36 @@ export function PeoplePage() {
             <p className="empty">正在读取关系…</p>
           ) : (
             <FamilyGraphView
-              people={visiblePeople}
+              people={people}
               relationships={relationships}
               selectedId={selectedId}
               onSelect={(id) => selectPerson(id)}
               onRelate={(subjectId, objectId) => selectPerson(subjectId, objectId)}
               onChanged={refresh}
+              onRelationsChanged={applyRelationships}
             />
           )}
         </Section>
       ) : null}
 
-      {view === "insights" ? (
-        <Section kicker="人物介绍" title="看看系统记得的这个人，像不像他">
-          <PersonInsights scopeId={scopeId} />
-        </Section>
-      ) : null}
 
       {selected === null ? null : (
         <PersonDetail
           key={selected.id}
           person={selected}
-          people={visiblePeople}
+          people={people}
           relationships={relationships}
-          relateTarget={relateTo}
+          relateTarget={selectedDrop?.target}
+          relateAttempt={selectedDrop?.attempt}
+          mergeConfirmation={confirmation?.personId === selected.id ? confirmation : null}
+          onMergeConfirmation={(next) => {
+            setConfirmation(next);
+            if (next !== null && next.personId !== selected.id) selectPerson(next.personId);
+          }}
           onClose={() => selectPerson(null)}
           onChanged={refresh}
-          onNamePreview={(personId, name) => setNamePreviews((current) => {
-            const next = { ...current };
-            if (name === null) delete next[personId];
-            else next[personId] = name;
-            return next;
-          })}
+          onPersonPatched={applyPersonPatch}
+          onRelationsChanged={applyRelationships}
           onRedirect={(id) => selectPerson(id)}
         />
       )}
@@ -191,6 +193,6 @@ export function PeoplePage() {
       <span className="sr-only" aria-live="polite">
         {selected === null ? "" : `已打开 ${personDisplayName(selected)} 的详情`}
       </span>
-    </>
+    </PeopleWritesContext.Provider>
   );
 }

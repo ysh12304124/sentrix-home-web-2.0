@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../shared/api/client", async (importOriginal) => {
@@ -85,8 +85,12 @@ describe("助手面板的历史回放", () => {
 
     expect(await screen.findByText("去年夏天在海边")).toBeTruthy();
     expect(await screen.findByText("找到了两张。")).toBeTruthy();
-    const firstPhoto = await screen.findByAltText("beach.jpg");
-    expect(firstPhoto.getAttribute("src")).toBe("/api/v1/assets/a1/file");
+    const firstPhoto = await screen.findByAltText("相关照片");
+    expect(firstPhoto.getAttribute("src")).toBe("/api/v1/assets/a1/thumbnail");
+    expect(client.fetchTurnEvents).not.toHaveBeenCalled();
+    fireEvent.click(firstPhoto);
+    expect(screen.getByRole("dialog").querySelector("img")?.getAttribute("src")).toBe("/api/v1/assets/a1/preview");
+    fireEvent.keyDown(window, { key: "Escape" });
     expect(client.getConversation).toHaveBeenCalledWith("c1");
 
     rerender(<AssistantPanel conversationId="c2" scopeId="album1" />);
@@ -94,6 +98,7 @@ describe("助手面板的历史回放", () => {
     expect(await screen.findByText("奶奶的生日")).toBeTruthy();
     expect(await screen.findByText("找到了蛋糕。")).toBeTruthy();
     expect(client.getConversation).toHaveBeenLastCalledWith("c2");
+    expect(screen.getByAltText("相关照片").getAttribute("src")).toBe("/api/v1/assets/a2/thumbnail");
     // 回放的是 c2，c1 的内容不该继续留在面板里。
     expect(screen.queryByText("去年夏天在海边")).toBeNull();
   });

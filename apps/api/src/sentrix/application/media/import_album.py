@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -54,6 +55,7 @@ from sentrix.application.media.stage_timing import stage_span
 from sentrix.domain.media.models import Asset, AssetStatus
 from sentrix.domain.media.ports import AssetRepository
 from sentrix.domain.media.progress import OperationCancelled
+from sentrix.domain.media.source_metadata import SourceMetadata
 from sentrix.runtime.work import import_task
 
 log = logging.getLogger("sentrix.media.import_album")
@@ -73,7 +75,7 @@ VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".avi", ".mkv"})
 AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"})
 
 # 扫描的实际判据 = 图片 ∪ 视频 ∪ 音频。
-SCAN_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES | AUDIO_SUFFIXES
+SCAN_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES | AUDIO_SUFFIXES | frozenset({".txt", ".md"})
 
 DEFAULT_ALBUM_LIMIT = 200
 
@@ -139,6 +141,9 @@ class AlbumProcessRequest:
     scope_id: str
     # 顺序就是目录扫描顺序；事件提交必须严格遵守它，不能按推理完成顺序提交。
     asset_ids: tuple[str, ...]
+    finalize_only: bool = False
+    resume_interrupted: bool = False
+    existing_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +151,7 @@ class AlbumProcessResult:
     scope_id: str
     processed: int = 0
     skipped: int = 0
+    resumed_asset_ids: tuple[str, ...] = ()
     events: int = 0
     lexical_terms: int = 0
     video_scenes: int = 0
@@ -175,6 +181,7 @@ class ImportAlbum:
     @import_task
     def execute(self, request: AlbumImportRequest) -> AlbumImportResult:
         root, paths = self._paths(request)
+        sources = self._source_records(root)
 
         self._report(stage="media_processing", total=len(paths))
         imported = deduplicated = events = lexical_terms = 0
@@ -206,7 +213,9 @@ class ImportAlbum:
                     self._report(stage="media_staging", current_file=paths[index].name)
                     stage_started = time.perf_counter()
                     try:
-                        outcome = self._importer.stage(self._request_for(request, paths[index]))
+                        outcome = self._importer.stage(
+                            self._request_for(request, paths[index], sources=sources)
+                        )
                     except OperationCancelled:
                         raise
                     except Exception as error:  # 一张失败不中断整批——整册导入是几小时的事
@@ -326,13 +335,16 @@ class ImportAlbum:
         不在这里执行。既有 ``execute`` 完整导入入口保持不变，兼容产品端原调用方。
         """
         root, paths = self._paths(request)
+        sources = self._source_records(root)
         total_started = time.perf_counter()
         imported = deduplicated = 0
         asset_ids: list[str] = []
         failures: list[AlbumFailure] = []
         for path in paths:
             try:
-                outcome = self._importer.stage(self._request_for(request, path, defer_processing=True))
+                outcome = self._importer.stage(
+                    self._request_for(request, path, defer_processing=True, sources=sources)
+                )
             except Exception as error:  # 一张坏媒体不阻断整册
                 failures.append(AlbumFailure(file_name=path.name, reason=f"{type(error).__name__}: {error}"))
                 continue
@@ -373,10 +385,18 @@ class ImportAlbum:
 
     @staticmethod
     def _request_for(
-        request: AlbumImportRequest, path: Path, *, defer_processing: bool = False
+        request: AlbumImportRequest,
+        path: Path,
+        *,
+        defer_processing: bool = False,
+        sources: dict[str, Any] | None = None,
     ) -> ImportRequest:
         """磁盘上的一张图 → 一次导入请求。整册导入没有 upload 的 content-type 可依。"""
+        source = (sources or {}).get(path.name, {})
         return ImportRequest(
+            external_source_id=source.get("external_source_id"),
+            source_timestamp=source.get("source_timestamp"),
+            source_metadata=SourceMetadata.from_dict(source),
             scope_id=request.scope_id,
             file_name=path.name,
             content_type=None,
@@ -385,6 +405,22 @@ class ImportAlbum:
             source_move=False,
             defer_processing=defer_processing,
         )
+
+    @staticmethod
+    def _source_records(root: Path) -> dict[str, Any]:
+        path = root / "source-metadata.jsonl"
+        if not path.is_file():
+            return {}
+        records: dict[str, Any] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            name = row["file_name"]
+            if name in records or Path(name).name != name:
+                raise ValueError(f"来源清单中的文件名重复或非法: {name}")
+            records[name] = row
+        return records
 
     def _summarize_events(self, event_ids: list[str]) -> int:
         """批末逐个总结。**一个事件的失败不中断整批**——与逐张那条同样的性质。
@@ -430,6 +466,36 @@ class ProcessAlbumPipeline:
         total_started = time.perf_counter()
         # 保序去重，防止客户端拼多个目录时把同一资产重复提交。
         ordered_ids = list(dict.fromkeys(request.asset_ids))
+        recovered_asset_ids: list[str] = []
+        if request.resume_interrupted:
+            if not ordered_ids:
+                raise ValueError("pipeline recovery requires source asset IDs")
+            checkpoint = self._assets.get_many(ordered_ids)
+            for asset_id in ordered_ids:
+                asset = checkpoint.get(asset_id)
+                if (
+                    asset is None
+                    or asset.scope_id != request.scope_id
+                    or asset.parent_asset_id is not None
+                    or asset.status not in {AssetStatus.PROCESSED, AssetStatus.PROCESSING, AssetStatus.QUEUED}
+                ):
+                    raise ValueError(f"invalid source checkpoint for pipeline recovery: {asset_id}")
+            for asset_id in ordered_ids:
+                if checkpoint[asset_id].status is AssetStatus.PROCESSING:
+                    self._assets.update_status(asset_id, AssetStatus.QUEUED)
+                    recovered_asset_ids.append(asset_id)
+        if request.finalize_only:
+            if not ordered_ids:
+                raise ValueError("finalization requires a nonempty source asset checkpoint")
+            for asset_id in ordered_ids:
+                asset = self._assets.get(asset_id)
+                if (
+                    asset is None
+                    or asset.scope_id != request.scope_id
+                    or asset.parent_asset_id is not None
+                    or asset.status is not AssetStatus.PROCESSED
+                ):
+                    raise ValueError(f"source asset is not fully processed in this scope: {asset_id}")
         targets: list[Asset | None] = []
         failures: dict[int, AlbumFailure] = {}
         skipped = 0
@@ -464,7 +530,7 @@ class ProcessAlbumPipeline:
                 return self._importer.prepare_image(asset)
 
         processed = events = lexical_terms = video_scenes = 0
-        event_ids: list[str] = []
+        event_ids: list[str] = list(dict.fromkeys(request.existing_event_ids))
         timing_totals: dict[str, float] = {}
         prepared: dict[int, Future[PreparedImage]] = {}
         next_submit = next_finish = 0
@@ -519,6 +585,8 @@ class ProcessAlbumPipeline:
         summarize_started = time.perf_counter()
         with stage_span("event_summarize"):
             summarized = self._summarize_events(event_ids)
+        if request.resume_interrupted and summarized != len(event_ids):
+            failures[len(ordered_ids)] = AlbumFailure("event_summaries", "some event summaries failed")
         timing_totals["event_summarize"] = time.perf_counter() - summarize_started
         summarize_finished = time.perf_counter()
         spans.include({"event_summarize": (summarize_started, summarize_finished)})
@@ -529,6 +597,7 @@ class ProcessAlbumPipeline:
             scope_id=request.scope_id,
             processed=processed,
             skipped=skipped,
+            resumed_asset_ids=tuple(recovered_asset_ids),
             events=events,
             lexical_terms=lexical_terms,
             video_scenes=video_scenes,

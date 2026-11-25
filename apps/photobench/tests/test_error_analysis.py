@@ -285,7 +285,7 @@ def test_spawn_priority_cancellation_restart_staleness_and_raw_preservation(tmp_
         assert backend.get(j["job_id"])["status"] == "cancelled"
         j = backend.submit("r", "rules", {})
         assert backend.result(j["job_id"])["status"] == "queued"
-        busy.clear()
+        # Rules use no inference endpoint and run while another benchmark is busy.
         done = await_job(backend, j["job_id"])
         assert done["status"] == "completed", done
         assert done["worker_pid"] != __import__("os").getpid()
@@ -615,7 +615,7 @@ def test_task_aliases_merge_before_counting_and_filters_exports_share_the_catego
     cases = [case_from_item(row, i) for i, row in enumerate(raw)]
     r = report(cases)
     assert raw == before
-    assert r["rule_version"] == 13
+    assert r["rule_version"] == 15
     media, behavior = r["groups"]["content_type"]
     assert media == {
         "value": "T1_retrieve_media",
@@ -783,3 +783,11 @@ def test_html_mixed_scales_mean_uses_continuous_raw_score_and_legacy_normalizati
     assert "平均答案正确性<strong>58.3%</strong>" in output
     assert "新版评分覆盖 2 / 2 题" in output
     assert "归一化平均分 62.5%" in output
+
+
+def test_native_atm_adapted_behavior_label_is_recorded_but_not_scored():
+    data = item(benchmark_id="atm-bench", expected_action="clarify")
+    case = case_from_item(data, 0)
+    turn = case["turns"][0]
+    assert turn["recorded_expected"] == "clarify"
+    assert turn["expected"] is None and turn["behavior_correct"] is None

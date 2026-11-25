@@ -17,7 +17,7 @@ import mimetypes
 from typing import Any
 
 #: 1.0 ``:7716``：相册媒体只从这三个子目录交付。
-ALBUM_MEDIA_COLLECTIONS = frozenset({"photos", "faces", "videos"})
+ALBUM_MEDIA_COLLECTIONS = frozenset({"photos", "faces", "videos", "documents"})
 
 
 def manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -37,6 +37,7 @@ def manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "face_count": len(manifest.get("faces", [])),
         "photo_count": len(manifest.get("photos", [])),
         "video_count": len(manifest.get("videos", [])),
+        "document_count": len(manifest.get("documents", [])),
         "qa_sets": list(manifest.get("qa_sets", {}).keys()),
     }
 

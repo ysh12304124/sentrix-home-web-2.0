@@ -453,8 +453,8 @@ class SqliteVideoRepository:
                 "INSERT INTO assets (id, scope_id, file_name, media_type, path, mime_type,"
                 " size_bytes, status, content_sha256, captured_at, gps_latitude, gps_longitude,"
                 " created_at, updated_at, parent_asset_id, derived_kind, source_timestamp_sec,"
-                " source_frame_index, source_scene_index, capture_time_json)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " source_frame_index, source_scene_index, capture_time_json, metadata_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     asset.id,
                     asset.scope_id,
@@ -476,6 +476,7 @@ class SqliteVideoRepository:
                     int(source_frame_index),
                     int(source_scene_index),
                     json.dumps(dataclasses.asdict(asset.capture_time)),
+                    json.dumps({"source_metadata": asset.source_metadata.to_dict()}, ensure_ascii=False),
                 ),
             )
 

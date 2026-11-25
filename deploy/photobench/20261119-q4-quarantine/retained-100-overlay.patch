@@ -1,0 +1,185 @@
+--- a/apps/photobench/src/photobench/application/runs/suites.py
++++ b/apps/photobench/src/photobench/application/runs/suites.py
+@@ -42,6 +42,9 @@
+ 
+ from photobench.application.config.service import (
+     ConfigService,
++    BIG_MODEL_PROFILE_ID,
++    BIG_MODEL_ENABLED,
++    BIG_MODEL_MODEL,
+     normalize_model_base_url,
+     normalize_service_url,
+ )
+@@ -251,6 +254,17 @@
+                 self._on_finished(run_id)
+ 
+     def _require_inactive(self) -> None:
++        # A timed-out cleanup can finish after execute() returns. Reap only
++        # terminal executions whose worker and all cleanup guards are finished.
++        for rid, run in list(self._active.items()):
++            thread = self._threads.get(rid)
++            if (
++                run.state is not None
++                and run.state.get("status") not in DIRTY_STATUSES
++                and (thread is None or not thread.is_alive())
++                and not self._stop_pending(run.state.data)
++            ):
++                self._active.pop(rid, None)
+         busy = self._active_ids()
+         if (
+             busy
+@@ -268,7 +282,10 @@
+                 run.state is not None and self._stop_pending(run.state.data) for run in self._active.values()
+             )
+         ):
+-            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(busy)}")
++            occupied = sorted(set(busy) | set(self._active) | {
++                rid for rid, thread in self._threads.items() if thread.is_alive()
++            })
++            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(occupied)}")
+ 
+     def _state_if_exists(self, run_id: str) -> dict[str, Any] | None:
+         try:
+@@ -419,14 +436,22 @@
+                     f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
+                     f"{safe_slug(str(model))}-{uuid.uuid4().hex[:6]}"
+                 )
++                cloud = str(model) == BIG_MODEL_PROFILE_ID
++                if cloud and not BIG_MODEL_ENABLED:
++                    raise InvalidRequestError("cloud model profile is disabled")
++                run_connection = dict(connection)
++                if cloud:
++                    # Auth remains in the loopback gateway, never in run snapshots.
++                    run_connection.update(model_base_url="http://127.0.0.1:18106/v1",
++                                          vllm_manager_url="", endpoint_model=BIG_MODEL_MODEL)
+                 request = RunRequest(
+                     album_id=album_id,
+                     qa_set=qa_set,
+                     model_profile=str(model),
+                     sentrix_url=sentrix_url,
+-                    manager_url=deps.manager_url,
+-                    model_base_url=deps.model_base_url,
+-                    endpoint_model=endpoint_model,
++                    manager_url="" if cloud else deps.manager_url,
++                    model_base_url="http://127.0.0.1:18106/v1" if cloud else deps.model_base_url,
++                    endpoint_model=BIG_MODEL_MODEL if cloud else endpoint_model,
+                     run_id=run_id,
+                     mode=mode,
+                     qa_concurrency=int(
+@@ -445,7 +470,7 @@
+                     pipeline_timeout=int(payload.get("pipeline_timeout") or 86400),
+                     # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
+                     scope_id=existing_scope_id,
+-                    runtime_framework=deps.runtime_framework,
++                    runtime_framework="generic" if cloud else deps.runtime_framework,
+                     judge_provider_id=deps.judge.judge_provider_id,
+                     judge_url=deps.judge.judge_url,
+                     judge_model=deps.judge.judge_model,
+@@ -463,7 +488,7 @@
+                     evidence_judge_enabled=deps.judge.evidence_enabled,
+                     judge_use_gt_images=deps.judge.judge_use_gt_images,
+                 )
+-                request = freeze_runtime_request(request, connection, self._build_revision)
++                request = freeze_runtime_request(request, run_connection, self._build_revision)
+                 requests[run_id] = request
+                 execution = self._new_execution(request)
+                 execution.prepare(request)
+--- a/apps/photobench/src/photobench/application/run_execution/service.py
++++ b/apps/photobench/src/photobench/application/run_execution/service.py
+@@ -596,6 +596,7 @@
+                 if sampling and name in {"photo_import", "pipeline_processing", "qa_eval"}:
+                     sampler.sample_once()
+                 phase(state, request)
++                request = self._request or request
+                 state.persist()
+                 if (
+                     request.recover_pipeline
+@@ -972,6 +973,24 @@
+ 
+     # ---- model_deploy -------------------------------------------------------
+ 
++    def _resolve_current_model_profile(self, request: RunRequest) -> str:
++        profiles = self.lifecycle.profiles().get("profiles") or []
++        profiles = [p for p in profiles if isinstance(p, dict) and p.get("id")]
++        current = self.lifecycle.state() or {}
++        active = str(current.get("profile") or "").strip()
++        if active:
++            matches = [p for p in profiles if p["id"] == active]
++        else:
++            model = str(request.endpoint_model or "").strip()
++            if (not model or model == "__current__") and self.runtime_snapshot is not None:
++                model = str(self.runtime_snapshot.connection().get("endpoint_model") or "").strip()
++            if not model or model == "__current__":
++                model = str(current.get("served_model_name") or "").strip()
++            matches = [p for p in profiles if model and model in {p["id"], p.get("served_model_name")}]
++        if len(matches) != 1 or matches[0].get("available") is False:
++            raise RuntimeError("无法将当前模型唯一解析为可用注册名，请明确选择已注册模型；当前模型未停止。")
++        return str(matches[0]["id"])
++
+     def _phase_model_deploy(self, state: RunState, request: RunRequest) -> None:
+         """1.0 ``:2526``。
+ 
+@@ -993,6 +1012,16 @@
+             or request.model_profile == "__current__"
+             or not request.manager_url
+         ):
++            if not request.manager_url:
++                # Listing a proxy's static models does not verify upstream auth.
++                identity = self._record_model_identity(state, request)
++                if identity.get("status") != "resolved":
++                    raise RuntimeError("External model identity could not be resolved")
++                probe_model = identity.get("raw_id") or request.endpoint_model or request.model_profile
++                self.inference.chat(
++                    {"model": probe_model, "messages": [{"role": "user", "content": "Reply OK."}],
++                     "max_tokens": 16}, timeout=45,
++                )
+             if request.switch_model and request.endpoint_model:
+                 models = self.inference.list_models().get("models") or []
+                 if not models or models[0] != request.endpoint_model:
+@@ -1009,6 +1038,14 @@
+                 },
+             )
+             return
++        # Resolve the UI sentinel while the current Manager state still exists.
++        if request.model_profile == "__current__":
++            profile = self._resolve_current_model_profile(request)
++            request = replace(request, model_profile=profile)
++            self._request = request
++            state.set("requested_model_profile", "__current__")
++            state.set("resolved_model_profile", profile)
++            state.set("model_profile", profile)
+         started = time.perf_counter()
+         stop_seconds = 0.0
+         # 1.0 ``:2547``：卸载失败不阻断装载——没在跑的模型本来就停不掉。
+@@ -1151,6 +1188,11 @@
+             if self.runtime_snapshot
+             else ""
+         )
++        if request.manager_url:
++            managed = self.lifecycle.state() or {}
++            if managed.get("profile") != request.model_profile:
++                raise RuntimeError("Model profile mismatch: requested=" + request.model_profile + ", actual=" + str(managed.get("profile")))
++            requested = str(managed.get("served_model_name") or request.model_profile)
+         if requested == "__current__":
+             requested = ""
+         try:
+@@ -1160,6 +1202,8 @@
+         identity["observed_at"] = now_iso()
+         state.set("model_identity", identity)
+         state.set("model_name", identity.get("display_name"))
++        if request.manager_url and identity.get("status") != "resolved":
++            raise RuntimeError("Model identity verification failed: " + str(identity.get("reason")))
+         return identity
+ 
+     def _cancel_wait(self, seconds: float) -> None:
+@@ -2857,6 +2901,10 @@
+                     "judge_status": "pending",
+                 }
+             )
++            failures = [turn for turn in turn_records if turn.get("termination_reason") == "model_error" or turn.get("status") == "failed"]
++            if failures:
++                raise RuntimeError("Agent execution failed: " + str(failures[0].get("error") or failures[0].get("answer") or "model_error"))
++            item["attribution"] = derive_attribution(item)
+             item["execution_status"] = "completed"
+         except RunCancelledError:
+             raise

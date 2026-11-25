@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../shared/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/api/client")>();
-  return { ...actual, getAsset: vi.fn() };
+  return { ...actual, getAsset: vi.fn(), getVideo: vi.fn().mockResolvedValue({ scenes: [] }) };
 });
 
 import * as client from "../../shared/api/client";
@@ -59,11 +59,12 @@ describe("检索结果", () => {
 
     fireEvent.click(screen.getByTitle("查看详情"));
 
-    const dialog = screen.getByRole("dialog", { name: "资产详情" });
+    const dialog = screen.getByRole("dialog", { name: "资料详情" });
     expect(within(dialog).getByRole("img")).toBeTruthy();
-    expect(within(dialog).getByText("bridge.jpg")).toBeTruthy();
+    expect(within(dialog).getByRole("img").getAttribute("src")).toBe("/api/v1/assets/a1/preview");
+    expect(within(dialog).getByRole("link", { name: "打开原文件" }).getAttribute("href")).toBe("/api/v1/assets/a1/file");
     expect(within(dialog).getByText(/2026.*01.*02/)).toBeTruthy();
-    expect(within(dialog).getByText("31.230000, 121.470000")).toBeTruthy();
+    expect(within(dialog).getByText("31.2300, 121.4700")).toBeTruthy();
   });
 
   it("命中视频帧时在源视频上定位到 source_timestamp_sec", async () => {
@@ -92,7 +93,11 @@ describe("检索结果", () => {
 
     fireEvent.click(screen.getByTitle("查看详情"));
     await waitFor(() => expect(client.getAsset).toHaveBeenCalledWith("v1"));
-    const dialog = await screen.findByRole("dialog", { name: "资产详情" });
-    expect(within(dialog).getByText("trip.mp4")).toBeTruthy();
+    const dialog = await screen.findByRole("dialog", { name: "资料详情" });
+    const detailVideo = within(dialog).getByLabelText("视频") as HTMLVideoElement;
+    expect(detailVideo.src).toContain("/api/v1/assets/v1/preview");
+    Object.defineProperty(detailVideo, "currentTime", { value: 0, writable: true });
+    fireEvent.loadedMetadata(detailVideo);
+    expect(detailVideo.currentTime).toBe(12.5);
   });
 });

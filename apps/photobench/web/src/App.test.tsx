@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ManifestSummary } from "./api/types.ts";
@@ -7,6 +7,7 @@ const { mockApi, mockPost } = vi.hoisted(() => ({ mockApi: vi.fn(), mockPost: vi
 vi.mock("./api/client.ts", () => ({ api: mockApi, post: mockPost, BASE: "/api" }));
 
 import { App } from "./App.tsx";
+import { ATM_PROFILE, OPEN_PROFILE, PROFILE_LABELS } from './lib/scoring.ts';
 
 // 这个工程没开 vitest `globals`，testing-library 的自动 cleanup 不会注册——不显式
 // 清理的话上一个用例挂上的 DOM 还在，`getByRole` 会因为找到两个按钮而抛错。
@@ -78,6 +79,51 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('题集评分默认值与运行快照', () => {
+  it('日期命名相册按题集默认选择，同相册切题集更新默认并允许手选', async () => {
+    const fallback = mockApi.getMockImplementation()!;
+    mockApi.mockImplementation((path: string) => path === '/manifests'
+      ? Promise.resolve({manifests: [{...MANIFEST, album_id:'2026.11.17-atm-sources-addresses', qa_sets:['atm-bench', 'photobench-full', 'atm-bench-hard-email']}]}) : fallback(path));
+    const {container} = render(<App />);
+    const config = within(container.querySelector('.config-section') as HTMLElement);
+    const atm = () => config.getByRole('checkbox', {name:PROFILE_LABELS[ATM_PROFILE]}) as HTMLInputElement;
+    const open = () => config.getByRole('checkbox', {name:PROFILE_LABELS[OPEN_PROFILE]}) as HTMLInputElement;
+    await waitFor(() => expect(atm().checked).toBe(true));
+    expect(open().checked).toBe(false);
+    fireEvent.click(open());
+    expect(atm().checked && open().checked).toBe(true);
+    fireEvent.change(config.getByRole('combobox', {name:/^QA 数据集/}), {target:{value:'photobench-full'}});
+    expect(open().checked).toBe(true);
+    expect(atm().checked).toBe(false);
+    fireEvent.change(config.getByRole('combobox', {name:/^QA 数据集/}), {target:{value:'atm-bench-hard-email'}});
+    expect(atm().checked).toBe(true);
+    expect(open().checked).toBe(false);
+  });
+
+  it('运行中回显实际冻结标准与GT开关，优先于当前新任务草稿', async () => {
+    const fallback = mockApi.getMockImplementation()!;
+    const frozen = {run_id:'frozen-atm', status:'running', mode:'reuse', qa_set:'atm-bench',
+      album_id:'2026.11.17-atm-sources-addresses', scoring_profiles:[ATM_PROFILE],
+      scoring_configs:{[ATM_PROFILE]:{use_gt_images:true}}};
+    mockApi.mockImplementation((path:string) => {
+      if (path.startsWith('/runs?')) return Promise.resolve({runs:[{run_id:frozen.run_id,status:'running',qa_set:'atm-bench'}],page:1,pages:1,total:1,active_count:1});
+      if (path.startsWith('/runs/frozen-atm?include_history=')) return Promise.resolve(frozen);
+      if (path.startsWith('/runs/frozen-atm/items')) return Promise.resolve({items:[],page:1,total:0,pages:1});
+      return fallback(path);
+    });
+    const {container} = render(<App />);
+    const config = within(container.querySelector('.config-section') as HTMLElement);
+    expect(await config.findByText(/运行任务评分（已冻结） · atm-bench · frozen-atm/)).toBeTruthy();
+    const atm = config.getByRole('checkbox', {name:PROFILE_LABELS[ATM_PROFILE]}) as HTMLInputElement;
+    expect(atm.checked).toBe(true);
+    expect(atm.closest('fieldset')?.disabled).toBe(true);
+    expect((config.getByRole('checkbox', {name:PROFILE_LABELS[OPEN_PROFILE]}) as HTMLInputElement).checked).toBe(false);
+    expect((config.getByLabelText(PROFILE_LABELS[ATM_PROFILE]+' · GT图片辅助') as HTMLInputElement).checked).toBe(true);
+    expect(config.queryByText('评分提示词')).toBeNull();
+    expect(mockPost).not.toHaveBeenCalled();
+  });
 });
 
 // 夹具的口径：**切换后旧视图必须消失**。只断言「新视图在」是不够的——两个视图

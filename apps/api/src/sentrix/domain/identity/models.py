@@ -30,6 +30,8 @@ from datetime import datetime
 # Python 里出现（``entity.get("status") == "confirmed"``），两边漂开一次就是一条静默的
 # 空结果——所以收在这里一份。
 
+ALIAS_PROPERTY_KEY = "aliases"
+
 ENTITY_TYPE_PERSON = "person"
 # 语义实体那四类。1.0 的 ``entity_type`` 有五个取值（person / place / object / time /
 # atmosphere）**外加一个 ``emotion``**——它只在语义分组里出现，而且被当成 atmosphere。
@@ -72,6 +74,11 @@ PROPERTY_SOURCE_DERIVED = "derived"
 
 PROPERTY_STATUS_ACTIVE = "active"
 PROPERTY_STATUS_PENDING = "pending"
+
+# 用户把一个人标成「路人」：只是人物页不再铺开他，**不是**拒绝人脸分组——人脸、照片、
+# 提及都原样留着，取消标记就回来。存成通用实体属性（``PUT /entities/{id}/properties/hidden``），
+# 值为真即隐藏；名录投影把它读成 ``FamilyPersonProjection.hidden``。
+PERSON_HIDDEN_PROPERTY_KEY = "hidden"
 
 REVISION_SOURCE_USER = "user"
 REVISION_SOURCE_USER_RENAME = "user_rename"

@@ -84,7 +84,10 @@ def test_parse_judge_json_takes_the_outermost_object():
 def test_execution_failure_reads_both_status_and_termination_reason():
     """1.0 ``:1488``。**两个来源都要看**：只看 ``agent_status`` 会漏掉
     ``termination_reason`` 里的 ``budget_limit``／``parse_failure`` 那几类。"""
-    assert execution_failure("partial", "answered") is True
+    for reason in ("answered", "answered_with_gap", "policy_refusal"):
+        assert execution_failure("partial", reason) is False
+    assert execution_failure("partial", "step_budget_limit") is True
+    assert execution_failure("failed", "answered_with_gap") is True
     assert execution_failure("complete", "step_budget_limit") is True
     assert execution_failure("complete", "answered") is False
 

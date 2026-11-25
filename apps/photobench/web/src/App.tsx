@@ -1,5 +1,8 @@
 import { defaultScoring, scoringPayload } from './lib/scoring.ts';
-import type { ActiveWorkStatus } from "./api/types.ts";
+import "./features/interactive/interactive.css";
+import { ChatView } from "./features/chat/ChatView.tsx";
+import { RetestDialog } from "./features/interactive/RetestDialog.tsx";
+import type { ActiveWorkStatus, Run, RunItemSummary } from "./api/types.ts";
 /**
  * PhotoBench 前端的组合层（组合根）。
  *
@@ -101,7 +104,7 @@ export function App({ initialLoading = false }: AppProps) {
       judge_provider_id:configApi.judgeProviderId, ...(configApi.judgeApiKeyDirty ? {judge_api_key:configApi.judgeApiKey}: {})},
   });
   /** 逐题状态唯一实例；`QaResults` 与记忆面板共享（见文件头 1）。 */
-  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge, scoringQuery:runs.readQuery });
+  const qa = useQaPage({ activeRunId: runs.activeRunId, activeRejudge: runs.activeRejudge });
   qaRef.current = qa;
 
   const [selectedAlbum, setSelectedAlbum] = useState("album3-14");
@@ -136,11 +139,16 @@ export function App({ initialLoading = false }: AppProps) {
   });
 
   const [startScoring, setStartScoring] = useState(defaultScoring);
+  useEffect(() => {
+    setStartScoring(defaultScoring(selectedQa));
+  }, [selectedAlbum, selectedQa]);
   const [deleteScopeAfterRun, setDeleteScopeAfterRun] = useState(false);
   const [graphEnabled, setGraphEnabled] = useState(true);
+  const [reasoning, setReasoning] = useState(true);
   const [graphBaselineRunId, setGraphBaselineRunId] = useState("");
   const [suiteRunning, setSuiteRunning] = useState(false);
   const [lightbox, setLightbox] = useState<LightboxTarget | null>(null);
+  const [retest, setRetest] = useState<{ run: Run; question: RunItemSummary } | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>("runs");
   const [loading, setLoading] = useState(initialLoading);
   /** init() 是否已跑完（`loading` 的初值可被 `initialLoading=false` 关掉，不能拿它当判据）。 */
@@ -286,6 +294,7 @@ export function App({ initialLoading = false }: AppProps) {
             : "",
         endpoint_model: selectedModels.has("__current__") ? modelApi.selectedEndpointModel : "",
         graph_enabled: graphEnabled,
+        reasoning,
         graph_baseline_run_id: graphEnabled ? graphBaselineRunId.trim() || undefined : undefined,
         delete_scope_after_run: reuseApi.runMode === "full" ? deleteScopeAfterRun : false,
       });
@@ -392,6 +401,28 @@ export function App({ initialLoading = false }: AppProps) {
       }
     : undefined;
 
+  const runningSummary = runs.activeRun && ['running', 'pending'].includes(runs.activeRun.status || '')
+    ? runs.activeRun : runs.runs.find(run => ['running', 'pending'].includes(run.status || ''));
+  const runningRunId = runningSummary?.run_id;
+  const [runningSnapshot, setRunningSnapshot] = useState<Run | null>(null);
+  const [runningScoringError, setRunningScoringError] = useState('');
+  useEffect(() => {
+    setRunningSnapshot(null);
+    setRunningScoringError('');
+    if (!runningRunId) return;
+    const controller = new AbortController();
+    void api<Run>(`/runs/${encodeURIComponent(runningRunId)}?include_history=false`, {signal:controller.signal})
+      .then(run => {if (!controller.signal.aborted) {
+        setRunningSnapshot(run);
+        if (!run.scoring_profiles?.length) setRunningScoringError('该任务未记录冻结评分标准');
+      }})
+      .catch(error => {if (!controller.signal.aborted) setRunningScoringError((error as Error).message);});
+    return () => controller.abort();
+  }, [runningRunId]);
+  const runningRun = runningSummary?.scoring_profiles?.length ? runningSummary
+    : runningSnapshot?.run_id === runningRunId ? runningSnapshot : runningSummary;
+  const interactiveModels = { profiles: modelApi.profiles, targets: configApi.config?.vllm_targets || {}, managerUrl: modelApi.vllmManagerUrl, modelEndpoint: modelApi.modelEndpoint };
+  const selectInteractiveRun = (id: string) => { setActiveView("runs"); void runs.loadRuns(1); runs.selectRun({ run_id: id }); runs.startPolling(); };
   if (loading) {
     return <Loading />;
   }
@@ -410,13 +441,15 @@ export function App({ initialLoading = false }: AppProps) {
               baselineRuns={runs.runs}
               start={{
                 ...startInput,
-                scoring: startScoring, onScoringChange: setStartScoring,
+                scoring: startScoring, onScoringChange: setStartScoring, runningRun, runningScoringError,
                 prompts:{judgePromptKinds:runs.judgePromptKinds,activePromptKind:runs.activePromptKind,
                   onSwitchPromptKind:runs.switchPromptKind,rejudgePrompt:runs.rejudgePrompt,onRejudgePromptChange:runs.setRejudgePrompt,
                   judgeModel:configApi.judgeModel,onSavePrompt:()=> {void configApi.saveJudgePrompt(runs.activePromptKind,runs.rejudgePrompt);},onResetPrompt:runs.resetJudgePrompt},
                 deleteScopeAfterRun,
                 onDeleteScopeAfterRunChange: setDeleteScopeAfterRun,
                 graphEnabled,
+                reasoning,
+                onReasoningChange: setReasoning,
                 onGraphEnabledChange: setGraphEnabled,
                 graphBaselineRunId,
                 onGraphBaselineRunIdChange: setGraphBaselineRunId,
@@ -455,18 +488,18 @@ export function App({ initialLoading = false }: AppProps) {
             {/* 1.0 里逐题结果是 `RunDetail` 的 `v-else` 分支，未选中 run 时整块不存在。
                 2.0 拆成两个兄弟组件后忘了这层条件，初始状态会多出一整块
                 「QA 逐题结果 / 筛选结果 0 / 全部 0 条」的空白面板。 */}
+            {runs.activeRun?.retest_context && <div className="retest-origin">单题重测 · 原第 {Number(runs.activeRun.retest_context.source_item_index) + 1} 题 <button className="btn ghost compact" onClick={() => selectInteractiveRun(runs.activeRun!.retest_context!.source_run_id)}>返回原任务</button></div>}
             {runs.activeRun ? (
             <QaResults
               activeRun={runs.activeRun}
               qa={qa}
-              readProfile={runs.readProfile}
-              onReadProfileChange={value => {runs.setReadProfile(value);runs.setReadBatch('');}}
               resultRef={runs.runDetailRef}
               onOpenMedia={setLightbox}
+              onRetest={question => { if (runs.activeRun) setRetest({ run: runs.activeRun, question }); }}
             />
             ) : null}
           </>
-        ) : activeView === "capacity" ? <CapacityReport /> : (
+        ) : activeView === "chat" ? <ChatView sentrixUrl={configApi.sentrixUrl} manifests={configApi.manifests} models={interactiveModels} busy={workBusy || runs.hasRunning || suiteRunning} onOpenMedia={setLightbox}/> : activeView === "capacity" ? <CapacityReport /> : (
           <QaBrowserView
             sentrixUrl={configApi.sentrixUrl}
             manifests={configApi.manifests}
@@ -474,6 +507,7 @@ export function App({ initialLoading = false }: AppProps) {
           />
         )}
       </main>
+      {retest && <RetestDialog run={retest.run} question={retest.question} models={interactiveModels} busy={workBusy || runs.hasRunning || suiteRunning} onClose={() => { setRetest(null); void runs.loadRuns(1); runs.startPolling(); }}/>}
       <Lightbox target={lightbox} onClose={() => setLightbox(null)} />
     </>
   );

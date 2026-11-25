@@ -156,6 +156,8 @@ def _person_payload(person: FamilyPersonProjection) -> FamilyPersonPayload:
             for item in person.representative_media
         ],
         status=person.status,
+        aliases=list(person.aliases),
+        hidden=person.hidden,
     )
 
 

@@ -19,6 +19,7 @@ export interface AssetSummary {
   /** 派生关键帧在源视频里的秒数；用它把 `<video>` 定位到命中帧。 */
   source_timestamp_sec?: number | null;
   external_source_id?: string | null;
+  source_metadata?: { document_type?: string; title?: string; summary?: string; precise_address?: string; address_source?: string };
   /**
    * 后端**目前不返回**。若将来 `/assets` 带上它，资料库就能按相册聚合；
    * 现在消费方必须按「可能为空」处理，不能把它当成一册一个值。
@@ -149,11 +150,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const raw = await response.text();
     throw new ApiError(response.status, parseApiError(raw), raw);
   }
-  const result = (await response.json()) as T;
-  if (!SAFE_METHODS.has(method) && /^\/(memories|people|face-clusters|entities|relationships|family|assets)(\/|\?)/.test(path)) {
-    window.dispatchEvent(new Event("sentrix:memory-changed"));
-  }
-  return result;
+  return (await response.json()) as T;
 }
 
 export async function listAssets(scopeId: string): Promise<AssetSummary[]> {
@@ -232,7 +229,6 @@ export async function searchAssets(
 }
 
 export interface TimelinePhoto {
-  media_type?: string;
   asset_id: string;
   file_name: string;
   captured_at: string | null;
@@ -392,6 +388,11 @@ export interface AssistantAttachment {
   asset_id: string;
   file_name: string;
   media_type?: string;
+  source_type?: string;
+  source_id?: string;
+  title?: string;
+  source_timestamp?: string;
+  excerpt?: string;
 }
 
 export interface AssistantRequirement {
@@ -513,13 +514,16 @@ export async function startTurn(
   conversationId: string,
   message: string,
   idempotencyKey = "",
+  reasoning = false,
 ): Promise<{ turn_id: string; conversation_id: string; status: string }> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (idempotencyKey !== "") headers["Idempotency-Key"] = idempotencyKey;
   return request(`/assistant/conversations/${conversationId}/turns`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ message }),
+    // ``reasoning`` 是**按回合**的选择：默认 false，后端据此决定用普通 profile
+    // 还是推理 profile；不建议把它做成会话级状态，用户可能只想让某一问想久一点。
+    body: JSON.stringify({ message, reasoning }),
   });
 }
 
@@ -689,27 +693,41 @@ export interface PersonDetailResponse {
 }
 
 export interface MemorySyncResult {
-  sync_status: "synced" | "pending";
+  sync_status: "synced" | "pending" | "failed";
   sync_error: string;
+  sync_job_id?: string | null;
 }
 
-export async function getMemoryCorrectionSyncStatus(
-  scopeId: string,
-): Promise<{ status: "synced" | "pending"; error: string }> {
-  const result = await request<{ items: Array<{ status?: string; error?: string }> }>(
-    `/memories/corrections?scope_id=${encodeURIComponent(scopeId)}&limit=1`,
-  );
-  const latest = result.items[0];
-  return {
-    status: latest?.status === "pending" ? "pending" : "synced",
-    error: latest?.status === "pending" ? latest.error ?? "" : "",
-  };
+interface PersonNameSyncStatus {
+  id: string;
+  status: MemorySyncResult["sync_status"];
+  error: string;
 }
 
-export async function retryMemoryCorrections(scopeId: string, personId?: string): Promise<{ error: string }> {
-  const personQuery = personId ? `&person_id=${encodeURIComponent(personId)}` : "";
+export function getPersonNameSync(entityId: string): Promise<PersonNameSyncStatus | null> {
+  return request(`/memories/corrections/name-sync?entity_id=${encodeURIComponent(entityId)}`);
+}
+
+export function retryPersonNameSync(jobId: string): Promise<PersonNameSyncStatus> {
+  return request(`/memories/corrections/name-sync/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+}
+
+/**
+ * 一条修正同步任务的进度。关系、家庭归属、改名、别名、确认身份的写回执都带 `sync_job_id`：
+ * 写入本身已提交，记忆图与检索索引在后台重建，用它查是否已同步。
+ */
+export function getCorrectionJob(jobId: string): Promise<PersonNameSyncStatus> {
+  return request(`/memories/corrections/jobs/${encodeURIComponent(jobId)}`);
+}
+
+/** 让一条失败或在退避中的同步任务立即重试（任意类型的任务都可以）。 */
+export function retryCorrectionJob(jobId: string): Promise<PersonNameSyncStatus> {
+  return request(`/memories/corrections/jobs/${encodeURIComponent(jobId)}/retry`, { method: "POST" });
+}
+
+export async function retryMemoryCorrections(scopeId: string): Promise<{ error: string }> {
   return request<{ error: string }>(
-    `/memories/corrections/retry?scope_id=${encodeURIComponent(scopeId)}${personQuery}`,
+    `/memories/corrections/retry?scope_id=${encodeURIComponent(scopeId)}`,
     { method: "POST" },
   );
 }
@@ -723,6 +741,11 @@ export interface BatchConfirmItem {
   person_id: string;
   name: string;
   family_role?: string | null;
+  /**
+   * 同名时是否并入那位已确认的人。默认（省略）为 true；用户在同名确认框里答了
+   * 「不是，只是同名」时传 false，照常确认成独立的人。
+   */
+  merge_same_name?: boolean;
 }
 
 export interface BatchConfirmOutcome {
@@ -731,6 +754,8 @@ export interface BatchConfirmOutcome {
   name: string;
   family_role: string | null;
   merged: boolean;
+  /** 确认后重建记忆图的后台任务。 */
+  sync_job_id?: string | null;
 }
 
 export interface BatchConfirmFailure {
@@ -852,6 +877,14 @@ export async function setEntityProperty(
       body: JSON.stringify({ value }),
     },
   );
+}
+
+/**
+ * 标为路人 / 取消。存成通用实体属性 `hidden`（后端 `PERSON_HIDDEN_PROPERTY_KEY`），
+ * 不拒绝人脸分组、不删任何数据；`GET /family-graph` 把它读回成 `FamilyPerson.hidden`。
+ */
+export function setPersonHidden(entityId: string, hidden: boolean): Promise<EntityPropertyWriteResponse> {
+  return setEntityProperty(entityId, "hidden", hidden);
 }
 
 // ---- 人物证据 -------------------------------------------------------------------
@@ -1064,6 +1097,12 @@ export interface ImportResponse {
  * 用 multipart：`file` 是文件本身、`scope_id` 是表单字段。**不要手写 Content-Type**——
  * 浏览器要给 multipart 带上 boundary，手写会把 boundary 弄丢。
  */
+export async function importDocumentPackage(file: File, scopeId: string): Promise<{total: number; failed: number; items: unknown[]}> {
+  const form = new FormData();
+  form.append("file", file); form.append("scope_id", scopeId || "home-default");
+  return request("/documents/import", {method: "POST", body: form});
+}
+
 export async function importAsset(file: File, scopeId: string): Promise<ImportResponse> {
   const form = new FormData();
   form.append("file", file);
@@ -1307,6 +1346,10 @@ export interface FamilyPerson {
    * 只改名不确认的人进不了问答与按人找照片，所以详情据此给「确认身份」而不是「改名」。
    */
   status: string;
+  /** 用户起的其他称呼。名录与选人列表按别名也能搜到人。 */
+  aliases: string[];
+  /** 用户标成「路人」：名录收进偶遇面孔区。人脸与照片都还在，取消即恢复。 */
+  hidden: boolean;
 }
 
 export interface FamilyRelationship {

@@ -54,3 +54,15 @@ it("AI输出校验失败直接显示具体状态",()=>{
   render(<CaseJourney diagnosis={copy} jobId="frozen" navigate={vi.fn()}/>);
   expect(screen.getByText("AI 输出格式或引用未通过校验")).toBeTruthy();
 });
+
+
+it("最新后端的事实核验、答案核验和工具内部模型保留独立类型与耗时",()=>{
+  const nodes=journeyNodes({index:0,runtime_turns:[{index:0,trace_bundle:{debug_calls:[
+    {call_id:"claim",call_type:"claim_verifier",seq:0,duration_ms:12},
+    {call_id:"judge",call_type:"faithfulness_judge",seq:1,duration_ms:34},
+    {call_id:"internal",call_type:"tool_internal",seq:2,duration_ms:56},
+  ]}}]},{});
+  expect(nodes.filter(n=>n.entry.call).map(n=>[n.title,n.entry.call!.duration_ms])).toEqual([
+    ["事实核验",12],["答案核验",34],["工具内模型",56],
+  ]);
+});

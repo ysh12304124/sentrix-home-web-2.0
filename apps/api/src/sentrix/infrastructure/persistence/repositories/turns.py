@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from sentrix.domain.assistant.errors import ConversationNotFoundError
 from sentrix.domain.assistant.models import (
     Attachment,
     ProgressEvent,
@@ -47,16 +49,7 @@ def _row_to_turn(row: sqlite3.Row) -> TurnRecord:
         updated_at=datetime.fromisoformat(row["updated_at"]),
         answer=row["answer"],
         termination_reason=row["termination_reason"],
-        attachments=tuple(
-            Attachment(
-                handle=item["handle"],
-                asset_id=item["asset_id"],
-                file_name=item["file_name"],
-                media_type=item.get("media_type")
-                or ("text" if item["file_name"].lower().endswith((".txt", ".md")) else ""),
-            )
-            for item in attachments
-        ),
+        attachments=tuple(Attachment(**item) for item in attachments),
         requirements=tuple(json.loads(row["requirements_json"] or "[]")),
         retrieved_candidates=tuple(json.loads(row["candidates_json"] or "[]")),
         trace=dict(json.loads(row["trace_json"] or "{}")),
@@ -137,6 +130,12 @@ class SqliteTurnRepository:
         with self._database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                conversation = connection.execute(
+                    "SELECT 1 FROM agent_conversations WHERE id = ? AND state = 'active'",
+                    (record.conversation_id,),
+                ).fetchone()
+                if conversation is None:
+                    raise ConversationNotFoundError("conversation not found")
                 if record.idempotency_key:
                     existing = connection.execute(
                         f"SELECT {_TURN_COLUMNS} FROM agent_turns"
@@ -147,6 +146,13 @@ class SqliteTurnRepository:
                         connection.commit()
                         if str(existing["question"]) != record.question:
                             raise TurnIdempotencyConflict("idempotency key reused for a different question")
+                        existing_trace = json.loads(existing["trace_json"] or "{}")
+                        if (existing_trace.get("reasoning") is True) != (
+                            record.trace.get("reasoning") is True
+                        ):
+                            raise TurnIdempotencyConflict(
+                                "idempotency key reused for a different reasoning mode"
+                            )
                         return _row_to_turn(existing), False
                 connection.execute(
                     "INSERT INTO agent_turns"
@@ -219,7 +225,7 @@ class SqliteTurnRepository:
             )
         return cursor.rowcount > 0
 
-    def claim_due(self, *, now: datetime, lease_s: int) -> TurnRecord | None:
+    def claim_due(self, *, now: datetime, lease_s: int, turn_id: str | None = None) -> TurnRecord | None:
         """认领 pending 或租约过期的 running 回合，尝试号与围栏号各自加一。"""
         stamp = now.isoformat()
         expires = (now + timedelta(seconds=lease_s)).isoformat()
@@ -228,12 +234,13 @@ class SqliteTurnRepository:
             try:
                 row = connection.execute(
                     f"SELECT {_TURN_COLUMNS} FROM agent_turns WHERE "
+                    "(? IS NULL OR id = ?) AND ("
                     "(status = 'pending' AND execution_state <> 'waiting_dependency'"
                     " AND (next_retry_at IS NULL OR next_retry_at <= ?)) "
                     "OR (status = 'pending' AND cancel_requested = 1) "
-                    "OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
+                    "OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?)) "
                     "ORDER BY created_at ASC, rowid ASC LIMIT 1",
-                    (stamp, stamp),
+                    (turn_id, turn_id, stamp, stamp),
                 ).fetchone()
                 if row is None:
                     connection.commit()
@@ -424,15 +431,7 @@ class SqliteTurnRepository:
     ) -> bool:
         """最终助手消息与回合终态在同一事务里提交；围栏不匹配则不写。"""
         payload = json.dumps(
-            [
-                {
-                    "handle": item.handle,
-                    "asset_id": item.asset_id,
-                    "file_name": item.file_name,
-                    "media_type": item.media_type,
-                }
-                for item in attachments
-            ],
+            [asdict(item) for item in attachments],
             ensure_ascii=False,
         )
         ledger_payload = json.dumps([dict(item) for item in requirements], ensure_ascii=False)
@@ -502,15 +501,7 @@ class SqliteTurnRepository:
     ) -> None:
         """兼容旧入口（无围栏）；新执行器走 ``finish_with_message``。"""
         payload = json.dumps(
-            [
-                {
-                    "handle": item.handle,
-                    "asset_id": item.asset_id,
-                    "file_name": item.file_name,
-                    "media_type": item.media_type,
-                }
-                for item in attachments
-            ],
+            [asdict(item) for item in attachments],
             ensure_ascii=False,
         )
         ledger_payload = json.dumps([dict(item) for item in requirements], ensure_ascii=False)

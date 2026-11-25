@@ -28,6 +28,17 @@ const WITHOUT_GT: QaRow = {
 };
 
 describe("QaReviewCard · GT 媒体与问答气泡（1.0 App.vue:3703-3745）", () => {
+  it("来源题包在入库前直接展示题包图片和视频原件", () => {
+    const { container } = render(<QaReviewCard albumId="atm-hard" index={0} item={{
+      ...WITH_GT, source_protocol: "source-citations-v1", retrieval_media_refs: [
+        { media_type: "image", media_id: "photo.jpg", mapping_status: "missing" },
+        { media_type: "video", media_id: "clip", mapping_status: "ambiguous", asset_id: "other-scope" },
+      ],
+    }} />);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("/api/v1/albums/atm-hard/photos/photo.jpg");
+    expect(container.querySelector("video")?.getAttribute("src")).toBe("/api/v1/albums/atm-hard/videos/clip.mp4");
+    expect(container.querySelector(".image-empty")).toBeNull();
+  });
   it("有 GT：渲染检索 GT 媒体面板、图片与「直接证据」标；布局不带 no-evidence", () => {
     const { container } = render(<QaReviewCard item={WITH_GT} index={0} />);
 

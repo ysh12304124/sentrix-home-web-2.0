@@ -22,7 +22,10 @@ def content_fingerprint(row: Mapping[str, Any]) -> str:
         "answerability",
     )
     payload = {key: row.get(key) for key in fields}
-    payload["conversation"] = [
+    for key in ("retrieval_source_refs", "answer_evidence_source_refs", "source_protocol"):
+        if key in row:
+            payload[key] = row[key]
+    conversations = [
         {
             key: turn.get(key)
             for key in (
@@ -36,6 +39,11 @@ def content_fingerprint(row: Mapping[str, Any]) -> str:
         }
         for turn in row.get("conversation") or []
     ]
+    for turn, frozen in zip(row.get("conversation") or [], conversations, strict=True):
+        for key in ("retrieval_source_refs", "answer_evidence_source_refs"):
+            if key in turn:
+                frozen[key] = turn[key]
+    payload["conversation"] = conversations
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -51,7 +59,7 @@ def validate_evaluation(row: Mapping[str, Any]) -> None:
     expected_format = {
         "choice_judge": "choice",
         "media_set": "media_list",
-        "atm_list": "media_list",
+        "atm_list": "source_list" if definition.get("target_source_refs") else "media_list",
         "open_judge": "open",
         "atm_number": "open",
         "atm_open": "open",
@@ -84,7 +92,7 @@ def validate_evaluation(row: Mapping[str, Any]) -> None:
         if definition.get("correct_option") not in ids or definition.get("review_status") != "verified":
             raise ValueError("Choice key or review missing")
     if scorer in {"media_set", "atm_list"}:
-        refs = definition.get("target_media_refs")
+        refs = definition.get("target_source_refs") or definition.get("target_media_refs")
         if not isinstance(refs, list) or not refs:
             raise ValueError("Media-list target set must be explicit and nonempty")
         if definition.get("retrieval_requirement") not in {"all", "any"}:

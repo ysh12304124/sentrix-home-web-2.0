@@ -65,13 +65,13 @@ export const TOURS: Readonly<Record<string, readonly TourStep[]>> = {
   people: [
     {
       selector: ".family-tabs",
-      title: "三个人物视图",
-      body: "在人物、关系和人物介绍之间切换。",
+      title: "四个人物视图",
+      body: "在人物、关系、待确认的人物和人物介绍之间切换。",
     },
     {
-      selector: ".family-roster",
+      selector: ".people",
       title: "先确认是谁",
-      body: "点开人物确认身份，时间线和回答才能用名字找到他；同一个人被分成几位时，用「合并人物」并在一起。",
+      body: "确认人物后，时间线和回答会更容易用名字找到内容；跳过不会改动原始照片。",
     },
   ],
   library: [
@@ -98,14 +98,14 @@ export const TOURS: Readonly<Record<string, readonly TourStep[]>> = {
       body: "点“选择文件”或“选择文件夹”，也可以直接拖进来。",
     },
     {
-      selector: ".import-overall",
-      title: "看总体进度",
-      body: "这里显示全部已接收资料的完成数量，单个文件的状态在右侧列表里。",
+      selector: ".import-stats",
+      title: "查看上传情况",
+      body: "带有“本次”的数据在每次上传后都会更新，只显示当次上传情况；“历史上传总数”是资料库中的总数。",
     },
     {
-      selector: ".import-status",
-      title: "上传后继续整理",
-      body: "关闭页面也不会中断；稍后回来还能看到同一批进度。",
+      selector: ".import-records",
+      title: "查看历史上传记录",
+      body: "记录了上传图片的文件名，大小，上传结果和上传时间。",
     },
   ],
 };

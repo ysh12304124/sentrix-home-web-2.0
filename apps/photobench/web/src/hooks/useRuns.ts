@@ -272,12 +272,17 @@ export function useRuns(options: UseRunsOptions = {}) {
   const deleteRun = useCallback(
     async (run: Run, confirm: (message: string) => boolean = window.confirm) => {
       if (!confirm("删除此评测？")) return;
-      await api(`/runs/${encodeURIComponent(run.run_id)}`, { method: "DELETE" });
-      if (activeRunIdRef.current === run.run_id) {
-        setActiveRunId(null);
-        setActiveRun(null);
+      setError("");
+      try {
+        await api(`/runs/${encodeURIComponent(run.run_id)}`, { method: "DELETE" });
+        if (activeRunIdRef.current === run.run_id) {
+          setActiveRunId(null);
+          setActiveRun(null);
+        }
+        await loadRuns();
+      } catch (error) {
+        setError(`删除评测失败：${(error as Error).message}`);
       }
-      await loadRuns();
     },
     [setActiveRunId, setActiveRun, loadRuns],
   );

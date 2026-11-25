@@ -1,0 +1,86 @@
+--- a/apps/photobench/src/photobench/application/runs/suites.py
++++ b/apps/photobench/src/photobench/application/runs/suites.py
+@@ -42,6 +42,9 @@
+ 
+ from photobench.application.config.service import (
+     ConfigService,
++    BIG_MODEL_PROFILE_ID,
++    BIG_MODEL_ENABLED,
++    BIG_MODEL_MODEL,
+     normalize_model_base_url,
+     normalize_service_url,
+ )
+@@ -251,6 +254,17 @@
+                 self._on_finished(run_id)
+ 
+     def _require_inactive(self) -> None:
++        # A timed-out cleanup can finish after execute() returns. Reap only
++        # terminal executions whose worker and all cleanup guards are finished.
++        for rid, run in list(self._active.items()):
++            thread = self._threads.get(rid)
++            if (
++                run.state is not None
++                and run.state.get("status") not in DIRTY_STATUSES
++                and (thread is None or not thread.is_alive())
++                and not self._stop_pending(run.state.data)
++            ):
++                self._active.pop(rid, None)
+         busy = self._active_ids()
+         if (
+             busy
+@@ -268,7 +282,10 @@
+                 run.state is not None and self._stop_pending(run.state.data) for run in self._active.values()
+             )
+         ):
+-            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(busy)}")
++            occupied = sorted(set(busy) | set(self._active) | {
++                rid for rid, thread in self._threads.items() if thread.is_alive()
++            })
++            raise InvalidRequestError(f"another benchmark suite is still active: {', '.join(occupied)}")
+ 
+     def _state_if_exists(self, run_id: str) -> dict[str, Any] | None:
+         try:
+@@ -419,14 +436,22 @@
+                     f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_slug(album_id)}-"
+                     f"{safe_slug(str(model))}-{uuid.uuid4().hex[:6]}"
+                 )
++                cloud = str(model) == BIG_MODEL_PROFILE_ID
++                if cloud and not BIG_MODEL_ENABLED:
++                    raise InvalidRequestError("cloud model profile is disabled")
++                run_connection = dict(connection)
++                if cloud:
++                    # Auth remains in the loopback gateway, never in run snapshots.
++                    run_connection.update(model_base_url="http://127.0.0.1:18106/v1",
++                                          vllm_manager_url="", endpoint_model=BIG_MODEL_MODEL)
+                 request = RunRequest(
+                     album_id=album_id,
+                     qa_set=qa_set,
+                     model_profile=str(model),
+                     sentrix_url=sentrix_url,
+-                    manager_url=deps.manager_url,
+-                    model_base_url=deps.model_base_url,
+-                    endpoint_model=endpoint_model,
++                    manager_url="" if cloud else deps.manager_url,
++                    model_base_url="http://127.0.0.1:18106/v1" if cloud else deps.model_base_url,
++                    endpoint_model=BIG_MODEL_MODEL if cloud else endpoint_model,
+                     run_id=run_id,
+                     mode=mode,
+                     qa_concurrency=int(
+@@ -445,7 +470,7 @@
+                     pipeline_timeout=int(payload.get("pipeline_timeout") or 86400),
+                     # reuse 才传；full 留空让 ``execute`` 走 ``_default_scope_id``。
+                     scope_id=existing_scope_id,
+-                    runtime_framework=deps.runtime_framework,
++                    runtime_framework="generic" if cloud else deps.runtime_framework,
+                     judge_provider_id=deps.judge.judge_provider_id,
+                     judge_url=deps.judge.judge_url,
+                     judge_model=deps.judge.judge_model,
+@@ -463,7 +488,7 @@
+                     evidence_judge_enabled=deps.judge.evidence_enabled,
+                     judge_use_gt_images=deps.judge.judge_use_gt_images,
+                 )
+-                request = freeze_runtime_request(request, connection, self._build_revision)
++                request = freeze_runtime_request(request, run_connection, self._build_revision)
+                 requests[run_id] = request
+                 execution = self._new_execution(request)
+                 execution.prepare(request)

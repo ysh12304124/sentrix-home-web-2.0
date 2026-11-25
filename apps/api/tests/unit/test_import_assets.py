@@ -38,6 +38,9 @@ class FakeAssets:
         # Asset 是 frozen+slots dataclass，没有 __dict__，必须用 dataclasses.replace
         self.rows[asset_id] = dataclasses.replace(self.rows[asset_id], status=status)
 
+    def find_file_by_hash(self, content_sha256):
+        return None
+
 
 class FakeObservations:
     def __init__(self) -> None:

@@ -15,12 +15,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
-from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement, EvidenceType, RequirementValueType
+from sentrix.domain.assistant.evidence_ledger import (
+    EvidenceRequirement,
+    EvidenceType,
+    RequirementValueType,
+    clean_person_name,
+    split_person_scope,
+)
 from sentrix.domain.assistant.task_state import TaskState, ToolCallRecord
+from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL
 
 _CONTROL_KEYS = frozenset({"event", "time", "place", "person"})
 
@@ -48,6 +55,7 @@ class Fact:
     provenance: str = ""
     confidence: float = 1.0
     coverage: float = 1.0
+    person_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,23 +87,36 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
     facts: list[Fact] = []
     asset_ids = observation.get("asset_ids")
     total = int(observation.get("total") or 0)
+    raw_people = observation.get("people_by_asset")
+    people_by_asset = raw_people if isinstance(raw_people, Mapping) else {}
+    raw_returned_ids = observation.get("returned_asset_ids")
+    returned_ids = raw_returned_ids if isinstance(raw_returned_ids, (list, tuple)) else ()
+    filters = observation.get("filters_applied")
+    filter_scope = _scope_from_filters(filters) if isinstance(filters, Mapping) else {}
     if isinstance(asset_ids, (list, tuple)):
+        common_people: set[str] = set(people_by_asset.get(asset_ids[0], ())) if asset_ids else set()
+        for asset_id in asset_ids[1:]:
+            common_people.intersection_update(people_by_asset.get(asset_id, ()))
         facts.append(
             Fact(
                 fact_type="retrieval_media_set",
                 value_type=RequirementValueType.MEDIA_SET,
                 value=tuple(str(item) for item in asset_ids),
+                scope=filter_scope,
                 provenance=record.call_id,
                 coverage=1.0 if total == 0 else min(1.0, len(asset_ids) / total),
+                person_names=tuple(sorted(common_people)),
             )
         )
     preview = visible.get("preview")
     if not isinstance(preview, (list, tuple)):
         return facts
-    for row in preview:
+    for index, row in enumerate(preview):
         if not isinstance(row, Mapping):
             continue
         handle = _text(row.get("handle"))
+        asset_id = returned_ids[index] if index < len(returned_ids) else ""
+        confirmed_names = tuple(people_by_asset.get(asset_id, ()))
         scope: dict[str, str] = {}
         for key in ("place", "time", "person"):
             value = _text(row.get(key))
@@ -103,7 +124,7 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                 scope[key] = value
         captured_at = _text(row.get("captured_at"))
         if captured_at:
-            scope["time"] = captured_at
+            scope["time"] = filter_scope.get("time", captured_at)
         place = _text(row.get("place"))
         if place:
             scope["place"] = place
@@ -128,6 +149,7 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     value_type=RequirementValueType.TIME,
                     value=captured_at,
                     scope=scope,
+                    person_names=confirmed_names,
                     provenance=f"{record.call_id}:{handle}",
                 )
             )
@@ -138,6 +160,7 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     value_type=RequirementValueType.PLACE,
                     value=place,
                     scope=scope,
+                    person_names=confirmed_names,
                     provenance=f"{record.call_id}:{handle}",
                 )
             )
@@ -149,6 +172,7 @@ def _retrieval_facts(record: ToolCallRecord) -> list[Fact]:
                     value_type=RequirementValueType.DESCRIPTION,
                     value=description,
                     scope=scope,
+                    person_names=confirmed_names,
                     provenance=f"{record.call_id}:{handle}",
                     confidence=1.0 if row.get("evidence_summary") else 0.6,
                 )
@@ -204,6 +228,8 @@ def _structured_fact(record: ToolCallRecord) -> list[Fact]:
     filters = observation.get("filters_applied")
     scope = _scope_from_filters(filters) if isinstance(filters, Mapping) else {}
     dropped = observation.get("filters_not_applied")
+    names = observation.get("person_names")
+    person_names = tuple(_text(name) for name in names) if isinstance(names, (list, tuple)) else ()
     facts = [
         Fact(
             fact_type=fact_type,
@@ -216,6 +242,7 @@ def _structured_fact(record: ToolCallRecord) -> list[Fact]:
             else (),
             provenance=record.call_id,
             coverage=1.0,
+            person_names=person_names,
         )
     ]
     # 人物维度统计同时是「这个人的事实」。只把它当 count 会让「谁是明明」这类
@@ -229,6 +256,7 @@ def _structured_fact(record: ToolCallRecord) -> list[Fact]:
                 value=person,
                 scope={"person": person},
                 provenance=record.call_id,
+                person_names=person_names,
             )
         )
     return facts
@@ -305,23 +333,56 @@ def _people_facts(record: ToolCallRecord) -> list[Fact]:
 
 
 def _profile_facts(record: ToolCallRecord) -> list[Fact]:
-    visible = record.model_visible
-    if visible.get("found") is not True:
+    if record.observation.get("found") is not True:
         return []
-    name = _text(visible.get("person"))
-    return (
-        [
+    name = _text(record.observation.get("person"))
+    if not name:
+        return []
+    raw_aliases = record.observation.get("aliases")
+    aliases = raw_aliases if isinstance(raw_aliases, (list, tuple)) else ()
+    names = (name, *(_text(alias) for alias in aliases if _text(alias)))
+    facts = [
+        Fact(
+            fact_type="person_profile",
+            value_type=RequirementValueType.PERSON,
+            value=name,
+            scope={"person": name},
+            provenance=record.call_id,
+            person_names=names,
+        )
+    ]
+    relations = record.observation.get("relationships")
+    for relation in relations if isinstance(relations, (list, tuple)) else ():
+        if not isinstance(relation, Mapping):
+            continue
+        other = _text(relation.get("other_name"))
+        predicate = _text(relation.get("predicate"))
+        if other and predicate:
+            raw = relation.get("aliases")
+            other_aliases = tuple(_text(alias) for alias in raw) if isinstance(raw, (list, tuple)) else ()
+            facts.append(
+                Fact(
+                    fact_type="person_relationship",
+                    value_type=RequirementValueType.PERSON,
+                    value=f"{name}是{other}的{predicate}",
+                    scope={"person": name},
+                    provenance=record.call_id,
+                    person_names=(*names, other, *other_aliases),
+                )
+            )
+    description = _text(record.model_visible.get("photo_portrait") or record.model_visible.get("summary"))
+    if description:
+        facts.append(
             Fact(
                 fact_type="person_profile",
-                value_type=RequirementValueType.PERSON,
-                value=name,
+                value_type=RequirementValueType.DESCRIPTION,
+                value=description,
                 scope={"person": name},
                 provenance=record.call_id,
+                person_names=names,
             )
-        ]
-        if name
-        else []
-    )
+        )
+    return facts
 
 
 def facts_from_state(state: TaskState) -> tuple[Fact, ...]:
@@ -346,6 +407,27 @@ def facts_from_state(state: TaskState) -> tuple[Fact, ...]:
             facts.extend(_people_facts(record))
         elif record.tool == "get_person_profile":
             facts.extend(_profile_facts(record))
+        elif record.tool == FINAL_ANSWER_TOOL:
+            ids = record.observation.get("delivered_asset_ids")
+            if isinstance(ids, (list, tuple)) and ids:
+                delivered = tuple(str(item) for item in ids)
+                source = next(
+                    (
+                        fact
+                        for fact in reversed(facts)
+                        if fact.fact_type == "retrieval_media_set" and set(delivered).issubset(fact.value)
+                    ),
+                    Fact("retrieval_media_set", RequirementValueType.MEDIA_SET, delivered),
+                )
+                facts.append(
+                    replace(
+                        source,
+                        fact_type="delivered_media_set",
+                        value=delivered,
+                        provenance=record.call_id,
+                        coverage=1.0,
+                    )
+                )
     return tuple(facts)
 
 
@@ -392,7 +474,16 @@ def bind_requirement(requirement: EvidenceRequirement, facts: Sequence[Fact]) ->
         for fact in facts
         if fact.value_type is requirement.value_type and fact.fact_type != "source_text"
     ]
+    if requirement.evidence_type is EvidenceType.PERSON_PROFILE and requirement.value_type in {
+        RequirementValueType.PERSON,
+        RequirementValueType.DESCRIPTION,
+    }:
+        typed = [fact for fact in typed if fact.fact_type in {"person_profile", "person_relationship"}]
     if requirement.value_type is RequirementValueType.MEDIA_SET:
+        if requirement.evidence_type is EvidenceType.DELIVERED_PHOTO:
+            typed = [fact for fact in typed if fact.fact_type == "delivered_media_set"]
+        elif requirement.evidence_type is EvidenceType.PHOTO_SET:
+            typed = [fact for fact in typed if fact.fact_type == "retrieval_media_set"]
         typed = [fact for fact in typed if isinstance(fact.value, (list, tuple, set)) and len(fact.value) > 0]
     if not typed:
         return RequirementBinding(
@@ -424,6 +515,13 @@ def bind_requirement(requirement: EvidenceRequirement, facts: Sequence[Fact]) ->
                 # 参数里有、工具没应用：这是明确的 scope 失配，不是「信息缺失」。
                 matches = False
                 saw_scope_conflict = True
+                continue
+            if key == "person" and fact.person_names:
+                if clean_person_name(expected) not in fact.person_names and not all(
+                    name in fact.person_names for name in split_person_scope(expected)
+                ):
+                    matches = False
+                    saw_scope_conflict = True
                 continue
             actual = fact.scope.get(key, "")
             if not actual:

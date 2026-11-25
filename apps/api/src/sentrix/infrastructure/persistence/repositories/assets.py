@@ -19,12 +19,14 @@ from sentrix.domain.media.models import (
     ObservationFact,
 )
 from sentrix.domain.media.ports import ObservationSemantics, PeopleSnapshotEntry
+from sentrix.domain.media.source_metadata import SourceMetadata
 from sentrix.infrastructure.persistence.database import Database
 
 _ASSET_COLUMNS = (
     "id, scope_id, file_name, media_type, path, mime_type, size_bytes, status,"
     " content_sha256, captured_at, gps_latitude, gps_longitude, created_at, updated_at,"
-    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json, external_source_id"
+    " derived_kind, parent_asset_id, source_timestamp_sec, capture_time_json,"
+    " external_source_id, metadata_json"
 )
 
 
@@ -58,6 +60,9 @@ def _row_to_asset(row: sqlite3.Row) -> Asset:
         parent_asset_id=row["parent_asset_id"],
         source_timestamp_sec=row["source_timestamp_sec"],
         external_source_id=row["external_source_id"],
+        source_metadata=SourceMetadata.from_dict(
+            json.loads(row["metadata_json"] or "{}").get("source_metadata", {})
+        ),
     )
 
 
@@ -101,8 +106,9 @@ class SqliteAssetRepository:
         connection.execute(
             "INSERT INTO assets (id, scope_id, file_name, media_type, path, mime_type,"
             " size_bytes, status, content_sha256, captured_at, gps_latitude, gps_longitude,"
-            " created_at, updated_at, capture_time_json, external_source_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " created_at, updated_at, capture_time_json,"
+            " external_source_id, metadata_json)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 asset.id,
                 asset.scope_id,
@@ -120,6 +126,7 @@ class SqliteAssetRepository:
                 asset.updated_at.isoformat(),
                 json.dumps(dataclasses.asdict(asset.capture_time)),
                 asset.external_source_id,
+                json.dumps({"source_metadata": asset.source_metadata.to_dict()}, ensure_ascii=False),
             ),
         )
 
@@ -218,6 +225,15 @@ class SqliteAssetRepository:
                 "UPDATE assets SET status = ?, updated_at = datetime('now') WHERE id = ?",
                 (status.value, asset_id),
             )
+
+    def find_file_by_hash(self, content_sha256: str) -> str | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT path FROM assets WHERE content_sha256 = ? AND parent_asset_id IS NULL"
+                " ORDER BY created_at, id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+        return str(row["path"]) if row else None
 
 
 _OBSERVATION_COLUMNS = (

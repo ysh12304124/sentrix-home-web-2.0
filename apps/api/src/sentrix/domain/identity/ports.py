@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -539,6 +540,12 @@ class EntityRepository(Protocol):
         """
         ...
 
+    def confirmed_people_named(self, scope_id: str, name: str) -> tuple[EntityRecord, ...]:
+        """Exact name matches, or effective aliases, within the requested visible scope."""
+        ...
+
+    def asset_ids_for_person(self, entity_id: str, scope_id: str) -> tuple[str, ...]: ...
+
     def record_revision(
         self,
         entity_id: str,
@@ -615,6 +622,10 @@ class EntityRepository(Protocol):
         ...
 
     def person_aliases(self, entity_id: str) -> tuple[str, ...]: ...
+
+    def person_hidden(self, entity_id: str) -> bool:
+        """用户是否把这个人标成了路人（``PERSON_HIDDEN_PROPERTY_KEY`` 的当前值为真）。"""
+        ...
 
     def set_person_aliases(self, entity_id: str, aliases: Sequence[str]) -> tuple[str, ...]:
         """整表替换别名，空串与重复项被清掉。实体不存在时返回空。"""
@@ -981,6 +992,38 @@ class AppearanceRepository(Protocol):
         """
         ...
 
+    def is_sampled(self, person_id: str, face_instance_id: str, model_name: str) -> bool:
+        """这张脸是否已经由这个模型采过、且证据仍然有效（``status == 'confirmed'``）。
+
+        取样任务据此跳过已采过的脸：合并或重新确认只给新增的事件调模型。被驳回的证据
+        不算——重新采到之后它应当重新生效（``record`` 的原样行为）。
+        """
+        ...
+
+
+class PersonAppearanceJobRepository(Protocol):
+    """确认 / 合并之后的外观取样任务。一个人一行，重复入队合并；跑完即删。"""
+
+    def enqueue(self, person_id: str) -> None: ...
+
+    def claim_next(self) -> tuple[str, int] | None:
+        """取一个到期任务并标成 running，返回 ``(person_id, generation)``。"""
+        ...
+
+    def finish(self, person_id: str, generation: int) -> None:
+        """跑完。期间又入队过（generation 变了）就保留，留给下一轮。"""
+        ...
+
+    def fail(self, person_id: str, generation: int, error: str) -> None:
+        """失败：退避后重试，次数用完标为 failed。"""
+        ...
+
+    def requeue_running(self) -> int:
+        """启动时把上次进程退出时还在跑的任务放回队列。"""
+        ...
+
+    def status(self, person_id: str) -> str | None: ...
+
 
 class SemanticRepository(Protocol):
     """语义画像与声明。读侧是 S6 · T130，写侧是 S7a · T206。
@@ -1151,7 +1194,9 @@ class FamilyGraphRepository(Protocol):
         校验顺序是行为的一部分（1.0 ``db.py:5808-5863``），前六道会抛、后两道静默：
 
         1. ``source`` 合法；2. 两端不是同一个人；3. 两端都是同 scope 的 person 实体；
-        4. 两个标签 strip 后非空；5. **``validate_relationship_pair`` 过白名单**；
+        4. 两个标签 strip 后非空；5. 标签校验：``source='model'`` 过亲属白名单
+           ``validate_relationship_pair``；``source='user_override'`` 只做形状校验
+           ``validate_custom_relationship_pair``（用户可以写自己的称谓，2026-11-12）；
         6. ``source='model'`` 且这对人被 block 过 → **返回空**（用户撤回过，模型不许恢复）；
         7. ``source='user_override'`` 且存在 block → **先删掉那一行**（用户重新建边即解锁）；
         8. ``source='model'`` 且当前有效边里有 ``locked`` 的 → **返回那些行**，不写。
@@ -1173,6 +1218,10 @@ class FamilyGraphRepository(Protocol):
         ...
 
     # ---- 家庭画像 --------------------------------------------------------------
+
+    def latest_user_edit_at(self, scope_id: str, entity_id: str) -> datetime | None:
+        """Time of the latest user membership or relationship edit, including retractions."""
+        ...
 
     def get_active_portrait(self, scope_id: str, entity_id: str) -> FamilyPortraitRecord | None:
         """当前生效的那一段家庭画像。

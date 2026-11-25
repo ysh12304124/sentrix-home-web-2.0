@@ -6,7 +6,9 @@
  * `body` 下、**不在组件树内**，所以 `.judge-modal-backdrop` 的 `position:fixed` 不会被
  * 任何祖先的 `transform` / `overflow` 影响（`photobench.css` 就是按 body 层级写的）。
  */
+import { LazyTraceNodeBrowser } from "./TraceNodeBrowser.tsx";
 import { createPortal } from "react-dom";
+import { useState } from "react";
 
 import type { RunItemDetail } from "../../api/types.ts";
 
@@ -43,6 +45,7 @@ export interface JudgeInputModalProps {
 }
 
 export function JudgeInputModal({ item, onClose }: JudgeInputModalProps) {
+  const [judgeTurn, setJudgeTurn] = useState(Number(item.runtime_turns?.at(-1)?.index ?? 0));
   const inputs = judgeInputs(item);
   const scorer = String(obj(item.evaluation_result || item.judge).scorer || "");
   const deterministic = ["media_set", "atm_list", "atm_number"].includes(scorer);
@@ -65,7 +68,10 @@ export function JudgeInputModal({ item, onClose }: JudgeInputModalProps) {
         </header>
         <div className="judge-requests">
         {(item.scoring_results as unknown[] | undefined)?.length ? <ItemScoringResults results={item.scoring_results} diagnostics={item.diagnostic_results} /> : null}
-        {inputs.length ? inputs.map((entry, index) => (
+        {item.trace_storage && (item.runtime_turns?.length ?? 0) > 1 ? <label>评分轮次<select aria-label="评分轮次" value={judgeTurn} onChange={event => setJudgeTurn(Number(event.target.value))}>
+          {item.runtime_turns?.map((turn, index) => <option key={index} value={Number(turn.index ?? index)}>第 {index + 1} 轮</option>)}
+        </select></label> : null}
+        {item.trace_storage ? <LazyTraceNodeBrowser detail={item} turnIndex={judgeTurn} initialKind="judges" /> : inputs.length ? inputs.map((entry, index) => (
           <section className="judge-request" key={index}>
             <h4>{entry.title}</h4>
             <pre>{JSON.stringify(entry.input, null, 2)}</pre>

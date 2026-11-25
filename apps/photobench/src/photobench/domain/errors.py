@@ -41,6 +41,24 @@ class InvalidRequestError(DomainError):
     status_code = 400
 
 
+class ReadIndexRequiredError(DomainError):
+    code = "read_index_required"
+    status_code = 409
+
+
+class ChatBusyError(DomainError):
+    code = "chat_busy"
+    status_code = 409
+
+
+class HttpResponseError(RuntimeError):
+    """Upstream HTTP failure with its original status and readable message."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class RequestOutcomeUnknownError(RuntimeError):
     """A non-idempotent request may have executed; automatic replay is forbidden."""
 

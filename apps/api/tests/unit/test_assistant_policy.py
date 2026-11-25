@@ -11,7 +11,7 @@ import pytest
 
 from sentrix.domain.assistant.evidence_ledger import EvidenceType
 from sentrix.domain.assistant.models import ToolCall
-from sentrix.domain.assistant.profile import DEFAULT_PROFILE
+from sentrix.domain.assistant.profile import DEFAULT_PROFILE, REASONING_PROFILE
 from sentrix.domain.assistant.task_state import ToolCallRecord
 from sentrix.domain.assistant.tool_policy import ToolAction, ToolPolicy
 from sentrix.domain.assistant.tools import TOOL_SPECS, TOOLS_BY_NAME, openai_tools
@@ -90,6 +90,26 @@ def test_a_valid_call_is_executed_with_parsed_arguments(make_state):
     assert decision.action is ToolAction.EXECUTE
     assert decision.arguments == {"query": "海边"}
     assert decision.signature == "search_memories(query='海边')"
+
+
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        ("search_memories", {"query": "next query"}),
+        ("get_result_page", {"result_set_id": "new-result", "page": 3}),
+        ("inspect_photo", {"handle": "photo_1", "question": "details"}),
+    ],
+)
+def test_reasoning_allows_evidence_work_beyond_normal_call_limits(make_state, tool, arguments):
+    state = make_state(profile=REASONING_PROFILE)
+    state.model_steps = 30
+    for name in ("search_memories", "get_result_page", "inspect_photo"):
+        for index in range(10):
+            state.record(
+                ToolCallRecord(call_id=f"{name}-{index}", tool=name, signature=f"{name}-{index}", status="ok")
+            )
+    assert state.can_step() and state.can_call_tool() and state.can_inspect()
+    assert ToolPolicy().decide(call(tool, **arguments), state).action is ToolAction.EXECUTE
 
 
 def test_an_unknown_tool_is_denied_with_the_available_names(make_state):

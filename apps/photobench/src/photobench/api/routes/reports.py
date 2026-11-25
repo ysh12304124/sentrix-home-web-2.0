@@ -10,13 +10,14 @@ export-trace,export-sft}`` 那四条，``:7724-7819``）。
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import StreamingResponse
 
 from photobench.api.deps import get_container
 from photobench.domain.runs import exports
+from photobench.domain.runs.stream_exports import buffered_chunks
 
 router = APIRouter(tags=["reports"])
 
@@ -45,26 +46,6 @@ def graph_quality(request: Request, run_id: str) -> dict[str, Any]:
     return get_container(request).reports.graph_quality(run_id)
 
 
-def _download(payload: Any, file_name: str) -> Response:
-    """1.0 的下载响应：JSON 字节 + ``Content-Disposition``。
-
-    **刻意不用 FastAPI 的 ``JSONResponse``。** 它走 ``json.dumps`` 的默认参数，
-    ``ensure_ascii=True`` 会把中文转义成 ``\\uXXXX``。1.0 用的是
-    ``json.dumps(payload, ensure_ascii=False)``（``:7800`` / ``:7821``），而导出的
-    trace 里全是中文提示词与中文工具结果——转义之后这份文件是给机器看的，
-    而它本来就是给人拿去标注的。
-
-    ``run_id`` 能走到这里就说明盘上真有这个 run 目录（``RunStore.load_state`` 对不
-    存在的 id 抛 ``KeyError``，HTTP 层映射成 404），所以文件名里不会有路径分隔符。
-    """
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    return Response(
-        content=body,
-        media_type="application/json; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
-    )
-
-
 @router.get("/runs/{run_id}/export-trace")
 def export_trace(
     request: Request,
@@ -75,14 +56,18 @@ def export_trace(
     scoring_batch: str = "",
 ) -> Response:
     """1.0 ``:7789-7803``。``scores`` 与 ``min_score`` 同时生效（1.0 是两个独立的 ``if``）。"""
-    payload = get_container(request).reports.export_traces(
+    payload = get_container(request).reports.stream_export(
         run_id,
         scoring_profile=scoring_profile,
         scoring_batch=scoring_batch,
         scores=exports.parse_filter(scores) or None,
         min_score=exports.parse_min_score(min_score),
     )
-    return _download(payload, f"{run_id}-trace.json")
+    return StreamingResponse(
+        buffered_chunks(payload),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}-trace.json"'},
+    )
 
 
 @router.get("/runs/{run_id}/export-sft")
@@ -95,11 +80,16 @@ def export_sft(
     scoring_batch: str = "",
 ) -> Response:
     """1.0 ``:7804-7819``。**给了 ``scores`` 就忽略 ``min_score``**（1.0 是 ``if/elif``）。"""
-    payload = get_container(request).reports.export_sft(
+    payload = get_container(request).reports.stream_export(
         run_id,
+        sft=True,
         scoring_profile=scoring_profile,
         scoring_batch=scoring_batch,
         scores=exports.parse_filter(scores) or None,
         min_score=exports.parse_min_score(min_score),
     )
-    return _download(payload, f"{run_id}-sft-traces.json")
+    return StreamingResponse(
+        buffered_chunks(payload),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{run_id}-sft-traces.json"'},
+    )

@@ -1,0 +1,59 @@
+{
+  "source_revision": "928845b9d3b7af49516be68cacd1553e5b591474",
+  "files": [
+    {
+      "bundle": "shared-suites.py",
+      "target": "/home/realmagic/xy/releases/psh-b2030e1-100-20261117-8772/apps/photobench/src/photobench/application/runs/suites.py",
+      "before_sha256": "810e39e2f4bc8b66fc8605b04ea31863ed3ecd10bf29b727f6c1caa0b3af6358",
+      "after_sha256": "2a00a27c437f6560a6b88730c0bc9801a3531be91e65ac2b005a1eaa12323655",
+      "changed_methods": [
+        "__init__",
+        "_execute_and_release",
+        "_live_list_entry",
+        "_register_active",
+        "active_run_ids",
+        "active_states",
+        "resume_run",
+        "start_retest",
+        "start_suite",
+        "work_status"
+      ]
+    },
+    {
+      "bundle": "resume-suites.py",
+      "target": "/home/realmagic/xy/experiments/atm1013-20261118/resume-release/apps/photobench/src/photobench/application/runs/suites.py",
+      "before_sha256": "d35e577f9a863c6c93f7cd5cfa1ad1eb81af7862afa58f0b40107b29f7e52153",
+      "after_sha256": "30f79223cc229052e477365d43e4e663dadb2ab0b48b05b2a57b1ce7d63d9eaa",
+      "changed_methods": [
+        "__init__",
+        "_execute_and_release",
+        "_live_list_entry",
+        "_register_active",
+        "active_run_ids",
+        "active_states",
+        "resume_run",
+        "start_retest",
+        "start_suite",
+        "work_status"
+      ]
+    },
+    {
+      "bundle": "shared-suites.py",
+      "target": "/home/realmagic/xy/releases/psh-b2030e1-100-20261117/apps/photobench/src/photobench/application/runs/suites.py",
+      "before_sha256": "810e39e2f4bc8b66fc8605b04ea31863ed3ecd10bf29b727f6c1caa0b3af6358",
+      "after_sha256": "2a00a27c437f6560a6b88730c0bc9801a3531be91e65ac2b005a1eaa12323655",
+      "changed_methods": [
+        "__init__",
+        "_execute_and_release",
+        "_live_list_entry",
+        "_register_active",
+        "active_run_ids",
+        "active_states",
+        "resume_run",
+        "start_retest",
+        "start_suite",
+        "work_status"
+      ]
+    }
+  ]
+}

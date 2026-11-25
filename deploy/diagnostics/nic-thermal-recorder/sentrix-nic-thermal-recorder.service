@@ -1,0 +1,13 @@
+[Unit]
+Description=NIC thermal and PCIe evidence recorder
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/realmagic/xy/diagnostics/nic-thermal/record.py --interval 30 --output /home/realmagic/xy/diagnostics/nic-thermal/logs/samples.jsonl
+Restart=on-failure
+RestartSec=5
+Nice=10
+UMask=0077
+
+[Install]
+WantedBy=default.target

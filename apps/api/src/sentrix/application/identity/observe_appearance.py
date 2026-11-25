@@ -25,7 +25,7 @@ B 头上），两件事不该共用一个 catch。
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sentrix.domain.identity.models import FaceInstanceRecord
@@ -37,6 +37,10 @@ from sentrix.domain.identity.ports import (
     PersonVision,
 )
 from sentrix.domain.media.ports import ObservationRepository
+
+# 确认 / 合并之后「给这个人采外观证据」的入口。生产装配的是入队（后台线程消费，见
+# ``appearance_sampling``）；单测直接传 ``ObserveAppearance`` 同步跑。
+RequestAppearance = Callable[[str], object]
 
 # 1.0 ``model_clients.py:1352`` 的 ``normalize_confidence(..., 0.55)``。兜底值住在
 # ``person_vision_model`` 里（那是解析回复的地方），这里只在回复形状不对时用它兜底。
@@ -94,6 +98,10 @@ class ObserveAppearance:
         for event_id in self._entities.event_ids(person_id):
             instance = self._faces.best_instance_for_person_in_event(person_id, event_id)
             if instance is None:
+                continue
+            # 已经采过、证据仍有效的脸不再送模型：确认之后再合并、或重复确认，只给新增的
+            # 事件付那十秒。被驳回的证据不算采过（见 ``AppearanceRepository.is_sampled``）。
+            if self._appearances.is_sampled(person_id, instance.id, self._vision.model_id):
                 continue
             if self._observe(person_id, instance):
                 recorded += 1

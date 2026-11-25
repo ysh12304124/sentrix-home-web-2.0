@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from sentrix.api.deps import get_container
+from sentrix.api.errors import ConflictError, DomainErrorResponse
 from sentrix.api.routes.media import to_summary
 from sentrix.api.schemas.search import ChannelTrace, SearchHit, SearchResponse
+from sentrix.application.identity.person_directory import assets_for_names
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest
 from sentrix.bootstrap.assistant_wiring import build_retrieve_evidence
 from sentrix.bootstrap.container import Container
+from sentrix.domain.assistant.models import AmbiguousPersonName
 from sentrix.domain.media.models import MediaType
 from sentrix.domain.retrieval.conditions import Condition
 from sentrix.domain.retrieval.time_expression import parse_time_expression
@@ -22,9 +24,7 @@ log = logging.getLogger("sentrix.api.search")
 router = APIRouter(tags=["search"])
 
 
-def _conditions(
-    *, time_range: str, person: Sequence[str], place: str, media_type: str
-) -> tuple[Condition, ...]:
+def _conditions(*, time_range: str, place: str, media_type: str) -> tuple[Condition, ...]:
     """把查询参数变成结构化条件。
 
     **每条都是 HARD。** 1.0 的 ``HardFilterContext.from_spec`` 只把
@@ -39,9 +39,6 @@ def _conditions(
     built: list[Condition] = []
     if time_range.strip() and parse_time_expression(time_range) is not None:
         built.append(Condition(dimension="time", value=time_range.strip(), key="time"))
-    for name in person:
-        if name.strip():
-            built.append(Condition(dimension="person", value=name.strip(), key=f"person:{name}"))
     if place.strip():
         built.append(Condition(dimension="place", value=place.strip(), key="place"))
     if media_type.strip():
@@ -54,7 +51,10 @@ def _has_gps(container: Container, asset_id: str) -> bool:
     return asset is not None and asset.captured_location is not None
 
 
-@router.get("/search")
+@router.get(
+    "/search",
+    responses={409: {"model": DomainErrorResponse, "description": "有多位已确认人物匹配所填姓名或别名"}},
+)
 def search_assets(
     q: str = Query(..., min_length=1, max_length=200, description="内容词，例如 桥 / 海边 / 红色"),
     # 空串与不传都表示**全部相册**（1.0 的 `if scope_id:`）。默认值从 "home-default"
@@ -62,7 +62,7 @@ def search_assets(
     scope_id: str = "",
     limit: int = Query(20, ge=1, le=100),
     time_range: str = Query("", max_length=60, description="时间条件，例如 2023年10月 / 2025年-2026年"),
-    person: list[str] = Query(default=[], description="人物条件，可重复：scope 内已确认人物的本名"),
+    person: list[str] = Query(default=[], description="人物条件，可重复：已确认人物的本名或别名"),
     place: str = Query("", max_length=60, description="地点条件，服务端按解析出的行政区/地名匹配"),
     media_type: str = Query("", max_length=20, description="媒体类型：image / video / audio / text"),
     source_type: str = Query("", max_length=40, description="可选文本来源标签，如email/note/document"),
@@ -72,6 +72,10 @@ def search_assets(
         media_types = (MediaType(media_type),) if media_type.strip() else ()
     except ValueError as error:
         raise HTTPException(status_code=400, detail=f"未知的媒体类型: {media_type}") from error
+    try:
+        linked_assets = assets_for_names(container.person_directory, person, scope_id)
+    except AmbiguousPersonName as error:
+        raise ConflictError("有多位已确认人物匹配这个姓名") from error
 
     use_case = build_retrieve_evidence(container)
     result = use_case.execute(
@@ -85,8 +89,8 @@ def search_assets(
             time_bounds=parse_time_expression(time_range) if time_range.strip() else None,
             media_types=media_types,
             place=place.strip(),
-            person=tuple(name.strip() for name in person if name.strip()),
-            conditions=_conditions(time_range=time_range, person=person, place=place, media_type=media_type),
+            linked_person_assets=linked_assets,
+            conditions=_conditions(time_range=time_range, place=place, media_type=media_type),
         )
     )
 

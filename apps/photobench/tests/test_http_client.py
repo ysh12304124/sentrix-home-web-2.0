@@ -12,7 +12,7 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from photobench.domain.errors import RequestOutcomeUnknownError
+from photobench.domain.errors import HttpResponseError, RequestOutcomeUnknownError
 from photobench.infrastructure.http.client import HttpxJsonClient, build_multipart
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -49,6 +49,15 @@ def test_retries_are_bounded_and_never_replay_an_uncertain_post(method, error, r
 
 def _client(handler: Handler) -> HttpxJsonClient:
     return HttpxJsonClient(client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
+
+
+def test_delete_204_has_no_json_and_errors_retain_status():
+    client = _client(lambda request: httpx.Response(204))
+    assert client.request_json("http://local/conversation", method="DELETE") is None
+    client = _client(lambda request: httpx.Response(409, json={"message": "still running"}))
+    with pytest.raises(HttpResponseError) as caught:
+        client.request_json("http://local/conversation", method="DELETE")
+    assert caught.value.status_code == 409
 
 
 def test_unknown_post_preserves_transport_errno_without_private_exception_text():

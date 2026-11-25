@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -37,10 +38,15 @@ from typing import Any
 from sentrix.application.assistant.query_memory_facts import QueryMemoryFacts
 from sentrix.application.retrieval.retrieve_evidence import EvidenceRequest, RetrieveEvidence
 from sentrix.application.retrieval.retrieve_graph import graph_direction, graph_intent
-from sentrix.application.retrieval.text_memories import RetrieveTextMemories
 from sentrix.domain.assistant.evidence_binding import fact_value_type
-from sentrix.domain.assistant.evidence_ledger import EvidenceType
-from sentrix.domain.assistant.models import Attachment
+from sentrix.domain.assistant.evidence_ledger import (
+    EvidenceRequirement,
+    EvidenceType,
+    RequirementValueType,
+    clean_person_name,
+    split_person_scope,
+)
+from sentrix.domain.assistant.models import AmbiguousPersonName, Attachment, PersonProfile
 from sentrix.domain.assistant.ports import PersonDirectory, ResultSetRepository
 from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet, ResultSetEntry
 from sentrix.domain.assistant.tools import MAX_DELIVERED_PHOTOS, SOURCE_TEXT_PAGE_CHARS
@@ -55,7 +61,10 @@ from sentrix.domain.media.ports import (
 )
 from sentrix.domain.memories.ports import EventRepository
 from sentrix.domain.places.ports import AssetPlaceRepository
+from sentrix.domain.retrieval.conditions import Condition, Strictness
 from sentrix.domain.retrieval.fact_query import FactRejection
+from sentrix.domain.retrieval.time_expression import parse_time_expression
+from sentrix.domain.spaces.ports import SpaceRepository
 
 log = logging.getLogger("sentrix.assistant.tools")
 
@@ -64,6 +73,31 @@ DEFAULT_INSPECT_QUESTION = "请描述这张照片"
 
 DEFAULT_SEARCH_LIMIT = 6
 MAX_SEARCH_LIMIT = 6
+
+_WHO_SUFFIX = re.compile(r"(?:请问\s*)?([^，。？！?！]{1,80}?)\s*是谁(?:呀|啊|呢)?")
+_WHO_PREFIX = re.compile(r"(?:请问\s*)?谁是\s*([^，。？！?！]{1,80})")
+_PERSON_PHOTOS = re.compile(
+    r"(?:请\s*)?(?:给我看看|给我找|帮我找|找一下|查找|找|看看|看一下)?\s*"
+    r"([^，。？！?！]{1,80}?)\s*的\s*(?:照片|图片)"
+)
+
+
+def _person_question(question: str) -> tuple[str, bool] | None:
+    query = question.strip().rstrip("？?。!！").strip()
+    for pattern, photos_requested in ((_WHO_SUFFIX, False), (_WHO_PREFIX, False), (_PERSON_PHOTOS, True)):
+        if match := pattern.fullmatch(query):
+            return clean_person_name(match.group(1)), photos_requested
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class KnownPersonAnswer:
+    answer: str
+    person: PersonProfile | None = None
+    result_set: ResultSet | None = None
+    attachments: tuple[Attachment, ...] = ()
+    photos_requested: bool = False
+
 
 # 复合摘要的三个上限，逐条取自 1.0 ``agent_runtime/tools.py:371-414`` 的
 # ``_observation_summary``（单段文字 120 字、整串 300 字、列表取前 8 项）。
@@ -185,6 +219,12 @@ def _text_source_metadata(asset: Asset) -> dict[str, str]:
         metadata["external_source_id"] = asset.external_source_id
     if asset.capture_time.source == "text_source":
         metadata["source_timestamp"] = asset.capture_time.raw
+    metadata.update(
+        document_type=asset.source_metadata.document_type or "document",
+        title=asset.source_metadata.title,
+        summary=asset.source_metadata.summary,
+        source_version=asset.content_sha256,
+    )
     return metadata
 
 
@@ -212,15 +252,15 @@ class AssistantToolbox:
         asset_places: AssetPlaceRepository | None = None,
         events: EventRepository | None = None,
         limits: ToolLimits | None = None,
-        text_retrieval: RetrieveTextMemories | None = None,
+        spaces: SpaceRepository | None = None,
     ) -> None:
         self._limits = limits or ToolLimits()
-        self._text_retrieval = text_retrieval
         self._retrieval = retrieval
         self._assets = assets
         self._result_sets = result_sets
         self._people = people
         self._memory_facts = memory_facts
+        self._spaces = spaces
         # 照片的**行政地点**（导入期由 EXIF GPS 反解而来）。preview 的 ``place``
         # 必须取这一份而不是 ``observations.place``——理由见 ``_place_label``。
         self._asset_places = asset_places
@@ -246,14 +286,17 @@ class AssistantToolbox:
         now: datetime,
         question: str = "",
         graph_enabled: bool = True,
+        requirements: Sequence[EvidenceRequirement] = (),
     ) -> ToolOutcome:
-        if name == "search_text_memories":
-            try:
-                return self._search_text(arguments, scope_id=scope_id, now=now, question=question)
-            except ValueError as exc:
-                return _failure("invalid_text_filter", str(exc))
         if name == "search_memories":
-            return self._search(arguments, scope_id=scope_id, now=now, graph_enabled=graph_enabled)
+            return self._search(
+                arguments,
+                scope_id=scope_id,
+                now=now,
+                graph_enabled=graph_enabled,
+                question=question,
+                requirements=requirements,
+            )
         if name == "get_result_page":
             return self._page(arguments, scope_id=scope_id)
         if name == "query_photo_people":
@@ -265,120 +308,18 @@ class AssistantToolbox:
         if name == "read_source_text":
             return self._read_source_text(arguments, scope_id=scope_id)
         if name == "get_person_profile":
-            return self._person(arguments, scope_id=scope_id)
+            return self._person(
+                arguments,
+                scope_id=scope_id,
+                include_portrait=any(
+                    item.evidence_type is EvidenceType.PERSON_PROFILE
+                    and item.value_type is RequirementValueType.DESCRIPTION
+                    for item in requirements
+                ),
+            )
         if name == "query_memory_facts":
             return self._facts(arguments, scope_id=scope_id, now=now)
         return _failure("unknown_tool", f"没有名为 {name} 的工具。")
-
-    def _search_text(
-        self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime, question: str = ""
-    ) -> ToolOutcome:
-        if self._text_retrieval is None:
-            return _failure("text_index_unavailable", "文本索引不可用，请先完成文本构建。")
-        query = str(arguments.get("query") or "").strip()
-        if not query:
-            return _failure("empty_query", "query不能为空")
-        result = self._text_retrieval.execute(
-            query,
-            scope_id,
-            source_type=str(arguments.get("source_type") or ""),
-            after=str(arguments.get("after") or ""),
-            before=str(arguments.get("before") or ""),
-            question=question,
-        )
-        hits = result.hits
-        result_set = ResultSet(
-            id=f"rs_{uuid.uuid4().hex[:12]}",
-            scope_id=scope_id,
-            query=query,
-            asset_ids=tuple(c.asset_id for c in hits),
-            created_at=now,
-            text_offsets={c.asset_id: c.start for c in hits},
-        )
-        self._result_sets.add(result_set)
-        preview = [
-            {
-                "handle": f"{result_set.id}/photo_{i}",
-                "citation_handle": f"{result_set.id}/photo_{i}",
-                "media_kind": "text",
-                "evidence_id": c.external_id,
-                "source_type": c.source_type,
-                "matched_text": c.text,
-                "offset": c.start,
-                "end_offset": c.end,
-                "revision": c.revision,
-            }
-            for i, c in enumerate(hits, 1)
-        ]
-        visible = {
-            "result_set_id": result_set.id,
-            "preview": preview,
-            "total": len(hits),
-            "has_more": False,
-            "degraded": result.degraded,
-            "reason": result.reason,
-        }
-        return ToolOutcome(
-            observation={
-                **visible,
-                "asset_ids": list(result_set.asset_ids),
-                "candidate_asset_ids": list(result_set.asset_ids),
-                "returned_asset_ids": list(result_set.asset_ids),
-                "pooled_asset_ids": [c.asset_id for c in result.candidates],
-                "rerank_status": result.rerank_status,
-                "retrieval_channels": ["fts_bm25", "text_ann", "source_relations", "rerank"],
-                "retrieval_stages": {name: list(ids) for name, ids in result.channels},
-                "source_relations": [asdict(edge) for edge in result.relations],
-            },
-            model_visible=visible,
-        )
-
-    def text_citations(
-        self, handles: Sequence[str], result_set_ids: Sequence[str], *, scope_id: str
-    ) -> list[dict[str, str]]:
-        citations = {}
-        for handle in handles:
-            qualified_id, sep, local_handle = handle.partition("/")
-            allowed_ids = (
-                [qualified_id]
-                if sep and qualified_id in result_set_ids
-                else list(result_set_ids[-1:] if handle.startswith("photo_") else result_set_ids)
-            )
-            if sep and qualified_id not in result_set_ids:
-                continue
-            for result_id in reversed(allowed_ids):
-                result = self._result_sets.get(result_id)
-                if result is None or result.scope_id != scope_id:
-                    continue
-                asset = self._assets.get(result.resolve(local_handle if sep else handle) or "")
-                if asset is None and not sep:
-                    # Public source IDs are accepted only when the source was
-                    # returned in this turn. Never look up arbitrary scope data.
-                    for aid in result.asset_ids:
-                        candidate = self._assets.get(aid)
-                        if (
-                            candidate is None
-                            or candidate.scope_id != scope_id
-                            or candidate.media_type is not MediaType.TEXT
-                        ):
-                            continue
-                        if any(o.external_id == handle for o in self._observations.list_by_asset(aid)):
-                            asset = candidate
-                            break
-                if asset is None or asset.scope_id != scope_id or asset.media_type is not MediaType.TEXT:
-                    continue
-                observations = self._observations.list_by_asset(asset.id)
-                if not observations:
-                    continue
-                observation = observations[0]
-                citations[asset.id] = {
-                    "asset_id": asset.id,
-                    "evidence_id": observation.external_id,
-                    "source_type": str(observation.source_metadata.get("source_type", "unknown")),
-                    "handle": handle,
-                }
-                break
-        return list(citations.values())
 
     # ---- query_memory_facts -------------------------------------------------
 
@@ -434,6 +375,7 @@ class AssistantToolbox:
                 # 参数里有、实际没应用：不能当已应用。时间表达式解析失败就是这条，
                 # 静默忽略会把「2017 年那场婚礼」的统计退化成整个相册。
                 "filters_not_applied": not_applied,
+                "person_names": answer.person_names,
                 "coverage": dict(answer.coverage),
                 "confidence": 1.0,
             },
@@ -449,10 +391,65 @@ class AssistantToolbox:
         scope_id: str,
         now: datetime,
         graph_enabled: bool = True,
+        question: str = "",
+        requirements: Sequence[EvidenceRequirement] = (),
     ) -> ToolOutcome:
         query = str(arguments.get("query") or "").strip()
         if not query:
             return _failure("empty_query", "query 不能为空，请用用户问题里的实词。")
+        source_type = str(arguments.get("source_type") or "all")
+        if source_type not in {"all", "email", "document"}:
+            return _failure("invalid_source_type", "source_type 需为 all、email 或 document")
+
+        scopes = [dict(item.scope) for item in requirements]
+        names = tuple(dict.fromkeys(scope["person"] for scope in scopes if scope.get("person")))
+        try:
+            groups = [self._search_people(name, scope_id) for name in names]
+            if not groups:
+                simple = _person_question(question or query)
+                exact_name = simple[0] if simple else ""
+                if not exact_name and query == question.strip().rstrip("？?。!！"):
+                    exact_name = clean_person_name(query)
+                if exact_name:
+                    person = self._people.lookup(exact_name, scope_id)
+                    if person and person.confirmed and person.entity_id:
+                        groups = [(person,)]
+        except AmbiguousPersonName:
+            return _failure("ambiguous_person", "有多位已确认人物匹配这个姓名，请补充信息。")
+        if any(not group for group in groups):
+            return _failure("unresolved_person", "无法确认提到的相册人物，请核对姓名或别名。")
+
+        if re.search(r"合照|合影", question or query) and len(groups) > 1:
+            groups = [tuple(dict.fromkeys(person for group in groups for person in group))]
+        person_assets: dict[str, tuple[str, ...]] = {}
+        people_by_asset: dict[str, dict[str, tuple[str, ...]]] = {}
+        for group in groups:
+            for person in group:
+                if person.entity_id not in person_assets:
+                    person_assets[person.entity_id] = self._people.asset_ids(person)
+            # The first person's ordering is by capture time. Keep it when intersecting.
+            first_ids = person_assets[group[0].entity_id]
+            common = set(first_ids)
+            for person in group[1:]:
+                common.intersection_update(person_assets[person.entity_id])
+            names_and_aliases = {person.name: person.aliases for person in group}
+            for asset_id in first_ids:
+                if asset_id in common:
+                    people_by_asset.setdefault(asset_id, {}).update(names_and_aliases)
+
+        times = {scope["time"] for scope in scopes if scope.get("time")}
+        places = {scope["place"] for scope in scopes if scope.get("place")}
+        time = next(iter(times)) if groups and len(times) == 1 else ""
+        place = next(iter(places)) if groups and len(places) == 1 else ""
+        bounds = parse_time_expression(time)
+        conditions = [Condition("time", time, key="time")] if bounds else []
+        if place:
+            conditions.append(Condition("place", place, key="place", strictness=Strictness.SEMANTIC))
+        excluded_scopes = (
+            frozenset(space.id for space in self._spaces.list_all() if not space.include_in_people)
+            if not scope_id and self._spaces is not None
+            else frozenset()
+        )
 
         result = self._retrieval.execute(
             EvidenceRequest(
@@ -460,6 +457,12 @@ class AssistantToolbox:
                 scope_id=scope_id,
                 limit=DEFAULT_SEARCH_LIMIT,
                 graph_enabled=graph_enabled,
+                linked_person_assets=tuple(people_by_asset) if groups else None,
+                time_bounds=bounds,
+                place=place,
+                conditions=tuple(conditions),
+                excluded_scopes=excluded_scopes,
+                source_types=(source_type,) if source_type != "all" else (),
             )
         )
         result_set = ResultSet(
@@ -486,6 +489,7 @@ class AssistantToolbox:
         return self._page_outcome(
             result_set,
             page_no=1,
+            confirmed_people=people_by_asset,
             extra={
                 "backend": result.backend,
                 "degraded": result.degraded,
@@ -501,8 +505,24 @@ class AssistantToolbox:
                 "graph_primary_asset_ids": list(result.primary_asset_ids),
                 "graph_fused_asset_ids": list(result.fused_asset_ids),
                 "graph_policy": {"intent": graph_intent(query), "direction": graph_direction(query)},
+                "filters_applied": {"time": time} if bounds else {},
             },
         )
+
+    def _search_people(self, name: str, scope_id: str) -> tuple[PersonProfile, ...]:
+        profile = self._people.lookup(clean_person_name(name), scope_id)
+        if profile and profile.confirmed and profile.entity_id:
+            return (profile,)
+        parts = split_person_scope(name)
+        if len(parts) == 1:
+            return ()
+        people: dict[str, PersonProfile] = {}
+        for part in parts:
+            profile = self._people.lookup(part, scope_id)
+            if profile is None or not profile.confirmed or not profile.entity_id:
+                return ()
+            people[profile.entity_id] = profile
+        return tuple(people.values())
 
     # ---- get_result_page ----------------------------------------------------
 
@@ -538,10 +558,26 @@ class AssistantToolbox:
         return self._page_outcome(result_set, page_no=page_no)
 
     def _page_outcome(
-        self, result_set: ResultSet, *, page_no: int, extra: Mapping[str, Any] | None = None
+        self,
+        result_set: ResultSet,
+        *,
+        page_no: int,
+        extra: Mapping[str, Any] | None = None,
+        confirmed_people: Mapping[str, Mapping[str, tuple[str, ...]]] | None = None,
     ) -> ToolOutcome:
         page = result_set.page(page_no)
         preview = [self._preview(entry) for entry in page.entries]
+        people_by_asset: dict[str, tuple[str, ...]] = {}
+        if confirmed_people:
+            for entry, row in zip(page.entries, preview, strict=True):
+                if matched := confirmed_people.get(entry.asset_id):
+                    row["people"] = list(dict.fromkeys([*row.get("people", []), *matched]))
+                    row["people_count"] = max(row["people_count"], len(matched))
+                    people_by_asset[entry.asset_id] = tuple(
+                        dict.fromkeys(
+                            name for canonical, aliases in matched.items() for name in (canonical, *aliases)
+                        )
+                    )
         # 1.0 ``_RETRIEVAL_TOP_KEEP`` 里那三个 ``group_photo_*`` 的等价物，**判据换了**
         # （见 ``_group_photo_rows``）。
         group_rows = _group_photo_rows(preview)
@@ -599,6 +635,8 @@ class AssistantToolbox:
         }
         if extra:
             observation.update(extra)
+        if people_by_asset:
+            observation["people_by_asset"] = people_by_asset
         return ToolOutcome(observation=observation, model_visible=model_visible)
 
     def _place_label(self, asset_id: str) -> str:
@@ -616,7 +654,7 @@ class AssistantToolbox:
         place = self._asset_places.get(asset_id)
         return place.display() if place is not None else ""
 
-    def _preview(self, entry: ResultSetEntry) -> Mapping[str, Any]:
+    def _preview(self, entry: ResultSetEntry) -> dict[str, Any]:
         """一条候选在**模型眼里**的样子。
 
         **这是模型获取照片信息的主要手段，字段按 1.0 的 ``_preview_entry``
@@ -654,14 +692,18 @@ class AssistantToolbox:
                 "handle": entry.handle,
                 "file_name": asset.file_name,
                 "media_kind": "text",
-                "source_kind": "text",
-                "evidence_id": latest.external_id if latest else "",
-                "source_type": str(latest.source_metadata.get("source_type", "unknown"))
-                if latest
-                else "unknown",
+                "source_kind": asset.source_metadata.document_type or "text",
                 "level": _LEVEL_BY_EVIDENCE_CLASS.get(entry.evidence_class, ""),
                 "people_count": 0,
-                "evidence_summary": text[:_SUMMARY_TEXT_LIMIT],
+                "evidence_summary": "\n".join(
+                    part
+                    for part in (
+                        asset.source_metadata.title,
+                        asset.source_metadata.summary,
+                        text[:_SUMMARY_TEXT_LIMIT],
+                    )
+                    if part
+                ),
                 "text_truncated": len(text) > _SUMMARY_TEXT_LIMIT,
                 **_text_source_metadata(asset),
             }
@@ -939,6 +981,60 @@ class AssistantToolbox:
         )
 
     # ---- query_photo_people -------------------------------------------------
+
+    def cite_sources(
+        self, citations: Sequence[Mapping[str, Any]], *, scope_id: str, reads: Sequence[Mapping[str, Any]]
+    ) -> tuple[Attachment, ...]:
+        """引用必须绑定本轮实际读取的原文范围，句柄在其所属结果集内解析。"""
+        items: list[Attachment] = []
+        seen: set[tuple[str, int, int]] = set()
+        for citation in citations[:20]:
+            set_id, handle = str(citation.get("result_set_id") or ""), str(citation.get("asset_handle") or "")
+            matching = [
+                read
+                for read in reads
+                if read.get("result_set_id") == set_id and read.get("asset_handle") == handle
+            ]
+            if not matching:
+                raise ValueError("来源引用需先使用 read_source_text 读取原文")
+            result = self._result_sets.get(set_id)
+            asset_id = result.resolve(handle) if result is not None and result.scope_id == scope_id else None
+            asset = self._assets.get(asset_id) if asset_id else None
+            if asset is None or asset.scope_id != scope_id or asset.media_type is not MediaType.TEXT:
+                raise ValueError("来源引用不属于本轮可访问的文本资料")
+            read = matching[-1]
+            offset = citation.get("offset", read["offset"])
+            end = citation.get("end_offset", int(read["offset"]) + len(str(read["text"])))
+            if (
+                type(offset) is not int
+                or type(end) is not int
+                or not any(
+                    int(r["offset"]) <= offset < end <= int(r["offset"]) + len(str(r["text"]))
+                    for r in matching
+                )
+            ):
+                raise ValueError("引用范围需位于实际读取的原文内")
+            key = (asset.id, offset, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            original = self._observations.list_by_asset(asset.id)[0].source_text
+            items.append(
+                Attachment(
+                    handle=handle,
+                    asset_id=asset.id,
+                    file_name=asset.file_name,
+                    media_type="text",
+                    source_type=asset.source_metadata.document_type or "document",
+                    source_id=asset.external_source_id or asset.id,
+                    title=asset.source_metadata.title,
+                    source_timestamp=asset.capture_time.raw,
+                    offset=offset,
+                    end_offset=end,
+                    excerpt=original[offset:end],
+                )
+            )
+        return tuple(items)
 
     def _photo_people(self, arguments: Mapping[str, Any], *, scope_id: str) -> ToolOutcome:
         """一张照片自己的已确认人物 + 未确认同行者。1.0 ``tools.py:2555-2608``。
@@ -1284,8 +1380,6 @@ class AssistantToolbox:
             return _failure("scope_mismatch", "这个结果集不属于当前资料范围。")
 
         handle = str(arguments.get("asset_handle") or "").strip()
-        if handle.startswith(result_set.id + "/"):
-            handle = handle.partition("/")[2]
         asset_id = result_set.resolve(handle)
         if asset_id is None:
             return _failure("bad_handle", "请使用当前检索预览中返回的 handle。")
@@ -1299,19 +1393,17 @@ class AssistantToolbox:
         text = observations[0].source_text if observations else ""
         if not text:
             return _failure("source_text_unavailable", "这条资料没有可读取的原文。")
-        offset = arguments.get("offset", result_set.text_offsets.get(asset.id, 0))
+        offset = arguments.get("offset", 0)
         if type(offset) is not int or not 0 <= offset < len(text):
             return _failure("bad_offset", "请从 0 开始，或用上一段返回的 next_offset 续读。")
-        page_chars = 640 if result_set.text_offsets else SOURCE_TEXT_PAGE_CHARS
-        end = min(offset + page_chars, len(text))
+        end = min(offset + SOURCE_TEXT_PAGE_CHARS, len(text))
         page = {
+            "result_set_id": result_set.id,
             "asset_handle": handle,
             "text": text[offset:end],
             "offset": offset,
             "next_offset": end if end < len(text) else None,
             "total_chars": len(text),
-            "evidence_id": observations[0].external_id,
-            "citation_handle": f"{result_set.id}/{handle}",
             **_text_source_metadata(asset),
         }
         return ToolOutcome(
@@ -1321,11 +1413,78 @@ class AssistantToolbox:
 
     # ---- get_person_profile -------------------------------------------------
 
-    def _person(self, arguments: Mapping[str, Any], *, scope_id: str) -> ToolOutcome:
+    def _person_result_set(
+        self, person: PersonProfile, scope_id: str, query: str, now: datetime
+    ) -> ResultSet:
+        visible: list[str] = []
+        for asset_id in self._people.asset_ids(person):
+            asset = self._assets.get(asset_id)
+            if asset is not None and asset.media_type is MediaType.IMAGE and Path(asset.path).is_file():
+                visible.append(asset_id)
+                if len(visible) >= DEFAULT_SEARCH_LIMIT:
+                    break
+        result_set = ResultSet(
+            id=f"rs_{uuid.uuid4().hex[:12]}",
+            scope_id=scope_id,
+            query=query,
+            asset_ids=tuple(visible),
+            created_at=now,
+            evidence_classes=dict.fromkeys(visible, "exact"),
+        )
+        self._result_sets.add(result_set)
+        return result_set
+
+    def known_person_answer(self, question: str, scope_id: str, now: datetime) -> KnownPersonAnswer | None:
+        intent = _person_question(question)
+        if intent is None or not intent[0]:
+            return None
+        name, photos_requested = intent
+        try:
+            person = self._people.lookup(name, scope_id)
+        except AmbiguousPersonName:
+            return KnownPersonAnswer(f"有多位已确认人物匹配「{name}」。你指的是哪一位？")
+        if person is None or not person.entity_id or not person.confirmed:
+            return None
+        paragraphs: list[str] = []
+        if not photos_requested:
+            paragraphs.append(
+                f"「{name}」是相册里「{person.name}」的别名。"
+                if name != person.name
+                else f"「{person.name}」是相册中已确认的人物。"
+            )
+            membership = {"family": "家人", "friend": "朋友"}.get(person.membership)
+            if membership:
+                paragraphs.append(f"相册中记录的归属是{membership}。")
+            if person.relationships:
+                paragraphs.append(
+                    "相册中记录的关系是"
+                    + "、".join(
+                        f"「{relation.other_name}」的{relation.predicate}"
+                        for relation in person.relationships
+                    )
+                    + "。"
+                )
+        result_set = self._person_result_set(person, scope_id, question, now)
+        handles = [entry.handle for entry in result_set.page(1, page_size=3).entries]
+        attachments = self.deliver(result_set.id, handles, scope_id=scope_id).attachments
+        if attachments:
+            paragraphs.append(f"下面是与「{person.name}」关联的照片。")
+        elif photos_requested:
+            paragraphs.append(f"当前没有可显示的「{person.name}」的关联照片。")
+        return KnownPersonAnswer("\n\n".join(paragraphs), person, result_set, attachments, photos_requested)
+
+    def _person(
+        self, arguments: Mapping[str, Any], *, scope_id: str, include_portrait: bool = False
+    ) -> ToolOutcome:
         name = str(arguments.get("person") or "").strip()
         if not name:
             return _failure("empty_person", "person 不能为空。")
-        profile = self._people.lookup(name, scope_id)
+        try:
+            profile = self._people.lookup(
+                clean_person_name(name), scope_id, include_portrait=include_portrait
+            )
+        except AmbiguousPersonName:
+            return _failure("ambiguous_person", "有多位已确认人物匹配这个姓名，请补充信息。")
         if profile is None or not profile.confirmed:
             return ToolOutcome(
                 observation={"person": name, "found": False},
@@ -1337,6 +1496,24 @@ class AssistantToolbox:
                 # 身份层还没建起来（S5）。封口而不是让门禁反复逼模型去查一个查不到的东西。
                 blocks=EvidenceType.PERSON_PROFILE,
             )
+        visible: dict[str, Any] = {
+            "person": profile.name,
+            "aliases": list(profile.aliases),
+            "membership": profile.membership,
+            "relationships": [
+                {"predicate": item.predicate, "other_name": item.other_name, "source": item.source}
+                for item in profile.relationships
+            ],
+        }
+        if profile.membership_source:
+            visible["membership_source"] = profile.membership_source
+        if profile.family_role_label:
+            visible["family_role_label"] = profile.family_role_label
+        if include_portrait:
+            if profile.photo_portrait:
+                visible["photo_portrait"] = profile.photo_portrait
+            elif profile.summary and profile.summary_source:
+                visible.update(summary=profile.summary, summary_source=profile.summary_source)
         return ToolOutcome(
             # 两份投影的差集就是这个工具的信息边界（见模块 docstring）：内部那份多一个
             # 「有几条关系」——那是给账本与门禁看的量，模型不需要它，给了反而会拿数量
@@ -1346,21 +1523,18 @@ class AssistantToolbox:
                 "found": True,
                 "membership": profile.membership,
                 "relationship_count": len(profile.relationships),
-            },
-            model_visible={
-                "person": profile.name,
-                "membership": profile.membership,
-                "membership_source": profile.membership_source,
-                "summary": profile.summary,
+                "entity_id": profile.entity_id,
+                "aliases": list(profile.aliases),
                 "relationships": [
                     {
                         "predicate": item.predicate,
                         "other_name": item.other_name,
-                        "source": item.source,
+                        "aliases": item.other_aliases,
                     }
                     for item in profile.relationships
                 ],
             },
+            model_visible=visible,
         )
 
 

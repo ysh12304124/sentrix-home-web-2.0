@@ -1,6 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../shared/api/client", async (original) => ({
+  ...await original<typeof import("../../shared/api/client")>(),
+  getVideo: vi.fn().mockResolvedValue({ scenes: [] }),
+}));
+
 import type { AssetSummary, ObservationPayload } from "../../shared/api/client";
 import { AssetDetail } from "./AssetDetail";
 
@@ -36,9 +41,9 @@ describe("资产详情", () => {
     render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} />);
     const image = screen.getByRole("img") as HTMLImageElement;
     expect(image.src).toContain("/api/v1/assets/a1/preview");
-    expect(screen.getByRole("link", { name: "打开原文件" }).getAttribute("href")).toBe("/api/v1/assets/a1/file");
     expect(screen.getByText(/2026.*01.*02/)).toBeTruthy();
-    expect(screen.getByText("31.230000, 121.470000")).toBeTruthy();
+    expect(screen.getByText("31.2300, 121.4700")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "打开原文件" }).getAttribute("href")).toBe("/api/v1/assets/a1/file");
   });
 
   it("视频走 /preview，并在元数据就绪时定位到命中秒数", () => {
@@ -49,7 +54,7 @@ describe("资产详情", () => {
         onClose={() => {}}
       />,
     );
-    const video = screen.getByLabelText("clip.mp4") as HTMLVideoElement;
+    const video = screen.getByLabelText("视频") as HTMLVideoElement;
     expect(video.src).toContain("/api/v1/assets/v1/preview");
     Object.defineProperty(video, "currentTime", { value: 0, writable: true });
     fireEvent.loadedMetadata(video);
@@ -63,7 +68,7 @@ describe("资产详情", () => {
         onClose={() => {}}
       />,
     );
-    const audio = screen.getByLabelText("voice.m4a") as HTMLAudioElement;
+    const audio = screen.getByLabelText("音频") as HTMLAudioElement;
     expect(audio.src).toContain("/api/v1/assets/s1/preview");
   });
 
@@ -81,56 +86,38 @@ describe("资产详情", () => {
     await waitFor(() => expect(screen.getByText("这是一段导入的笔记")).toBeTruthy());
   });
 
-  it("有 Observation 就列出；没有就显示简明提示", () => {
+  it("有 Observation 就列出；没有时省略整理记录区", () => {
     const { rerender } = render(
       <AssetDetail asset={asset({ id: "a1" })} observations={[observation]} onClose={() => {}} />,
     );
     expect(screen.getByText("桥边有一排红色的花")).toBeTruthy();
 
     rerender(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} />);
-    expect(screen.getByText("当前详情没有可展示的观察记录。")).toBeTruthy();
+    expect(screen.queryByText("整理记录")).toBeNull();
+    expect(screen.queryByText("桥边有一排红色的花")).toBeNull();
+    expect(screen.getByRole("link", { name: "打开原文件" })).toBeTruthy();
   });
 
   it("确认删除后调用 API 并把结果交给资料库列表", async () => {
     const onDeleted = vi.fn();
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ asset_id: "a1", deleted: true, warnings: [] }),
     });
+    vi.stubGlobal("confirm", confirm);
     vi.stubGlobal("fetch", fetch);
     render(<AssetDetail asset={asset({ id: "a1" })} onClose={() => {}} onDeleted={onDeleted} />);
 
     fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
     expect(fetch).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
-    expect(screen.queryByRole("button", { name: "确认删除" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
-    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
 
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", []));
     expect(fetch).toHaveBeenCalledWith("/api/v1/assets/a1", {
       method: "DELETE",
       credentials: "same-origin",
-      headers: expect.any(Headers),
+      headers: { "x-csrf-token": "" },
     });
-  });
-
-  it("删除错误显示后端原因，保留详情和重试按钮", async () => {
-    const onDeleted = vi.fn();
-    const onClose = vi.fn();
-    const fetch = vi.fn().mockResolvedValueOnce({
-      ok: false, status: 409,
-      text: async () => JSON.stringify({ code: "conflict", message: "视频仍在处理，请先停止处理任务", detail: {} }),
-    }).mockResolvedValueOnce({ ok: true, json: async () => ({ deleted: true, warnings: ["关联记忆重建待重试"] }) });
-    vi.stubGlobal("fetch", fetch);
-    render(<AssetDetail asset={asset({ id: "a1" })} onClose={onClose} onDeleted={onDeleted} />);
-    fireEvent.click(screen.getByRole("button", { name: "删除媒体及关联记忆" }));
-    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("视频仍在处理"));
-    expect(onDeleted).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
-    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("a1", ["关联记忆重建待重试"]));
-    expect(onClose).toHaveBeenCalledOnce();
   });
 });

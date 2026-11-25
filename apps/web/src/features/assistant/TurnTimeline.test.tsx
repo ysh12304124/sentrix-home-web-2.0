@@ -90,23 +90,26 @@ describe("推理时间线", () => {
     expect(cards[1].events.map((item) => item.step_index)).toEqual([2, 3]);
   });
 
-  it("阶段卡片可折叠，展开后显示参数与返回摘要", () => {
+  it("过程默认收起，展开显示三张阶段卡和结果摘要", () => {
     render(<TurnTimeline events={EVENTS} />);
 
-    const toggle = screen.getByRole("button", { name: /记忆推理 · 4 个节点/ });
+    const toggle = screen.getByRole("button", { name: "思考过程 · 4 步" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("工具调用")).toBeNull();
+    expect(screen.queryByText("查找资料")).toBeNull();
 
     fireEvent.click(toggle);
 
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("规划")).toBeTruthy();
-    expect(screen.getByText("工具调用")).toBeTruthy();
-    expect(screen.getByText("收尾")).toBeTruthy();
+    expect(screen.getByText("先想一想")).toBeTruthy();
+    expect(screen.getByText("查找资料")).toBeTruthy();
+    expect(screen.getByText("整理回答")).toBeTruthy();
     expect(screen.getByText(/照片的时间范围/)).toBeTruthy();
-    expect(screen.getByText(/"query": "海边"/)).toBeTruthy();
-    expect(screen.getByText("结果集 rs_1")).toBeTruthy();
-    expect(screen.getByText("共 7 张")).toBeTruthy();
-    expect(screen.getByText("耗时 12 ms")).toBeTruthy();
+    expect(screen.getByText("正在查找相关照片…")).toBeTruthy();
+    expect(screen.getByText("找到 7 张相关照片；候选 2 张")).toBeTruthy();
+    expect(screen.getByText("回答完成。")).toBeTruthy();
+    expect(document.querySelectorAll(".timeline-card")).toHaveLength(3);
+    expect(screen.queryByText(/rs_1|"query"|耗时 12 ms/)).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.queryByText("查找资料")).toBeNull();
   });
 });

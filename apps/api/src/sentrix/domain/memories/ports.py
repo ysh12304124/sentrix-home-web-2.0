@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from sentrix.domain.identity.models import EntityPropertyRecord, EntityRecord
 from sentrix.domain.memories.causality import CausalVerdict
 from sentrix.domain.memories.events import EventEntityRecord, EventParticipantRecord, EventRecord
 from sentrix.domain.memories.facts import Fact
@@ -37,12 +38,30 @@ class MemoryCorrectionRepository(Protocol):
 
     def read(self, kind: str, target_id: str) -> dict[str, object] | None: ...
 
+    def rename_person(
+        self, entity_id: str, name: str
+    ) -> tuple[EntityRecord, tuple[str, ...], str] | None: ...
+
+    def save_aliases(
+        self, entity_id: str, value: object, evidence_ids: Sequence[str]
+    ) -> tuple[EntityPropertyRecord, str]: ...
+
+    def graph_sync_lock(self) -> AbstractContextManager[None]: ...
+
+    def next_name_sync_batch(self, now: str) -> tuple[str, int] | None: ...
+
+    def finish_name_sync_batch(self, scope_id: str, through: int, error: str) -> None: ...
+
+    def latest_name_sync(self, entity_id: str) -> dict[str, object] | None: ...
+
+    def retry_name_sync(self, job_id: str) -> dict[str, object] | None: ...
+
     def correct(
         self, kind: str, target_id: str, revision: int, changes: Mapping[str, object], reason: str
     ) -> dict[str, object]: ...
 
-    def track(self, scope_id: str, kind: str, target_id: str) -> AbstractContextManager[None]:
-        """在既有写入之前登记持久任务，写后记录快照；异常也保留待核验记录。"""
+    def track(self, scope_id: str, kind: str, target_id: str) -> AbstractContextManager[str]:
+        """写入前登记持久任务并产出其 id；写后记录快照、放进同步队列。异常也保留待核验记录。"""
         ...
 
     def records(self, scope_id: str, limit: int) -> Sequence[dict[str, object]]: ...
@@ -84,7 +103,17 @@ class MemoryCorrectionRepository(Protocol):
 
     def affected_events(self, scope_id: str) -> Sequence[str]: ...
 
-    def finish(self, scope_id: str, error: str) -> None: ...
+    def next_legacy_sync_batch(
+        self, scope_id: str | None, now: str
+    ) -> tuple[str, tuple[str, ...]] | None: ...
+
+    def finish_legacy_sync_batch(self, ids: Sequence[str], error: str) -> None: ...
+
+    def requeue_legacy_sync(self, scope_id: str) -> None: ...
+
+    def sync_job(self, job_id: str) -> dict[str, object] | None: ...
+
+    def enqueue_graph_sync(self, scope_id: str, entity_id: str) -> str: ...
 
 
 class EventRepository(Protocol):

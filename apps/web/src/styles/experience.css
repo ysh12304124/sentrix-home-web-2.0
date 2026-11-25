@@ -535,9 +535,27 @@ body {
 }
 
 /* ---------- 导入 ---------- */
-.import-layout {
-  grid-template-columns: minmax(0, 1fr) 380px;
+/* 导入页纵向分区：上方整行（拖拽区 + 两张进度卡），下方一行（本次上传 | 整理进度）。 */
+.import-stage {
+  display: grid;
   gap: 22px;
+}
+
+.import-stage-main {
+  display: grid;
+  gap: 14px;
+}
+
+/* 进度卡已移入上方整行，去掉自带的下外边距避免与 gap 叠加。 */
+.import-stage-main .import-phases {
+  margin-bottom: 0;
+}
+
+/* 本次上传与整理进度上下堆叠（第8 在第7 下方），同宽、共用外框。 */
+.import-queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
 }
 
 .import-head {
@@ -565,14 +583,24 @@ body {
   font-size: 13px;
 }
 
-.app-shell .import-status {
+/* 「本次上传」与「整理进度」共用的外框：两框并排、上下边缘齐平。 */
+.queue-panel {
   border: 1px solid var(--ex-line);
   border-radius: 20px;
   background: var(--ex-surface);
   padding: 20px;
   box-shadow: 0 10px 30px rgba(31, 39, 30, 0.05);
-  align-self: start;
 }
+
+/* 面板标题行：左侧折叠按钮、右侧操作（刷新）。 */
+.queue-panel .panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
 
 .app-shell .import-status h2 {
   font-size: 18px;
@@ -999,7 +1027,7 @@ body {
   .dash-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .import-layout {
+  .import-queue-row {
     grid-template-columns: minmax(0, 1fr);
   }
   .login-screen {
@@ -2061,6 +2089,76 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 进度卡右上角的数字 + 手动关闭按钮，与标题同一行。 */
+.import-phase-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+
+.phase-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--ex-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ex-muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.phase-close:hover {
+  border-color: var(--ex-red);
+  color: var(--ex-red);
+}
+
+.phase-close:focus-visible {
+  outline: 2px solid var(--ex-green);
+  outline-offset: 2px;
+}
+
+/* 本次上传 / 整理进度两个列表标题的展开收起按钮。 */
+.queue-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.app-shell .import-status .queue-toggle {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.queue-toggle:focus-visible {
+  outline: 2px solid var(--ex-green);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.summary-caret {
+  color: var(--ex-muted);
+  font-size: 13px;
+}
+
+/* 上下堆叠后，整理进度收起与否都只占自己那一行，无需再切列。 */
+
 .import-phase-bar {
   height: 8px;
   margin-top: 12px;
@@ -2082,6 +2180,39 @@ body {
 
 .import-phase-bar.postprocess i {
   background: linear-gradient(90deg, #d69a2d, #b87322);
+}
+
+/* 建库 / 整理进行中：在已填充的条上叠一道左→右扫过的亮带，表示「还在往前推」。
+   条子的**长度**由 ImportsPage 的 useCreepingPercent 缓慢爬升负责，这里只管流光。
+   只在 is-running 时挂上——完成后亮带消失，留一条静态满条。 */
+.import-phase-bar.is-running i {
+  position: relative;
+  overflow: hidden;
+  /* 进度按张数跳，第一张没建完时是 0%，整条空着看起来像没开始。
+     给个最小宽度先占一小段，配下面的流光就能读出「正在跑」。 */
+  min-width: 4%;
+}
+
+.import-phase-bar.is-running i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  transform: translateX(-100%);
+  animation: import-phase-sheen 1.6s linear infinite;
+}
+
+@keyframes import-phase-sheen {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+/* 动效只是装饰：系统开了「减少动效」就不扫光，静态进度条照样能读。 */
+@media (prefers-reduced-motion: reduce) {
+  .import-phase-bar.is-running i::after {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 .import-phase-bar.indeterminate i {
@@ -2294,5 +2425,318 @@ body {
   .import-picker-actions {
     grid-column: 1 / -1;
     justify-content: flex-start;
+  }
+}
+
+/* ---------- 导入页：三阶段页面（添加资料 / 资料建库 / 整理回忆） ---------- */
+.import-flow {
+  display: grid;
+  gap: 18px;
+  max-width: 960px;
+  /* 三个阶段页面都套这个容器：在 .view-root 里水平居中，避免固定宽度靠左留白。 */
+  margin: 0 auto;
+}
+
+/* 阶段页的白色主卡片：标题 / 提示 / 统计 / 上传区 / 上传记录都收在里面。 */
+.import-add-card,
+.import-flow-card {
+  padding: 28px 30px 30px;
+  border: 1px solid var(--ex-line);
+  border-radius: 20px;
+  background: var(--ex-surface);
+  box-shadow: var(--ex-shadow);
+}
+
+.import-add-head {
+  margin-bottom: 20px;
+}
+
+.import-add-head h1 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+
+.import-add-head p {
+  margin: 7px 0 0;
+  color: var(--ex-muted);
+  font-size: 12.5px;
+}
+
+/* 提示条堆叠：新条追加在末尾，显示在上一条下方，互不覆盖。 */
+.import-notices:empty {
+  display: none;
+}
+
+.import-notices .import-resume-note {
+  margin: 0 0 10px;
+}
+
+.import-notices .import-resume-note:last-child {
+  margin-bottom: 0;
+}
+
+/* 拖拽区与「处理小贴士」并排：左宽右窄。 */
+.import-add-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  align-items: stretch;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.import-add-grid .import-picker {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  row-gap: 14px;
+}
+
+.import-add-grid .import-picker-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
+.import-picker-foot {
+  grid-column: 1 / -1;
+  color: var(--ex-muted);
+  font-size: 11px;
+}
+
+.import-tips {
+  padding: 20px;
+  border: 1px solid rgba(47, 107, 69, 0.18);
+  border-radius: 20px;
+  background:
+    linear-gradient(150deg, rgba(204, 245, 110, 0.16), transparent 60%),
+    var(--ex-surface);
+}
+
+.import-tips-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ex-ink);
+  font-size: 13px;
+}
+
+.import-tips-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: rgba(47, 107, 69, 0.14);
+  color: var(--ex-green);
+  font-size: 12px;
+  font-weight: 800;
+  font-style: italic;
+}
+
+.import-tips ul {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.import-tips li {
+  position: relative;
+  padding-left: 14px;
+  color: var(--ex-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.import-tips li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ex-green);
+}
+
+/* 上传记录：默认收起的折叠表。 */
+.import-records {
+  margin-top: 18px;
+  border: 1px solid var(--ex-line);
+  border-radius: 16px;
+  background: var(--ex-surface);
+  overflow: hidden;
+}
+
+.import-records-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 18px;
+  border: 0;
+  background: transparent;
+  color: var(--ex-ink);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.import-records-toggle:hover {
+  background: rgba(31, 39, 30, 0.03);
+}
+
+.import-records-table {
+  padding: 0 18px 14px;
+}
+
+.record-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px 90px 130px;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--ex-line);
+  color: var(--ex-muted);
+  font-size: 11.5px;
+}
+
+.record-head {
+  border-top: 0;
+  color: var(--ex-ink);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.record-name {
+  color: var(--ex-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-ok { color: var(--ex-green); font-weight: 700; }
+.record-fail { color: var(--ex-red); font-weight: 700; }
+
+.import-error {
+  margin: 0 0 16px;
+}
+
+/* 建库页 / 回忆页的两步步骤条。 */
+.import-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 4px 2px;
+}
+
+.import-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ex-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.import-step-dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1.5px solid var(--ex-line);
+  border-radius: 50%;
+  background: var(--ex-surface);
+  color: var(--ex-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.import-step.is-active {
+  color: var(--ex-green);
+}
+
+.import-step.is-active .import-step-dot {
+  border-color: var(--ex-green);
+  background: var(--ex-green);
+  color: #fff;
+}
+
+.import-step.is-done {
+  color: var(--ex-green);
+}
+
+.import-step.is-done .import-step-dot {
+  border-color: var(--ex-green);
+  background: var(--ex-green);
+  color: #fff;
+}
+
+.import-step-line {
+  width: 56px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ex-line);
+}
+
+.import-step-line.is-done {
+  background: var(--ex-green);
+}
+
+/* 阶段页里的进度面板：标题 / 数字 / 进度条 / 状态文字。 */
+.import-phase-panel {
+  margin-top: 22px;
+  padding: 20px 22px;
+  border: 1px solid var(--ex-line);
+  border-radius: 16px;
+  background: var(--ex-surface);
+}
+
+.import-phase-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--ex-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.import-phase-line b {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+.import-phase-line .postprocess-value {
+  color: #b87322;
+}
+
+.import-phase-panel > small {
+  display: block;
+  margin-top: 10px;
+  color: var(--ex-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .import-add-card,
+  .import-flow-card {
+    padding: 22px 18px;
+  }
+  .import-add-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .import-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .record-row {
+    grid-template-columns: minmax(0, 1fr) 70px 76px;
+  }
+  .record-row > :last-child {
+    display: none;
   }
 }

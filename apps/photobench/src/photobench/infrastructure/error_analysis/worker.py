@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from photobench.domain.datasets.qa_taxonomy import snapshot_metadata
+from photobench.domain.error_analysis.process import run_process
 from photobench.domain.error_analysis.rules import (
     Aggregator,
     case_from_item,
@@ -25,6 +26,9 @@ from photobench.domain.evaluation.profile_view import profile_state, select_batc
 from photobench.domain.runs.judge import judge_chat_url
 from photobench.infrastructure.error_analysis.ai_comparison_worker import run_ai_comparison
 from photobench.infrastructure.error_analysis.ai_worker import run_ai
+from photobench.infrastructure.error_analysis.split_source import split_input
+from photobench.infrastructure.results.encoding import open_snapshot, read_snapshot, snapshot_file
+from photobench.infrastructure.results.split_json import manifest
 from photobench.infrastructure.results.store import committed_path, run_lock
 
 
@@ -32,26 +36,35 @@ def source(
     root: Path, run_id: str, scoring_profile: str = "", scoring_batch: str = "", pinned: Path | None = None
 ) -> dict[str, Any]:
     directory = root / run_id
+    current = manifest(directory)
+    if current is not None:
+        state, selection, read_revision = split_input(root, run_id, scoring_profile, scoring_batch, pinned)
+        return describe_source(
+            state, selection, run_id, str(directory / "split-commit.json"), "split_facts_jsonl", read_revision
+        )
     with run_lock(directory):
         rows = committed_path(directory, "results.jsonl")
         # Resolve the atomic commit pointer once. Rejudge may publish a newer
         # generation while this worker is reading; all source facts must remain
         # tied to the generation selected by the result path.
         selected = rows.parent
+        complete = snapshot_file(selected, "run.json")
         meta = selected / "metadata.json"
         if meta.is_file():
             state = json.loads(meta.read_text())["overview"]
         else:
             # Legacy state may be large; this runs only in the isolated worker.
-            state = json.loads((selected / "run.json").read_text())
+            state = read_snapshot(complete)
             state.pop("items", None)
         identity = _selected_identity(selected)
         selection = {}
-        if scoring_profile and not (selected / "run.json").is_file():
+        if scoring_profile and not complete.is_file():
             raise ValueError("Selected scoring standard requires a complete run snapshot")
-        if (selected / "run.json").is_file():
-            full = json.loads((selected / "run.json").read_text())
+        if complete.is_file():
+            full = read_snapshot(complete)
             state["qa_snapshot"] = full.get("qa_snapshot") or {}
+            if not scoring_profile and full.get("scoring_batches"):
+                scoring_profile = full["scoring_batches"][0]["profile_id"]
             if scoring_profile:
                 projected = profile_state(full, scoring_profile, scoring_batch)
                 batch = select_batch(full, scoring_profile, scoring_batch)
@@ -76,57 +89,81 @@ def source(
                 if batch:
                     state["judge_url"], state["judge_model"] = batch["judge"]["url"], batch["judge"]["model"]
             if pinned is not None and scoring_profile:
+                diagnostics = run_process(projected)
+                by_qa = {r["qa_id"]: r for r in diagnostics["items"]}
+                selection["process_rule_version"] = diagnostics["rule_version"]
+                selection["process_source_fingerprint"] = diagnostics["source_fingerprint"]
                 with pinned.open("w", encoding="utf-8") as out:
                     for item in projected.get("items") or []:
-                        out.write(json.dumps(item, ensure_ascii=False) + chr(10))
+                        out.write(
+                            json.dumps(
+                                {**item, "process_diagnostics": by_qa.get(str(item.get("qa_id")))},
+                                ensure_ascii=False,
+                            )
+                            + chr(10)
+                        )
         if pinned is not None and not scoring_profile and rows.is_file():
-            shutil.copyfile(rows, pinned)
-        runtime = state.get("runtime_snapshot") or {}
-        return {
-            **selection,
-            "run_id": run_id,
-            "qa_snapshot": snapshot_metadata(state.get("qa_snapshot") or {}),
-            "_qa_rows": (state.get("qa_snapshot") or {}).get("rows") or [],
-            "path": str(rows if rows.is_file() else selected / "run.json"),
-            "format": "jsonl" if rows.is_file() else "legacy_run_json",
-            "revision": fingerprint(identity),
-            "status": state.get("status"),
-            "mode": state.get("mode"),
-            "build_revision": state.get("build_revision") or runtime.get("required_build_revision"),
-            "judge": {k: state[k] for k in ("judge_url", "judge_model", "judge_provider_id") if state.get(k)},
-            "model": state.get("model_name") or state.get("endpoint_model") or state.get("model"),
-            "budgets": {
-                "execution": state.get("execution_budgets") or runtime.get("execution_budgets"),
-                "product": runtime.get("product_settings"),
-            },
-            "device": {
-                "framework": runtime.get("runtime_framework") or state.get("runtime_framework"),
-                "telemetry_source": (state.get("phases", {}).get("gpu_metrics") or {}).get("source"),
-            },
-            "telemetry": {
-                k: v
-                for k, v in (state.get("phases", {}).get("gpu_metrics") or {}).items()
-                if k
-                in {
-                    "samples_count",
-                    "partial",
-                    "memory_complete",
-                    "component_validity",
-                    "sampling_diagnostics",
-                }
-            },
-            "phase_errors": {
-                k: {f: v[f] for f in ("status", "error", "error_details") if f in v}
-                for k, v in (state.get("phases") or {}).items()
-                if isinstance(v, dict) and (v.get("error") or v.get("status") in {"failed", "partial"})
-            },
-            "sampling_integrity": ((state.get("phases") or {}).get("gpu_metrics") or {}).get(
-                "sampling_integrity"
-            ),
-            "persistence": state.get("persistence"),
-            "cleanup": state.get("cleanup"),
-            "expected_items": state.get("qa_count") or state.get("item_count"),
-        }
+            with open_snapshot(rows) as incoming, pinned.open("w", encoding="utf-8") as out:
+                shutil.copyfileobj(incoming, out)
+        return describe_source(
+            state,
+            selection,
+            run_id,
+            str(rows if rows.is_file() else complete),
+            "jsonl" if rows.is_file() else "legacy_run_json",
+            fingerprint(identity),
+        )
+
+
+def describe_source(
+    state: dict[str, Any], selection: dict[str, Any], run_id: str, path: str, format: str, read_revision: str
+) -> dict[str, Any]:
+    runtime = state.get("runtime_snapshot") or {}
+    return {
+        **selection,
+        "run_id": run_id,
+        "qa_snapshot": snapshot_metadata(state.get("qa_snapshot") or {}),
+        "_qa_rows": (state.get("qa_snapshot") or {}).get("rows") or [],
+        "path": path,
+        "format": format,
+        "revision": read_revision,
+        "status": state.get("status"),
+        "mode": state.get("mode"),
+        "build_revision": state.get("build_revision") or runtime.get("required_build_revision"),
+        "judge": {k: state[k] for k in ("judge_url", "judge_model", "judge_provider_id") if state.get(k)},
+        "model": state.get("model_name") or state.get("endpoint_model") or state.get("model"),
+        "budgets": {
+            "execution": state.get("execution_budgets") or runtime.get("execution_budgets"),
+            "product": runtime.get("product_settings"),
+        },
+        "device": {
+            "framework": runtime.get("runtime_framework") or state.get("runtime_framework"),
+            "telemetry_source": (state.get("phases", {}).get("gpu_metrics") or {}).get("source"),
+        },
+        "telemetry": {
+            k: v
+            for k, v in (state.get("phases", {}).get("gpu_metrics") or {}).items()
+            if k
+            in {
+                "samples_count",
+                "partial",
+                "memory_complete",
+                "component_validity",
+                "sampling_diagnostics",
+            }
+        },
+        "phase_errors": {
+            k: {f: v[f] for f in ("status", "error", "error_details") if f in v}
+            for k, v in (state.get("phases") or {}).items()
+            if isinstance(v, dict) and (v.get("error") or v.get("status") in {"failed", "partial"})
+        },
+        "sampling_integrity": ((state.get("phases") or {}).get("gpu_metrics") or {}).get(
+            "sampling_integrity"
+        ),
+        "persistence": state.get("persistence"),
+        "cleanup": state.get("cleanup"),
+        "expected_items": state.get("qa_count") or state.get("item_count"),
+    }
 
 
 def _identity(directory: Path) -> list[Any]:
@@ -136,7 +173,7 @@ def _identity(directory: Path) -> list[Any]:
 def _selected_identity(selected: Path) -> list[Any]:
     facts: list[Any] = []
     for name in ("results.jsonl", "metadata.json", "run.json"):
-        path = selected / name
+        path = snapshot_file(selected, name)
         if path.is_file():
             stat = path.stat()
             facts.append([str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns])
@@ -145,12 +182,15 @@ def _selected_identity(selected: Path) -> list[Any]:
 
 def revision(root: Path, run_id: str) -> str:
     directory = root / run_id
+    current = manifest(directory)
+    if current is not None:
+        return str(current["revision"])
     with run_lock(directory):
         return fingerprint(_identity(directory))
 
 
 def lines(path: Path) -> Iterator[dict[str, Any]]:
-    with path.open(encoding="utf-8") as file:
+    with open_snapshot(path) as file:
         for line in file:
             if line.strip():
                 yield json.loads(line)
@@ -207,9 +247,13 @@ def run_worker(
             # Pin a private input copy: source snapshot generations may be retired by rejudge.
             pinned = target / "input.jsonl"
             if not pinned.exists() and src["format"] == "jsonl":
-                shutil.copyfile(src["path"], pinned)
+                with (
+                    open_snapshot(Path(src["path"])) as text_input,
+                    pinned.open("w", encoding="utf-8") as out,
+                ):
+                    shutil.copyfileobj(text_input, out)
             elif not pinned.exists():
-                old = json.loads(Path(src["path"]).read_text())
+                old = read_snapshot(Path(src["path"]))
                 with pinned.open("w", encoding="utf-8") as out:
                     for item in old.get("items") or []:
                         check()

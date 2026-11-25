@@ -26,7 +26,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sentrix.application.identity.observe_appearance import ObserveAppearance
+from sentrix.application.identity.observe_appearance import RequestAppearance
 from sentrix.application.memories.assign_events import ConfirmedPersonEvents
 from sentrix.domain.errors import DomainError
 from sentrix.domain.identity.models import (
@@ -123,13 +123,14 @@ class ReviewCluster:
         entities: EntityRepository,
         facts: FactRepository,
         events: ConfirmedPersonEvents,
-        appearance: ObserveAppearance,
+        appearance: RequestAppearance,
     ) -> None:
         self._faces = faces
         self._entities = entities
         self._facts = facts
         # 确认之后的外观取样（Task 85d）。与 ``events`` 同理，**不是可选回调**——
-        # 1.0 的 ``_refresh_confirmed_person`` 无条件调它。
+        # 1.0 的 ``_refresh_confirmed_person`` 无条件调它。生产装配的是「入队」：
+        # 每个事件一次视觉模型调用（约 10 秒），不能让确认请求等它（2026-11-20）。
         self._appearance = appearance
         # 确认之后的事件侧（参与者投影 + 重分段）。**不是可选参数**：一次确认如果不刷
         # 投影，事件里就查不到这个人，而那是「按人找照片」唯一的桥——少接一处不会报错。
@@ -137,8 +138,19 @@ class ReviewCluster:
 
     # ---- 确认 --------------------------------------------------------------------
 
-    def confirm(self, cluster_id: str, *, name: str, family_role: str | None = None) -> ConfirmResult:
+    def confirm(
+        self,
+        cluster_id: str,
+        *,
+        name: str,
+        family_role: str | None = None,
+        merge_same_name: bool = True,
+    ) -> ConfirmResult:
         """确认一簇脸是某个人。
+
+        ``merge_same_name=False``：用户已经在界面上答过「不是同一个人，只是同名」，
+        这时不再按名字并进那个已确认的人，而是照常确认成一个独立的人（2026-11-12）。
+        默认 ``True`` 保持 1.0 的同名并入。
 
         名字先判（400 早于 404）：1.0 在路由里就是这个顺序，两处都错时报的是名字错。
         ``family_role`` 会 ``strip`` 后把空串折成 ``None``——那是 1.0 路由做的事
@@ -158,7 +170,7 @@ class ReviewCluster:
         # member_count 归零——**自己把自己删了**。1.0 的 ``confirm_face_cluster``
         # （``db.py:5157``）漏了这条守卫，而同一作者在 ``confirm_person_entity``
         # （``db.py:5251``）里写了它；这不是新行为，是把 1.0 自己那条判据补齐。
-        if existing is not None and existing.entity_id != cluster.entity_id:
+        if merge_same_name and existing is not None and existing.entity_id != cluster.entity_id:
             return self._merge_into_person(cluster, existing.entity_id)
 
         instances = self._faces.list_instances(cluster.id)

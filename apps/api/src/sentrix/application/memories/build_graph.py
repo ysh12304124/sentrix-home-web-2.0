@@ -6,6 +6,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -82,6 +83,7 @@ class BuildMemoryGraph:
         vectors: VectorRepository | None = None,
         family: FamilyGraphRepository | None = None,
         causal_batch_size: int | None = 12,
+        build_lock: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> None:
         self._assets = assets
         self._observations = observations
@@ -95,8 +97,15 @@ class BuildMemoryGraph:
         self._vectors = vectors
         self._family = family
         self._causal_batch_size = causal_batch_size
+        self._build_lock = build_lock
 
     def execute(self, scope_id: str) -> GraphBuildStats:
+        # Serialize snapshot reads through publication, so a slower earlier build
+        # cannot overwrite a newer graph after a name edit has synced.
+        with self._build_lock():
+            return self._execute(scope_id)
+
+    def _execute(self, scope_id: str) -> GraphBuildStats:
         scope = str(scope_id or "").strip()
         if not scope:
             raise ValueError("构建记忆图需要明确的 scope_id")

@@ -89,6 +89,8 @@ function realShapeGraph(): FamilyGraph {
     avatar_face_instance_id: null,
     appearance_count: 1,
     representative_media: [],
+    aliases: [],
+    hidden: false,
     status: "confirmed",
   }));
   return { scope_id: "album1", run: null, people, scope_ids: ["album1"], relationships: [] };
@@ -170,9 +172,11 @@ describe("/people 名人录（F7 §0 真实形状）", () => {
     });
     // 「有没有内容」由人数决定，关系条数为 0 不算空——这正是 1.0 画空图的那个坑。
     expect(screen.queryByText("还没有可显示的人物")).toBeNull();
-    expect(screen.getByText("8 人 · 0 条已确认关系")).toBeTruthy();
+    // 数字跟着各自的 tab：人物 8、关系 0。
+    expect(screen.getByRole("tab", { name: "人物8" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "关系0" })).toBeTruthy();
     // 默认视图是名录（计划书裁决②），图谱 tab 此时不该被卸载掉门槛
-    expect(screen.getByRole("tab", { name: "人物" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: /^人物/ }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("点一张卡走 ?person= 打开详情侧栏（不加路由）", async () => {
@@ -197,7 +201,7 @@ describe("图谱 tab", () => {
   }
 
   async function openGraph(container: HTMLElement) {
-    fireEvent.click(screen.getByRole("tab", { name: "关系" }));
+    fireEvent.click(screen.getByRole("tab", { name: /^关系/ }));
     await waitFor(() => {
       expect(container.querySelector(".graph-shell, .graph-empty")).not.toBeNull();
     });
@@ -219,30 +223,36 @@ describe("图谱 tab", () => {
     });
     const { container } = mount(graph, `/?person=${dad.id}`);
     await screen.findByRole("complementary");
-    fireEvent.change(screen.getByLabelText("对方"), { target: { value: son.id } });
+    // 「儿子 是 爸爸 的儿子」→ 反向有父亲/母亲两项，选「父亲」。
+    fireEvent.click(container.querySelector(`[data-option-id="${son.id}"]`) as Element);
+    fireEvent.change(screen.getByLabelText("关系称谓"), { target: { value: "儿子" } });
+    fireEvent.click(screen.getByRole("button", { name: "父亲" }));
     fireEvent.click(screen.getByRole("button", { name: "建立关系" }));
 
-    await screen.findByText("3 人 · 1 条已确认关系");
+    await screen.findByRole("tab", { name: "关系1" });
     expect(client.putFamilyRelationship).toHaveBeenCalledWith({
       scopeId: "album1",
-      subjectEntityId: dad.id,
-      predicate: "父亲",
-      objectEntityId: son.id,
-      inversePredicate: "儿子",
+      subjectEntityId: son.id,
+      predicate: "儿子",
+      objectEntityId: dad.id,
+      inversePredicate: "父亲",
     });
     expect(client.getFamilyGraph).toHaveBeenLastCalledWith("");
     expect(container.querySelectorAll(".detail-relations li")).toHaveLength(1);
     await openGraph(container);
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
-    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(2);
+    // 认出来的人都在图上：爸爸、儿子，以及另一个相册里还没有关系的那位（散在外围）。
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(3);
   });
 
-  it("没有已确认关系时图谱为空，只显示一行提示", async () => {
+  it("没有已确认关系时人照样在图上，并提示怎么建第一条关系", async () => {
     const { container } = mount();
     await openGraph(container);
 
-    expect(screen.getByText("当前无已确认关系")).toBeTruthy();
-    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(0);
+    expect(screen.getByText(/还没有关系：把鼠标移到一个人身上/)).toBeTruthy();
+    // 8 个认出来的人都在图上，每人都有拖出关系的 ⊕ 把手。
+    expect(container.querySelectorAll("[data-node-id]")).toHaveLength(8);
+    expect(container.querySelectorAll("[data-relate-handle]")).toHaveLength(8);
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(0);
   });
 
@@ -271,8 +281,11 @@ describe("图谱 tab", () => {
       expect(container.querySelectorAll("[data-node-id]")).toHaveLength(2);
     });
     expect(container.querySelectorAll(".graph-edge")).toHaveLength(1);
-    expect(container.querySelectorAll(".graph-edge-label")).toHaveLength(1);
-    expect(container.querySelector(".graph-edge-label")?.textContent).toBe("父亲");
+    // 两端各贴一个称谓：「父亲」贴爸爸、「儿子」贴孩子（<title> 里是整句，不算标签文字）。
+    const labels = [...container.querySelectorAll(".graph-edge-label")].map(
+      (node) => node.childNodes[node.childNodes.length - 1]?.textContent,
+    );
+    expect(labels).toEqual(["父亲", "儿子"]);
     const transform = transformOf(container);
     expect(transform).not.toBeNull();
     expect(transform).not.toContain("NaN");

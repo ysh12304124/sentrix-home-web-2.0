@@ -32,7 +32,6 @@ import type { ChainDetail, ChainMedia, GraphLayer, GraphNode, QaDetailMap } from
 import { AnswerCorrectnessPanel } from "./AnswerCorrectnessPanel.tsx";
 import { ChainDetailModal } from "./ChainDetailModal.tsx";
 import { EvidenceTree } from "./EvidenceTree.tsx";
-import { KeyframeAnalysisPanel } from "./KeyframeAnalysisPanel.tsx";
 import { MemoryEffectivenessTable } from "./MemoryEffectivenessTable.tsx";
 import { RecallMatrices } from "./RecallMatrices.tsx";
 
@@ -64,8 +63,6 @@ export function MemoryLayerPanel({
   qaPageItems,
   memoryEffectiveness,
   keyframeAnalysis,
-  keyframeAnalysisLoading = false,
-  keyframeAnalysisError = "",
   summary,
   chainDetail,
   onOpenChainNode,
@@ -148,11 +145,6 @@ export function MemoryLayerPanel({
         variant="graph"
         layers={activeView}
         onOpenNode={(layer, node) => onOpenChainNode(chainMode, layer, node)}
-      />
-      <KeyframeAnalysisPanel
-        keyframeAnalysis={keyframeAnalysis}
-        keyframeAnalysisLoading={keyframeAnalysisLoading}
-        keyframeAnalysisError={keyframeAnalysisError}
       />
       <p className="memory-layer-footnote">
         指标口径：运行级指标来自本次 run 的汇总轨迹；“已展开轨迹”只对当前打开的 QA 逐题核验。这样可以直接定位是 L0

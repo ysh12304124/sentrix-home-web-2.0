@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from sentrix.domain.media.models import Asset
+from sentrix.domain.places.models import AdminArea, NearestPlace, Place, PlacePrecision, PlaceSource
 from sentrix.domain.places.ports import AssetPlaceIndex, AssetPlaceRepository, PlaceResolver
 
 
@@ -27,9 +28,23 @@ class IndexAssetPlace(AssetPlaceIndex):
 
     def index(self, asset: Asset) -> bool:
         gps = asset.captured_location
-        if gps is None:
+        supplied = asset.source_metadata
+        place: Place | None
+        if supplied.precise_address.strip():
+            place = Place(
+                admin=AdminArea(),
+                nearest=NearestPlace(),
+                precision=PlacePrecision.ADDRESS,
+                source=PlaceSource.PROVIDED,
+                gps=gps,
+                precise_address=supplied.precise_address,
+                address_source=supplied.address_source,
+                address_source_sha256=supplied.address_source_sha256,
+            )
+        elif gps is not None:
+            place = self._resolver.resolve(gps)
+        else:
             return False
-        place = self._resolver.resolve(gps)
         if place is None:
             return False
         self._places.save(asset_id=asset.id, scope_id=asset.scope_id, gps=gps, place=place)

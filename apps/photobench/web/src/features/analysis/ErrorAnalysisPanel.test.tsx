@@ -466,3 +466,18 @@ it("案例默认只显示命中问题，可展开其余调用", async () => {
   fireEvent.click(screen.getByRole("button", { name: "仅看命中问题" }));
   expect(screen.queryByText("评分调用故障")).toBeNull();
 });
+
+
+it("分析状态读取失败后显示错误并可重试，不持续显示读取中", async () => {
+  vi.mocked(api).mockRejectedValue(new Error("请求超时"));
+  render(<ErrorAnalysisPanel runId="r" terminal />);
+  fireEvent.click(screen.getByText("错误分析 展开"));
+  await screen.findByText("分析状态读取失败");
+  expect(screen.queryByText("读取分析状态…")).toBeNull();
+  expect(screen.getByRole("alert").textContent).toContain("请求超时");
+  vi.mocked(api).mockResolvedValue({ status: "not_generated" });
+  fireEvent.click(screen.getByRole("button", { name: "重试读取分析状态" }));
+  await screen.findByText("尚未生成");
+  expect(screen.queryByRole("button", { name: "重试读取分析状态" })).toBeNull();
+  expect(screen.queryByText("请求超时")).toBeNull();
+});

@@ -143,3 +143,14 @@ def test_structured_output_instruction_is_included_in_tokenization(endpoint):
     )
     assert handler.received[0][1]["response_format"] == schema
     assert handler.received[-1][1]["response_format"] == schema
+
+
+def test_reasoning_keeps_exact_tokenizer_window_contract(endpoint):
+    model, handler = endpoint
+    client = OpenAIChatModel(model.base_url, model, context_tokens=32768, reasoning_context_tokens=131072)
+    result = client.for_reasoning().complete(
+        [ChatMessage(ChatRole.SYSTEM, "test"), ChatMessage(ChatRole.USER, "x" * 100_000)], ()
+    )
+    assert result.diagnostics["context_window_tokens"] == 32768
+    assert result.diagnostics["prompt_tokens_exact"] == 3000
+    assert handler.received[-1][1]["max_tokens"] == 29768

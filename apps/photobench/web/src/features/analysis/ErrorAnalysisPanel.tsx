@@ -30,7 +30,7 @@ import "./analysis.css";
 
 const status: Record<string, string> = {
   not_generated: "尚未生成",
-  queued: "等待测评退出",
+  queued: "排队中",
   running: "分析中",
   completed: "已完成",
   failed: "失败",
@@ -114,7 +114,7 @@ function Evidence({
             ? `查看证据 · 第${event.turn + 1}轮 · ${event.step_id || event.source}`
             : sourceRef
               ? `引用证据 · ${sourceRef}`
-              : "查看本题轨迹与完整记录"}
+              : "查看本题轨迹与来源记录"}
       </button>
       {error && <p role="alert">{error}</p>}
       {item && (
@@ -134,9 +134,10 @@ function Evidence({
           {sourceRef && !path && (
             <p>此引用没有独立记录位置，完整来源见下方。</p>
           )}
+          {item.analysis_projection ? <p className="muted small">以下包含规则字段和有界原文片段；完整正文可在轨迹节点内按需查看。</p> : null}
           <DebugTracePanel detail={item} />
           <details>
-            <summary>完整来源记录</summary>
+            <summary>{item.analysis_projection ? "规则字段与原文片段" : "完整来源记录"}</summary>
             <pre>{pretty(item)}</pre>
           </details>
         </>
@@ -191,6 +192,7 @@ function CaseCard({
       <p>{c.reference_answer || "未记录"}</p>
       <h5>{c.turns.length > 1 ? "最终回答" : "模型回答"}</h5>
       <p>{c.answer || "未记录"}</p>
+      {c.process_diagnostics && <details><summary>本批次答题过程线索</summary><p>沿用保存轨迹及本批次Judge理由；语义线索待复核，各类不能相加为执行失败数。</p><pre>{pretty(c.process_diagnostics)}</pre></details>}
       {c.scoring_evidence && <details>
         <summary>题型评分与扣分依据 · {displayLabel(c.dimensions.scoring_question_type || "unknown")}</summary>
         <p>本次评分标准、批次、判分理由及已保存的媒体集合差异；缺失记录见判断限制。</p>
@@ -346,6 +348,8 @@ export function ErrorAnalysisPanel({
   const [pending, setPending] = useState(false);
   const aiRevision = useRef(0);
   const [savedAiError, setSavedAiError] = useState("");
+  const [statusRead, setStatusRead] = useState<{ key: string; error: string }>();
+  const statusKey = `${runId}:${scoringProfile}:${scoringBatch}:${tick}`;
   useEffect(() => {
     if (!open) return;
     let alive = true;
@@ -361,11 +365,12 @@ export function ErrorAnalysisPanel({
         );
         if (alive) {
           setJob(x);
+          setStatusRead({ key: statusKey, error: "" });
           if (activeAnalysis(x))
             timer = window.setTimeout(() => void load(), 1500);
         }
       } catch (e) {
-        if (alive) setError(String(e));
+        if (alive) setStatusRead({ key: statusKey, error: String(e) });
       }
     };
     void load();
@@ -375,7 +380,7 @@ export function ErrorAnalysisPanel({
       abort.abort();
       window.clearTimeout(timer);
     };
-  }, [open, runId, tick, scoringProfile, scoringBatch]);
+  }, [open, runId, tick, scoringProfile, scoringBatch, statusKey]);
   useEffect(() => {
     if (!open || job?.status !== "completed" || !job.job_id) return;
     let alive = true;
@@ -530,7 +535,11 @@ export function ErrorAnalysisPanel({
         <>
           <div className="analysis-toolbar">
             <label>分析标准 <select aria-label="错误分析评分标准" value={scoringProfile} onChange={e => {setScoringProfile(e.target.value);setJob(null);setData(null);setError('');setPage(1);}}>{Object.entries(PROFILE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}<option value="">历史评分</option></select></label>
-            <b>{status[job?.status || ""] || "读取分析状态…"}</b>
+            <b>{statusRead?.key !== statusKey ? "读取分析状态…" : statusRead.error ? "分析状态读取失败" : status[job?.status || ""] || "状态未知"}</b>
+            {statusRead?.key === statusKey && statusRead.error ? <>
+              <span role="alert">{statusRead.error}</span>
+              <button className="btn compact" onClick={() => setTick(x => x + 1)}>重试读取分析状态</button>
+            </> : null}
             {activeAnalysis(job) && <span>已处理 {job?.processed} 题</span>}
             <button
               className="btn compact"

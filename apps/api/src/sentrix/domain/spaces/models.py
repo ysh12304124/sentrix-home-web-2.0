@@ -31,3 +31,4 @@ class MemorySpace:
     #: ``memory_spaces.created_at``，ISO-8601 串（``SqliteSpaceRepository.ensure``
     #: 写的是 ``datetime.now(UTC).isoformat()``）。消费方只拿它排序。
     created_at: str
+    include_in_people: bool = True

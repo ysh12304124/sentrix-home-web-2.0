@@ -106,14 +106,14 @@ describe("MemoryLayerPanel · 外壳与 tab（1.0 :3147-3156）", () => {
     );
   });
 
-  it("面板包含有效性表、正确性对比、命中矩阵、关键帧面板与脚注", () => {
+  it("面板包含有效性表、正确性对比、命中矩阵与脚注，关键帧由运行详情独立展示", () => {
     const { props } = bind();
     const { container } = render(<MemoryLayerPanel {...props} />);
 
     expect(container.querySelector(".memory-effectiveness-panel")).not.toBeNull();
     expect(container.querySelector(".answer-correctness-panel")).not.toBeNull();
     expect(container.querySelector(".memory-answer-attribution-panel")).not.toBeNull();
-    expect(container.querySelector(".keyframe-analysis-panel")).not.toBeNull();
+    expect(container.querySelector(".keyframe-analysis-panel")).toBeNull();
     expect(screen.getByText(/指标口径：运行级指标来自本次 run 的汇总轨迹/)).not.toBeNull();
   });
 
