@@ -194,7 +194,7 @@ class PipelineProcessRequest(BaseModel):
 
     scope_id: str = Field(..., min_length=1, max_length=255)
     # 流水线按 workers 有界预取，源资产清单不决定推理并发。
-    asset_ids: list[str] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list, max_length=1000)
     operation_id: str | None = Field(default=None, min_length=1, max_length=128)
     graph_enabled: bool = True
     finalize: bool = True

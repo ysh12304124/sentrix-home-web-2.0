@@ -214,9 +214,17 @@ class HttpxSentrixClient:
         )
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
+        self,
+        *,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        timeout: int,
+        graph_enabled: bool = True,
+        finalize: bool = True,
     ) -> dict[str, Any]:
-        return self._pipeline_request("process", scope_id, asset_ids, timeout, graph_enabled=graph_enabled)
+        return self._pipeline_request(
+            "process", scope_id, asset_ids, timeout, graph_enabled=graph_enabled, finalize=finalize
+        )
 
     def finalize_pipeline(self, *, scope_id: str, asset_ids: Sequence[str], timeout: int) -> dict[str, Any]:
         return self._pipeline_request("finalize", scope_id, asset_ids, timeout)
@@ -251,6 +259,7 @@ class HttpxSentrixClient:
         timeout: int,
         *,
         graph_enabled: bool = True,
+        finalize: bool = True,
     ) -> dict[str, Any]:
         operation_id = uuid4().hex
         try:
@@ -262,6 +271,7 @@ class HttpxSentrixClient:
                         "asset_ids": list(asset_ids),
                         "operation_id": operation_id,
                         "graph_enabled": graph_enabled,
+                        **({"finalize": False} if not finalize else {}),
                     },
                     "POST",
                     timeout,

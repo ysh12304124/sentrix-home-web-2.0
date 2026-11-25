@@ -93,8 +93,12 @@ class ReadRuns:
         http: JsonHttpClient,
         sentrix_url: Callable[[], str],
         live_states: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        *,
+        history_reads_enabled: bool = True,
+        live_snapshot: Callable[[str], dict[str, Any] | None] | None = None,
     ) -> None:
         self._store = store
+        self._history_reads_enabled = history_reads_enabled
         self._versions = store if isinstance(store, RunRevisions) else None
         self._views = store if isinstance(store, RunReadViews) else None
         self._state_weights: dict[str, int] = {}
@@ -107,6 +111,7 @@ class ReadRuns:
         # 「还在跑的 run」的活状态。**传取值函数而不是快照**，与上面那个
         # ``sentrix_url`` 同一条理由：列表页每次来问都要拿当下的，不是装配那时的。
         self._live_states = live_states
+        self._live_snapshot = live_snapshot
         self._lock = threading.RLock()
         self._states: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._item_locks = tuple(threading.RLock() for _ in range(64))
@@ -124,6 +129,10 @@ class ReadRuns:
         「这一份是终态」。用例 ``test_a_running_run_is_not_served_from_a_stale_cache``
         钉住它（把 ``not in`` 去掉，用例立刻红）。
         """
+        if self._live_snapshot is not None:
+            live = self._live_snapshot(run_id)
+            if live is not None:
+                return live
         revision = self._versions.revision(run_id) if self._versions is not None else "legacy"
         with self._lock:
             if self._state_versions.get(run_id) != revision:
@@ -388,7 +397,12 @@ class ReadRuns:
             # 直接改会把内存里那份运行状态改脏（1.0 的注释就是这个意思，``:5370``）。
             result["telemetry_live"] = copy.deepcopy(live)
         live = result.get("telemetry_live")
-        if include_history and isinstance(live, dict):
+        if not self._history_reads_enabled or result.get("telemetry_history_enabled") is False:
+            result["history_mode"] = "latest"
+            if isinstance(live, dict):
+                live["history_enabled"] = False
+                live["history"] = []
+        elif include_history and isinstance(live, dict):
             analysis.attach_gpu_sample_history(live, self._store.read_gpu_sample_lines(run_id))
             analysis.publish_full_sample_phase_stats(result, live)
         if (

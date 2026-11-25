@@ -13,12 +13,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     EvidenceRequirement,
     EvidenceType,
 )
-from sentrix.domain.assistant.jit import (
-    RetrievalMode,
-    retrieval_mode_for,
-    select_tools,
-    select_turn_tools,
-)
+from sentrix.domain.assistant.jit import select_tools
 from sentrix.domain.assistant.tools import FINAL_ANSWER_TOOL, TOOL_SPECS
 
 
@@ -68,54 +63,6 @@ def test_a_missing_result_set_always_offers_search():
     offered = names(select_tools(ledger_with(), has_result_set=False, tools_exhausted=False))
 
     assert "search_memories" in offered
-
-
-def test_source_text_requirements_route_only_to_the_text_path():
-    offered = names(
-        select_turn_tools(
-            ledger_with(EvidenceType.SOURCE_TEXT),
-            has_source_text=True,
-        )
-    )
-
-    assert "search_text_memories" in offered
-    assert "search_memories" not in offered
-    assert "read_source_text" in offered
-    assert "inspect_photo" not in offered
-
-
-def test_media_requirements_keep_the_original_toolset_when_scope_has_text():
-    ledger = ledger_with(EvidenceType.PHOTO_SET, EvidenceType.VISUAL_OBSERVATION)
-    assert retrieval_mode_for(ledger, has_source_text=True) is RetrievalMode.MEDIA
-    offered = names(select_turn_tools(ledger, has_source_text=True))
-
-    assert "search_memories" in offered
-    assert "search_text_memories" not in offered
-    assert "read_source_text" not in offered
-
-
-def test_mixed_requirements_expose_both_paths():
-    ledger = ledger_with(EvidenceType.PHOTO_SET, EvidenceType.SOURCE_TEXT)
-    assert retrieval_mode_for(ledger, has_source_text=True) is RetrievalMode.MIXED
-    offered = names(select_turn_tools(ledger, has_source_text=True))
-
-    assert {"search_memories", "search_text_memories", "read_source_text"} <= offered
-
-
-def test_explicit_media_route_keeps_media_tools_even_for_text_bearing_scope():
-    ledger = ledger_with(EvidenceType.SOURCE_TEXT, EvidenceType.PHOTO_SET)
-
-    offered = names(
-        select_turn_tools(
-            ledger,
-            has_source_text=True,
-            retrieval_mode=RetrievalMode.MEDIA,
-        )
-    )
-
-    assert "search_memories" in offered
-    assert "search_text_memories" not in offered
-    assert "read_source_text" not in offered
 
 
 def test_the_photo_level_tools_wait_for_a_result_set():

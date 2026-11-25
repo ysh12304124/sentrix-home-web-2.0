@@ -43,7 +43,6 @@ from sentrix.application.memories.sync_corrections import (
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
 from sentrix.application.retrieval.text_memories import IndexTextMemories
-from sentrix.application.retrieval.text_memories import IndexTextMemories
 from sentrix.domain.media.import_jobs import ImportJob
 from sentrix.domain.media.models import AssetStatus, MediaType, Observation
 from sentrix.domain.memories.graph import GraphBuildStats

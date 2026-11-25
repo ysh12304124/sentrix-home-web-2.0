@@ -77,116 +77,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DiagnosticsResponse'
-  /api/v1/memories/corrections/name-sync:
-    get:
-      tags:
-      - memory-corrections
-      summary: Latest Name Sync
-      operationId: latest_name_sync_api_v1_memories_corrections_name_sync_get
-      parameters:
-      - name: entity_id
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Entity Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                anyOf:
-                - $ref: '#/components/schemas/NameSyncStatus'
-                - type: 'null'
-                title: Response Latest Name Sync Api V1 Memories Corrections Name
-                  Sync Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/memories/corrections/jobs/{job_id}:
-    get:
-      tags:
-      - memory-corrections
-      summary: Correction Job
-      description: 一条修正同步任务的进度（关系、归属、改名、确认身份都用它查）。
-      operationId: correction_job_api_v1_memories_corrections_jobs__job_id__get
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NameSyncStatus'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/memories/corrections/name-sync/{job_id}/retry:
-    post:
-      tags:
-      - memory-corrections
-      summary: Retry Name Sync
-      operationId: retry_name_sync_api_v1_memories_corrections_name_sync__job_id__retry_post
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '202':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NameSyncStatus'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/memories/corrections/jobs/{job_id}/retry:
-    post:
-      tags:
-      - memory-corrections
-      summary: Retry Correction Job
-      description: 让一条失败或在退避中的同步任务立即重新入队，由后台执行器处理。
-      operationId: retry_correction_job_api_v1_memories_corrections_jobs__job_id__retry_post
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '202':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NameSyncStatus'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/memories/corrections:
     get:
       tags:
@@ -236,6 +126,13 @@ paths:
           type: string
           default: ''
           title: Scope Id
+      - name: person_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Person Id
       responses:
         '200':
           description: Successful Response
@@ -343,6 +240,116 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CorrectionRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/emails/import:
+    post:
+      tags:
+      - emails
+      summary: Import Emails
+      operationId: import_emails_api_v1_emails_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Import Emails Api V1 Emails Import Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/emails/{asset_id}:
+    get:
+      tags:
+      - emails
+      summary: Email Detail
+      operationId: email_detail_api_v1_emails__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Email Detail Api V1 Emails  Asset Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/text/import:
+    post:
+      tags:
+      - text-memory
+      summary: Import Text
+      operationId: import_text_api_v1_text_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Import Text Api V1 Text Import Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/text/{asset_id}:
+    get:
+      tags:
+      - text-memory
+      summary: Text Detail
+      operationId: text_detail_api_v1_text__asset_id__get
+      parameters:
+      - name: asset_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Asset Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Text Detail Api V1 Text  Asset Id  Get
         '422':
           description: Validation Error
           content:
@@ -944,6 +951,16 @@ paths:
           default: ''
           title: Media Type
         description: 媒体类型：image / video / audio / text
+      - name: source_type
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 40
+          description: 可选文本来源标签，如email/note/document
+          default: ''
+          title: Source Type
+        description: 可选文本来源标签，如email/note/document
       responses:
         '200':
           description: Successful Response
@@ -1624,7 +1641,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AssetImportRequest'
+              $ref: '#/components/schemas/ImportBatchRequest'
         required: true
       responses:
         '201':
@@ -3429,33 +3446,6 @@ components:
       - failures
       title: AssetImportBatchResponse
       description: 资产导入阶段响应：只落盘/登记，不包含关键帧、记忆或图构建。
-    AssetImportRequest:
-      properties:
-        directory:
-          type: string
-          maxLength: 4096
-          minLength: 1
-          title: Directory
-        scope_id:
-          type: string
-          title: Scope Id
-          default: home-default
-        limit:
-          type: integer
-          minimum: 1.0
-          title: Limit
-          default: 200
-        operation_id:
-          anyOf:
-          - type: string
-            pattern: ^[A-Za-z0-9_-]{1,96}$
-          - type: 'null'
-          title: Operation Id
-      type: object
-      required:
-      - directory
-      title: AssetImportRequest
-      description: 资产登记不执行模型推理，允许一次登记完整目录。
     AssetListResponse:
       properties:
         items:
@@ -3892,6 +3882,13 @@ components:
           type: string
           title: Reason
           default: ''
+        all_scores:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: All Scores
+          default: []
       type: object
       required:
       - channel
@@ -4257,6 +4254,30 @@ components:
       - message
       - detail
       title: DomainErrorResponse
+    EmailImportRequest:
+      properties:
+        scope_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Scope Id
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Items
+        rebuild_graph:
+          type: boolean
+          title: Rebuild Graph
+          default: true
+      type: object
+      required:
+      - scope_id
+      - items
+      title: EmailImportRequest
     EntityDetailAppearance:
       properties:
         id:
@@ -6786,27 +6807,6 @@ components:
       - turn_id
       - created_at
       title: MessageSummary
-    NameSyncStatus:
-      properties:
-        id:
-          type: string
-          title: Id
-        status:
-          type: string
-          enum:
-          - pending
-          - synced
-          - failed
-          title: Status
-        error:
-          type: string
-          title: Error
-      type: object
-      required:
-      - id
-      - status
-      - error
-      title: NameSyncStatus
     OperationCancellationResponse:
       properties:
         operation_id:
@@ -6915,6 +6915,7 @@ components:
           items:
             type: string
           type: array
+          maxItems: 1000
           title: Asset Ids
         operation_id:
           anyOf:
@@ -6926,6 +6927,10 @@ components:
         graph_enabled:
           type: boolean
           title: Graph Enabled
+          default: true
+        finalize:
+          type: boolean
+          title: Finalize
           default: true
       type: object
       required:
@@ -8116,6 +8121,30 @@ components:
       - conversation_id
       - status
       title: StartTurnResponse
+    TextImportRequest:
+      properties:
+        scope_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Scope Id
+        items:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Items
+        rebuild_graph:
+          type: boolean
+          title: Rebuild Graph
+          default: true
+      type: object
+      required:
+      - scope_id
+      - items
+      title: TextImportRequest
     TimelineCalendarResponse:
       properties:
         scope_id:

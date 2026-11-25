@@ -232,3 +232,22 @@ export function relationFromSelf(
     ? { otherId: edge.object_entity_id, otherRole: edge.inverse_predicate, selfRole: edge.predicate }
     : { otherId: edge.subject_entity_id, otherRole: edge.predicate, selfRole: edge.inverse_predicate };
 }
+
+export interface RelationChoice {
+  readonly label: string;
+  readonly predicate: string;
+  readonly inversePredicate: string;
+}
+
+/** 建关系下拉里的十一条，1.0 `people_graph.js:17-23` 逐字。 */
+export function relationChoices(): RelationChoice[] {
+  return [
+    ["父亲", "儿子"], ["父亲", "女儿"], ["母亲", "儿子"], ["母亲", "女儿"],
+    ["丈夫", "妻子"], ["妻子", "丈夫"], ["哥哥", "弟弟"], ["姐姐", "妹妹"],
+    ["朋友", "朋友"], ["密友", "密友"], ["其他亲属", "其他亲属"],
+  ].map(([predicate, inversePredicate]) => ({
+    label: `${predicate} → ${inversePredicate}`,
+    predicate,
+    inversePredicate,
+  }));
+}

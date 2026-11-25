@@ -115,7 +115,13 @@ class SentrixClient(Protocol):
         ...
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+        self,
+        *,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        graph_enabled: bool,
+        timeout: int,
+        finalize: bool = True,
     ) -> dict[str, Any]:
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...

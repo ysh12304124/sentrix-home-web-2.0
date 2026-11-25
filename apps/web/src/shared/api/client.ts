@@ -2144,3 +2144,16 @@ export function transcribeSpeech(pcm: ArrayBuffer, sampleRate: number, signal: A
     signal,
   });
 }
+
+export async function getMemoryCorrectionSyncStatus(
+  scopeId: string,
+): Promise<{ status: "synced" | "pending"; error: string }> {
+  const result = await request<{ items: Array<{ status?: string; error?: string }> }>(
+    `/memories/corrections?scope_id=${encodeURIComponent(scopeId)}&limit=1`,
+  );
+  const latest = result.items[0];
+  return {
+    status: latest?.status === "pending" ? "pending" : "synced",
+    error: latest?.status === "pending" ? latest.error ?? "" : "",
+  };
+}

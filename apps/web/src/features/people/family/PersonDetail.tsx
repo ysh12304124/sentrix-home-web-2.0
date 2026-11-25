@@ -75,7 +75,7 @@ export function PersonDetail({
   const pending = isPendingPerson(person);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [syncNotice, setSyncNotice] = useState<{ status: "synced" | "pending"; text: string } | null>(null);
+  const [syncNotice, setSyncNotice] = useState<{ status: "synced" | "pending" | "failed"; text: string } | null>(null);
   const [syncRetrying, setSyncRetrying] = useState(false);
   const [syncPending, setSyncPending] = useState(false);
   const writeInProgress = busy || syncRetrying || syncPending;

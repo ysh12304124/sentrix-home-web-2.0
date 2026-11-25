@@ -87,6 +87,8 @@ function person(overrides: Partial<FamilyPerson> = {}): FamilyPerson {
     appearance_count: 3,
     representative_media: [],
     status: "confirmed",
+    aliases: [],
+    hidden: false,
     ...overrides,
   };
 }

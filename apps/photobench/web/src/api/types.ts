@@ -19,7 +19,11 @@
 // 媒体
 // ---------------------------------------------------------------------------
 
+import type { ScoringConfig } from '../lib/scoring.ts';
+
 export type MediaType = "image" | "video" | "email";
+
+export interface SourceRef { source_type?: unknown; source_id?: unknown; asset_id?: unknown; title?: unknown; summary?: unknown; source_timestamp?: unknown; excerpt?: unknown; file_name?: unknown }
 
 /** 一处媒体引用。1.0 `mediaRefs`（`App.vue:394`）与 run item 的 `*_media_refs` 同形。 */
 export interface MediaRef {
@@ -142,6 +146,11 @@ export type RunPhases = Record<string, Phase | undefined>;
  * 下存在的可空字段。
  */
 export interface TelemetryLive {
+  history_enabled?: boolean;
+  statistics_mode?: string;
+  devices?: Record<string, TelemetryLive>;
+  device_index?: number | null;
+  raw_samples_count?: number;
   memory_observation_version?: number;
   memory_observations?: Record<string, MemorySourceObservation>;
   memory_dependencies?: Record<string, string[]>;
@@ -186,12 +195,6 @@ export interface MemorySourceObservation {
 
 /** run 指标汇总。后端 `summary` 的字段是开放的，前端 `effectiveRunSummary` 现算 60+ 项。 */
 export interface RunSummary {
-  text_retrieval_summary?: {
-    question_count:number;recorded_count:number;
-    retrieval:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
-    citation:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
-    recall_at_k:Record<string,number|null>;
-  };
   structured_json_requested?: number | null;
   structured_json_total?: number | null;
   structured_json_success?: number | null;
@@ -207,6 +210,12 @@ export interface RunSummary {
   retrieval_recall_mean?: number | null;
   media_retrieval_recall_macro?: number | null;
   [key: string]: unknown;
+  text_retrieval_summary?: {
+    question_count:number;recorded_count:number;
+    retrieval:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
+    citation:{sample_count:number;precision:number|null;recall:number|null;f1:number|null};
+    recall_at_k:Record<string,number|null>;
+  };
 }
 
 export interface GraphReferenceMetrics {
@@ -379,12 +388,14 @@ export interface ExecutionVersion extends RejudgeTask {
 }
 
 export interface Run {
+  email_only_qa?: boolean;
   source_run_id?: string;
   task_id?: string;
   task_run_ids?: string[];
   execution_versions?: ExecutionVersion[];
   read_revision?: string | null;
-  history_mode?: "full" | "checkpoint" | null;
+  history_mode?: "full" | "checkpoint" | "latest" | null;
+  telemetry_history_enabled?: boolean;
   persistence?: { status?: string; error?: string } | null;
   metrics_contract_version?: number;
   build_revision?: string;
@@ -400,7 +411,7 @@ export interface Run {
   model_name?: string | null;
   endpoint_model?: string;
   graph_enabled?: boolean;
-  email_only_qa?: boolean;
+  reasoning?: boolean | null;
   graph_baseline_run_id?: string | null;
   model_identity?: Record<string, unknown> | null;
   execution_budgets?: Record<string, unknown> | null;
@@ -408,6 +419,8 @@ export interface Run {
   model_source?: string;
   model_backend?: string;
   qa_set?: string;
+  scoring_profiles?: string[];
+  scoring_configs?: Record<string, ScoringConfig>;
   qa_name?: string;
   qa_count?: number | null;
   status?: string;
@@ -427,6 +440,9 @@ export interface Run {
   /** 详情响应的可选内嵌条目；`effectiveRunSummary` 会读它（`App.vue:430`）。 */
   items?: RunItemSummary[];
   [key: string]: unknown;
+  retest_context?: RetestContext;
+  retest_summary?: { wall_clock_ms?: number; delivery_recall?: number; candidate_recall?: number; answer?: string };
+
 }
 
 /** `GET /api/runs` 的信封（`loadRuns` `App.vue:2233`）。 */
@@ -481,15 +497,6 @@ export interface TaskJudge {
 
 /** 一行逐题摘要（`/api/v1/runs/{id}/items` 的 `items[]`）。 */
 export interface RunItemSummary {
-  text_retrieval_metrics?: {
-    version: number;
-    retrieved_evidence_ids?: string[];
-    cited_evidence_ids?: string[];
-    retrieval: {status:string;precision:number|null;recall:number|null;f1:number|null;gt:number;matched:number};
-    citation: {status:string;precision:number|null;recall:number|null;f1:number|null};
-    recall_at_k: Record<string, number|null>;
-    reason: string;
-  };
   profile_scores?: Record<string, Judge>;
   display_question?: string;
   conversation_turn_count?: number;
@@ -513,6 +520,15 @@ export interface RunItemSummary {
   task_judge?: TaskJudge;
   task_judges?: TaskJudge[];
   [key: string]: unknown;
+  text_retrieval_metrics?: {
+    version: number;
+    retrieved_evidence_ids?: string[];
+    cited_evidence_ids?: string[];
+    retrieval: {status:string;precision:number|null;recall:number|null;f1:number|null;gt:number;matched:number};
+    citation: {status:string;precision:number|null;recall:number|null;f1:number|null};
+    recall_at_k: Record<string, number|null>;
+    reason: string;
+  };
 }
 
 /** 一次对话轮（`conversationTurns` `:617`）。 */
@@ -535,6 +551,13 @@ export interface RetrievalCounts {
 
 /** 一题的完整记录（`/api/v1/runs/{id}/items/{index}` 的 `item`）。 */
 export interface RunItemDetail extends RunItemSummary {
+  retrieval_source_refs?: SourceRef[];
+  answer_evidence_source_refs?: SourceRef[];
+  predicted_source_refs?: SourceRef[];
+  retrieved_source_refs?: SourceRef[];
+  read_source_refs?: SourceRef[];
+  attachments?: SourceRef[];
+  source_metrics?: Record<string, unknown>;
   conversation?: ConversationTurn[];
   conversation_id?: string;
   runtime_turns?: Array<Record<string, unknown>>;
@@ -620,6 +643,7 @@ export interface KeyframeAnalysis {
     }>;
     [key: string]: unknown;
   };
+  evidence_hits?: { annotated: number; candidate_video: number; candidate_time: number; viewed_video: number; viewed_time: number; candidate_time_unknown: number; viewed_time_unknown: number; unmapped_video: number; candidate_empty?: number; viewed_trace_missing?: number; windows?: Record<string, Record<string, { hits: number; unknown: number }>> };
   retrieval?: {
     candidate_keyframes?: number;
     candidate_relevant_keyframes?: number;
@@ -818,6 +842,8 @@ export interface ManifestPage {
  * `application/datasets/service.py:93`）。QA 浏览页只读其中少数几列，其余原样带过。
  */
 export interface QaRow {
+  retrieval_source_refs?: SourceRef[];
+  answer_evidence_source_refs?: SourceRef[];
   qa_id?: string;
   question?: string;
   answer?: string;
@@ -861,6 +887,7 @@ export interface MediaResolution {
 
 /** `GET /api/qa-dataset` 的信封（`loadQaBrowser` `App.vue:2778`）。 */
 export interface QaDatasetResponse {
+  validation?: {can_start:boolean;error_count:number;warning_count:number;issues:Record<string,unknown>[]};
   album_id: string;
   qa_set: string;
   items: QaRow[];
@@ -889,15 +916,8 @@ export interface MemorySpace {
 /** 可复用基座（`build_reuse_bases`，`domain/runs/reuse.py`）。 */
 export interface ReuseBase {
   base_id: string;
-  run_id: string;
   album_id: string;
   model_profile: string;
-  model_name?: string;
-  qa_set?: string;
-  run_status?: string;
-  started_at?: string;
-  finished_at?: string;
-  graph_enabled?: boolean | null;
   scope_id: string;
   scope_name: string;
   created_at: string;
@@ -967,4 +987,39 @@ export interface ActiveWorkStatus {
   }>;
   cleanup_status: string;
   errors?: Record<string, string>;
+}
+
+/** One actual endpoint/profile, shared by retests and chat. */
+export interface InteractiveModel {
+  profile?: string;
+  target_id?: string;
+  base_url?: string;
+  manager_url?: string;
+  endpoint_model?: string;
+}
+export interface RetestContext {
+  source_run_id: string;
+  qa_id: string;
+  source_item_index: number;
+  source_scoring_batch_ids: string[];
+  source_rule_versions?: string[];
+}
+export interface ChatSession {
+  session_id: string;
+  created_at: string;
+  title: string;
+  scope_id: string;
+  album_id: string;
+  model_name?: string;
+  endpoint_model?: string;
+  model_profile?: string;
+  model_identity?: Record<string, unknown>;
+  model_preparation?: Record<string, unknown>;
+  runtime_snapshot?: Record<string, unknown>;
+  status: string;
+  reasoning?: boolean | null;
+  error?: string;
+  source?: { album_id: string; qa_set: string; row: QaRow; definition_sha256: string } | null;
+  turns?: Array<{ index: number; message: string; turn_id: string; status: string; reasoning?: boolean; answer?: string; error?: string; wall_clock_ms?: number }>;
+  items?: RunItemDetail[];
 }
