@@ -6685,6 +6685,10 @@ components:
           type: boolean
           title: Graph Enabled
           default: true
+        finalize:
+          type: boolean
+          title: Finalize
+          default: true
       type: object
       required:
       - scope_id
@@ -7825,6 +7829,16 @@ components:
           title: Graph Enabled
           description: 是否启用图记忆拓展检索；评测对照 run 可关闭
           default: true
+        retrieval_mode:
+          type: string
+          enum:
+          - auto
+          - media
+          - text
+          - mixed
+          title: Retrieval Mode
+          description: 证据检索路由；默认由规划器需求自动选择，评测可按 QA 集固定路由
+          default: auto
       type: object
       required:
       - message

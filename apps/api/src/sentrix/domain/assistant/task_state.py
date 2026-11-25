@@ -163,6 +163,32 @@ class TaskState:
         return tuple(ids)
 
     @property
+    def media_result_set_ids(self) -> tuple[str, ...]:
+        """Media result sets only; text searches must not shadow photo handles."""
+        return self._result_set_ids_for(frozenset({"search_memories", "get_result_page"}))
+
+    @property
+    def text_result_set_ids(self) -> tuple[str, ...]:
+        """Text result sets only; citations are validated against actual text searches."""
+        return self._result_set_ids_for(frozenset({"search_text_memories"}))
+
+    @property
+    def current_media_result_set_id(self) -> str | None:
+        ids = self.media_result_set_ids
+        return ids[0] if ids else None
+
+    def _result_set_ids_for(self, tools: frozenset[str]) -> tuple[str, ...]:
+        ids: list[str] = []
+        for record in reversed(self.records):
+            if record.status != "ok" or record.tool not in tools:
+                continue
+            value = record.observation.get("result_set_id")
+            result_set_id = str(value) if value else ""
+            if result_set_id and result_set_id not in ids:
+                ids.append(result_set_id)
+        return tuple(ids)
+
+    @property
     def retrieved_candidates(self) -> tuple[str, ...]:
         """**检索捞回来的那批候选**（``asset_id``，按名次），不是交付的那批。
 

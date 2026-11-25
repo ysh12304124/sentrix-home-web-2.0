@@ -1,5 +1,8 @@
 # Runbook：GeoNames 地点数据
 
+2026-11-24 起，Sentrix 新导入不再装配 GeoNames。以下仅用于重现旧版地点解析结果。
+当前部署见 [OSM 离线地点解析](osm-places.md)。
+
 时间线的「乡镇 / 村庄 / 国外城镇」这一级靠 GeoNames 的最近邻点，数据**不进版本控制**，
 必须由部署方按本文件装。没有它服务照常启动——`GeoNamesNearestResolver.available` 为假、
 `resolve_nearest` 恒返回 `None`，区县那一级（PyGeoCN 的**面**）不受影响。

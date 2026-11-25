@@ -97,14 +97,17 @@ def claim_numbers(text: str) -> tuple[float, ...]:
     return tuple(numbers)
 
 
-def high_risk_claims(answer: str) -> tuple[Claim, ...]:
+def high_risk_claims(answer: str, *, source_text: bool = False) -> tuple[Claim, ...]:
     """从回答里抽出高风险句子。同一句只取最高的那一类，避免重复核验。"""
     claims: list[Claim] = []
     for sentence in _SENTENCE.findall(answer or ""):
         text = sentence.strip()
         if not text:
             continue
-        if _AMOUNT.search(text):
+        text_amount = source_text and re.search(
+            r"(?:GBP|USD|EUR|£|€|\$)\s*[\d,.]+|\d[\d,.]*\s*(?:pounds|dollars)", text, re.I
+        )
+        if _AMOUNT.search(text) or text_amount:
             claims.append(Claim(text, RequirementValueType.AMOUNT))
         elif _TIME.search(text):
             claims.append(Claim(text, RequirementValueType.TIME))
@@ -156,7 +159,9 @@ def build_claim_messages(
         "unsupported：facts 没有该信息或没有能支撑它的值；ambiguous：信息不足以判断。\n"
         "数字/日期表达等价不算冲突（三个人 = 3 人，2024-03-02 = 2024年3月2日）。"
     )
-    passages = [fact for fact in facts if fact.fact_type == "source_text"][-2:]
+    # The cited evidence may be the first source read. Keeping only the last
+    # two drops it whenever the agent checks another email before answering.
+    passages = [fact for fact in facts if fact.fact_type == "source_text"][-max(1, int(max_facts)) :]
     typed = [
         fact for fact in facts if fact.value_type is claim.value_type and fact.fact_type != "source_text"
     ]

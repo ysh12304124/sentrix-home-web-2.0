@@ -693,6 +693,19 @@ export interface MemorySyncResult {
   sync_error: string;
 }
 
+export async function getMemoryCorrectionSyncStatus(
+  scopeId: string,
+): Promise<{ status: "synced" | "pending"; error: string }> {
+  const result = await request<{ items: Array<{ status?: string; error?: string }> }>(
+    `/memories/corrections?scope_id=${encodeURIComponent(scopeId)}&limit=1`,
+  );
+  const latest = result.items[0];
+  return {
+    status: latest?.status === "pending" ? "pending" : "synced",
+    error: latest?.status === "pending" ? latest.error ?? "" : "",
+  };
+}
+
 export async function retryMemoryCorrections(scopeId: string, personId?: string): Promise<{ error: string }> {
   const personQuery = personId ? `&person_id=${encodeURIComponent(personId)}` : "";
   return request<{ error: string }>(

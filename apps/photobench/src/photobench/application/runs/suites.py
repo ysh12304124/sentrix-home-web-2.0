@@ -209,6 +209,11 @@ class RunSuites:
                 self._on_finished(run_id)
 
     def _require_inactive(self) -> None:
+        # A cancelled run can finish its remote cleanup after its main thread
+        # exits. Recheck that ownership before rejecting the next operation.
+        cleanup = self.refresh_cleanup()
+        if cleanup.get("errors"):
+            raise InvalidRequestError(f"benchmark cleanup not confirmed: {cleanup['errors']}")
         busy = self._active_ids()
         if (
             busy
@@ -541,6 +546,7 @@ class RunSuites:
             }
         )
         resumed_judge = self._frozen_judge_settings(frozen_judge)
+        text_phase_status = (saved.get("phases") or {}).get("text_memory_import", {}).get("status")
         request = RunRequest(
             album_id=album_id,
             qa_set=qa_set,
@@ -552,10 +558,8 @@ class RunSuites:
             run_id=new_run_id,
             mode="reuse",
             scope_id=scope_id,
-            text_import_already_completed=(
-                str((saved.get("phases") or {}).get("text_memory_import", {}).get("status") or "")
-                == "done"
-            ),
+            text_import_already_completed=text_phase_status == "done",
+            repair_text_import=text_phase_status in {"failed", "cancelled", "interrupted", "running"},
             runtime_framework=str(saved.get("runtime_framework") or ""),
             judge_url=resumed_judge.judge_url,
             judge_model=resumed_judge.judge_model,
@@ -815,6 +819,7 @@ class RunSuites:
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
         """``DELETE /api/runs/{id}``（1.0 ``delete_run`` ``:7010``）。"""
+        self.refresh_cleanup()
         state = self._state_if_exists(run_id)
         if state is None and run_id not in self._active:
             raise KeyError(run_id)

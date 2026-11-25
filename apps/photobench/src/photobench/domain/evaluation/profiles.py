@@ -352,8 +352,10 @@ def scoring_summary(state: Mapping[str, Any]) -> dict[str, Any]:
 def stable_media_key(ref: Mapping[str, Any]) -> str:
     kind = str(ref.get("media_type") or "")
     identifier = str(ref.get("media_id") or ref.get("file_name") or "").replace(chr(92), "/")
-    if kind not in {"image", "video"} or not identifier:
+    if kind not in {"image", "video", "email"} or not identifier:
         raise ValueError("Missing typed media identity")
+    if kind == "email" and PurePosixPath(identifier).suffix.lower() == ".txt":
+        identifier = str(PurePosixPath(identifier).with_suffix(""))
     if kind == "video" and PurePosixPath(identifier).suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
         identifier = str(PurePosixPath(identifier).with_suffix(""))
     return kind + ":" + identifier

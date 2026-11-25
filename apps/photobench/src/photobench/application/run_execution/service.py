@@ -71,7 +71,7 @@ from photobench.domain.deploy.ports import (
 from photobench.domain.errors import RequestOutcomeUnknownError
 from photobench.domain.evaluation.profiles import uses_readable_metadata
 from photobench.domain.evaluation.prompts import evaluation_prompts
-from photobench.domain.evaluation.text_retrieval import text_retrieval_metrics
+from photobench.domain.evaluation.text_retrieval import project_text_metrics, text_retrieval_metrics
 from photobench.domain.http.ports import JsonHttpClient
 from photobench.domain.results.ports import RunResultWriter
 from photobench.domain.runs.analysis import (
@@ -250,6 +250,7 @@ class RunRequest:
     #: Resume may reuse an already-imported, unchanged text-memory scope. In that case
     #: don't re-index thousands of records and rebuild the same graph before every retry.
     text_import_already_completed: bool = False
+    repair_text_import: bool = False
     repair_missing_judges: bool = False
     resume_context: Mapping[str, Any] | None = None
     frozen_qa_snapshot: Mapping[str, Any] | None = None
@@ -1786,6 +1787,24 @@ class RunExecution:
         # 只数本次流水线的目标资产里 ``media_type == "image"`` 的那些。没有它，前端那张
         # 卡的「评测图片墙钟均值」恒显示「未记录」（``details.ts:pipelineMetricRows``）。
         observed_image_count = 0
+
+        def read_target_assets(timeout: int) -> list[dict[str, Any]]:
+            page_size = 1000
+            page = self.client.list_assets(scope_id=scope_id, limit=page_size, timeout=timeout)
+            found: dict[str, dict[str, Any]] = {}
+            offset = 0
+            while True:
+                for item in page:
+                    asset_id = str(item.get("id") or "")
+                    if asset_id in target_ids:
+                        found[asset_id] = item
+                if len(target_ids) <= page_size or len(found) == len(target_ids) or len(page) < page_size:
+                    return list(found.values())
+                offset += len(page)
+                page = self.client.list_assets(
+                    scope_id=scope_id, limit=page_size, timeout=timeout, offset=offset
+                )
+
         state.record_phase(
             "pipeline_processing",
             "progress",
@@ -1800,20 +1819,53 @@ class RunExecution:
         )
         self._persist(str(state.get("run_id")), state)
 
-        future = self._start_phase_request(
-            lambda: self.client.process_pipeline(
-                scope_id=scope_id,
-                asset_ids=asset_ids,
-                graph_enabled=request.graph_enabled,
-                timeout=request.import_timeout,
-            ),
-            name="sentrix-pipeline",
-        )
+        def process_batches() -> dict[str, Any]:
+            batch_size = 1000
+            batch_started = time.perf_counter()
+            totals: dict[str, int] = {}
+            timings: dict[str, float] = {}
+            failures: list[dict[str, Any]] = []
+            spans: list[dict[str, Any]] = []
+            batch: dict[str, Any] = {}
+            for offset in range(0, max(len(asset_ids), 1), batch_size):
+                self._cancel_wait(0)
+                elapsed = time.perf_counter() - batch_started
+                batch = self.client.process_pipeline(
+                    scope_id=scope_id,
+                    asset_ids=asset_ids[offset : offset + batch_size],
+                    graph_enabled=request.graph_enabled,
+                    timeout=request.import_timeout,
+                    finalize=offset + batch_size >= len(asset_ids),
+                )
+                if len(asset_ids) <= batch_size:
+                    return batch
+                for key in ("processed", "skipped", "events", "video_scenes", "summarized"):
+                    totals[key] = totals.get(key, 0) + int(batch.get(key) or 0)
+                failures.extend(batch.get("failures") or [])
+                for key, value in (batch.get("timings") or {}).items():
+                    seconds = float(value or 0)
+                    if key.endswith("_start_seconds"):
+                        timings.setdefault(key, seconds + elapsed)
+                    elif key.endswith("_end_seconds"):
+                        timings[key] = seconds + elapsed
+                    else:
+                        timings[key] = timings.get(key, 0.0) + seconds
+                for span in batch.get("timing_spans") or []:
+                    spans.append(
+                        {
+                            **span,
+                            "started_offset_seconds": span["started_offset_seconds"] + elapsed,
+                            "finished_offset_seconds": span["finished_offset_seconds"] + elapsed,
+                        }
+                    )
+            timings["total"] = time.perf_counter() - batch_started
+            return {**batch, **totals, "failures": failures, "timings": timings, "timing_spans": spans}
+
+        future = self._start_phase_request(process_batches, name="sentrix-pipeline")
         while not future.done():
             poll_count += 1
             try:
-                visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=3)
-                assets = [item for item in visible if str(item.get("id") or "") in target_ids]
+                assets = read_target_assets(timeout=3)
                 processed = [item for item in assets if item.get("status") == "processed"]
                 pending = [item for item in assets if item.get("status") in PIPELINE_PENDING_STATUSES]
                 failed = [item for item in assets if item.get("status") in PIPELINE_FAILED_STATUSES]
@@ -1852,8 +1904,7 @@ class RunExecution:
         result = future.result()
 
         try:
-            visible = self.client.list_assets(scope_id=scope_id, limit=1000, timeout=60)
-            assets = [item for item in visible if str(item.get("id") or "") in target_ids]
+            assets = read_target_assets(timeout=60)
             poll_count += 1
         except Exception:  # noqa: BLE001 - 最终状态可由主响应兜底
             assets = []
@@ -1915,7 +1966,7 @@ class RunExecution:
         phase_result = {
             "total_seconds": round(float(timings.get("total") or time.perf_counter() - started), 3),
             "poll_iterations": poll_count,
-            "processed_photo_count": final_processed or processed_count + skipped_count,
+            "processed_photo_count": max(final_processed, processed_count + skipped_count),
             "processed_asset_count": processed_count,
             "failed_asset_count": failed_count,
             "skipped_asset_count": skipped_count,
@@ -1979,10 +2030,17 @@ class RunExecution:
     def _phase_text_memory_import(self, state: RunState, request: RunRequest) -> None:
         """导入 manifest 声明的统一文本记忆（ATM-Bench 的邮件），并在最后一批构建图。"""
         started = time.perf_counter()
-        if request.text_import_already_completed:
+        if request.text_import_already_completed or (
+            request.mode == "reuse" and not request.repair_text_import
+        ):
             state.phase_done(
                 "text_memory_import",
-                {"status": "skipped", "reason": "reusing_verified_import_from_source_run"},
+                {
+                    "status": "skipped",
+                    "reason": "reusing_existing_text_memory"
+                    if request.mode == "reuse"
+                    else "reusing_verified_import_from_source_run",
+                },
             )
             return
         album_id = str(state.get("album_id"))
@@ -1995,6 +2053,8 @@ class RunExecution:
         manifest = self.albums.manifest(album_id)
         relative = str(manifest.get("text_memories") or "").strip()
         if not relative:
+            if request.repair_text_import:
+                raise RuntimeError("原测评的文本记忆清单缺失，无法续跑")
             state.phase_done(
                 "text_memory_import",
                 {"status": "skipped", "reason": "dataset_has_no_text_memories"},
@@ -2029,6 +2089,7 @@ class RunExecution:
         # Publish completed work frequently without changing the import endpoint's limit.
         batch_size = 50
         batches = (total + batch_size - 1) // batch_size
+        causal_degraded = False
         state.record_phase(
             "text_memory_import",
             "progress",
@@ -2082,19 +2143,30 @@ class RunExecution:
                 rebuild_graph=request.graph_enabled and is_last_batch,
                 timeout=max(600, request.import_timeout),
             )
-            if result.get("status") != "completed" or result.get("errors"):
-                first_error = (result.get("errors") or [{}])[0]
-                raise RuntimeError(
-                    "邮件记忆导入/索引未完整完成："
-                    + str(first_error.get("error") or result.get("graph_error") or result.get("status"))
-                )
-            imported += int(result.get("imported") or 0)
-            skipped += int(result.get("skipped") or 0)
-            indexed += int(result.get("indexed") or 0)
+            batch_imported = int(result.get("imported") or 0)
+            batch_skipped = int(result.get("skipped") or 0)
+            batch_indexed = int(result.get("indexed") or 0)
+            imported += batch_imported
+            skipped += batch_skipped
+            indexed += batch_indexed
+            import_complete = batch_imported + batch_skipped == batch_indexed == len(
+                batch
+            ) and not result.get("errors")
+            # The product persists the graph before returning a causal-only partial result.
+            # A graph write exception instead has a graph_error key, even with an empty message.
+            causal_degraded = (
+                is_last_batch
+                and request.graph_enabled
+                and result.get("status") == "partial"
+                and result.get("graph_status") == "partial"
+                and "graph_error" not in result
+                and import_complete
+            )
+            batch_complete = import_complete and (result.get("status") == "completed" or causal_degraded)
             progress_state = {
-                "stage": "completed" if is_last_batch else "memory_indexing",
+                "stage": "completed" if is_last_batch and batch_complete else "memory_indexing",
                 "total": total,
-                "processed": min(total, start + len(batch)),
+                "processed": indexed,
                 "batches": batches,
                 "current_batch": start // batch_size + 1,
                 "imported": imported,
@@ -2114,21 +2186,44 @@ class RunExecution:
                 progress_state,
             )
             self._persist(str(state.get("run_id")), state)
+            if not batch_complete:
+                first_error = (result.get("errors") or [{}])[0]
+                if import_complete and "graph_error" in result:
+                    raise RuntimeError(f"记忆图构建失败：{result['graph_error'] or '图未写入'}")
+                raise RuntimeError(
+                    "邮件记忆导入/索引未完整完成："
+                    + str(first_error.get("error") or f"本批已索引 {batch_indexed}/{len(batch)} 条")
+                )
 
-        state.phase_done(
-            "text_memory_import",
-            {
-                "source": relative,
-                "memory_type": "text",
-                "source_type": "email",
-                "total": total,
-                "imported": imported,
-                "skipped": skipped,
-                "indexed": indexed,
-                "graph_status": result.get("graph_status"),
-                "total_seconds": round(time.perf_counter() - started, 1),
-            },
-        )
+        phase_result = {
+            "source": relative,
+            "memory_type": "text",
+            "source_type": "email",
+            "total": total,
+            "imported": imported,
+            "skipped": skipped,
+            "indexed": indexed,
+            "graph_status": result.get("graph_status"),
+            "total_seconds": round(time.perf_counter() - started, 1),
+        }
+        if causal_degraded:
+            state.phase_partial(
+                "text_memory_import",
+                {
+                    **phase_result,
+                    "error": "邮件已全部索引，图已保存，部分视频因果边判定失败",
+                    "error_details": [
+                        {
+                            "sample_id": "causal_graph",
+                            "status": "failed",
+                            "error_type": "causal_inference_error",
+                            "reason": "部分视频因果边判定失败，已保存其他图边",
+                        }
+                    ],
+                },
+            )
+        else:
+            state.phase_done("text_memory_import", phase_result)
 
     @staticmethod
     def _stall_timeout() -> int:
@@ -2317,6 +2412,14 @@ class RunExecution:
             raise RuntimeError(f"model service is unhealthy before QA evaluation: {health_error}")
         scope_id = str(state.get("scope_id"))
         assets = self.client.list_assets(scope_id=scope_id, limit=1000)
+        while len(assets) and len(assets) % 1000 == 0:
+            page = self.client.list_assets(scope_id=scope_id, limit=1000, offset=len(assets))
+            known = {str(a.get("id")) for a in assets}
+            if any(str(a.get("id")) in known for a in page):
+                raise RuntimeError("Asset pagination repeated IDs; QA evidence mapping is incomplete")
+            assets.extend(page)
+            if len(page) < 1000:
+                break
         assets_by_name = index_assets_by_name(assets)
         snapshot = state.get("qa_snapshot")
         if not snapshot or "rows" not in snapshot:
@@ -2493,7 +2596,14 @@ class RunExecution:
                             break
                         index, row = next_row
                         futures[
-                            executor.submit(self._evaluate_one, row, scope_id, assets_by_name, request)
+                            executor.submit(
+                                self._evaluate_one,
+                                row,
+                                scope_id,
+                                assets_by_name,
+                                request,
+                                str((state.get("qa_snapshot") or {}).get("retrieval_mode") or "auto"),
+                            )
                         ] = index
 
                 fill_agent_slots()
@@ -2653,6 +2763,7 @@ class RunExecution:
         scope_id: str,
         assets_by_name: dict[str, list[dict[str, Any]]],
         request: RunRequest,
+        retrieval_mode: str = "auto",
     ) -> dict[str, Any]:
         """1.0 ``_evaluate_one``（``:3357``）去掉 judge。
 
@@ -2723,6 +2834,7 @@ class RunExecution:
                     conversation_id=conversation_id,
                     message=message,
                     include_debug=True,
+                    retrieval_mode=retrieval_mode,
                     **({"graph_enabled": False} if not request.graph_enabled else {}),
                     timeout=300,
                 )
@@ -2800,7 +2912,7 @@ class RunExecution:
             # 轨迹：从**同一条事件流**投影出两条（见 ``traces_from_progress``）。
             # 读侧的 ``bind_tool_calls_to_model_rounds`` 早就在等它们了。
             tool_trace, execution_trace = traces_from_progress(turn_records)
-            text_metrics = text_retrieval_metrics(row, turn_records)
+            text_metrics = text_retrieval_metrics(row, turn_records, tool_trace=tool_trace)
             if text_metrics is not None:
                 item["text_retrieval_metrics"] = text_metrics
             selected = selected_asset_ids(last_result)
@@ -2905,6 +3017,7 @@ class RunExecution:
                     "judge_status": "pending",
                 }
             )
+            item.update(project_text_metrics(item))
             item["execution_status"] = "completed"
         except RunCancelledError:
             raise

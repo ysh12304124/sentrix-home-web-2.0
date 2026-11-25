@@ -43,8 +43,8 @@ export function ReuseBasePicker({
               : "无可复用基座（检查 Sentrix 后端地址）"}
         </option>
         {reuseBases.map((base) => (
-          <option key={base.base_id} value={base.base_id}>
-            {base.album_id} · {base.model_profile} · {base.scope_name}
+          <option key={base.base_id} value={base.base_id} disabled={!base.ready}>
+            {base.album_id} · {base.model_profile} · {base.scope_name}{!base.ready ? "（构建未确认完成）" : ""}
           </option>
         ))}
       </select>

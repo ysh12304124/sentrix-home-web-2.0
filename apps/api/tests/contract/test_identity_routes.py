@@ -219,6 +219,80 @@ def test_explicit_person_sync_rejects_wrong_scope_before_tracking(identity_clien
     assert not identity_client.app.state.container.memory_corrections.records(HOME, 10)
 
 
+def test_rename_rebuilds_multi_person_title_and_body_then_syncs_timeline(identity_client):
+    client = identity_client
+    add_entity(client, "named", name="旧名字", status="confirmed")
+    add_entity(client, "other", name="小川", status="confirmed")
+    _correction_event(client, summary="旧名字、小川：一名男子和一个孩子在散步")
+    container = client.app.state.container
+    for person in ("named", "other"):
+        container.entity_repository.link_confirmed_mention(person, "obs_1")
+
+    class RetryTitleModel(CorrectionModel):
+        def complete(self, messages, tools):
+            if "observations" in json.loads(messages[1].content):
+                self.summary = "小禾与孩子在散步" if len(messages) == 2 else "小禾与小川在散步"
+            return super().complete(messages, tools)
+
+    model = RetryTitleModel()
+    _correction_model(client, model)
+    response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
+    assert response.status_code == 200, response.text
+    assert response.json()["sync_status"] == "pending", response.text
+    stored = container.event_repository.get("correct-event")
+    assert stored.title == stored.summary == "小禾与小川在散步"
+    detail = client.get("/api/v1/memories/event/correct-event").json()
+    assert detail["title"] == stored.title and detail["summary"] == stored.summary
+    timeline = client.get("/api/v1/events/correct-event")
+    assert timeline.status_code == 200, timeline.text
+    assert timeline.json()["title"] == stored.title
+    assert timeline.json()["summary"] == stored.summary
+    person = client.get("/api/v1/people/named").json()
+    assert "小禾" in json.dumps(person, ensure_ascii=False)
+    assert HOME not in container.memory_corrections.pending_scopes()
+    assert len([item for item in model.inputs if "observations" in item]) == 2
+
+
+@pytest.mark.parametrize("edit", ["aliases", "membership", "relationship"])
+def test_person_edits_rebuild_linked_timeline_during_save(identity_client, edit):
+    client = identity_client
+    container = client.app.state.container
+    add_entity(client, "named", name="小禾", status="confirmed")
+    add_entity(client, "related", name="小川", status="confirmed")
+    _correction_event(client)
+    container.entity_repository.link_confirmed_mention("named", "obs_1")
+    _correction_model(client, CorrectionModel())
+
+    if edit == "aliases":
+        response = client.put("/api/v1/entities/named/properties/aliases", json={"value": ["禾禾"]})
+    elif edit == "membership":
+        response = client.patch(
+            "/api/v1/family-graph/people/named/membership",
+            json={"scope_id": HOME, "membership": "family"},
+        )
+    else:
+        response = client.put(
+            "/api/v1/family-graph/relationships",
+            json={
+                "scope_id": HOME,
+                "subject_entity_id": "named",
+                "object_entity_id": "related",
+                "predicate": "父亲",
+                "inverse_predicate": "儿子",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["sync_status"] == "synced", response.text
+    timeline = client.get("/api/v1/timeline", params={"scope_id": HOME})
+    assert timeline.status_code == 200, timeline.text
+    card = next(
+        item for day in timeline.json()["days"] for item in day["events"] if item["id"] == "correct-event"
+    )
+    assert card["title"] == card["summary"] == "小禾在散步"
+    assert HOME not in container.memory_corrections.pending_scopes()
+
+
 def test_name_is_readable_while_linked_memory_rebuild_is_still_running(identity_client):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -247,7 +321,7 @@ def test_name_is_readable_while_linked_memory_rebuild_is_still_running(identity_
         finally:
             release.set()
         response = future.result(timeout=10)
-        assert response.status_code == 200 and response.json()["sync_status"] == "synced", response.text
+        assert response.status_code == 200 and response.json()["sync_status"] == "pending", response.text
 
 
 def test_independent_event_corrections_rebuild_in_a_bounded_parallel_batch(identity_client):
@@ -268,7 +342,7 @@ def test_independent_event_corrections_rebuild_in_a_bounded_parallel_batch(ident
 
     _correction_model(client, ConcurrentModel())
     response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
-    assert response.status_code == 200 and response.json()["sync_status"] == "synced", response.text
+    assert response.status_code == 200 and response.json()["sync_status"] == "pending", response.text
     for index in range(4):
         event = client.app.state.container.event_repository.get(f"parallel-{index}")
         assert event.title == "小禾在散步" and event.summary == "小禾在散步"
@@ -286,7 +360,7 @@ def test_rename_rebuilds_only_linked_summary_graph_and_event_vector(identity_cli
     _correction_model(client, model)
     response = client.patch("/api/v1/people/named/name", json={"name": "小禾"})
     assert response.status_code == 200, response.text
-    assert response.json()["sync_status"] == "synced", response.text
+    assert response.json()["sync_status"] == "pending", response.text
     assert container.event_repository.get("correct-event").summary == "小禾在散步"
     assert container.event_repository.get("unrelated").summary == "其他人的摘要"
     evidence = next(p for p in model.inputs if "observations" in p)
@@ -320,7 +394,7 @@ def test_naming_candidate_rebuilds_description_without_confirming_face_identity(
     model = CorrectionModel("用户标记为小禾的人物在散步")
     _correction_model(client, model)
     response = client.patch("/api/v1/people/candidate/name", json={"name": "小禾"})
-    assert response.json()["sync_status"] == "synced", response.text
+    assert response.json()["sync_status"] == "pending", response.text
     assert response.json()["entity"]["confirmed"] is False
     evidence = model.inputs[0]
     update = evidence["identity_updates"][0]
@@ -801,8 +875,42 @@ def test_rename_folds_the_old_name_into_aliases(identity_client: TestClient):
     assert response.status_code == 200
     assert response.json()["entity"]["canonical_name"] == "母亲"
     assert response.json()["aliases"] == ["妈妈"]
-    assert response.json()["sync_status"] in {"synced", "pending"}
+    assert response.json()["sync_status"] == "pending"
     assert "sync_error" in response.json()
+
+
+def test_rename_returns_pending_and_defers_derived_sync(
+    identity_client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import BackgroundTasks
+
+    add_entity(identity_client, "ent_1", name="妈妈", status="confirmed")
+    scheduled = []
+
+    def capture_task(self, func, *args, **kwargs):
+        scheduled.append((func, args, kwargs))
+
+    monkeypatch.setattr(BackgroundTasks, "add_task", capture_task)
+    container = identity_client.app.state.container
+
+    class SyncProbe:
+        def execute(self, scope: str) -> str:
+            assert scope == HOME
+            assert container.entity_repository.get("ent_1").canonical_name == "母亲"
+            container.memory_corrections.finish(scope, "")
+            return ""
+
+    monkeypatch.setattr(correction_routes, "synchronizer", lambda _container: SyncProbe())
+    response = identity_client.patch("/api/v1/people/ent_1/name", json={"name": "母亲"})
+
+    assert response.status_code == 200
+    assert response.json()["sync_status"] == "pending"
+    assert response.json()["sync_error"] == ""
+    assert HOME in container.memory_corrections.pending_scopes()
+    assert len(scheduled) == 1
+    function, args, kwargs = scheduled.pop()
+    function(*args, **kwargs)
+    assert HOME not in container.memory_corrections.pending_scopes()
 
 
 def test_rename_reports_pending_when_derived_sync_fails(
@@ -811,8 +919,8 @@ def test_rename_reports_pending_when_derived_sync_fails(
     add_entity(identity_client, "ent_1", name="妈妈", status="confirmed")
 
     class FailedSync:
-        @staticmethod
-        def execute(_scope: str) -> str:
+        def execute(self, scope: str) -> str:
+            identity_client.app.state.container.memory_corrections.finish(scope, "图谱暂不可用")
             return "图谱暂不可用"
 
     monkeypatch.setattr(correction_routes, "synchronizer", lambda _container: FailedSync())
@@ -821,7 +929,10 @@ def test_rename_reports_pending_when_derived_sync_fails(
     assert response.status_code == 200
     assert response.json()["entity"]["canonical_name"] == "母亲"
     assert response.json()["sync_status"] == "pending"
-    assert response.json()["sync_error"] == "图谱暂不可用"
+    assert response.json()["sync_error"] == ""
+    records = identity_client.get("/api/v1/memories/corrections", params={"scope_id": HOME}).json()["items"]
+    assert records[0]["status"] == "pending"
+    assert "图谱暂不可用" in records[0]["error"]
 
 
 def test_rename_with_a_blank_name_is_400(identity_client: TestClient):

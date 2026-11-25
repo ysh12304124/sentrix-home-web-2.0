@@ -547,7 +547,7 @@ def test_include_debug_puts_the_exact_model_calls_in_the_turn_trace(client: Test
     )
     response = client.post(
         f"/api/v1/assistant/conversations/{conversation['id']}/turns",
-        json={"message": "你好", "include_debug": True},
+        json={"message": "你好", "include_debug": True, "retrieval_mode": "media"},
     )
     assert response.status_code == 202, response.text
 
@@ -555,6 +555,7 @@ def test_include_debug_puts_the_exact_model_calls_in_the_turn_trace(client: Test
 
     trace = body["result"]["trace"]
     assert trace["include_debug"] is True
+    assert trace["retrieval_mode"] == "media"
     calls = trace["debug_calls"]
     # 第一次正文收尾之后门禁会提醒一次，所以 agent 调用可能不止一条；
     # 这里只钉住「planner 在最前、其余都是 agent、每条都有原始输入输出」。

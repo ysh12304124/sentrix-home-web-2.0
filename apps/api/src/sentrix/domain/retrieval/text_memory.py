@@ -16,9 +16,40 @@ class TextChunk:
     end: int
     text: str
     vector: tuple[float, ...] = ()
+    title: str = ""
+    recorded_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TextRelation:
+    seed_asset_id: str
+    asset_id: str
+    kind: str
 
 
 class TextChunkRepository(Protocol):
+    def prepare_sources(self, scope_id: str) -> None: ...
+    def lexical(
+        self,
+        query: str,
+        scope_id: str,
+        model_id: str,
+        *,
+        source_type: str = "",
+        after: str = "",
+        before: str = "",
+        limit: int = 64,
+    ) -> Sequence[tuple[str, float]]: ...
+    def related(
+        self,
+        scope_id: str,
+        seeds: Sequence[str],
+        model_id: str,
+        *,
+        source_type: str = "",
+        after: str = "",
+        before: str = "",
+    ) -> Sequence[TextRelation]: ...
     def similarities(
         self, chunks: Sequence[TextChunk], vector: Sequence[float], model_id: str
     ) -> Sequence[float]: ...
@@ -46,6 +77,10 @@ class TextSearchResult:
     hits: tuple[TextChunk, ...]
     degraded: bool = False
     reason: str = ""
+    candidates: tuple[TextChunk, ...] = ()
+    rerank_status: str = "rrf"
+    relations: tuple[TextRelation, ...] = ()
+    channels: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def split_text(text: str, width: int = 256, overlap: int = 48) -> tuple[tuple[int, int, str], ...]:

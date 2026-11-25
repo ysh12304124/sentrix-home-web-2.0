@@ -298,3 +298,29 @@ def test_a_denied_page_call_still_counts():
     state.record(ToolCallRecord(call_id="p2", tool="get_result_page", signature="s2", status="denied"))
 
     assert state.page_calls == 2
+
+
+def test_text_and_media_result_sets_are_tracked_separately():
+    state = make_state()
+    state.record(
+        ToolCallRecord(
+            call_id="m1",
+            tool="search_memories",
+            signature="m1",
+            status="ok",
+            observation={"result_set_id": "media-1"},
+        )
+    )
+    state.record(
+        ToolCallRecord(
+            call_id="t1",
+            tool="search_text_memories",
+            signature="t1",
+            status="ok",
+            observation={"result_set_id": "text-1"},
+        )
+    )
+
+    assert state.media_result_set_ids == ("media-1",)
+    assert state.text_result_set_ids == ("text-1",)
+    assert state.current_media_result_set_id == "media-1"

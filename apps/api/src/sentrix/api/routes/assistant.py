@@ -221,6 +221,7 @@ def start_turn(
                 question=payload.message,
                 include_debug=payload.include_debug,
                 graph_enabled=payload.graph_enabled,
+                retrieval_mode=payload.retrieval_mode,
                 idempotency_key=idempotency_key.strip(),
             )
         )

@@ -143,3 +143,42 @@ def test_memory_spaces_sorts_newest_first(client: TestClient):
     _with_http(client, {"memory-spaces": {"spaces": [older, SPACE]}})
     body = client.get("/api/v1/memory-spaces").json()
     assert [space["id"] for space in body["spaces"]] == ["scope-1", "scope-0"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_reuse_keeps_complete_scope_and_its_own_build_metadata(reverse):
+    from photobench.domain.runs.reuse import build_reuse_bases
+
+    spaces = [
+        {**SPACE, "id": "old", "created_at": "2026-01-01"},
+        {**SPACE, "id": "new", "created_at": "2026-01-02"},
+    ]
+    runs = [
+        {
+            "run_id": "old-build",
+            "scope_id": "old",
+            "album_id": "album3",
+            "model_profile": "big_model",
+            "scope_build": {"status": "ready"},
+        },
+        {
+            "run_id": "new-build",
+            "scope_id": "new",
+            "album_id": "album3",
+            "model_profile": "big_model",
+            "scope_build": {"status": "incomplete"},
+        },
+    ]
+    if reverse:
+        spaces.reverse()
+    base = build_reuse_bases(spaces, runs)[0]
+    assert base["scope_id"] == "old"
+    assert base["ready"] is True
+    assert base["scope_build"]["status"] == "ready"
+    assert base["source_run_ids"] == ["old-build"]
+
+
+def test_orphan_space_is_not_confirmed_ready():
+    from photobench.domain.runs.reuse import build_reuse_bases
+
+    assert build_reuse_bases([SPACE], [])[0]["ready"] is False

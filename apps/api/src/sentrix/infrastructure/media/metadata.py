@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,10 @@ DATETIME_DIGITIZED_TAG = 36868
 DATETIME_TAG = 306
 OFFSET_TIME_ORIGINAL_TAG = 36881
 OFFSET_TIME_TAG = 36880
+OFFSET_TIME_DIGITIZED_TAG = 36882
+SUBSEC_TIME_TAG = 37520
+SUBSEC_TIME_ORIGINAL_TAG = 37521
+SUBSEC_TIME_DIGITIZED_TAG = 37522
 MAKE_TAG = 271
 MODEL_TAG = 272
 
@@ -50,6 +55,7 @@ def _degrees_minutes_seconds(values: Sequence[object], *, negative_ref: str, ref
 # EXIF 的时间格式不统一：有无 OffsetTime、有无小数秒都要能解析。
 _DATETIME_FORMATS = (
     "%Y:%m:%d %H:%M:%S.%f%z",
+    "%Y:%m:%d %H:%M:%S.%f",
     "%Y:%m:%d %H:%M:%S%z",
     "%Y:%m:%d %H:%M:%S",
 )
@@ -65,22 +71,38 @@ def _text(value: object) -> str:
 def _parse_exif_datetime(tags: dict[int, object]) -> datetime | None:
     # DateTimeOriginal / DateTimeDigitized 常在 Exif 子 IFD 里，DateTime 在 IFD0。
     # 三处都看：只读顶层会漏掉「只有 DateTimeOriginal」的相机文件。
-    raw = tags.get(DATETIME_ORIGINAL_TAG) or tags.get(DATETIME_DIGITIZED_TAG) or tags.get(DATETIME_TAG)
-    if not raw:
-        return None
-    text = _text(raw)
-    # 有 DateTimeOriginal 时优先用它的 offset；否则退回通用 offset。
-    offset_tag = OFFSET_TIME_ORIGINAL_TAG if tags.get(DATETIME_ORIGINAL_TAG) else OFFSET_TIME_TAG
-    offset = _text(tags.get(offset_tag) or "")
-    # EXIF 的 offset 写作 "+0800"，strptime 的 %z 接受 "+08:00" 也接受 "+0800"，直接拼接即可
-    if offset.startswith(("+", "-")) and len(offset) >= 5:
-        text = f"{text}{offset}"
-    for fmt in _DATETIME_FORMATS:
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
+    candidates = (
+        (DATETIME_ORIGINAL_TAG, OFFSET_TIME_ORIGINAL_TAG, SUBSEC_TIME_ORIGINAL_TAG),
+        (DATETIME_DIGITIZED_TAG, OFFSET_TIME_DIGITIZED_TAG, SUBSEC_TIME_DIGITIZED_TAG),
+        (DATETIME_TAG, OFFSET_TIME_TAG, SUBSEC_TIME_TAG),
+    )
+    raw_values: list[object] = []
+    for datetime_tag, offset_tag, subsecond_tag in candidates:
+        raw = tags.get(datetime_tag)
+        if not raw:
             continue
-    log.warning("exif_datetime_unparseable raw=%r", raw)
+        raw_values.append(raw)
+        text = _text(raw)
+        # SubSecTime* is the standard EXIF representation of fractional seconds.
+        # Preserve at Python's microsecond precision; DateTimeOriginal can also
+        # already contain a fraction in non-standard camera files.
+        subsecond = _text(tags.get(subsecond_tag) or "").lstrip(".")
+        if subsecond and "." not in text:
+            fraction = (subsecond + "000000")[:6]
+            text = f"{text}.{fraction}"
+        offset = _text(tags.get(offset_tag) or "")
+        # OffsetTime is tied to its matching DateTime* tag. Never borrow an
+        # unrelated offset (for example DateTime's offset for DateTimeOriginal).
+        has_offset = bool(re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", text))
+        if offset.startswith(("+", "-")) and len(offset) >= 5 and not has_offset:
+            text = f"{text}{offset}"
+        for fmt in _DATETIME_FORMATS:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    if raw_values:
+        log.warning("exif_datetime_unparseable raw=%r", raw_values)
     return None
 
 
@@ -99,7 +121,17 @@ class PillowMetadataReader:
                     capture_tags = exif.get_ifd(ExifTags.IFD.Exif) or {}
                 except (KeyError, TypeError, ValueError, OSError):
                     capture_tags = {}
-                for tag in (DATETIME_ORIGINAL_TAG, OFFSET_TIME_ORIGINAL_TAG, OFFSET_TIME_TAG):
+                for tag in (
+                    DATETIME_ORIGINAL_TAG,
+                    DATETIME_DIGITIZED_TAG,
+                    DATETIME_TAG,
+                    OFFSET_TIME_ORIGINAL_TAG,
+                    OFFSET_TIME_DIGITIZED_TAG,
+                    OFFSET_TIME_TAG,
+                    SUBSEC_TIME_ORIGINAL_TAG,
+                    SUBSEC_TIME_DIGITIZED_TAG,
+                    SUBSEC_TIME_TAG,
+                ):
                     if tag in capture_tags:
                         tags[tag] = capture_tags[tag]
                 try:

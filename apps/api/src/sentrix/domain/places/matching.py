@@ -41,14 +41,7 @@ def place_admin_matches(value: str, place: Place | None, aliases: PlaceAliases) 
 
 def place_label(place: Place) -> str:
     """参与第 1 条规则的整串。与 1.0 的 ``label`` 拼接范围一致（含国名）。"""
-    parts = [
-        place.admin.province,
-        place.admin.city,
-        place.admin.district,
-        place.nearest.township,
-        place.nearest.locality,
-    ]
-    return " ".join(part for part in parts if part)
+    return place.searchable_text()
 
 
 def place_text_matches(value: str, place: Place | None, aliases: PlaceAliases) -> bool:

@@ -219,7 +219,13 @@ export function App({ initialLoading = false }: AppProps) {
       pending = true;
       try {
         const status = await api<ActiveWorkStatus>("/active-work");
-        if (!disposed && status.cleanup_status) setWorkBusy(status.cleanup_status !== "stopped");
+        if (!disposed && status.cleanup_status) {
+          setWorkBusy(status.cleanup_status !== "stopped");
+          if (status.cleanup_status !== "stopped") {
+            const cleanup = await api<ActiveWorkStatus>("/active-work/cleanup", { method: "POST", body: "{}" });
+            if (!disposed) setWorkBusy(cleanup.cleanup_status !== "stopped");
+          }
+        }
       } catch { /* Keep the last known state; a failed read cannot prove exit. */ }
       finally { pending = false; }
     };

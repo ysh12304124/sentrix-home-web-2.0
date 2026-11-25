@@ -17,7 +17,7 @@ it("邮件检索和最终引用分别显示，历史缺失不伪装成零", () =
     recall_at_k:{'1':.5,'5':1,'10':null},
   }}}} />);
   expect(screen.getByRole('region',{name:'邮件文本召回指标'}).textContent).toContain('已记录 1/2');
-  expect(screen.getByText(/最终引用（1题）/).textContent).toContain('R 50.0%');
+  expect(screen.getByText(/最终交付／引用（1题）/).textContent).toContain('R 50.0%');
   expect(screen.getByText(/R@1/).textContent).toContain('R@10 未记录');
 });
 

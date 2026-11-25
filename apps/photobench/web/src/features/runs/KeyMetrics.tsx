@@ -34,9 +34,9 @@ export function KeyMetrics({ run }: KeyMetricsProps) {
       <ScoringResults summary={summary} />
       {textMetrics && <section aria-label="邮件文本召回指标">
         <h3>邮件文本召回与引用</h3>
-        <p>已记录 {textMetrics.recorded_count}/{textMetrics.question_count} 题；按源邮件去重，分块重复命中只计一次。</p>
-        <p>检索（{textMetrics.retrieval.sample_count}题）：P {pct(textMetrics.retrieval.precision)} · R {pct(textMetrics.retrieval.recall)} · F1 {pct(textMetrics.retrieval.f1)}</p>
-        <p>最终引用（{textMetrics.citation.sample_count}题）：P {pct(textMetrics.citation.precision)} · R {pct(textMetrics.citation.recall)} · F1 {pct(textMetrics.citation.f1)}</p>
+        <p>已记录 {textMetrics.recorded_count}/{textMetrics.question_count} 题；按源邮件去重，分块重复命中只计一次；与公共指标共用计数，逐题等权平均。</p>
+        <p>候选检索（{textMetrics.retrieval.sample_count}题）：P {pct(textMetrics.retrieval.precision)} · R {pct(textMetrics.retrieval.recall)} · F1 {pct(textMetrics.retrieval.f1)}</p>
+        <p>最终交付／引用（{textMetrics.citation.sample_count}题）：P {pct(textMetrics.citation.precision)} · R {pct(textMetrics.citation.recall)} · F1 {pct(textMetrics.citation.f1)}</p>
         <p>R@1 {pct(textMetrics.recall_at_k['1'])} · R@5 {pct(textMetrics.recall_at_k['5'])} · R@10 {pct(textMetrics.recall_at_k['10'])}</p>
       </section>}
       {summary?.legacy_scoring_label && <details className="historical-score"><summary>历史评分记录</summary><EvaluationSummary value={summary.evaluation_summary} /></details>}

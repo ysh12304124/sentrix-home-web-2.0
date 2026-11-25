@@ -9,7 +9,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentrix.api.deps import get_container
@@ -28,7 +28,7 @@ def synchronizer(container: Container) -> SyncCorrections:
     return build_memory_sync(container)
 
 
-def memory_write(kind: str, key: str) -> Callable[..., Any]:
+def memory_write(kind: str, key: str, *, defer_sync: bool = False) -> Callable[..., Any]:
     """包裹已有用户修正入口；请求/响应契约保持，审计任务先于副作用持久化。"""
 
     def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -43,11 +43,11 @@ def memory_write(kind: str, key: str) -> Callable[..., Any]:
             target = str(bound.arguments.get(key, "") or getattr(payload, key, "") or "")
             if not scope:
                 if kind == "face":
-                    record = container.face_repository.get_cluster(target)
-                    scope = record.scope_id if record else ""
+                    face_record = container.face_repository.get_cluster(target)
+                    scope = face_record.scope_id if face_record else ""
                 elif kind in {"entity", "family"}:
-                    record = container.entity_repository.get(target)
-                    scope = record.scope_id if record else ""
+                    entity_record = container.entity_repository.get(target)
+                    scope = entity_record.scope_id if entity_record else ""
                 else:
                     data = container.memory_corrections.read(kind, target)
                     scope = str(data["scope_id"]) if data else ""
@@ -56,13 +56,20 @@ def memory_write(kind: str, key: str) -> Callable[..., Any]:
             with SYNC_LOCK:
                 with container.memory_corrections.track(scope, kind, target):
                     result = function(*args, **kwargs)
-                sync_error = synchronizer(container).execute(scope)
+                if defer_sync:
+                    background_tasks = bound.arguments.get("background_tasks")
+                    if not isinstance(background_tasks, BackgroundTasks):
+                        raise RuntimeError("deferred memory sync requires FastAPI BackgroundTasks")
+                    background_tasks.add_task(synchronizer(container).execute, scope)
+                    sync_error = None
+                else:
+                    sync_error = synchronizer(container).execute(scope)
                 model_fields = getattr(type(result), "model_fields", {})
                 if {"sync_status", "sync_error"}.issubset(model_fields):
                     result = result.model_copy(
                         update={
-                            "sync_status": "pending" if sync_error else "synced",
-                            "sync_error": sync_error,
+                            "sync_status": "pending" if defer_sync or sync_error else "synced",
+                            "sync_error": sync_error or "",
                         }
                     )
             return result

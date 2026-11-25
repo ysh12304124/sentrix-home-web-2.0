@@ -75,6 +75,33 @@ def test_import_batch_reports_each_file_once_across_reruns(client: TestClient, t
     assert again.json()["deduplicated"] == 1
 
 
+def test_pipeline_rejects_more_than_one_thousand_assets(client: TestClient):
+    response = client.post(
+        "/api/v1/pipeline/process",
+        json={"scope_id": "large-album", "asset_ids": [f"asset-{index}" for index in range(1001)]},
+    )
+
+    assert response.status_code == 422
+
+
+def test_pipeline_defers_album_finalization_until_requested(client: TestClient, tmp_path: Path):
+    staged = client.post(
+        "/api/v1/imports/assets",
+        json={"scope_id": "batched-album", "directory": str(album(tmp_path, count=2))},
+    )
+    first, second = staged.json()["asset_ids"]
+    for asset_id, finalize in ((first, False), (second, True)):
+        response = client.post(
+            "/api/v1/pipeline/process",
+            json={"scope_id": "batched-album", "asset_ids": [asset_id], "finalize": finalize},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["processed"] == 1
+        assert result["failures"] == []
+        assert (result["memory_graph"] is not None) == finalize
+
+
 def test_asset_import_and_pipeline_are_two_real_phases(client: TestClient, tmp_path: Path):
     root = str(album(tmp_path, count=2))
 

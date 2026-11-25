@@ -233,13 +233,30 @@ describe("init() 的自动选中（1.0 :2758 / :2761-2765）", () => {
 
 
 describe("停止全部", () => {
+  it("重新打开页面后自动复查残留任务，清理暂时失败仍继续复查", async () => {
+    let attempts = 0;
+    const fallback = mockApi.getMockImplementation()!;
+    mockApi.mockImplementation((path: string) => {
+      if (path === "/active-work") return Promise.resolve({ cleanup_status: "pending" });
+      if (path === "/active-work/cleanup") {
+        attempts += 1;
+        return attempts === 1 ? Promise.reject(new Error("temporary outage")) : Promise.resolve({ cleanup_status: "stopped" });
+      }
+      return fallback(path);
+    });
+    render(<App />);
+    await waitFor(() => expect(attempts).toBe(1));
+    await waitFor(() => expect(attempts).toBeGreaterThan(1), { timeout: 4500 });
+    expect(mockApi.mock.calls.some(([path]) => path === "/cancel-active")).toBe(false);
+  });
+
   it("显示待收尾而不提前宣称退出，并能复查到停止", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     let cleanupCalls = 0;
     const fallback = mockApi.getMockImplementation()!;
     mockApi.mockImplementation((path: string) => {
       if (path === "/active-work") return Promise.resolve({ cleanup_status: "pending" });
-      if (path === "/cancel-active") return Promise.resolve({ cancelled: ["r"] });
+      if (path === "/cancel-active") { cleanupCalls = 0; return Promise.resolve({ cancelled: ["r"] }); }
       if (path === "/active-work/cleanup") return Promise.resolve({ cleanup_status: ++cleanupCalls > 1 ? "stopped" : "pending" });
       return fallback(path);
     });

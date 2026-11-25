@@ -15,7 +15,7 @@ import os
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +131,7 @@ from sentrix.infrastructure.models.legacy import (
 )
 from sentrix.infrastructure.models.reranker import BgeSidecarReranker
 from sentrix.infrastructure.models.speech_http import HttpSpeechRecognizer
+from sentrix.infrastructure.models.text_reranker import ModelTextReranker
 from sentrix.infrastructure.models.visual_utility import OpenAIVisualEvidenceUtility
 from sentrix.infrastructure.models.wemm import WeMMSidecarEmbedder
 from sentrix.infrastructure.persistence.database import Database
@@ -181,8 +182,7 @@ from sentrix.infrastructure.persistence.repositories.turns import SqliteTurnRepo
 from sentrix.infrastructure.persistence.repositories.vectors import SqliteVectorRepository
 from sentrix.infrastructure.persistence.repositories.video import SqliteVideoRepository
 from sentrix.infrastructure.places.aliases import load_place_aliases
-from sentrix.infrastructure.places.composite import OfflinePlaceResolver
-from sentrix.infrastructure.places.geonames import GeoNamesNearestResolver
+from sentrix.infrastructure.places.osm import OsmPlaceResolver
 from sentrix.infrastructure.places.pygeocn import PyGeoCNAdminResolver
 from sentrix.infrastructure.vector.qdrant_index import QdrantVectorIndex
 
@@ -299,6 +299,7 @@ class Container:
     # 重排是**可选增强**：``SENTRIX_RERANKER_URL`` 为空时它是 ``None``，检索走
     # 纯 RRF 顺序。声明成端口而不是具体类，与其余模型入口同一条口径。
     reranker: Reranker | None
+    text_reranker: Reranker
     visual_evidence_utility: VisualEvidenceUtility | None
     # 嵌入能力的**可用性**（与上面两槽是同一个实例，但声明成另一个端口）。
     # 分开的理由写在 ``EmbeddingHealthProbe`` 上：能力回答「怎么嵌」，状态回答
@@ -657,6 +658,20 @@ class Container:
             ),
             text_embedder=text_embedder,
             reranker=reranker,
+            text_reranker=reranker
+            or ModelTextReranker(
+                OpenAIChatModel(
+                    chat_base_url,
+                    chat_served,
+                    timeout_s=min(chat_timeout, 60.0),
+                    context_tokens=chat_budget.context_tokens,
+                    api_key=chat_api_key,
+                    budget=replace(chat_budget, max_output_tokens=512),
+                    payload_config=chat_payload,
+                    retry=chat_retry,
+                ),
+                max_input_chars=int(chat_budget.context_tokens * 0.65 / chat_budget.tokens_per_char),
+            ),
             visual_evidence_utility=utility,
             embedding_health=embedding_health,
             model_health=ModelGenerationHealth(
@@ -665,9 +680,9 @@ class Container:
                 api_key=chat_api_key,
                 max_tokens=8 if settings.llm_profile == "cloud" else 1,
             ),
-            place_resolver=OfflinePlaceResolver(
-                admin=PyGeoCNAdminResolver(),
-                nearest=GeoNamesNearestResolver(settings.geo_dir),
+            place_resolver=OsmPlaceResolver(
+                settings.geo_dir / "osm-places.sqlite",
+                admin_fallback=PyGeoCNAdminResolver(),
             ),
             asset_place_repository=asset_places,
             place_aliases=place_aliases,

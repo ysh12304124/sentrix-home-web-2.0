@@ -31,6 +31,8 @@ NEW-2.0：这个结构 1.0 没有，是设计文档 §3.2 明确定的新模型�
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -58,6 +60,7 @@ class PlaceSource(StrEnum):
 
     PYGEOCN = "pygeocn"
     GEONAMES = "geonames"
+    OSM = "osm"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +127,28 @@ class NearestPlace:
         return " / ".join(dict.fromkeys(p for p in (self.township, self.locality) if p))
 
 
+def is_road_number(value: str) -> bool:
+    """Recognize standalone route identifiers, including legacy OSM display values."""
+    cleaned = unicodedata.normalize("NFKC", value).strip().upper()
+    parts = re.split(r"[;,/、]+", cleaned)
+    return all(re.fullmatch(r"(?:[A-Z]{1,3}\s*)?\d+[A-Z]?(?:[-.]\d+)?", part.strip()) for part in parts)
+
+
+@dataclass(frozen=True, slots=True)
+class PlaceDetail:
+    kind: str
+    name: str
+    match: str
+    osm_id: str
+    distance_m: float | None = None
+    aliases: tuple[str, ...] = ()
+
+    def label(self) -> str:
+        if self.kind == "road" and is_road_number(self.name):
+            return ""
+        return self.name if self.match == "contains" else f"{self.name}附近"
+
+
 @dataclass(frozen=True, slots=True)
 class Place:
     """一次地点解析的结果。``admin`` 与 ``nearest`` 语义不同，不可互相顶替。"""
@@ -134,9 +159,11 @@ class Place:
     source: PlaceSource
     gps: GpsPoint | None = None
     confidence: float = 0.0
+    details: tuple[PlaceDetail, ...] = ()
+    map_version: str = ""
 
     def __post_init__(self) -> None:
-        if self.admin.is_empty and self.nearest.is_empty:
+        if self.admin.is_empty and self.nearest.is_empty and not self.details:
             raise ValueError("地点解析结果两个槽位都为空——这种情况必须返回 None，不是 Place")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError(f"confidence 越界: {self.confidence!r}")
@@ -151,7 +178,9 @@ class Place:
         tail = self.nearest.label()
         if tail:
             tail = f"{tail}附近"
-        return " · ".join(part for part in (head, tail) if part)
+        return " · ".join(
+            dict.fromkeys(part for part in (head, tail, *(d.label() for d in self.details)) if part)
+        )
 
     def searchable_text(self) -> str:
         """写进词法索引与地点匹配的文本。刻意**不含** ``gps`` 坐标。
@@ -168,6 +197,12 @@ class Place:
                 self.admin.district,
                 self.nearest.township,
                 self.nearest.locality,
+                *(
+                    name
+                    for detail in self.details
+                    if detail.label()
+                    for name in ((detail.name,) if detail.kind == "road" else (detail.name, *detail.aliases))
+                ),
             )
             if part
         )

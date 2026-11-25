@@ -151,7 +151,12 @@ def build_run_turn(container: Container) -> RunTurn:
             events=container.event_repository,
             asset_places=container.asset_place_repository,
             limits=_tool_limits(container),
-            text_retrieval=RetrieveTextMemories(container.text_chunks, container.text_embedder),
+            text_retrieval=RetrieveTextMemories(
+                container.text_chunks,
+                container.text_embedder,
+                reranker=container.text_reranker,
+                rerank_top_k=container.settings.rerank_top_k,
+            ),
         ),
         observations=container.observation_repository,
         profile=_turn_profile(container),

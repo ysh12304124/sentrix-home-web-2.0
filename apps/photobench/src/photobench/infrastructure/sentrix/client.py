@@ -184,7 +184,13 @@ class HttpxSentrixClient:
         )
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
+        self,
+        *,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        timeout: int,
+        graph_enabled: bool = True,
+        finalize: bool = True,
     ) -> dict[str, Any]:
         return dict(
             self._http.request_json(
@@ -193,9 +199,7 @@ class HttpxSentrixClient:
                     "scope_id": scope_id,
                     "asset_ids": list(asset_ids),
                     "graph_enabled": graph_enabled,
-                    # The 2.0 pipeline endpoint finalizes synchronously. Keep the
-                    # explicit flag for the existing client contract and tests.
-                    "finalize": True,
+                    "finalize": finalize,
                 },
                 "POST",
                 timeout,
@@ -231,20 +235,28 @@ class HttpxSentrixClient:
             )
         )
 
-    def list_assets(self, *, scope_id: str, limit: int, timeout: int = 60) -> list[dict[str, Any]]:
+    def list_assets(
+        self, *, scope_id: str, limit: int, timeout: int = 60, offset: int = 0
+    ) -> list[dict[str, Any]]:
         """``GET /api/v1/assets``（``api/routes/media.py:290``），解封 ``{"items": [...]}``。
 
-        2.0 的上限是 ``min(limit, 1000)``（路由里做，不在 schema 上），所以调用方给
-        超过 1000 的数不会报错、只会被静默截断——这一点与 1.0 的 ``limit=2000``
-        行为不同，记在行为基线里。
+        服务端单页最多500项；此适配器使用offset分页，满足调用方的limit。
+        QA调用方继续翻页直到末页，避免大文本相册的来源映射被截断。
         """
-        payload = self._http.request_json(
-            self._url(f"/assets?scope_id={_quote(scope_id)}&limit={int(limit)}"),
-            method="GET",
-            timeout=timeout,
-        )
-        items = payload.get("items") if isinstance(payload, dict) else None
-        return [dict(item) for item in (items or []) if isinstance(item, dict)]
+        result: list[dict[str, Any]] = []
+        while len(result) < limit:
+            size = min(500, limit - len(result))
+            payload = self._http.request_json(
+                self._url(f"/assets?scope_id={_quote(scope_id)}&limit={size}&offset={offset + len(result)}"),
+                method="GET",
+                timeout=timeout,
+            )
+            items = payload.get("items") if isinstance(payload, dict) else None
+            page = [dict(item) for item in (items or []) if isinstance(item, dict)]
+            result.extend(page)
+            if len(page) < size:
+                break
+        return result
 
     def start_conversation(self, *, scope_id: str, title: str = "", timeout: int = 30) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations``（``api/routes/assistant.py:127``）。
@@ -267,6 +279,7 @@ class HttpxSentrixClient:
         message: str,
         include_debug: bool = False,
         graph_enabled: bool = True,
+        retrieval_mode: str = "auto",
         timeout: int = 300,
     ) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations/{cid}/turns``（``assistant.py:202``）。
@@ -282,6 +295,8 @@ class HttpxSentrixClient:
             payload["include_debug"] = True
         if not graph_enabled:
             payload["graph_enabled"] = False
+        if retrieval_mode != "auto":
+            payload["retrieval_mode"] = retrieval_mode
         return dict(
             self._http.request_json(
                 self._url(f"/assistant/conversations/{_quote(conversation_id)}/turns"),
@@ -300,9 +315,11 @@ class HttpxSentrixClient:
             except Exception:
                 turn = None
             if isinstance(turn, Mapping) and str(turn.get("status") or "").lower() in {
+                "complete",
                 "completed",
                 "partial",
                 "failed",
+                "blocked",
                 "cancelled",
                 "interrupted",
             }:

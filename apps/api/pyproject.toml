@@ -26,6 +26,7 @@ dependencies = [
     # 地点解析（设计 §3.3）：PyGeoCN 提供国内省/市/区县的**面**（内置 16MB 天地图边界
     # GeoJSON，随包发布），geopandas 是它的运行时依赖。1.0 用的就是这个包与这个版本。
     "pygeo_cn>=0.1.5,<0.2",
+    "shapely>=2,<3",
     # 乡镇/村庄的最近邻索引（NEW-2.0）：GeoNames 中国区约 96 万条点，cKDTree 建在
     # 三维单位向量上。1.0 没有这一层；scipy 也不是 1.0 的依赖之外的额外负担——
     # 1.0 venv 里本来就有 scipy 1.15.3（reverse_geocoder 用它）。
@@ -74,6 +75,8 @@ dev = [
     "ruff>=0.8,<1",
     "mypy>=1.13,<2",
     "types-psutil>=7,<8",
+    "types-shapely>=2,<3",
+    "osmium==4.3.2",
     "import-linter>=2.1,<3",
     "pre-commit>=4,<5",
 ]

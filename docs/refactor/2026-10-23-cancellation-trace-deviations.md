@@ -34,3 +34,33 @@ PhotoBench保留POST /cancel-active的cancelled/skipped/total兼容字段，新�
 沿用八种运行总状态。新版在全部Agent/Judge收尾后，将最终执行/评分失败及应有评分缺失汇总为qa_eval partial、run completed_with_errors；合法0分、重试恢复及未配置Judge不误报。结果ID缺失/重复/不匹配或缺少Agent终态为failed，取消优先。规则在domain集中，application调用；不改接口、指标公式或历史原始记录；QA收尾前清除旧run_valid成功值，失败时保持false，不将该字段用作独立验收结论。
 
 完整边界、failed_count口径及验证要求见[终态汇总规则](../architecture/photobench-metrics-contract.md#t006-2026-10-24-运行终态汇总规则)。本地门禁、同步部署与新版真实回归分别记录，忙机仅暂存。
+# 2026-11-20 取消后重新准入
+
+已取消的测评主线程退出后，产品操作、遥测或写入线程可能晚于清理期限退出。
+启动新测评与删除记录前复用 `refresh_cleanup` 复查保留的所有权；未确认退出仍拒绝，
+复查失败保留错误，不以终态字符串强制释放。页面每三秒查询工作状态，存在待清理
+任务时调用既有清理端点，刷新页面或一次网络故障后仍可继续复查，不必重启服务。
+不改变 API/schema、任务预算、模型或检索行为。
+
+回归：`test_cancelled_run_is_released_after_remote_cleanup_finishes` 覆盖远端未停止时
+拒绝启动/删除，确认停止后自动释放；现有活线程用例仍禁止提前清理。
+`App.test.tsx` 覆盖重新打开页面及清理网络暂时失败后继续复查。
+
+# 2026-11-20 取消后重新启动
+
+复用基座修复：同数据集/模型的多个 scope 选择已就绪基座优先，再按创建时间排序；
+scope_id、ready、scope_build 和 source_run_ids 必须来自同一 scope，不跨相册拼接。
+无关联运行的孤立相册不再仅凭 active 声明 ready，前端禁用未就绪选项。
+题集合并不修改源文本记忆，完整历史 scope 保留。
+验证见 test_reuse_keeps_complete_scope_and_its_own_build_metadata、test_orphan_space_is_not_confirmed_ready。
+
+产品回合终态包含 `complete` 和 `blocked`，取消客户端必须识别它们；正常完成与取消
+竞争时，已结束回合直接确认 stopped，不重复提交取消。启动新测评和删除记录前使用
+既有 refresh_cleanup 复查已退出主线程的残留任务；仍在运行或确认失败继续保留闸门。
+页面常规工作状态轮询遇到 pending 时调用既有清理复查，刷新页面或单次网络失败后
+仍可继续确认退出。API、结果 schema、评分和 Agent 决策不变。
+
+回归：test_cancel_already_terminal_turn_confirms_exit_without_post、
+test_cancelled_run_is_released_after_remote_cleanup_finishes，及 App.test.tsx 的重新打开
+页面/临时清理故障用例。Windows 全套 PhotoBench 测试目前在 ability taxonomy 文件
+指纹测试失败（临时文件默认换行与 UTF-8 字节哈希不同）；make ci 因本机无 make 未执行。

@@ -34,7 +34,7 @@ from typing import Any
 from photobench.domain.datasets.ability_taxonomy import ABILITY_FIELDS
 from photobench.domain.evaluation.contract import evaluation_summary
 from photobench.domain.evaluation.profiles import media_ranking_summary, scoring_summary
-from photobench.domain.evaluation.text_retrieval import aggregate_text_retrieval
+from photobench.domain.evaluation.text_retrieval import project_text_metrics
 from photobench.domain.runs.graph_quality import aggregate_graph_qa_by_type
 from photobench.domain.runs.judge import normalize_judge_score, parse_judge_json
 from photobench.domain.runs.task_history import execution_metadata
@@ -1180,10 +1180,45 @@ def aggregate_delivery(items: Sequence[dict[str, Any]]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def aggregate_text_retrieval(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    rows = [
+        project_text_metrics(i)
+        for i in items
+        if retrieval_metric_eligible(i)
+        and i.get("retrieval_media_refs")
+        and all(r.get("media_type") == "email" for r in i["retrieval_media_refs"])
+    ]
+    if not rows:
+        return {}
+    recorded = [r for r in rows if r.get("text_retrieval_metrics")]
+    result: dict[str, Any] = {"question_count": len(rows), "recorded_count": len(recorded)}
+    for group, field in (("retrieval", "candidate_retrieval_counts"), ("citation", "media_retrieval_counts")):
+        available = [r for r in recorded if r["text_retrieval_metrics"][group]["status"] == "available"]
+        metrics = macro_metrics_from_counts(available, field)
+        result[group] = {
+            "sample_count": metrics["metric_count"],
+            **{k: metrics[k] for k in ("precision", "recall", "f1")},
+        }
+    result["recall_at_k"] = {
+        str(k): sum(values) / len(values)
+        if (
+            values := [
+                r["text_retrieval_metrics"]["recall_at_k"][str(k)]
+                for r in recorded
+                if r["text_retrieval_metrics"]["recall_at_k"][str(k)] is not None
+            ]
+        )
+        else None
+        for k in (1, 5, 10)
+    }
+    return {"text_retrieval_summary": result}
+
+
 def capability_summary(
     items: Sequence[dict[str, Any]], phases: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """1.0 ``:4639`` 的 ``BenchmarkRun._capability_summary``。"""
+    items = [project_text_metrics(item) for item in items]
     answer_judges = [item.get("judge") or {} for item in items]
     answer_scores = [
         score for judge in answer_judges if (score := judge_score_for_summary(judge)) is not None
@@ -1965,6 +2000,7 @@ def conversation_projection(item: dict[str, Any]) -> dict[str, Any]:
 
 def item_summary(item: dict[str, Any], index: int, review: dict[str, Any] | None = None) -> dict[str, Any]:
     """1.0 ``:6559`` 的 ``_item_summary``。"""
+    item = project_text_metrics(item)
     item = {**item, **retrieval_metric_projection(item)}
     judge = judge_projection(item.get("judge"))
     media_counts = item.get("media_retrieval_counts") or {}

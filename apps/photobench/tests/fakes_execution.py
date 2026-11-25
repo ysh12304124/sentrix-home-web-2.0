@@ -168,7 +168,13 @@ class FakeSentrixClient:
         return {**self.import_result, "scope_id": scope_id, "directory": directory}
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], timeout: int, graph_enabled: bool = True
+        self,
+        *,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        timeout: int,
+        graph_enabled: bool = True,
+        finalize: bool = True,
     ) -> dict[str, Any]:
         self._record(
             "process_pipeline",
@@ -227,6 +233,7 @@ class FakeSentrixClient:
         conversation_id: str,
         message: str,
         include_debug: bool = False,
+        retrieval_mode: str = "auto",
         timeout: int = 300,
     ) -> dict[str, Any]:
         self._record(
@@ -235,6 +242,7 @@ class FakeSentrixClient:
             message=message,
             include_debug=include_debug,
             timeout=timeout,
+            **({"retrieval_mode": retrieval_mode} if retrieval_mode != "auto" else {}),
         )
         self._turn_seq += 1
         return {"turn_id": f"turn_{self._turn_seq}", "conversation_id": conversation_id, "status": "running"}

@@ -217,6 +217,7 @@ class SqliteMediaDeletionRepository:
                     "event_observations",
                     "observation_search_terms",
                     "observation_search_fts",
+                    "text_source_fts",
                 ):
                     db.execute(f"DELETE FROM {table} WHERE observation_id IN ({o})", observations)
                 db.execute(

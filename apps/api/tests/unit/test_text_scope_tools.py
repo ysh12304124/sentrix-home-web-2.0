@@ -35,3 +35,22 @@ def test_text_review_distinguishes_source_metadata_from_private_handles():
     assert model.messages[0].content == JUDGE_SYSTEM
     judge.review(query="How much?", answer="23 pounds", transcript=[], source_text=True)
     assert model.messages[0].content == JUDGE_SYSTEM + TEXT_SOURCE_REVIEW_RULES
+
+
+def test_declared_text_question_uses_one_retrieval_path_and_mixed_stays_available():
+    from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement, EvidenceType
+
+    ledger = EvidenceLedger(
+        "scope",
+        [
+            EvidenceRequirement(
+                id="body", evidence_type=EvidenceType.SOURCE_TEXT, description="Read correspondence"
+            )
+        ],
+    )
+    names = {t.name for t in select_turn_tools(ledger, has_source_text=True)}
+    assert "search_text_memories" in names and "search_memories" not in names
+    ledger.requirements.append(
+        EvidenceRequirement(id="photos", evidence_type=EvidenceType.PHOTO_SET, description="Find pictures")
+    )
+    assert "search_memories" in {t.name for t in select_turn_tools(ledger, has_source_text=True)}

@@ -620,6 +620,13 @@ legacy文本HTTP协议：优先`POST /embed`，仅404时协商`/v1/embeddings`�
 
 ### 4.9 地理
 
+2026-11-24：生产装配通过既有 `PlaceResolver` 使用 OSM 离线索引，GeoNames 不再参与新解析，
+以下 GeoNames 半径仅描述历史适配器。OSM 区县优先，缺失时保留 PyGeoCN 粗行政区兜底。
+乡镇/村边界与附近点线证据分开持久化；附近证据不进入行政硬约束。部署、回填和验证见
+[OSM 离线地点解析](../runbooks/osm-places.md)。
+索引 v4 收录澳门特别行政区边界作为省级，地市可缺席。离线地点审计按原始参考地址和行政
+区划编码归一化层级，保留原始标注与归一化状态；这一路径只用于审计。
+
 **必须保持**
 
 - `AdminResolver` 与 `NearestResolver` 互补，不可互换；
@@ -1463,3 +1470,32 @@ PSS、WSL 进程 GPU 归属未解析时保持 null 并披露原因，不替换�
 空源观察不进入事件总结，关键帧内容和可用原文件才进入场景事件。可用原文件的历史视频
 通过持久重处理任务恢复，空的自动占位事件只在无共享证据、无用户修正和无确认身份时归档，
 缺失原文件保持延期。具体平台限制与真实源视频验收见 Windows 修复记录。
+
+### 2026-11-20 文本全文检索与关联扩展
+
+TextChunkRepository新增prepare_sources、lexical和related：prepare_sources仅补齐当前
+scope的FTS5和源关联投影；lexical按来源、发信时间和当前观察revision过滤后执行
+FTS5/BM25；related最多扩展3个种子、每个2个同scope来源，线程/预订标识为强链接，
+主题和实体词组链接要求30日窗口并排除高频枢纽。投影均从原文和来源元数据派生，不读取题库。
+写入分块时同事务更新全文与关联投影；旧revision、删除或异scope证据不可召回。
+删除源观察时一并清理全文行和级联关联键。检索保留RRF后再统一重排，工具最多6个源。
+
+Container.text_reranker依赖既有Reranker端口：配置了重排侧车时复用它，否则仅文本路径
+用已有ChatModel的结构化相关性评分。图片视频的Container.reranker与装配保持原语义。
+本机模型重排最多24个候选、输出512 token、单次超时至多60秒；分数数目/类型不符
+返回空表、warning并在工具轨迹标degraded，保留RRF顺序，不补造分数或清洗答案。
+原问题含日期的上下文传给文本重排；显式after/before仍只过滤发信时间，日期上界包含整日。
+来源复合别名email/document兼容为查全部文本，非法表达式报invalid_text_filter，不静默查空。
+trace.text_retrieval.stages增量记录FTS、向量、RRF、扩展与重排名单，未送达模型的池内来源
+不计工具召回；API/SSE强类型字段与评测既有计数保持。复用测评跳过文本重导入与构图。
+
+### 2026-11-20 文本规划与最终回答边界
+
+文本规划schema限定4条短需求；仅文本OutputTruncatedError可纠错重试一次并保留失败轨迹，
+图片视频规划与其它服务错误仍按原约定处理。实际使用文本工具的回合预留最终回答/核验
+步骤，不增加max_steps或工具额度。文本完整回答通过原文L2核验，不用候选数证明字段存在。
+公开evidence_id可作为selected_text_handles中的显式引用，但只解析本回合已返回、同scope、
+当前仍存在的文本资产；photo_N保持最新结果集语义，qualified handle保持已授权结果集校验。
+与本文MUST NOT出口清洗一致：不改写答案、不从答案字符串推断引用、旧错误记录不覆盖。
+普通英文observations与assets仅在实际文本检索上下文中作为自然词处理；明确的内部表引用
+仍硬拦，纯图片视频的门禁不受这一适配影响。

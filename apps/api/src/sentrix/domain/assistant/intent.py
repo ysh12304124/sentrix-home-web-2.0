@@ -180,10 +180,16 @@ def planner_evidence_types(*, has_source_text: bool = False) -> tuple[str, ...]:
 def build_prompt(*, has_source_text: bool = False) -> str:
     """规划提示词的最终形态（把注册表渲染进去）。1.0 ``goal_planner.py:113`` 同形。"""
     evidence_types = planner_evidence_types(has_source_text=has_source_text)
-    return _DECLARATION_PROMPT.format(
+    prompt = _DECLARATION_PROMPT.format(
         evidence_types="\n".join(f"- {item}" for item in evidence_types),
         source_rule=_MIXED_SOURCE_RULE if has_source_text else _PHOTO_SOURCE_RULE,
     )
+    if has_source_text:
+        prompt += (
+            "\n规划字段保持简短；优先1至2条需求，最多4条。不要把每封候选邮件或每个检索步骤"
+            "各拆为需求。邮件中的金额、时间和地点从source_text取证，不声明结构化统计工具能给出它们。"
+        )
+    return prompt
 
 
 def planner_response_format(*, has_source_text: bool = False) -> dict[str, Any]:
@@ -195,7 +201,9 @@ def planner_response_format(*, has_source_text: bool = False) -> dict[str, Any]:
     必须一起发：思考 token 与语法约束冲突时，llama.cpp 会回
     “does not match the expected peg-native format”。
     """
-    string = {"type": "string"}
+    string: dict[str, Any] = {"type": "string"}
+    if has_source_text:
+        string["maxLength"] = 160
     scope = {
         "type": "object",
         "properties": {
@@ -247,6 +255,7 @@ def planner_response_format(*, has_source_text: bool = False) -> dict[str, Any]:
                             "requirements": {
                                 "type": "array",
                                 "minItems": MIN_REQUIREMENTS,
+                                **({"maxItems": 4} if has_source_text else {}),
                                 "items": requirement,
                             },
                         },

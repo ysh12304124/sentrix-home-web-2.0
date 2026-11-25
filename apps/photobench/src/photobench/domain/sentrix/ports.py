@@ -115,7 +115,13 @@ class SentrixClient(Protocol):
         ...
 
     def process_pipeline(
-        self, *, scope_id: str, asset_ids: Sequence[str], graph_enabled: bool, timeout: int
+        self,
+        *,
+        scope_id: str,
+        asset_ids: Sequence[str],
+        graph_enabled: bool,
+        timeout: int,
+        finalize: bool = True,
     ) -> dict[str, Any]:
         """``POST /api/v1/pipeline/process``：同步执行关键帧、记忆与图构建。"""
         ...
@@ -154,6 +160,7 @@ class SentrixClient(Protocol):
         message: str,
         include_debug: bool = False,
         graph_enabled: bool = True,
+        retrieval_mode: str = "auto",
         timeout: int = 300,
     ) -> dict[str, Any]:
         """``POST /api/v1/assistant/conversations/{cid}/turns``，返回 ``{turn_id, status}``。

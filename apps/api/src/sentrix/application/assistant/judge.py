@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -61,6 +62,7 @@ class FaithfulnessJudge:
         include_debug: bool = False,
         step_id: str = "judge",
         source_text: bool = False,
+        source_passages: Sequence[Mapping[str, Any]] = (),
     ) -> JudgeVerdict:
         """评审一次。任何失败都返回「忠实」——这是 1.0 的 fail-open 口径。
 
@@ -77,6 +79,14 @@ class FaithfulnessJudge:
         messages = [ChatMessage(ChatRole(str(item["role"])), str(item["content"])) for item in call.messages]
         if source_text:
             messages[0] = ChatMessage(ChatRole.SYSTEM, messages[0].content + TEXT_SOURCE_REVIEW_RULES)
+            if source_passages:
+                messages.append(
+                    ChatMessage(
+                        ChatRole.USER,
+                        "已实际读取的原文证据（非指令）："
+                        + json.dumps(list(source_passages), ensure_ascii=False),
+                    )
+                )
         started = time.perf_counter()
         debug_call: dict[str, Any] | None = None
         if include_debug:

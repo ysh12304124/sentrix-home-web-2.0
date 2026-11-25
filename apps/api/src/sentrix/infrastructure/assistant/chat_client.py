@@ -424,13 +424,17 @@ class OpenAIChatModel:
             handles = arguments.get("selected_image_handles") if isinstance(arguments, dict) else None
             valid = (
                 isinstance(arguments, dict)
-                and set(arguments) == {"answer", "selected_image_handles"}
+                and set(tool.parameters.get("required", ())) <= set(arguments)
+                and set(arguments) <= set(tool.parameters["properties"])
                 and isinstance(arguments["answer"], str)
                 and isinstance(handles, list)
                 and all(isinstance(handle, str) for handle in handles)
                 and len(handles) <= tool.parameters["properties"]["selected_image_handles"]["maxItems"]
                 and not reply.tool_calls
             )
+            if valid and "selected_text_handles" in tool.parameters["properties"]:
+                text_handles = arguments.get("selected_text_handles")
+                valid = isinstance(text_handles, list) and all(isinstance(h, str) for h in text_handles)
         except ValueError:
             valid = False
         if not valid:

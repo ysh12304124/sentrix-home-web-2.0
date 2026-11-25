@@ -48,7 +48,12 @@ from sentrix.domain.assistant.intent import (
     planner_response_format,
 )
 from sentrix.domain.assistant.models import ChatMessage, ChatRole
-from sentrix.domain.assistant.ports import ChatModel, ModelServiceError, StructuredChatModel
+from sentrix.domain.assistant.ports import (
+    ChatModel,
+    ModelServiceError,
+    OutputTruncatedError,
+    StructuredChatModel,
+)
 from sentrix.domain.media.progress import OperationCancelled
 
 log = logging.getLogger("sentrix.assistant.goal_planner")
@@ -185,6 +190,20 @@ class GoalPlanner:
                 if include_debug:
                     debug_call["duration_ms"] = duration_ms
                     debug_calls.append(debug_call)
+                if (
+                    has_source_text
+                    and isinstance(error, OutputTruncatedError)
+                    and attempt == 0
+                    and attempt + 1 < self.max_attempts
+                ):
+                    messages = [
+                        *base,
+                        ChatMessage(
+                            ChatRole.USER,
+                            "上次规划输出超过长度预算。请仅声明1至2条必要需求，字段简短，返回完整JSON；不要逐封枚举邮件。",
+                        ),
+                    ]
+                    continue
                 detail = str(error) if isinstance(error, ModelServiceError) else ""
                 return PlannerResult(
                     fallback_reason=PLANNER_CALL_ERROR,
@@ -203,6 +222,8 @@ class GoalPlanner:
 
             last_raw = reply.content
             requirements, reason = parse_declaration(last_raw or "", scope_id=scope_id, question=question)
+            if has_source_text and requirements is not None and len(requirements) > 4:
+                requirements, reason = None, "text_requirements_excessive"
             if requirements is not None:
                 return PlannerResult(
                     requirements=requirements,

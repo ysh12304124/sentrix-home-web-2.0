@@ -66,16 +66,16 @@ def test_claim_messages_only_include_matching_fact_types():
 
 
 def test_email_amount_claim_is_checked_against_original_text_body():
-    claim = high_risk_claims("住宿总共花费 £1,750。")[0]
+    claim = high_risk_claims("住宿总共花费 £1,750。", source_text=True)[0]
     body_fact = Fact(
-        "text_content",
+        "source_text",
         RequirementValueType.DESCRIPTION,
         "The accommodation booking was GBP 1,750 for BMVC 2024.",
         provenance="email-search:memory_1",
     )
     requirement = EvidenceRequirement(
         id="req_email_amount",
-        evidence_type=EvidenceType.TEXT_CONTENT,
+        evidence_type=EvidenceType.SOURCE_TEXT,
         description="从住宿邮件中确认住宿总金额",
         value_type=RequirementValueType.AMOUNT,
     )
@@ -165,3 +165,18 @@ def test_nonstreaming_records_end_to_end_rate_without_inventing_ttft():
     assert model_timing_facts({}, 2000, 40) == {}
     assert model_timing_facts({"streamed": True}, 2000, 40) == {"streamed": True}
     assert "tokens_per_second" not in model_timing_facts({"streamed": False}, 0, 40)
+
+
+def test_reading_later_sources_does_not_drop_the_first_supporting_email():
+    claim = high_risk_claims("The compensation was 150 pounds.", source_text=True)[0]
+    facts = [
+        Fact("source_text", RequirementValueType.DESCRIPTION, text, provenance=str(i))
+        for i, text in enumerate(
+            ["The teaching payment is 150 pounds.", "Unrelated gardening advice.", "Unrelated meeting dates."]
+        )
+    ]
+    messages = build_claim_messages(
+        query="What was the compensation?", claim=claim, facts=facts, requirement=None
+    )
+    assert "teaching payment is 150 pounds" in messages[1]["content"]
+    assert all(f.provenance in messages[1]["content"] for f in facts)

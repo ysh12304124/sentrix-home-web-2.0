@@ -79,36 +79,28 @@ def build_reuse_bases(spaces: list[dict[str, Any]], runs: list[dict[str, Any]]) 
             if str(run.get("album_id") or "") == album_id
             and str(run.get("model_profile") or "") == model_profile
         ]
-        group = groups.setdefault(
-            key,
-            {
-                "base_id": f"{album_id}::{model_profile}",
-                "album_id": album_id,
-                "model_profile": model_profile,
-                "scope_id": scope_id,
-                "scope_name": space.get("name") or scope_id,
-                "created_at": space.get("created_at") or "",
-                "source_run_ids": [],
-                "ready": str(space.get("status") or "active") == "active"
-                and (build is None or build.get("status") == "ready"),
-            },
-        )
+        candidate = {
+            "base_id": f"{album_id}::{model_profile}",
+            "album_id": album_id,
+            "model_profile": model_profile,
+            "scope_id": scope_id,
+            "scope_name": space.get("name") or scope_id,
+            "created_at": space.get("created_at") or "",
+            "source_run_ids": sorted(str(run["run_id"]) for run in matching_runs if run.get("run_id")),
+            "ready": str(space.get("status") or "active") == "active"
+            and bool(linked)
+            and (build is None or build.get("status") == "ready"),
+        }
         if build is not None:
-            group["scope_build"] = build
-        if str(space.get("created_at") or "") > str(group.get("created_at") or ""):
-            group.update(
-                {
-                    "scope_id": scope_id,
-                    "scope_name": space.get("name") or scope_id,
-                    "created_at": space.get("created_at") or "",
-                }
-            )
-        group["source_run_ids"] = sorted(
-            set(
-                group["source_run_ids"]
-                + [str(run.get("run_id")) for run in matching_runs if run.get("run_id")]
-            )
-        )
+            candidate["scope_build"] = build
+        group = groups.get(key)
+        # Select one whole scope snapshot. Never attach an older scope's ready
+        # marker or source runs to a newer, incomplete scope.
+        if group is None or (bool(candidate["ready"]), str(candidate["created_at"])) > (
+            bool(group["ready"]),
+            str(group["created_at"]),
+        ):
+            groups[key] = candidate
     return sorted(
         groups.values(),
         key=lambda item: (str(item.get("album_id") or ""), str(item.get("model_profile") or "")),

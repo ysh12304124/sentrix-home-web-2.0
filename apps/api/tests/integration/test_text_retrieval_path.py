@@ -172,7 +172,141 @@ def test_tool_reads_matching_tail_and_cites_only_authorized_live_sources(pipelin
     assert read.model_visible["offset"] == preview["offset"] > 512
     citations = box.text_citations([preview["citation_handle"]] * 2, [rs], scope_id="texts")
     assert len(citations) == 1 and citations[0]["evidence_id"] == "receipt"
+    assert box.text_citations(["receipt"], [rs], scope_id="texts")[0]["evidence_id"] == "receipt"
+    assert not box.text_citations(["not-returned"], [rs], scope_id="texts")
     assert box.text_citations([preview["citation_handle"]], [rs], scope_id="other") == []
     assert box.text_citations([preview["citation_handle"]], [], scope_id="texts") == []
     assert SqliteMediaDeletionRepository(db).delete_asset(citations[0]["asset_id"])
     assert box.text_citations([preview["citation_handle"]], [rs], scope_id="texts") == []
+
+
+def test_text_pool_reranks_before_six_handle_limit(pipeline):
+    db, obs, chunks, model, index, importer, search = pipeline
+    importer.execute("texts", [row(f"source-{i}", f"ZX742 payment detail {i}") for i in range(12)])
+
+    class Ranker:
+        model_id = "test-cross-encoder"
+
+        def rerank(self, query, documents):
+            assert len(documents) == 12
+            return [100.0 if "detail 11" in d else 0.0 for d in documents]
+
+    ranked = RetrieveTextMemories(chunks, model, reranker=Ranker()).execute("ZX742 payment", "texts")
+    assert len(ranked.candidates) == 12
+    assert len(ranked.hits) == 6
+    assert ranked.hits[0].external_id == "source-11"
+    assert ranked.rerank_status == "test-cross-encoder"
+
+    class Broken:
+        model_id = "unavailable"
+
+        def rerank(self, query, documents):
+            return []
+
+    degraded = RetrieveTextMemories(chunks, model, reranker=Broken()).execute("ZX742", "texts")
+    assert len(degraded.hits) == 6
+    assert degraded.degraded and degraded.reason == "text_reranker_unavailable"
+
+
+def test_fts_is_source_level_uses_full_body_and_applies_date_before_limit(pipeline):
+    db, obs, chunks, model, index, importer, search = pipeline
+    importer.execute(
+        "texts",
+        [
+            row(
+                "target",
+                "Date: 2025-05-06\nSubject: Access token\n"
+                + "Unrelated introduction. " * 80
+                + " UniqueOrchid deadline: Friday 17:00.",
+            ),
+            row("other", "UniqueOrchid " * 100, "note"),
+        ],
+    )
+    chunks.prepare_sources("texts")
+    hits = chunks.lexical("UniqueOrchid deadline", "texts", model.model_id, source_type="email", limit=1)
+    assert len(hits) == 1
+    assert not chunks.lexical("UniqueOrchid", "texts", model.model_id, after="2026-01-01", limit=1)
+    result = search.execute("UniqueOrchid deadline", "texts", source_type="email/document")
+    assert "target" in [h.external_id for h in result.hits]
+    assert dict(result.channels)["fts_bm25"]
+    with pytest.raises(ValueError, match="source_type"):
+        search.execute("UniqueOrchid", "texts", source_type="email AND document")
+    # Date-only upper bounds include the entire last day.
+    assert search.execute("UniqueOrchid", "texts", source_type="email", before="2025-05-06").hits
+
+
+def test_source_relations_follow_live_revision_scope_and_deletion(pipeline):
+    db, obs, chunks, model, index, importer, search = pipeline
+    a = importer.execute(
+        "texts",
+        [
+            row("first", "Subject: Trip Garden Planning\nBooking reference: A123456."),
+            row("followup", "Subject: Re: Trip Garden Planning\nBooking reference: A123456."),
+            row("unrelated", "Subject: Winter Coding Meeting\nDifferent topic."),
+        ],
+    )["items"]
+    importer.execute("other", [row("foreign", "Booking reference: A123456.")])
+    seed = a[0]["asset_id"]
+    linked = a[1]["asset_id"]
+    assert [r.asset_id for r in chunks.related("texts", [seed], model.model_id)] == [linked]
+    observation = obs.list_by_asset(linked)[0]
+    with db.connect() as conn, conn:
+        conn.execute(
+            "UPDATE observations SET revision=revision+1,source_text='Removed reference' WHERE id=?",
+            (observation.id,),
+        )
+    assert not chunks.related("texts", [seed], model.model_id)
+    assert not chunks.lexical("A123456", "texts", model.model_id, limit=10)[1:]
+    index.index(obs.get(observation.id))
+    assert not chunks.related("texts", [seed], model.model_id)
+    seed_observation_id = obs.list_by_asset(seed)[0].id
+    assert SqliteMediaDeletionRepository(db).delete_asset(seed)
+    with db.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM text_source_fts WHERE observation_id=?", (seed_observation_id,)
+            ).fetchone()[0]
+            == 0
+        )
+    assert not chunks.lexical("A123456", "texts", model.model_id)
+
+
+def test_question_time_context_reaches_text_reranker(pipeline):
+    db, obs, chunks, model, index, importer, search = pipeline
+    importer.execute("texts", [row("target", "Subject: Seasonal dinner\nDinner ticket cost: 20 pounds.")])
+
+    class Ranker:
+        model_id = "context-test"
+
+        def rerank(self, query, documents):
+            assert "Today is May 6, 2025" in query
+            assert "Source date: 2025-05-06" in documents[0]
+            return [1.0] * len(documents)
+
+    result = RetrieveTextMemories(chunks, model, reranker=Ranker()).execute(
+        "dinner ticket cost", "texts", question="Today is May 6, 2025. How much is dinner?"
+    )
+    assert result.rerank_status == "context-test"
+
+
+def test_legacy_projection_backfill_is_concurrent_and_does_not_reembed(pipeline):
+    from concurrent.futures import ThreadPoolExecutor
+
+    db, obs, chunks, model, index, importer, search = pipeline
+    importer.execute(
+        "texts",
+        [
+            row("one", "Subject: Distributed Planning Meeting\nBooking reference: A123456."),
+            row("two", "Subject: Re: Distributed Planning Meeting\nBooking reference: A123456."),
+        ],
+    )
+    embedded = model.calls
+    with db.connect() as conn, conn:
+        conn.execute("DELETE FROM text_source_fts")
+        conn.execute("DELETE FROM text_source_projection")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(chunks.prepare_sources, ["texts"] * 8))
+    assert model.calls == embedded
+    assert len(chunks.lexical("A123456", "texts", model.model_id)) == 2
+    with db.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM text_source_fts").fetchone()[0] == 2

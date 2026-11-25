@@ -317,6 +317,47 @@ def test_graph_switch_rejects_non_boolean(tmp_path: Path):
 # ---- 取消 -----------------------------------------------------------------
 
 
+@pytest.mark.parametrize("operation", ["start", "delete"])
+def test_cancelled_run_is_released_after_remote_cleanup_finishes(tmp_path, operation):
+    from photobench.application.run_execution.service import RunExecution
+
+    stopped = threading.Event()
+
+    class CleanupState(_State):
+        def snapshot(self):
+            return dict(self.data)
+
+    class RetainedExecution(RunExecution):
+        def __init__(self):
+            self._state = CleanupState(
+                {"run_id": "old-run", "status": "cancelled", "cleanup": {"status": "stop_pending"}}
+            )
+
+        def refresh_cleanup(self):
+            if not stopped.is_set():
+                return False
+            self._state.set("cleanup", {"status": "stopped"})
+            return True
+
+    retained = RetainedExecution()
+    store = FakeRunStore({"old-run": retained.state.data})
+    suites = _suites(tmp_path, store=store)
+    suites._active["old-run"] = retained
+
+    def act():
+        if operation == "start":
+            return suites.start_suite(_payload())
+        return suites.delete_run("old-run")
+
+    # A terminal status alone must never release still-owned remote work.
+    with pytest.raises(InvalidRequestError):
+        act()
+    assert "old-run" in suites._active
+    stopped.set()
+    act()
+    assert "old-run" not in suites._active
+
+
 def test_suite_worker_ownership_prevents_cleanup_while_execution_is_live(tmp_path):
     from photobench.application.run_execution.service import RunExecution
 
@@ -687,6 +728,31 @@ def test_resume_carries_only_the_finished_items_and_reuses_the_scope(tmp_path: P
     assert result["resumed_from"] == "run-1"
     # 三题里只有 q1 是 completed；另外两题留给这一轮。
     assert result["resumed_items"] == 1
+
+
+def test_resume_repairs_failed_text_import_in_original_scope(tmp_path: Path):
+    saved = {
+        **_cancelled_state(),
+        "status": "failed",
+        "failed_phase": "text_memory_import",
+        "phases": {"text_memory_import": {"status": "failed"}},
+    }
+    captured = []
+    gate = threading.Event()
+
+    def factory(request):
+        captured.append(request)
+        return FakeExecution(request, gate)
+
+    suites = _suites(tmp_path, store=FakeRunStore({"run-1": saved}), new_execution=factory)
+    try:
+        suites.resume_run("run-1")
+        assert captured[0].mode == "reuse"
+        assert captured[0].scope_id == saved["scope_id"]
+        assert captured[0].repair_text_import
+        assert not captured[0].text_import_already_completed
+    finally:
+        gate.set()
 
 
 def test_queued_requests_freeze_topology_before_configuration_changes(tmp_path):

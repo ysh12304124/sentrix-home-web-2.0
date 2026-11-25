@@ -396,3 +396,29 @@ def test_a_blocked_answer_carries_the_offending_text():
 def test_a_passing_answer_carries_no_evidence():
     """反向：通过的裁决不该带一段原文——那会让「有没有命中」这件事变得含糊。"""
     assert FinalGuard().check(answer="海边有两张照片。", facts=GuardFacts()).evidence == ""
+
+
+def test_text_candidates_do_not_prove_a_requested_field_exists():
+    record = ToolCallRecord(
+        call_id="t",
+        tool="search_text_memories",
+        signature="q",
+        status="ok",
+        observation={"total": 6, "preview": [{"media_kind": "text"}]},
+    )
+    assert check("没有找到活动的具体费用，已有通知没有列价格。", records=(record,)) == ""
+    # The original photo existence check still applies.
+    assert check("没有找到相关照片。", records=(search_record(6),)) == "omission_conflict"
+
+
+def test_ordinary_english_observations_are_not_a_database_disclosure_in_text_answers():
+    record = ToolCallRecord(
+        call_id="t", tool="search_text_memories", signature="q", status="ok", observation={"total": 1}
+    )
+    assert (
+        check("The provided text observations do not contain the requested address.", records=(record,)) == ""
+    )
+    assert check("SELECT * FROM observations", records=(record,)) == "table_name_leak"
+    assert check("The observations table stores records.", records=(record,)) == "table_name_leak"
+    assert check("`observations`", records=(record,)) == "table_name_leak"
+    assert check("entity_mentions", records=(record,)) == "table_name_leak"

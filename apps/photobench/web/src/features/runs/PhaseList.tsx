@@ -64,9 +64,10 @@ function textBuildSteps(phase: Phase | undefined, graphEnabled: boolean) {
   const graphStarted = progress?.stage === "final_batch_graph_building" || (Number(progress?.processed ?? 0) >= total - lastBatchSize && total > 0);
   const graphStatus = phase?.graph_status ?? progress?.graph_status;
   const graphDone = graphStatus === "completed" || (terminal && graphEnabled);
+  const indexingDone = terminal || (total > 0 && Number(progress?.indexed ?? 0) >= total);
   return [
     { label: "读取文本记忆", state: total > 0 ? "done" : phase?.status === "running" ? "running" : "pending", fraction: total > 0 ? 1 : null },
-    { label: "写入记忆与建立索引", state: terminal ? "done" : stopped ? "stopped" : phase?.status === "running" ? "running" : "pending", fraction: total > 0 ? Math.min(1, processed / total) : null },
+    { label: "写入记忆与建立索引", state: indexingDone ? "done" : stopped ? "stopped" : phase?.status === "running" ? "running" : "pending", fraction: total > 0 ? Math.min(1, processed / total) : null },
     { label: graphEnabled ? "构建图结构" : "图结构（未启用）", state: !graphEnabled ? "done" : graphDone ? "done" : stopped ? "stopped" : graphStatus === "running" || (graphStarted && phase?.status === "running") ? "running" : "pending", fraction: graphDone ? 1 : null },
   ] as const;
 }
@@ -138,18 +139,19 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
       <div className="phase-list execution-phase-list">
         {EXECUTION_PHASES.filter((p) => activeRun.mode !== "build" || p.key !== "qa_eval").map((phaseDef, index) => {
           const storedPhase = activeRun.phases?.[phaseDef.key];
+          const reuse = activeRun.mode === "reuse";
           const textPhase = activeRun.phases?.text_memory_import;
           const textPhaseStatus = textPhase?.status ?? "pending";
-          const hasTextBuild = activeRun.email_only_qa === true ||
-            ["running", "done", "failed", "partial"].includes(textPhaseStatus);
+          const hasTextBuild = (!reuse && activeRun.email_only_qa === true && textPhaseStatus !== "skipped") ||
+            ["running", "done", "failed", "partial", "cancelled", "interrupted"].includes(textPhaseStatus);
           const showingTextImport = phaseDef.key === "photo_import" && hasTextBuild;
           const showingTextPipeline = phaseDef.key === "pipeline_processing" && hasTextBuild;
           const showingText = showingTextImport || showingTextPipeline;
-          const sourceRead = Number(textPhase?.progress?.total ?? 0) > 0;
+          const sourceTotal = Number(textPhase?.progress?.total ?? textPhase?.total ?? 0);
+          const sourceRead = sourceTotal > 0;
           const phase = showingTextImport
-            ? sourceRead ? { status: "done", progress: { total: textPhase?.progress?.total, processed: textPhase?.progress?.total } } as Phase : { status: "running" } as Phase
+            ? sourceRead ? { status: "done", progress: { total: sourceTotal, processed: sourceTotal } } as Phase : { ...textPhase, status: textPhaseStatus } as Phase
             : showingTextPipeline ? textPhase : storedPhase;
-          const reuse = activeRun.mode === "reuse";
           // 复用模式不生成这三个阶段；保留历史中确实执行过的阶段及其错误。
           const skipped = !showingText && (phase?.status === "skipped" || (reuse && !!reuseSkippedPhases[phaseDef.key] && (!phase || phase.status === "pending")));
           const label = reuse && phaseDef.key === "scope_setup" ? "连接已有相册"
@@ -210,8 +212,8 @@ export function InitialExecutionPhases({ activeRun }: PhaseListProps) {
                 <p className="pipeline-counts">{flow.detail}</p>
                 {flow.warning ? <p className="import-progress-warning">{flow.warning}</p> : null}
               </div> : showingTextImport ? <details className="phase-import-details" data-testid="text-memory-import">
-                <summary><span>{sourceRead ? `已读取${activeRun.email_only_qa ? "邮件" : "文本"}记忆清单：${Number(textPhase?.progress?.total).toLocaleString()} 条` : `正在读取${activeRun.email_only_qa ? "邮件" : "文本"}记忆清单…`}</span><span className="phase-import-toggle">阶段说明</span></summary>
-                <p>{sourceRead ? `已载入 ${Number(textPhase?.progress?.total).toLocaleString()} 条文本记忆，后续由流水线分批写入并建立索引。` : "正在载入文本记忆数据。"}</p>
+                <summary><span>{sourceRead ? `已读取${activeRun.email_only_qa ? "邮件" : "文本"}记忆清单：${sourceTotal.toLocaleString()} 条` : textPhaseStatus === "running" ? `正在读取${activeRun.email_only_qa ? "邮件" : "文本"}记忆清单…` : "本阶段尚未读取文本记忆清单。"}</span><span className="phase-import-toggle">阶段说明</span></summary>
+                <p>{sourceRead ? `已载入 ${sourceTotal.toLocaleString()} 条文本记忆，后续由流水线分批写入并建立索引。` : textPhaseStatus === "running" ? "正在载入文本记忆数据。" : "读取状态以本轮执行记录为准。"}</p>
                 <p>数据来源读取完成即结束此阶段；记忆写入、索引和图结构构建进度见“流水线处理”。</p>
               </details> : phaseDef.key === "photo_import" ? <details className="phase-import-details">
                 <summary><span>{phaseSummary(phaseDef.key, displayPhase, activeRun.item_count, true)}</span><span className="phase-import-toggle">登记明细</span></summary>

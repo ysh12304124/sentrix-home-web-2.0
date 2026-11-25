@@ -349,6 +349,7 @@ def identity_update(name="小禾", previous_name="旧称", observation_id="obs_1
         ("男孩在公园拍照", "小禾在公园拍照"),
         ("小禾在公园拍照", "旧称在公园拍照"),
         ("小禾在公园拍照", "小禾：一个孩子在公园拍照"),
+        ("小禾在公园拍照", "小禾:一个孩子在公园拍照"),
     ],
 )
 def test_correction_rejects_inconsistent_title_or_summary_without_publishing(repos, title, summary):
@@ -395,16 +396,29 @@ def test_correction_does_not_supply_names_from_other_events(repos):
     assert "小禾" not in model.messages[1].content
 
 
-def test_correction_requires_all_bound_names_in_summary_but_not_all_in_title(repos):
+def test_correction_requires_all_short_bound_names_in_title_and_summary(repos):
     seed(repos)
-    model = FakeChatModel('{"title":"小禾与朋友拍照","summary":"小禾和小川与一名未命名女孩在公园拍照"}')
+    model = FakeChatModel('{"title":"小禾与小川拍照","summary":"小禾和小川与一名未命名女孩在公园拍照"}')
     result = use_case(repos, model).execute(
         "evt_1",
         correction=True,
         identity_updates=[identity_update(), identity_update(name="小川", previous_name="")],
     )
-    assert result.title == "小禾与朋友拍照"
+    assert result.title == "小禾与小川拍照"
     assert "小川" in result.summary
+
+
+def test_correction_rejects_title_that_leaves_another_named_person_generic(repos):
+    seed(repos)
+    before = repos[0].get("evt_1")
+    model = FakeChatModel('{"title":"小禾与男孩拍照","summary":"小禾和小川在公园拍照"}')
+    with pytest.raises(RuntimeError, match="身份一致性"):
+        use_case(repos, model).execute(
+            "evt_1",
+            correction=True,
+            identity_updates=[identity_update(), identity_update(name="小川", previous_name="")],
+        )
+    assert repos[0].get("evt_1") == before
 
 
 def test_correction_model_failure_is_not_reported_as_synchronized(repos):

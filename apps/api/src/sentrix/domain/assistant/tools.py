@@ -447,7 +447,10 @@ SEARCH_TEXT_MEMORIES = ToolSpec(
     parameters=_object_schema(
         {
             "query": {"type": "string"},
-            "source_type": {"type": "string"},
+            "source_type": {
+                "type": "string",
+                "description": "单一来源类型，如email或document；查全部文本时省略。不能填写email/document。",
+            },
             "after": {"type": "string", "description": "记录时间下界 ISO8601"},
             "before": {"type": "string", "description": "记录时间上界 ISO8601"},
         },

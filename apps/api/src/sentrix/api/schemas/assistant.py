@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -83,6 +83,10 @@ class StartTurnRequest(BaseModel):
     graph_enabled: bool = Field(
         default=True,
         description="是否启用图记忆拓展检索；评测对照 run 可关闭",
+    )
+    retrieval_mode: Literal["auto", "media", "text", "mixed"] = Field(
+        default="auto",
+        description="证据检索路由；默认由规划器需求自动选择，评测可按 QA 集固定路由",
     )
 
 

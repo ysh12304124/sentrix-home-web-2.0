@@ -248,7 +248,10 @@ class AssistantToolbox:
         graph_enabled: bool = True,
     ) -> ToolOutcome:
         if name == "search_text_memories":
-            return self._search_text(arguments, scope_id=scope_id, now=now)
+            try:
+                return self._search_text(arguments, scope_id=scope_id, now=now, question=question)
+            except ValueError as exc:
+                return _failure("invalid_text_filter", str(exc))
         if name == "search_memories":
             return self._search(arguments, scope_id=scope_id, now=now, graph_enabled=graph_enabled)
         if name == "get_result_page":
@@ -267,7 +270,9 @@ class AssistantToolbox:
             return self._facts(arguments, scope_id=scope_id, now=now)
         return _failure("unknown_tool", f"没有名为 {name} 的工具。")
 
-    def _search_text(self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime) -> ToolOutcome:
+    def _search_text(
+        self, arguments: Mapping[str, Any], *, scope_id: str, now: datetime, question: str = ""
+    ) -> ToolOutcome:
         if self._text_retrieval is None:
             return _failure("text_index_unavailable", "文本索引不可用，请先完成文本构建。")
         query = str(arguments.get("query") or "").strip()
@@ -279,6 +284,7 @@ class AssistantToolbox:
             source_type=str(arguments.get("source_type") or ""),
             after=str(arguments.get("after") or ""),
             before=str(arguments.get("before") or ""),
+            question=question,
         )
         hits = result.hits
         result_set = ResultSet(
@@ -317,7 +323,12 @@ class AssistantToolbox:
                 **visible,
                 "asset_ids": list(result_set.asset_ids),
                 "candidate_asset_ids": list(result_set.asset_ids),
-                "retrieval_channels": ["lexical", "text_ann"],
+                "returned_asset_ids": list(result_set.asset_ids),
+                "pooled_asset_ids": [c.asset_id for c in result.candidates],
+                "rerank_status": result.rerank_status,
+                "retrieval_channels": ["fts_bm25", "text_ann", "source_relations", "rerank"],
+                "retrieval_stages": {name: list(ids) for name, ids in result.channels},
+                "source_relations": [asdict(edge) for edge in result.relations],
             },
             model_visible=visible,
         )
@@ -329,7 +340,9 @@ class AssistantToolbox:
         for handle in handles:
             qualified_id, sep, local_handle = handle.partition("/")
             allowed_ids = (
-                [qualified_id] if sep and qualified_id in result_set_ids else list(result_set_ids[-1:])
+                [qualified_id]
+                if sep and qualified_id in result_set_ids
+                else list(result_set_ids[-1:] if handle.startswith("photo_") else result_set_ids)
             )
             if sep and qualified_id not in result_set_ids:
                 continue
@@ -338,6 +351,20 @@ class AssistantToolbox:
                 if result is None or result.scope_id != scope_id:
                     continue
                 asset = self._assets.get(result.resolve(local_handle if sep else handle) or "")
+                if asset is None and not sep:
+                    # Public source IDs are accepted only when the source was
+                    # returned in this turn. Never look up arbitrary scope data.
+                    for aid in result.asset_ids:
+                        candidate = self._assets.get(aid)
+                        if (
+                            candidate is None
+                            or candidate.scope_id != scope_id
+                            or candidate.media_type is not MediaType.TEXT
+                        ):
+                            continue
+                        if any(o.external_id == handle for o in self._observations.list_by_asset(aid)):
+                            asset = candidate
+                            break
                 if asset is None or asset.scope_id != scope_id or asset.media_type is not MediaType.TEXT:
                     continue
                 observations = self._observations.list_by_asset(asset.id)
@@ -628,6 +655,10 @@ class AssistantToolbox:
                 "file_name": asset.file_name,
                 "media_kind": "text",
                 "source_kind": "text",
+                "evidence_id": latest.external_id if latest else "",
+                "source_type": str(latest.source_metadata.get("source_type", "unknown"))
+                if latest
+                else "unknown",
                 "level": _LEVEL_BY_EVIDENCE_CLASS.get(entry.evidence_class, ""),
                 "people_count": 0,
                 "evidence_summary": text[:_SUMMARY_TEXT_LIMIT],

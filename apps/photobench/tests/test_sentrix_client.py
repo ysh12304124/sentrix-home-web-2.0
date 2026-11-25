@@ -24,6 +24,18 @@ from photobench.infrastructure.sentrix.client import HttpxSentrixClient
 BASE = "http://sentrix:8191"
 
 
+@pytest.mark.parametrize(
+    "status", ["complete", "completed", "partial", "failed", "blocked", "cancelled", "interrupted"]
+)
+def test_cancel_already_terminal_turn_confirms_exit_without_post(status):
+    client, http = _client({"assistant/turns/t1": {"status": status}})
+    result = client.cancel_operation(kind="turn", operation_id="t1", timeout=1)
+    assert result["cleanup_status"] == "stopped"
+    assert result["terminal_status"] == status
+    assert len(http.calls) == 1
+    assert http.calls[0][2] == "GET"
+
+
 def _client(responses: dict) -> tuple[HttpxSentrixClient, FakeJsonHttpClient]:
     http = FakeJsonHttpClient(responses)
     return HttpxSentrixClient(http, lambda: BASE), http
@@ -143,9 +155,7 @@ def test_split_import_and_pipeline_use_the_explicit_endpoints():
 def test_text_memory_import_uses_unified_text_endpoint_and_forwards_graph_policy():
     client, http = _client({"text/import": {"status": "completed", "imported": 1}})
     items = [{"external_id": "email1", "text": "body", "metadata": {"source_type": "email"}}]
-    result = client.import_text_memories(
-        scope_id="scope1", items=items, rebuild_graph=False, timeout=600
-    )
+    result = client.import_text_memories(scope_id="scope1", items=items, rebuild_graph=False, timeout=600)
     assert result["status"] == "completed"
     assert http.calls == [
         (
@@ -155,6 +165,8 @@ def test_text_memory_import_uses_unified_text_endpoint_and_forwards_graph_policy
             600,
         )
     ]
+
+
 def test_ask_is_two_calls_and_the_turn_poll_uses_the_plural_path():
     """1.0 一次 ``POST /assistant/turn`` 拿到答案；2.0 先建会话再发起回合，
     而轮询路径是**复数** ``/assistant/turns/{id}``（1.0 是单数）。
@@ -188,6 +200,14 @@ def test_start_turn_can_request_the_full_debug_trace():
     client.start_turn(conversation_id="conv_1", message="海边有谁？", include_debug=True)
 
     assert http.calls[0][1] == {"message": "海边有谁？", "include_debug": True}
+
+
+def test_start_turn_forwards_explicit_retrieval_mode():
+    client, http = _client({"turns": {"turn_id": "turn_1", "status": "running"}})
+
+    client.start_turn(conversation_id="conv_1", message="邮件里说了什么？", retrieval_mode="text")
+
+    assert http.calls[0][1] == {"message": "邮件里说了什么？", "retrieval_mode": "text"}
 
 
 def test_start_turn_can_disable_graph_retrieval_for_a_paired_baseline_run():
@@ -225,3 +245,25 @@ def test_a_failure_propagates_instead_of_being_swallowed():
     client = HttpxSentrixClient(http, lambda: BASE)
     with pytest.raises(RuntimeError, match="boom"):
         client.list_assets(scope_id="s1", limit=1)
+
+
+def test_asset_mapping_pages_beyond_server_limit():
+    class Pages:
+        def __init__(self):
+            self.offsets = []
+
+        def request_json(self, url, **kwargs):
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(url).query)
+            offset, limit = int(query["offset"][0]), int(query["limit"][0])
+            self.offsets.append(offset)
+            return {"items": [{"id": str(i)} for i in range(offset, min(offset + limit, 1342))]}
+
+    http = Pages()
+    client = HttpxSentrixClient(http, lambda: BASE)
+    first = client.list_assets(scope_id="mail", limit=1000)
+    rest = client.list_assets(scope_id="mail", limit=1000, offset=len(first))
+    assert len(first + rest) == 1342
+    assert http.offsets == [0, 500, 1000]
+    assert (first + rest)[-1]["id"] == "1341"

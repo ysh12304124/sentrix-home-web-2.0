@@ -48,6 +48,44 @@ describe("阶段卡（1.0 :3099-3129）", () => {
     expect(getByLabelText("文本记忆构建进度").getAttribute("aria-valuenow")).toBe("52");
   });
 
+  it.each(["skipped", "pending", undefined])("复用邮件QA开始后，未执行的导入与流水线显示跳过（%s）", (status) => {
+    const run: Run={run_id:"reuse-mail",mode:"reuse",status:"running",email_only_qa:true,qa_count:381,
+      phases:{text_memory_import:status ? {status} : undefined,
+        photo_import:{status:"skipped"},pipeline_processing:{status:"skipped"},
+        qa_eval:{status:"running",progress:{completed:30,total:381}}}};
+    const {container,queryByTestId}=render(<PhaseList activeRun={run}/>);
+    const cards=container.querySelectorAll(".phase-card");
+    expect(cards[3].querySelector(".phase-status")?.textContent).toBe("跳过");
+    expect(cards[4].querySelector(".phase-status")?.textContent).toBe("跳过");
+    expect(cards[5].querySelector(".phase-status")?.textContent).toBe("进行中");
+    expect(queryByTestId("text-memory-build")).toBeNull();
+    expect(container.textContent).not.toContain("正在读取邮件记忆");
+    expect(container.textContent).not.toContain("导入与构建等待开始");
+    expect(run.phases?.text_memory_import?.status).toBe(status);
+  });
+
+  it("邮件阶段尚未开始时不能凭题集类型显示进行中", () => {
+    const {container}=render(<PhaseList activeRun={{run_id:"pending-text",email_only_qa:true,
+      phases:{text_memory_import:{status:"pending"}}}}/>);
+    expect(container.querySelectorAll(".phase-card")[3].querySelector(".phase-status")?.textContent).toBe("等待");
+    expect(container.textContent).not.toContain("正在读取邮件记忆");
+  });
+
+  it("复用历史中确实执行并失败的文本阶段不能掩盖为跳过", () => {
+    const {container}=render(<PhaseList activeRun={{run_id:"legacy-reuse",mode:"reuse",email_only_qa:true,
+      phases:{text_memory_import:{status:"failed",progress:{total:10,processed:4}}}}}/>);
+    expect(container.querySelectorAll(".phase-card")[4].querySelector(".phase-status")?.textContent).toBe("失败");
+  });
+
+  it("因果图部分失败时已完整索引的步骤显示完成", () => {
+    const {getByTestId} = render(<PhaseList activeRun={{run_id:"partial-graph",status:"running",
+      phases:{text_memory_import:{status:"partial",progress:{total:42,processed:42,indexed:42,graph_status:"partial"}},
+        qa_eval:{status:"running"}}}}/>);
+    const steps = getByTestId("text-memory-build").querySelectorAll(".pipeline-step");
+    expect(steps[1].classList.contains("done")).toBe(true);
+    expect(steps[2].classList.contains("stopped")).toBe(true);
+  });
+
   it("隔离小样区分答卷与源任务日志", () => {
     const {container} = render(<PhaseList activeRun={{run_id:'sample', source_run_id:'full',
       qa_count:3, item_count:3, summary:{judge_valid_count:3},

@@ -2119,25 +2119,32 @@ def test_unknown_qa_submission_preserves_stage_and_known_conversation_without_re
         assert "conversation_id" not in item
 
 
-def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(monkeypatch):
+@pytest.mark.parametrize("asset_count", [2, 4292])
+def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(monkeypatch, asset_count):
     """Asset completion must not finish the pipeline or hide its outstanding HTTP request."""
     from photobench.application.run_execution.state import RunState
 
     release = threading.Event()
     finalizing = threading.Event()
+    assets = [
+        {"id": f"asset_{index}", "status": "processed", "media_type": "image"} for index in range(asset_count)
+    ]
 
     class BlockingPipeline(FakeSentrixClient):
         def process_pipeline(self, **kwargs):
             assert release.wait(3)
-            return {"processed": 2, "memory_graph": {}}
+            return {"processed": asset_count, "memory_graph": {}}
 
-    client = BlockingPipeline(explicit_pipeline=True, assets=_assets())
+        def list_assets(self, *, scope_id, limit, timeout=60, offset=0):
+            return self.assets[offset : offset + limit]
+
+    client = BlockingPipeline(explicit_pipeline=True, assets=assets)
     execution, *_ = _execution(client=client)
     state = RunState(
         {
             "run_id": "run_test",
             "scope_id": "s",
-            "pipeline_asset_ids": ["asset_a", "asset_b"],
+            "pipeline_asset_ids": [asset["id"] for asset in assets],
             "phases": {"pipeline_processing": {"status": "running"}},
         }
     )
@@ -2153,7 +2160,7 @@ def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(mo
         try:
             assert finalizing.wait(2)
             progress = state.get("phases")["pipeline_processing"]["progress"]
-            assert progress["processed"] == progress["total"] == 2
+            assert progress["processed"] == progress["total"] == asset_count
             assert progress["request_status"] == "running"
             assert not future.done()
             state.cancel_event.set()
@@ -2165,6 +2172,37 @@ def test_explicit_pipeline_reports_finalization_and_retains_request_on_cancel(mo
             for worker in execution._background_threads:
                 worker.join(timeout=2)
     assert not any(worker.is_alive() for worker in execution._background_threads)
+
+
+def test_large_pipeline_batches_finalize_once_and_keep_all_counts():
+    from photobench.application.run_execution.state import RunState
+
+    asset_ids = [f"asset_{i}" for i in range(4292)]
+    batches = []
+
+    class BatchClient(FakeSentrixClient):
+        def process_pipeline(self, *, asset_ids, finalize, **kwargs):
+            batches.append((list(asset_ids), finalize))
+            return {"processed": len(asset_ids), "memory_graph": {} if finalize else None}
+
+    execution, *_ = _execution(client=BatchClient(explicit_pipeline=True))
+    state = RunState(
+        {
+            "run_id": "run_test",
+            "scope_id": "s",
+            "pipeline_asset_ids": asset_ids,
+            "phases": {"pipeline_processing": {"status": "running"}},
+        }
+    )
+    execution._state = state
+    execution._phase_processing_explicit(state, _request())
+
+    assert [len(ids) for ids, _ in batches] == [1000, 1000, 1000, 1000, 292]
+    assert [asset_id for ids, _ in batches for asset_id in ids] == asset_ids
+    assert [finalize for _, finalize in batches] == [False, False, False, False, True]
+    phase = state.get("phases")["pipeline_processing"]
+    assert phase["status"] == "done"
+    assert phase["processed_asset_count"] == 4292
 
 
 def test_resume_recovers_missing_judges_without_reexecuting_prior_agents(monkeypatch):
@@ -2317,3 +2355,54 @@ def test_text_import_batches_publish_completed_counts_and_build_graph_only_last(
     progress = state.data["phases"]["text_memory_import"]["progress"]
     assert progress["processed"] == progress["imported"] == progress["indexed"] == 101
     assert progress["current_batch"] == progress["batches"] == 3
+
+
+def test_reuse_email_scope_does_not_reimport_or_rebuild_text():
+    execution, client, *_ = _execution(
+        albums=FakeAlbums(
+            manifest={"album_id": ALBUM, "text_memories": "emails.json"},
+            files={"emails.json": b'[{"id":"one","detail":"already imported"}]'},
+        )
+    )
+    state = RunState({"run_id": "reuse_text", "album_id": ALBUM, "scope_id": "existing"})
+    execution._phase_text_memory_import(state, _request(mode="reuse", graph_enabled=True))
+    assert state.data["phases"]["text_memory_import"]["status"] == "skipped"
+    assert "import_text_memories" not in client.call_names()
+
+
+@pytest.mark.parametrize("failure", ["causal", "index", "graph_write"])
+def test_text_recovery_separates_index_and_graph_failure(failure, monkeypatch):
+    albums = FakeAlbums(
+        manifest={**_manifest(), "text_memories": "emails.json"},
+        files={"emails.json": b'[{"id":"email1","detail":"Body"}]'},
+    )
+    execution, client, *_ = _execution(albums=albums)
+    original = client.import_text_memories
+
+    def import_batch(**kwargs):
+        result = original(**kwargs)
+        result.update(status="partial", graph_status="partial", imported=0, skipped=1)
+        if failure == "index":
+            result.update(indexed=0, errors=[{"error": "embedding unavailable"}])
+        elif failure == "graph_write":
+            result["graph_error"] = "transaction failed"
+        return result
+
+    monkeypatch.setattr(client, "import_text_memories", import_batch)
+    state = RunState({"run_id": "reuse_partial", "album_id": ALBUM, "scope_id": "existing"})
+    request = _request(mode="reuse", graph_enabled=True, repair_text_import=True)
+    if failure == "causal":
+        execution._phase_text_memory_import(state, request)
+        phase = state.data["phases"]["text_memory_import"]
+        assert phase["status"] == "partial"
+        assert phase["error_details"][0]["error_type"] == "causal_inference_error"
+        assert phase["skipped"] == phase["indexed"] == 1
+    else:
+        message = "embedding unavailable" if failure == "index" else "记忆图构建失败.*transaction failed"
+        with pytest.raises(RuntimeError, match=message):
+            execution._phase_text_memory_import(state, request)
+    progress = state.data["phases"]["text_memory_import"]["progress"]
+    assert progress["processed"] == progress["indexed"] == int(failure != "index")
+    call = next(kwargs for name, kwargs in client.calls if name == "import_text_memories")
+    assert call["scope_id"] == "existing"
+    assert call["rebuild_graph"] is True

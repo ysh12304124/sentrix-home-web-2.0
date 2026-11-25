@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from PIL import Image
@@ -118,3 +118,53 @@ def test_original_without_offset_does_not_borrow_modified_timezone(tmp_path):
     captured_at, _, _ = PillowMetadataReader().read(path)
     assert captured_at == datetime(2024, 1, 1, 23, 30)
     assert captured_at.tzinfo is None
+
+
+def test_standard_subsecond_original_time_is_retained(tmp_path):
+    path = tmp_path / "subsecond.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[34665] = {
+        36867: "2024:01:01 23:30:00",
+        36881: "+08:00",
+        37521: "123456789",
+    }
+    image.save(path, format="JPEG", exif=exif)
+
+    captured_at, _, _ = PillowMetadataReader().read(path)
+
+    assert captured_at == datetime.fromisoformat("2024-01-01T23:30:00.123456+08:00")
+    assert captured_at.utcoffset() == timedelta(hours=8)
+
+
+def test_digitized_time_uses_its_matching_offset(tmp_path):
+    path = tmp_path / "digitized.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[34665] = {
+        36868: "2024:01:02 01:00:00",
+        36882: "+09:30",
+        37522: "5",
+    }
+    image.save(path, format="JPEG", exif=exif)
+
+    captured_at, _, _ = PillowMetadataReader().read(path)
+
+    assert captured_at == datetime.fromisoformat("2024-01-02T01:00:00.500000+09:30")
+    assert captured_at.utcoffset() == timedelta(hours=9, minutes=30)
+
+
+def test_unparseable_original_falls_back_to_digitized_time(tmp_path):
+    path = tmp_path / "fallback.jpg"
+    image = Image.new("RGB", (16, 16), "white")
+    exif = image.getexif()
+    exif[34665] = {
+        36867: "not-a-date",
+        36868: "2024:01:02 01:00:00",
+        36882: "+08:00",
+    }
+    image.save(path, format="JPEG", exif=exif)
+
+    captured_at, _, _ = PillowMetadataReader().read(path)
+
+    assert captured_at == datetime.fromisoformat("2024-01-02T01:00:00+08:00")

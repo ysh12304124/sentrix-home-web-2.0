@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Protocol, TypeVar
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 
 from sentrix.api.deps import get_container
@@ -837,10 +837,11 @@ def get_person(person_id: str, container: Container = Depends(get_container)) ->
 
 
 @router.patch("/people/{person_id}/name")
-@memory_write("entity", "person_id")
+@memory_write("entity", "person_id", defer_sync=True)
 def rename_person(
     person_id: str,
     payload: RenamePersonRequest,
+    background_tasks: BackgroundTasks,
     container: Container = Depends(get_container),
 ) -> RenamePersonResponse:
     result = _name_person(container).rename(person_id, payload.name)

@@ -469,12 +469,17 @@ class SummarizeEvent:
             and item["previous_name"] != item.get("name")
             and not any(str(item["previous_name"]) in name for name in names)
         }
+        # Keep the existing 20-character title contract. When all bound names
+        # fit, require them together rather than accepting one name plus a
+        # generic substitute for another known participant.
+        title_names = names if len("、".join(names)) <= 12 else []
         messages: tuple[ChatMessage, ...] = (
             ChatMessage(
                 role=ChatRole.SYSTEM,
                 content=build_correction_system_prompt()
                 + "\n本次是记忆修正：标题、摘要和活动须一致使用当前身份。"
-                "有绑定姓名时，标题至少包含一个当前姓名，摘要包含绑定的当前姓名。"
+                "有绑定姓名时，标题优先包含全部当前姓名；姓名合计较长时至少包含一个。"
+                "摘要正文包含全部绑定的当前姓名。"
                 "不能仅给旧摘要加姓名冒号前缀；不要提及曾用名或改名过程。"
                 "多人场景保留未命名人物，不能把他们的动作归给已命名人物。",
             ),
@@ -492,11 +497,13 @@ class SummarizeEvent:
             if projection is None or not projection.summary.strip():
                 projection = fallback_projection(event, observations, participants)
             summary_body = projection.summary
-            prefix, separator, body = summary_body.partition("：")
-            if separator and prefix and all(name in names for name in prefix.split("、")):
-                summary_body = body
+            for colon in ("：", ":"):
+                prefix, separator, body = summary_body.partition(colon)
+                if separator and prefix and all(name in names for name in prefix.strip().split("、")):
+                    summary_body = body
             missing = bool(names) and (
                 not any(name in projection.title for name in names)
+                or any(name not in projection.title for name in title_names)
                 or not all(name in summary_body for name in names)
             )
             stale = any(
@@ -513,7 +520,8 @@ class SummarizeEvent:
                     ChatMessage(
                         role=ChatRole.USER,
                         content="标题或摘要没有同步当前姓名，或还包含旧姓名。请依据同一份证据重新生成完整JSON，"
-                        "标题至少含一个当前姓名，摘要使用所有绑定姓名；不输出曾用名。",
+                        "姓名合计较短时标题使用全部绑定姓名，摘要正文使用所有绑定姓名；"
+                        "姓名列表加冒号前缀不算正文使用姓名，不输出曾用名。",
                     ),
                 )
         raise RuntimeError("事件标题与摘要未满足当前身份一致性约束，请重试")

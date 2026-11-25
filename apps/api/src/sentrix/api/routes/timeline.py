@@ -409,28 +409,32 @@ def process_album_pipeline(
         )
         timings = dict(result.timings)
 
-        with stage_timings.measure("finalize"):
-            participant_started = time.perf_counter()
-            with stage_timings.measure("participant_projection"):
-                observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
-                _confirmed_person_events(container).refresh_participants([item.id for item in observations])
-            timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
+        graph = family_graph = insights = None
+        if request.finalize:
+            with stage_timings.measure("finalize"):
+                participant_started = time.perf_counter()
+                with stage_timings.measure("participant_projection"):
+                    observations = container.observation_repository.list_scope(request.scope_id, limit=100000)
+                    _confirmed_person_events(container).refresh_participants(
+                        [item.id for item in observations]
+                    )
+                timings["participant_projection"] = round(time.perf_counter() - participant_started, 3)
 
-            graph_started = time.perf_counter()
-            with stage_timings.measure("memory_graph"):
-                graph = refresh_memory_graph(container, request.scope_id)
-            timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
-            timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
+                graph_started = time.perf_counter()
+                with stage_timings.measure("memory_graph"):
+                    graph = refresh_memory_graph(container, request.scope_id)
+                timings["memory_graph"] = round(time.perf_counter() - graph_started, 3)
+                timings["causal_graph"] = graph.causal_seconds if graph is not None else 0.0
 
-            family_started = time.perf_counter()
-            with stage_timings.measure("family_graph"):
-                family_graph = _maybe_run_family_graph(container, request.scope_id)
-            timings["family_graph"] = round(time.perf_counter() - family_started, 3)
+                family_started = time.perf_counter()
+                with stage_timings.measure("family_graph"):
+                    family_graph = _maybe_run_family_graph(container, request.scope_id)
+                timings["family_graph"] = round(time.perf_counter() - family_started, 3)
 
-            insights_started = time.perf_counter()
-            with stage_timings.measure("person_insights"):
-                insights = _maybe_run_insights(container, request.scope_id, result.processed)
-            timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
+                insights_started = time.perf_counter()
+                with stage_timings.measure("person_insights"):
+                    insights = _maybe_run_insights(container, request.scope_id, result.processed)
+                timings["person_insights"] = round(time.perf_counter() - insights_started, 3)
         timings["total"] = round(time.perf_counter() - total_started, 3)
 
     timings.update(stage_timings.walls())
@@ -454,6 +458,7 @@ def process_album_pipeline(
                 causal_edges=graph.causal_edges,
                 causal_status=graph.causal_status,
                 causal_seconds=graph.causal_seconds,
+                graph_structure_seconds=timings["memory_graph"],
                 keyframe_count=graph.keyframe_count,
                 keyframe_temporal_edges=graph.keyframe_temporal_edges,
                 keyframe_object_edges=graph.keyframe_object_edges,

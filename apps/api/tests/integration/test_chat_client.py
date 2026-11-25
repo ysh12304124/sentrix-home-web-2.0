@@ -266,6 +266,7 @@ def test_the_tools_field_carries_standard_json_schema(server: str):
     # 故意的重复：那条钉**注册表**，这条钉**真的上了线的那份**（发出去的就是它们）。
     assert [tool["name"] for tool in wire_tools] == [
         "search_memories",
+        "search_text_memories",
         "query_memory_facts",
         "query_photo_people",
         "inspect_photo",
@@ -819,3 +820,25 @@ def test_diagnostics_preserve_actual_tokens_and_preflight_does_not_send(server: 
     assert exc.value.diagnostics["request_sent"] is False
     assert exc.value.diagnostics["error_category"] == "context_output_insufficient"
     assert exc.value.diagnostics["prompt_tokens_estimated"] > CONTEXT_TOKENS
+
+
+def test_qwen_forced_email_final_validates_the_advertised_schema(server: str):
+    from sentrix.domain.assistant.evidence_ledger import EvidenceLedger
+    from sentrix.domain.assistant.jit import select_turn_tools
+
+    final = tuple(
+        t
+        for t in select_turn_tools(EvidenceLedger("text-test"), has_source_text=True)
+        if t.name == "final_answer"
+    )
+    arguments = '{"answer":"GBP 23","selected_image_handles":[],"selected_text_handles":["rs_test/photo_1"]}'
+    _Handler.response = reply(content=arguments)
+    model = OpenAIChatModel(server, ServedModel(server, generation_profile="qwen35_nonthinking"))
+    result = model.complete(messages(), final)
+    assert result.tool_calls[0].arguments_json == arguments
+    assert len(_Handler.received) == 1
+    _Handler.response = reply(
+        content='{"answer":"x","selected_image_handles":[],"selected_text_handles":[42]}'
+    )
+    with pytest.raises(ModelServiceError):
+        model.complete(messages(), final)

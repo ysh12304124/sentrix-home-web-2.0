@@ -89,7 +89,7 @@ def test_text_scope_uses_explicit_text_path_with_media_baseline_available(env) -
     run_turn.run(start(run_turn, conversation))
 
     assert toolbox.calls[0][0] == "search_text_memories"
-    assert "search_memories" in model.tool_sets[0]
+    assert "search_memories" not in model.tool_sets[0]
     assert "search_text_memories" in model.tool_sets[0]
 
 
@@ -1893,7 +1893,11 @@ def test_include_debug_persists_the_switch_before_the_turn_runs(env):
         TurnRequest(conversation_id=conversation.id, question=QUESTION, include_debug=True)
     ).id
 
-    assert turns.get(turn_id).trace == {"include_debug": True, "graph_enabled": True}
+    assert turns.get(turn_id).trace == {
+        "include_debug": True,
+        "graph_enabled": True,
+        "retrieval_mode": "auto",
+    }
 
 
 def test_include_debug_records_planner_agent_and_judge_with_exact_messages(env):
@@ -1960,3 +1964,60 @@ def test_debug_trace_is_off_by_default(env):
     trace = turns.get(turn_id).trace
     assert trace["include_debug"] is False
     assert trace["debug_calls"] == []
+
+
+def test_text_budget_reserves_an_actual_final_and_reviews_the_full_read_body(env):
+    from types import SimpleNamespace
+
+    conversations, turns, conversation, _db = env
+
+    class Model(ScriptedModel):
+        def complete(self, messages, tools):
+            if tools and {t.name for t in tools} == {"final_answer"}:
+                self.tool_sets.append(["final_answer"])
+                return tool_call(
+                    "final_answer",
+                    "last",
+                    answer="The cost was 23 pounds.",
+                    selected_image_handles=[],
+                    selected_text_handles=["source-one"],
+                )
+            return super().complete(messages, tools)
+
+    model = Model(
+        [tool_call("search_text_memories", "s", query="cost")]
+        + [
+            tool_call("read_source_text", f"r{i}", asset_handle="rs_1/photo_1", offset=i * 10)
+            for i in range(5)
+        ],
+        planner=planner_reply("source_text", value_type="amount"),
+    )
+
+    class Box(StubToolbox):
+        def text_citations(self, handles, result_set_ids, *, scope_id):
+            return [
+                {"asset_id": "a", "evidence_id": "source-one", "handle": "source-one", "source_type": "email"}
+            ]
+
+    box = Box(
+        {
+            "search_text_memories": SEARCH_OK,
+            "read_source_text": ToolOutcome(
+                observation={"asset_id": "a"},
+                model_visible={"text": "Payment received: 23 pounds.", "evidence_id": "source-one"},
+            ),
+        }
+    )
+    run = RunTurn(
+        model=model,
+        conversations=conversations,
+        turns=turns,
+        toolbox=box,
+        observations=SimpleNamespace(has_source_text=lambda scope: True),
+    )
+    result = run.run(start(run, conversation))
+    assert result.termination_reason in {TerminationReason.ANSWERED, TerminationReason.ANSWERED_WITH_GAP}
+    assert result.answer == "The cost was 23 pounds."
+    assert model.tool_sets[-1] == ["final_answer"]
+    assert not model.claim_calls
+    assert model.judge_calls and "Payment received: 23 pounds." in str(model.judge_calls[-1])

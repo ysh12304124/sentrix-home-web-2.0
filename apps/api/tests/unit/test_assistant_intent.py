@@ -85,7 +85,6 @@ def test_the_prompt_lists_exactly_the_evidence_registry():
         "photo_set",
         "spoken_content",
         "structured_fact",
-        "text_content",
         "visible_text",
         "visual_observation",
     )
@@ -567,3 +566,63 @@ def test_structured_planner_constrains_evidence_types_to_parser_registry():
         None,
         "invalid_planner_action",
     )
+
+
+def test_text_planner_schema_is_bounded_without_changing_photo_schema():
+    from sentrix.domain.assistant.intent import planner_response_format
+
+    def requirements(text):
+        return planner_response_format(has_source_text=text)["json_schema"]["schema"]["properties"][
+            "declaration"
+        ]["properties"]["requirements"]
+
+    assert requirements(True)["maxItems"] == 4
+    assert "maxItems" not in requirements(False)
+
+
+def test_text_planner_retries_truncation_once_and_retains_failure_trace():
+    import json
+
+    from sentrix.domain.assistant.models import ModelReply
+    from sentrix.domain.assistant.ports import OutputTruncatedError
+
+    class Model:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                raise OutputTruncatedError(
+                    "output truncated", diagnostics={"error_category": "output_truncated"}
+                )
+            return ModelReply(
+                content=json.dumps(
+                    {
+                        "action": "declare",
+                        "declaration": {
+                            "goal": "查询来源中的日期",
+                            "requirements": [
+                                {
+                                    "id": "r",
+                                    "evidence_type": "source_text",
+                                    "description": "读取原文",
+                                    "predicate": "日期",
+                                    "value_type": "time",
+                                    "scope": {},
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+
+    model = Model()
+    result = GoalPlanner(model).declare("When is the meeting?", scope_id=SCOPE, has_source_text=True)
+    assert result.ok and model.calls == 2
+    assert result.model_calls[0]["status"] == "error"
+    assert result.model_calls[1]["status"] == "complete"
+    model = Model()
+    assert not GoalPlanner(model).declare("When is the photo?", scope_id=SCOPE).ok
+    assert model.calls == 1

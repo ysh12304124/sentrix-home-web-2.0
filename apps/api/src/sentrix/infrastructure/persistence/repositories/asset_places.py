@@ -14,6 +14,7 @@ from sentrix.domain.places.models import (
     AdminArea,
     NearestPlace,
     Place,
+    PlaceDetail,
     PlacePrecision,
     PlaceSource,
 )
@@ -28,6 +29,12 @@ _COLUMNS = (
 
 def _row_to_place(row: sqlite3.Row) -> Place:
     latitude, longitude = row["gps_latitude"], row["gps_longitude"]
+    evidence = _nearest_evidence(row["nearest_evidence_json"])
+    details = tuple(
+        PlaceDetail(**{**item, "aliases": tuple(item.get("aliases", ()))})
+        for item in evidence.pop("osm_details", [])
+    )
+    map_version = evidence.pop("osm_version", "")
     return Place(
         admin=AdminArea(
             province=row["admin_province"], city=row["admin_city"], district=row["admin_district"]
@@ -36,12 +43,14 @@ def _row_to_place(row: sqlite3.Row) -> Place:
             township=row["nearest_township"],
             locality=row["nearest_locality"],
             distance_m=row["nearest_distance_m"],
-            **_nearest_evidence(row["nearest_evidence_json"]),
+            **evidence,
         ),
         precision=PlacePrecision(row["precision"]),
         source=PlaceSource(row["source"]),
         gps=(GpsPoint(latitude, longitude) if latitude is not None and longitude is not None else None),
         confidence=row["confidence"],
+        details=details,
+        map_version=map_version,
     )
 
 
@@ -89,9 +98,13 @@ class SqliteAssetPlaceRepository:
                     datetime.now(UTC).isoformat(),
                     json.dumps(
                         {
-                            k: v
-                            for k, v in asdict(place.nearest).items()
-                            if k not in {"township", "locality", "distance_m"}
+                            "osm_details": [asdict(detail) for detail in place.details],
+                            "osm_version": place.map_version,
+                            **{
+                                k: v
+                                for k, v in asdict(place.nearest).items()
+                                if k not in {"township", "locality", "distance_m"}
+                            },
                         }
                     ),
                 ),

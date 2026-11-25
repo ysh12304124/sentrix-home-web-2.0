@@ -15,6 +15,7 @@ import {
   batchConfirmPeople,
   deleteFamilyRelationship,
   deliveredPhotoThumbUrl,
+  getMemoryCorrectionSyncStatus,
   getPerson,
   getPersonPortrait,
   putFamilyRelationship,
@@ -76,6 +77,8 @@ export function PersonDetail({
   const [error, setError] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<{ status: "synced" | "pending"; text: string } | null>(null);
   const [syncRetrying, setSyncRetrying] = useState(false);
+  const [syncPending, setSyncPending] = useState(false);
+  const writeInProgress = busy || syncRetrying || syncPending;
   // 未命名的人不把占位文案「未确认姓名人物」预填进输入框——那句话不是名字。
   const [name, setName] = useState(isNamed(person) ? personDisplayName(person) : "");
   const [familyRole, setFamilyRole] = useState("");
@@ -94,7 +97,7 @@ export function PersonDetail({
   const [aliasText, setAliasText] = useState("");
 
   useEffect(() => {
-    if (!busy && !syncRetrying) return;
+    if (!busy && !syncRetrying && !syncPending) return;
     let cancelled = false;
     let reading = false;
     const refreshSaved = async () => {
@@ -105,7 +108,33 @@ export function PersonDetail({
     };
     const timer = window.setInterval(() => { void refreshSaved(); }, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [busy, syncRetrying, onChanged]);
+  }, [busy, syncRetrying, syncPending, onChanged]);
+
+  useEffect(() => {
+    if (!syncPending) return;
+    let cancelled = false;
+    let checking = false;
+    const refreshSyncStatus = async () => {
+      if (cancelled || checking) return;
+      checking = true;
+      try {
+        const status = await getMemoryCorrectionSyncStatus(person.scope_id);
+        if (cancelled || status.status === "pending" && !status.error) return;
+        setSyncPending(false);
+        setSyncNotice(status.error
+          ? { status: "pending", text: `修改已保存，但关联数据待同步：${status.error}` }
+          : { status: "synced", text: "修改已保存，关联记忆和时间线已同步。" });
+        await onChanged();
+      } catch {
+        // 保留后台同步状态；下一轮继续查询，不把网络瞬断误报为同步完成。
+      } finally {
+        checking = false;
+      }
+    };
+    void refreshSyncStatus();
+    const timer = window.setInterval(() => void refreshSyncStatus(), 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [syncPending, person.scope_id, onChanged]);
 
   const others = people.filter((item) => item.id !== person.id && item.scope_id === person.scope_id);
   const relationTarget = others.find((item) => item.id === targetId);
@@ -152,20 +181,26 @@ export function PersonDetail({
     });
 
   async function run(action: () => Promise<unknown>, refreshOnError = false): Promise<boolean> {
-    if (busy || syncRetrying) return false;
+    if (writeInProgress) return false;
     setBusy(true);
     setError(null);
     setSyncNotice(null);
+    setSyncPending(false);
     try {
       const result = await action();
       if (result !== null && typeof result === "object" && "sync_status" in result) {
         const sync = result as MemorySyncResult;
-        setSyncNotice({
-          status: sync.sync_status,
-          text: sync.sync_status === "synced"
-            ? "修改已保存，关联记忆、图谱与检索索引已同步。"
-            : `修改已保存，但关联数据待同步${sync.sync_error ? `：${sync.sync_error}` : "，可在修正记录中重试。"}`,
-        });
+        if (sync.sync_status === "pending" && !sync.sync_error) {
+          setSyncPending(true);
+          setSyncNotice({ status: "pending", text: "已保存，正在后台更新关联记忆和时间线…" });
+        } else {
+          setSyncNotice({
+            status: sync.sync_status,
+            text: sync.sync_status === "synced"
+              ? "修改已保存，关联记忆和时间线已同步。"
+              : `修改已保存，但关联数据待同步：${sync.sync_error || "可重试同步。"}`,
+          });
+        }
       } else {
         setSyncNotice({ status: "synced", text: "修改已保存，人物与关系信息已刷新。" });
       }
@@ -181,12 +216,13 @@ export function PersonDetail({
   }
 
   async function retrySync() {
+    if (writeInProgress) return;
     setSyncRetrying(true);
     try {
       const result = await retryMemoryCorrections(person.scope_id);
       setSyncNotice(result.error
         ? { status: "pending", text: `关联数据仍待同步：${result.error}` }
-        : { status: "synced", text: "关联记忆、图谱与检索索引已同步。" });
+        : { status: "synced", text: "关联记忆和时间线已同步。" });
       if (!result.error) await onChanged();
     } catch (cause) {
       setSyncNotice({ status: "pending", text: `重试失败：${describeReviewError(cause)}` });
@@ -195,25 +231,9 @@ export function PersonDetail({
     }
   }
 
-  async function syncPersonMemories() {
-    setSyncRetrying(true);
-    setError(null);
-    try {
-      const result = await retryMemoryCorrections(person.scope_id, person.id);
-      setSyncNotice(result.error
-        ? { status: "pending", text: `关联记忆同步失败：${result.error}` }
-        : { status: "synced", text: "已按当前人物与关系信息同步关联记忆、图谱和检索索引。" });
-      if (!result.error) await onChanged();
-    } catch (cause) {
-      setSyncNotice({ status: "pending", text: `关联记忆同步失败：${describeReviewError(cause)}` });
-    } finally {
-      setSyncRetrying(false);
-    }
-  }
-
   function submitRename(event: FormEvent) {
     event.preventDefault();
-    if (busy || syncRetrying) return;
+    if (writeInProgress) return;
     onNamePreview?.(person.id, name.trim());
     void run(async () => {
       const result = await renamePerson(person.id, name);
@@ -344,9 +364,13 @@ export function PersonDetail({
         </button>
       </header>
 
-      {busy || syncRetrying ? (
+      {writeInProgress ? (
         <p className="memory-sync-feedback" role="status" aria-live="polite">
-          正在保存并重建关联记忆…姓名和关系保存后会先刷新显示，请勿重复提交。
+          {syncRetrying
+            ? "正在重试同步关联记忆和时间线…"
+            : syncPending
+              ? "姓名已保存，正在后台同步关联记忆和时间线…"
+              : "正在保存并重建关联记忆和时间线…"}
         </p>
       ) : null}
 
@@ -359,7 +383,7 @@ export function PersonDetail({
         <div className={`memory-sync-feedback is-${syncNotice.status}`} role="status" aria-live="polite">
           <span>{syncNotice.text}</span>
           {syncNotice.status === "pending" ? (
-            <button type="button" className="button ghost small" disabled={syncRetrying || busy} onClick={() => void retrySync()}>
+            <button type="button" className="button ghost small" disabled={writeInProgress} onClick={() => void retrySync()}>
               {syncRetrying ? "正在重试…" : "重试同步"}
             </button>
           ) : null}
@@ -396,7 +420,7 @@ export function PersonDetail({
                 ))}
               </select>
             </label>
-            <button type="submit" className="button primary small" disabled={busy || name.trim() === ""}>
+            <button type="submit" className="button primary small" disabled={writeInProgress || name.trim() === ""}>
               确认身份
             </button>
           </form>
@@ -406,8 +430,8 @@ export function PersonDetail({
               姓名
               <input value={name} onChange={(event) => setName(event.target.value)} />
             </label>
-            <button type="submit" className="button ghost small" disabled={busy}>
-              {busy ? "正在保存并同步…" : "保存姓名"}
+            <button type="submit" className="button ghost small" disabled={writeInProgress || name.trim() === ""}>
+              {syncPending ? "后台同步中…" : "保存姓名"}
             </button>
           </form>
         )}
@@ -419,7 +443,7 @@ export function PersonDetail({
               <button
                 type="button"
                 className="button ghost small"
-                disabled={busy}
+                disabled={writeInProgress}
                 onClick={() => void rejectPerson()}
               >
                 确定移除
@@ -432,7 +456,7 @@ export function PersonDetail({
             <button
               type="button"
               className="button ghost small"
-              disabled={busy}
+              disabled={writeInProgress}
               onClick={() => setRejecting(true)}
             >
               这不是一个人物
@@ -451,7 +475,7 @@ export function PersonDetail({
                 onChange={(event) => setAliasText(event.target.value)}
               />
             </label>
-            <button type="submit" className="button ghost small" disabled={busy}>
+            <button type="submit" className="button ghost small" disabled={writeInProgress}>
               保存别名
             </button>
           </form>
@@ -459,7 +483,7 @@ export function PersonDetail({
           <button
             type="button"
             className="button ghost small"
-            disabled={busy || aliasesLoading}
+            disabled={writeInProgress || aliasesLoading}
             onClick={() => void openAliases()}
           >
             {aliasesLoading ? "正在读取别名…" : "编辑别名"}
@@ -485,7 +509,7 @@ export function PersonDetail({
               <ul className="detail-merge-candidates">
                 {mergeCandidates.map((item) => (
                   <li key={item.id}>
-                    <button type="button" disabled={busy} onClick={() => setMergeWith(item)}>
+                    <button type="button" disabled={writeInProgress} onClick={() => setMergeWith(item)}>
                       <PersonAvatar person={item} size="sm" />
                       <span>{personDisplayName(item)}</span>
                       <small>出现 {item.appearance_count} 次</small>
@@ -509,7 +533,7 @@ export function PersonDetail({
           <button
             type="button"
             className="button ghost small"
-            disabled={busy}
+            disabled={writeInProgress}
             onClick={() => setMergePicking(true)}
           >
             与其他人合并…
@@ -533,7 +557,7 @@ export function PersonDetail({
           家庭归属
           <select
             value={currentMembership}
-            disabled={busy}
+            disabled={writeInProgress}
             onChange={(event) => {
               const next = event.target.value as FamilyMembershipValue;
               void run(() => setFamilyMembership(person.id, person.scope_id, next));
@@ -568,7 +592,7 @@ export function PersonDetail({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={busy}
+                  disabled={writeInProgress}
                   onClick={() =>
                     void run(() =>
                       deleteFamilyRelationship({
@@ -616,30 +640,13 @@ export function PersonDetail({
                 ))}
               </select>
             </div>
-            <button type="submit" className="button primary small" disabled={busy || relationTarget === undefined}>
-              {busy ? "正在保存并同步…" : "建立关系"}
+            <button type="submit" className="button primary small" disabled={writeInProgress || relationTarget === undefined}>
+              建立关系
             </button>
             {relationTarget === undefined ? <p className="detail-empty">请先选择对方，再建立关系。</p> : null}
           </form>
         )}
       </section>
-
-      {!pending ? (
-        <section className="detail-section person-memory-sync" aria-label="关联记忆修正">
-          <h3>关联记忆</h3>
-          <p className="detail-empty">
-            人物姓名、别名、家庭归属或关系修改后，可在这里按当前信息重新同步相关记忆、图谱与检索索引。
-          </p>
-          <button
-            type="button"
-            className="button primary small"
-            disabled={busy || syncRetrying}
-            onClick={() => void syncPersonMemories()}
-          >
-            {syncRetrying ? "正在同步关联记忆…" : "修正并同步关联记忆"}
-          </button>
-        </section>
-      ) : null}
 
       <section className="detail-section">
         <h3>照片</h3>
