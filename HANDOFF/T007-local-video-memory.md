@@ -17,3 +17,6 @@
 全量门禁的主线既有问题仍在。还有两题 0 分、两题 1 分，精确地标能力受离线最近城市数据粒度限制。
 10 个回合仍为 partial，事件或地点限定的语义证据绑定尚未全部闭合。不可把任务 completed 解释成全部回答正确。
 详细对照在 data/accuracy-fix-comparison.json，逐视频结构核验在 data/atmbench-video-memory-verification.json。
+
+
+GitHub yxw 交付说明见 [视频功能修改说明](../docs/reports/20261125-video-function-changes.md) 和 [测试发现的其他待修改部分](../docs/reports/20261125-other-module-test-followups.md)。
