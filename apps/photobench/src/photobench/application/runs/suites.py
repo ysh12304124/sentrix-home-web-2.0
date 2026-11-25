@@ -1878,6 +1878,14 @@ class RunSuites:
 
     # ---- 供路由用的只读投影 -------------------------------------------------
 
+    def active_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """Return a detached snapshot for the live detail reader while a run is active."""
+        with self._lock:
+            execution = self._active.get(run_id)
+        if execution is None or execution.state is None:
+            return None
+        return execution.state.snapshot()
+
     def active_states(self) -> dict[str, dict[str, Any]]:
         """还在跑的 run 的**活状态**，给 ``GET /api/runs`` 的列表叠加用。
 
