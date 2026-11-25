@@ -118,8 +118,8 @@ def refresh_memory_graph(container: Container, scope_id: str) -> GraphBuildStats
 
 def build_import_assets(container: Container, *, observe: bool) -> ImportAssets:
     """把导入用例的协作者接起来。**只在这里接一次**。"""
-    keyframe_importer = _build_importer(container, observe=True)
-    extractor = _build_video_scenes(container, keyframe_importer.process_image)
+    keyframe_importer = _build_importer(container, observe=False)
+    extractor = _build_video_scenes(container, keyframe_importer)
     return _build_importer(
         container,
         observe=observe,
@@ -310,7 +310,7 @@ def build_video_scenes(
     """独立的抽取链，给重跑与执行器共用。"""
     return _build_video_scenes(
         container,
-        _build_importer(container, observe=True).process_image,
+        _build_importer(container, observe=False),
         checkpoint=checkpoint,
         resume_event_completed=resume_event_completed,
     )
@@ -379,7 +379,7 @@ def build_video_job_processor(
 
 def _build_video_scenes(
     container: Container,
-    process_image: Callable[..., object],
+    importer: ImportAssets,
     *,
     checkpoint: Callable[[str, int, int, int], None] | None = None,
     resume_event_completed: int = 0,
@@ -391,7 +391,10 @@ def _build_video_scenes(
         video_repository=container.video_repository,
         keyframes=container.video_keyframe_extractor,
         observations=container.observation_repository,
-        process_image=lambda asset, event_id: process_image(asset, forced_event_id=event_id),
+        process_image=lambda asset, event_id: importer.process_image(asset, forced_event_id=event_id),
+        group_observer=container.vlm_observer,
+        index_video_memory=importer.index_video_memory,
+        process_group_frame=importer.process_group_frame,
         scene_planner=container.video_scene_planner,
         transcriber=container.audio_transcriber,
         cross_modal_embedder=container.cross_modal_embedder,
@@ -426,6 +429,7 @@ def _build_importer(
         observations=container.observation_repository,
         storage=container.media_storage,
         metadata=container.metadata_reader,
+        resolve_capture_time=container.capture_time_resolver,
         address_reader=read_source_address,
         visual_indexer=IndexAssetVisual(
             embedder=container.visual_embedder,

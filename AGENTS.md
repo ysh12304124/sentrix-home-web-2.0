@@ -1,5 +1,7 @@
 # Sentrix 与 PhotoBench 开发约定
 
+- 11/25 Mac 视频记忆保留 Katna 实际分组、音轨和转写子记录，修复视频时间、泛称人物过滤与证据核验。进展和部署入口见 HANDOFF/T007-local-video-memory.md。
+
 - 11/20 Sentrix前端31项失败已逐项处理，全量191项/44文件通过、0跳过；TypeScript/构建通过，lint 0错误/45警告。修正旧测试上下文与界面断言，补时间线懒加载/定位和语音推理验证，修复无Fullscreen API时首页报错。继续PR #43，本轮不部署，见T006及产品项目audit/20261120-product-web-tests。
 
 - 11/20按用户要求合入upstream/main 42a1c58（导入三阶段、关键帧时间命中/QA代表帧），四处冲突已处理，邮件入口/统一GT及轨迹懒读保持。合并回归与PR #43推送跟进见T006及产品项目audit/20261120-main-sync；100候选仍99306be，本轮不部署。

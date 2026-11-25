@@ -124,6 +124,53 @@ def clean_person_name(name: str) -> str:
     return name
 
 
+# References to a viewer or a class of people are semantic content, not identity filters.
+_GENERIC_PERSON_REFERENCES = frozenset(
+    {
+        "我",
+        "我们",
+        "你",
+        "你们",
+        "用户",
+        "相册主人",
+        "本人",
+        "拍摄者",
+        "人",
+        "人物",
+        "有人",
+        "一个人",
+        "一群人",
+        "年轻人",
+        "青少年",
+        "学生",
+        "孩子们",
+        "游客",
+        "当地人",
+        "i",
+        "me",
+        "myself",
+        "we",
+        "us",
+        "you",
+        "user",
+        "viewer",
+        "people",
+        "person",
+        "someone",
+        "youth",
+        "young people",
+        "students",
+        "children",
+        "locals",
+        "tourists",
+    }
+)
+
+
+def is_generic_person_reference(value: str) -> bool:
+    return clean_person_name(value).casefold() in _GENERIC_PERSON_REFERENCES
+
+
 def split_person_scope(value: str) -> tuple[str, ...]:
     return tuple(clean_person_name(part) for part in _PERSON_SEPARATOR.split(value))
 

@@ -241,7 +241,7 @@ class Container:
             same_host = requested.hostname == registered.hostname or (
                 requested.hostname in local and registered.hostname in local
             )
-            if not (
+            if settings.sentrix_external_process or not (
                 same_host
                 and requested.hostname in local
                 and registered.hostname in local

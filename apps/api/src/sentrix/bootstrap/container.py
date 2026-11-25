@@ -61,6 +61,7 @@ from sentrix.domain.media.ports import (
     CaptureTimeResolver,
     MediaDeletionRepository,
     MediaStorage,
+    MediaVlmObserver,
     MetadataReader,
     ObservationRepository,
     OperationControl,
@@ -71,7 +72,6 @@ from sentrix.domain.media.ports import (
     VideoRepository,
     VideoScenePlanner,
     VideoTranscoder,
-    VlmObserver,
 )
 from sentrix.domain.media.progress import ImportProgressStore
 from sentrix.domain.memories.ports import (
@@ -377,7 +377,7 @@ class Container:
     portrait_repository: PortraitRepository
 
     chat_model: ChatModel
-    vlm_observer: VlmObserver
+    vlm_observer: MediaVlmObserver
     # 拿一个问题去问一张图（S6 的 T123/T124 共用的上游件）。与上面那个是**同一个端点的
     # 两种问法**，不是同一件事：``vlm_observer`` 的 schema 固定七个字段、不接问题。
     photo_inspector: PhotoInspector
@@ -637,6 +637,7 @@ class Container:
                     settings.qwen_asr_model,
                     api_key=settings.qwen_asr_api_key,
                     timeout_s=settings.qwen_asr_timeout_s,
+                    speaker_model_dir=settings.data_dir / "models" / "speaker-diarization",
                 )
                 if settings.qwen_asr_base_url.strip()
                 else None

@@ -38,6 +38,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     EvidenceRequirement,
     EvidenceType,
     RequirementValueType,
+    is_generic_person_reference,
 )
 
 # **一处对 1.0 与对 2.0 自己的双重偏离（2026-10-10 回退）。**
@@ -95,7 +96,8 @@ place / time / duration / amount / count / person / media_set / description / bo
 例如“2017年那场婚礼一共花了多少钱”的 value_type 是 amount，不是 time。
 scope 的键只能是 event / time / place / person；能从问题确定的事件、地点、人物、时间必须写上，
 不确定就输出空对象 {{}}；time 只放时间表达式（年份/日期/季节），地名不能塞进 time。
-person 只填所问事实的主体或要求出镜的人，保留原姓名或别名；同张合照的多人用顿号连接。
+person 只填问题明确提到的具体姓名或已确认别名；同张合照的多人用顿号连接。
+我、用户、拍摄者、青少年、学生、游客等代词或群体描述保留在 event 或检索内容里，person 留空。
 不同人物的独立问题用各自的需求；不把排除的人、拍摄者或尚待识别的人写成人物筛选。
 任何字段都禁止输出 <...> 占位符；scope 里禁止写“未知”“unknown”“n/a”。
 
@@ -507,6 +509,8 @@ def parse_declaration(
             if not value_text or _ANGLE_PLACEHOLDER.search(value_text):
                 continue
             if value_text.lower() in _UNKNOWN_SCOPE_VALUES:
+                continue
+            if key_text == "person" and is_generic_person_reference(value_text):
                 continue
             scope.append((key_text, value_text))
 

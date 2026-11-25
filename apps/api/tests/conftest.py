@@ -106,6 +106,15 @@ class FakeVlmObserver:
             confidence=0.65,
         )
 
+    def observe_group(self, frames):
+        return {
+            "short_caption": "测试视频",
+            "caption": "测试视频画面",
+            "ocr_text": "",
+            "tags": [],
+            "entities": [],
+        }
+
 
 class FakeVideoMetadataReader:
     """契约测试用的确定性视频探测器（S8a）。

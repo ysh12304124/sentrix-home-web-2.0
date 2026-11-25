@@ -29,6 +29,7 @@ import pytest
 from sentrix.domain.media.inspection import (
     CERTAINTY_SUPPORTED,
     CERTAINTY_UNCERTAIN,
+    EVIDENCE_INSTRUCTION,
     FACE_MANIFEST_PREFIX,
     INSPECT_PROMPT,
     TARGET_INSTRUCTION,
@@ -155,7 +156,7 @@ def test_the_certainty_vocabulary_has_exactly_the_two_levels_the_prompt_names() 
 def test_the_whole_prompt_with_a_question_is_the_1_0_string() -> None:
     """没有目标人物、没有人脸时，整串就是 1.0 的 ``.format`` 结果——多一个空格都算走样。"""
     expected = INSPECT_PROMPT_1_0.format(question=QUESTION, target_instruction="")
-    assert build_inspect_prompt(QUESTION) == expected
+    assert build_inspect_prompt(QUESTION) == expected + EVIDENCE_INSTRUCTION
 
 
 def test_a_target_person_fills_the_instruction_line() -> None:
@@ -164,7 +165,7 @@ def test_a_target_person_fills_the_instruction_line() -> None:
         question=QUESTION,
         target_instruction=TARGET_INSTRUCTION_1_0.format(target_person="爸爸"),
     )
-    assert build_inspect_prompt(QUESTION, target_person="爸爸") == expected
+    assert build_inspect_prompt(QUESTION, target_person="爸爸") == expected + EVIDENCE_INSTRUCTION
 
 
 def test_the_face_manifest_is_appended_after_the_prompt_not_inside_it() -> None:
@@ -175,6 +176,7 @@ def test_the_face_manifest_is_appended_after_the_prompt_not_inside_it() -> None:
     """
     expected = (
         INSPECT_PROMPT_1_0.format(question=QUESTION, target_instruction="")
+        + EVIDENCE_INSTRUCTION
         + FACE_MANIFEST_PREFIX_1_0
         + json.dumps(FACES, ensure_ascii=False)
     )
@@ -183,8 +185,8 @@ def test_the_face_manifest_is_appended_after_the_prompt_not_inside_it() -> None:
 
 def test_no_faces_appends_nothing_at_all() -> None:
     """1.0 ``:2204`` 的 ``if face_manifest:``——空表不是「一个空清单」，是**没有这一段**。"""
-    assert build_inspect_prompt(QUESTION, faces=[]) == INSPECT_PROMPT_1_0.format(
-        question=QUESTION, target_instruction=""
+    assert build_inspect_prompt(QUESTION, faces=[]) == (
+        INSPECT_PROMPT_1_0.format(question=QUESTION, target_instruction="") + EVIDENCE_INSTRUCTION
     )
     assert render_face_manifest([]) == ""
 

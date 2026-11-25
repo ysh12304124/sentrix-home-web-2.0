@@ -17,6 +17,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from sentrix.domain.media.models import Asset, DerivedAsset, VideoMetadata
 from sentrix.domain.media.ports import VideoProbe
@@ -51,6 +52,10 @@ _METADATA_FIELDS = (
     "device",
     "creation_source",
     "frame_count",
+    "audio_probed",
+    "audio_stream_index",
+    "audio_source_start_sec",
+    "audio_duration_sec",
 )
 
 _DERIVED_COLUMNS = (
@@ -109,6 +114,22 @@ def _row_to_derived(row: sqlite3.Row) -> DerivedAsset:
 class SqliteVideoRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    def read_video_memory_record(self, video_id: str, record_id: str) -> dict[str, Any] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM video_memory_records WHERE video_id=? AND record_id=?",
+                (video_id, record_id),
+            ).fetchone()
+        return _parse_metadata(row["payload"]) if row else None
+
+    def save_video_memory_record(self, video_id: str, record_id: str, payload: Mapping[str, Any]) -> None:
+        with self._database.connect() as connection, connection:
+            connection.execute(
+                "INSERT INTO video_memory_records(video_id, record_id, payload) VALUES(?,?,?) "
+                "ON CONFLICT(video_id, record_id) DO UPDATE SET payload=excluded.payload",
+                (video_id, record_id, json.dumps(dict(payload), ensure_ascii=False, allow_nan=False)),
+            )
 
     @staticmethod
     def _job_dict(row: sqlite3.Row) -> dict[str, object]:
@@ -430,6 +451,7 @@ class SqliteVideoRepository:
         资产/观察 id 上，谁也看不见，直到某次按 observation_id 的连接查询莫名其妙地多出几行。
         """
         with self._database.connect() as connection, connection:
+            connection.execute("DELETE FROM video_memory_records WHERE video_id=?", (parent_asset_id,))
             derived_ids = [
                 row["id"]
                 for row in connection.execute(

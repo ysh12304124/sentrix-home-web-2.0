@@ -22,6 +22,7 @@ import re
 import subprocess
 import time
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,8 +94,18 @@ def normalized_datetime(value: object) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    text = COMPACT_TZ_RE.sub(r"\1:\2", text)
-    return text[:-1] + "+00:00" if text.endswith("Z") else text
+    values = [part.strip() for part in text.split(";")]
+    normalized = [
+        COMPACT_TZ_RE.sub(r"\1:\2", part[:-1] + "+00:00" if part.endswith("Z") else part) for part in values
+    ]
+    if len(normalized) > 1:
+        try:
+            instants = [datetime.fromisoformat(part) for part in normalized]
+        except ValueError:
+            return None
+        if any(value != instants[0] for value in instants[1:]):
+            return None
+    return normalized[0]
 
 
 def iso6709_location(tags: Mapping[str, object]) -> tuple[float | None, float | None]:

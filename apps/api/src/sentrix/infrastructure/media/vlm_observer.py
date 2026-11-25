@@ -405,7 +405,38 @@ class OpenAIVlmObserver:
 
         return semantics_from_payload(parsed)
 
-    def _chat(self, prompt: str, image: str | None) -> dict[str, Any] | None:
+    def observe_group(self, frames: Sequence[tuple[Path, float]]) -> dict[str, Any] | None:
+        if not frames:
+            raise ValueError("a video group must contain at least one frame")
+        max_side = min(self._max_side or 512, int(1024 / len(frames) ** 0.5))
+        images: list[str] = []
+        for path, _ in frames:
+            encoded = _encode_image(path, max_side=max_side)
+            if encoded is None:
+                return None
+            images.append(encoded)
+        times = ", ".join(f"{seconds:.3f}s" for _, seconds in frames)
+        prompt = (
+            f"这是同一视频按时间排序的连续采样图，送入顺序对应原片时间 {times}。"
+            "联合描述可见场景、活动、事件和画面变化。只依据所给画面，不猜测身份、语音或采样间隔中的事情。"
+            "跨帧跟踪同一对象，保留出现、移动和变化；数量仅报告能逐个确认的对象，区分遮挡与未展示部分。"
+            "物品种类不能确认时保留外观描述和不确定性。画面文字按原文抄录。"
+            "用中文返回一个JSON对象：short_caption（一句话）、caption（详细描述）、"
+            "ocr_text（可见原文，无则空串）、tags（字符串数组）、entities（明确可辨认的实体名称数组）。"
+        )
+        payload = self._chat(prompt, images)
+        if payload is None or not _text(payload.get("caption")):
+            return None
+        return {
+            "model_used": self.model_id,
+            "short_caption": _text(payload.get("short_caption")),
+            "caption": _text(payload.get("caption")),
+            "ocr_text": _text(payload.get("ocr_text")),
+            "tags": list(_as_text_tuple(payload.get("tags"))),
+            "entities": list(_as_text_tuple(payload.get("entities"))),
+        }
+
+    def _chat(self, prompt: str, image: str | Sequence[str] | None) -> dict[str, Any] | None:
         return chat_json(
             self._endpoint,
             self._model,

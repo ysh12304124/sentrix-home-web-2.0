@@ -24,7 +24,7 @@ from sentrix.application.retrieval.retrieve_lexical import RetrieveLexical
 from sentrix.application.retrieval.retrieve_metadata import RetrieveMetadata
 from sentrix.application.retrieval.retrieve_text_ann import RetrieveTextAnn
 from sentrix.application.retrieval.retrieve_visual import RetrieveVisual
-from sentrix.domain.assistant.evidence_ledger import EvidenceType
+from sentrix.domain.assistant.evidence_ledger import EvidenceRequirement, EvidenceType
 from sentrix.domain.assistant.models import PersonProfile, PersonRelationship
 from sentrix.domain.assistant.result_set import PAGE_SIZE, ResultSet
 from sentrix.domain.identity.models import ENTITY_STATUS_CONFIRMED, FACE_VALIDITY_VERIFIED
@@ -451,7 +451,7 @@ def test_the_preview_carries_where_who_and_what(toolbox, migrations_ready_db):
     entry = outcome.model_visible["preview"][0]
     assert entry["place"] == "浙江省杭州市萧山区"
     # 场景描述仍然给模型，但换个键——它对「室内还是室外」有用，只是不冒充地点。
-    assert entry["scene_hint"] == "婚礼或庆典活动的室内背景区"
+    assert "婚礼或庆典活动的室内背景区" in entry["evidence_summary"]
     assert entry["people"] == ["妈妈"]
     assert "海边两个人合影" in entry["evidence_summary"]
 
@@ -1119,3 +1119,33 @@ def test_memory_facts_rejects_a_person_that_was_never_confirmed(toolbox):
 
     assert outcome.failure_reason == "person_not_named_in_current_album"
     assert outcome.model_visible["status"] == "unresolved_person"
+
+
+@pytest.mark.parametrize("reference", ["用户", "青少年", "students", "I"])
+def test_generic_person_scope_does_not_block_content_search(toolbox, reference):
+    build, _ = toolbox
+    outcome = build.execute(
+        "search_memories",
+        {"query": "海边"},
+        scope_id=SCOPE,
+        now=NOW,
+        requirements=(
+            EvidenceRequirement("r1", EvidenceType.PHOTO_SET, "查找活动", scope=(("person", reference),)),
+        ),
+    )
+    assert outcome.ok
+    assert outcome.observation["asset_ids"]
+
+
+def test_unresolved_specific_name_still_blocks_person_filtered_search(toolbox):
+    build, _ = toolbox
+    outcome = build.execute(
+        "search_memories",
+        {"query": "海边"},
+        scope_id=SCOPE,
+        now=NOW,
+        requirements=(
+            EvidenceRequirement("r1", EvidenceType.PHOTO_SET, "查找人物", scope=(("person", "陌生姓名"),)),
+        ),
+    )
+    assert outcome.failure_reason == "unresolved_person"

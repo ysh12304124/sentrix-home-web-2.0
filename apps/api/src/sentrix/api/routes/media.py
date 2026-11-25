@@ -525,7 +525,8 @@ def _process_is_alive(pid: int) -> bool:
 def _video_config_hash(container: Container) -> str:
     settings = container.settings
     config = {
-        "pipeline_version": "video-v1",
+        "pipeline_version": "video-memory-v2",
+        "qwen_asr_base_url": settings.qwen_asr_base_url,
         "embedding_scheme": settings.embedding_scheme,
         "cross_modal_attention_enabled": settings.cross_modal_attention_enabled,
         "qwen_asr_model": settings.qwen_asr_model,
@@ -598,6 +599,13 @@ def _run_video_job(container: Container, job_id: str) -> None:
                     raise RuntimeError("video probe artifact missing")
                 mark("VIDEO_PROBE", artifact="assets.metadata_json.video_metadata")
 
+            video_probe = container.video_repository.probe(asset_id)
+            metadata = video_probe.metadata if video_probe else None
+            no_audio = metadata is not None and metadata.audio_probed and metadata.audio_stream_index is None
+            audio_status = (
+                "no_audio" if no_audio else "disabled" if container.audio_transcriber is None else "success"
+            )
+
             source_stage = container.video_repository.stage(job_id, "SOURCE_MEMORY") or {}
             source_memory_exists = bool(container.observation_repository.list_by_asset(asset_id))
             if source_stage.get("status") != "SUCCEEDED" or not source_memory_exists:
@@ -632,7 +640,7 @@ def _run_video_job(container: Container, job_id: str) -> None:
                 try:
                     segments = tuple(
                         container.audio_transcriber.transcribe_video(Path(asset.path))
-                        if container.audio_transcriber is not None
+                        if container.audio_transcriber is not None and not no_audio
                         else ()
                     )
                     payload = [
@@ -700,7 +708,8 @@ def _run_video_job(container: Container, job_id: str) -> None:
                         error_message=str(error),
                     )
                     raise RuntimeError("speech checkpoint is missing or corrupt") from error
-            if speech_stage.get("status") == "SKIPPED":
+            if degraded or speech_stage.get("status") == "SKIPPED":
+                audio_status = "failed"
                 degraded = True
 
             for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY"):
@@ -735,9 +744,18 @@ def _run_video_job(container: Container, job_id: str) -> None:
                 and len(container.event_repository.list_video_scenes(asset_id)) == len(derived_frames)
                 and all(container.observation_repository.list_by_asset(frame.id) for frame in derived_frames)
             )
-            stage_artifacts_complete = scene_artifacts_valid and all(
-                (container.video_repository.stage(job_id, stage_name) or {}).get("status") == "SUCCEEDED"
-                for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY")
+            video_memory = container.video_repository.read_video_memory_record(asset_id, asset_id)
+            stage_artifacts_complete = (
+                bool(
+                    video_memory
+                    and video_memory.get("processing_version") == "video-memory-v2"
+                    and video_memory["status"] == "complete"
+                )
+                and scene_artifacts_valid
+                and all(
+                    (container.video_repository.stage(job_id, stage_name) or {}).get("status") == "SUCCEEDED"
+                    for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY")
+                )
             )
             if not stage_artifacts_complete:
                 for stage_name in ("FRAME_SAMPLE_VSD", "EVENT_BUILD", "KEYFRAME_MEMORY"):
@@ -791,14 +809,19 @@ def _run_video_job(container: Container, job_id: str) -> None:
                     plan_digest = hashlib.sha256(plan_payload).hexdigest()
                     if frame_stage.get("input_hash") == plan_digest:
                         raw_windows = json.loads(plan_payload)
-                        planned_windows = tuple(
-                            SceneWindow(
-                                index=int(item["index"]),
-                                start_sec=float(item["start_sec"]),
-                                end_sec=float(item["end_sec"]),
-                                selected_timestamp_sec=float(item["selected_timestamp_sec"]),
+                        planned_windows = (
+                            tuple(
+                                SceneWindow(
+                                    index=int(item["index"]),
+                                    start_sec=float(item["start_sec"]),
+                                    end_sec=float(item["end_sec"]),
+                                    selected_timestamp_sec=float(item["selected_timestamp_sec"]),
+                                    selection_group=item.get("selection_group"),
+                                )
+                                for item in raw_windows
                             )
-                            for item in raw_windows
+                            if all("selection_group" in item for item in raw_windows)
+                            else None
                         )
                 except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                     planned_windows = None
@@ -821,6 +844,7 @@ def _run_video_job(container: Container, job_id: str) -> None:
                             "start_sec": window.start_sec,
                             "end_sec": window.end_sec,
                             "selected_timestamp_sec": window.keyframe_timestamp_sec,
+                            "selection_group": window.selection_group,
                         }
                         for window in windows
                     ],
@@ -847,11 +871,13 @@ def _run_video_job(container: Container, job_id: str) -> None:
                 ).execute(
                     asset_id,
                     transcription_segments=segments,
+                    audio_status=audio_status,
                     planned_windows=planned_windows,
                     on_scene_plan=save_scene_plan,
                 )
                 if extraction.reason:
                     raise RuntimeError(f"video scene processing did not complete: {extraction.reason}")
+                degraded = degraded or extraction.memory_partial
                 container.video_repository.save_processing_timings(asset_id, extraction.timings)
                 mark("FRAME_SAMPLE_VSD", artifact=f"sqlite:video_keyframes(parent_asset_id={asset_id})")
                 mark("EVENT_BUILD", artifact=f"sqlite:events(source_asset_id={asset_id})")

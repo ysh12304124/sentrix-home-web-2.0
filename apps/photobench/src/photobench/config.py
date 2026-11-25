@@ -145,6 +145,7 @@ class Settings:
     #: ``SystemdSentrixProcess``——重启走 ``systemctl --user``，运行端点读单元环境。
     #: 生产（``deploy/systemd/`` 的单元）填 ``sentrix-api.service``。
     sentrix_service_unit: str = ""
+    sentrix_external_process: bool = False
     #: 部署形态（``server`` / ``mac``）。只读，用于诊断；默认值见上面的 helpers。
     deployment_profile: str = "server"
     qa_concurrency: int = 0
@@ -205,4 +206,5 @@ class Settings:
             sentrix_pid_file=_root("PHOTOBENCH_SENTRIX_PID_FILE", APP_ROOT / "logs" / "sentrix-process.json"),
             sentrix_log_path=_root("PHOTOBENCH_SENTRIX_LOG_PATH", APP_ROOT / "logs" / "sentrix.log"),
             sentrix_service_unit=os.environ.get("PHOTOBENCH_SENTRIX_SERVICE_UNIT", "").strip(),
+            sentrix_external_process=os.environ.get("PHOTOBENCH_SENTRIX_EXTERNAL_PROCESS") == "1",
         )

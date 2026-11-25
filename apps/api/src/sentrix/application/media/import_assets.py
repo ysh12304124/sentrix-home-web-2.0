@@ -83,7 +83,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -734,6 +734,38 @@ class ImportAssets:
             faces=faces,
             text_rows=text_rows,
         )
+
+    def process_group_frame(
+        self, asset: Asset, event_id: str, semantics: ObservationSemantics | None
+    ) -> ProcessedAsset:
+        """Index frame evidence, using the group observation on its representative frame."""
+        prepared = self.prepare_image(asset)
+        if semantics is not None:
+            place = prepared.semantics.place if prepared.semantics is not None else ""
+            prepared = replace(prepared, semantics=replace(semantics, place=place))
+        return self.commit_image(asset, prepared, forced_event_id=event_id)
+
+    def index_video_memory(self, asset: Asset, memory: dict[str, object]) -> None:
+        """Refresh the existing source observation and its search projections."""
+        observation = self._import_observation(asset)
+        tags, entities = memory.get("tags"), memory.get("entities")
+        objects = tuple(
+            dict.fromkeys(
+                str(item) for field in (tags, entities) if isinstance(field, list) for item in field
+            )
+        )
+        observation = self._observations.enrich(
+            observation.id,
+            semantics=ObservationSemantics(
+                caption=str(memory["caption"]),
+                ocr_text=str(memory["ocr_text"]),
+                objects=objects,
+                place=observation.place,
+                confidence=0.8 if memory["caption"] else 0.0,
+            ),
+        )
+        self._index_text(observation, None)
+        self._project_lexical(observation)
 
     def _import_observation(self, asset: Asset, *, source_text: str = "") -> Observation:
         # 重放复用最早的观察，避免重复创建向量、词项和事件归属。

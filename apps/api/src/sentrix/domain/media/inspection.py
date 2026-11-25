@@ -37,6 +37,12 @@ INSPECT_PROMPT = """观察这张照片，输出 JSON：
 问题：{question}
 如果问题指向照片中的某个人但没有姓名，请根据人脸清单选择对应的 face_id；无法确定时返回空，不要猜姓名。"""
 
+EVIDENCE_INSTRUCTION = (
+    "\n依据要求：只报告画面直接支持的内容。计数时按空间位置逐个列出可辨对象后给出总数，"
+    "明确区分完整可见、遮挡和画面外对象；无法精确计数时 certainty=uncertain。"
+    "同一对象跨画面出现只计一次。地点文字按原文报告，城市或地址需明确标识支持。"
+)
+
 # 1.0 ``:2619-2620`` 的 ``target_instruction`` 原文。``{target_person}`` 是它唯一的槽。
 TARGET_INSTRUCTION = (
     "目标人物是“{target_person}”。第一张图（如有）是该人物的定位裁剪图；"
@@ -83,6 +89,8 @@ def build_inspect_prompt(
     属于 T123，不住在这里。
     """
     instruction = TARGET_INSTRUCTION.format(target_person=target_person) if target_person else ""
-    return INSPECT_PROMPT.format(question=question, target_instruction=instruction) + render_face_manifest(
-        faces
+    return (
+        INSPECT_PROMPT.format(question=question, target_instruction=instruction)
+        + EVIDENCE_INSTRUCTION
+        + render_face_manifest(faces)
     )

@@ -254,3 +254,30 @@ job API 重载状态，并显示当前 stage 的场景 checkpoint（例如 `62/8
 的所有向量/事实投影都完整。SQLite artifact 指针可观测，但尚未对所有数据库派生物做哈希
 清单与自动修复。FFmpeg 当前采用软件解码，没有 NVDEC 优先路径；CUDA OOM 自适应 batch、
 取消 API、跨进程多 worker leasing 也未实现。逐项限制必须在验收报告中如实列出。
+
+### 视频分组和转写证据
+
+保留 SVD/Katna 选帧时的镜头分组与首末帧组。每组按原视频时间发起联合视觉请求，
+组大小由实际保留的帧数确定。分组检查点和结构化视频记忆使用
+`video_memory_records`，以原视频为父记录。公开视频 API 沿用原有字段。源视频
+观察写入带原片时间的画面和语音摘要并刷新原有文本检索投影。每个音频片段时刻按
+音轨时间保存，通过 `source_start_sec` 换算原片时间。没有说话人结果时标签留空。
+
+可在产品数据根下提供 `models/speaker-diarization/segmentation.onnx` 和
+`embedding.onnx`，分别为 Sherpa-ONNX 支持的 Pyannote 分段和 3D-Speaker
+嵌入模型。转写服务未提供标签时，按同片说话时段重叠估计标签。单个粗粒度转写片段
+包含多个说话人且无明显主导时保留空标签。
+
+Mac 上使用 launchd 管理产品 API 时，设 `PHOTOBENCH_SENTRIX_EXTERNAL_PROCESS=1`，
+让 PhotoBench 读取产品诊断并验证模型端点，服务生命周期继续由 launchd 管理。
+
+
+### 视频问答的来源和检索修复
+
+重复的容器拍摄时间先逐项解析，只有各项代表相同时刻才合并。冲突或无效的多值时间
+保持未知。导入装配接入已有 CaptureTimeResolver，结合 GPS 恢复拍摄当地时区。
+规划时泛指用户和人群的词保留为内容语义，具体姓名仍经过人物目录过滤。检索首屏
+保留翻页和结果集控制信息，帧预览补充原视频拍摄时间及原片秒数。精读要求逐个核对
+计数对象与遮挡情况，回答依据匹配媒体的时间、地点和图像，保留不确定性。
+部署需满足已声明的 tzfpy 依赖，并按 GeoNames runbook 配置离线城市数据。
+视频分组、音轨子记录和转写时间偏移仍由 video-memory-v2 生成。

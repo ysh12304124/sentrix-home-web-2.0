@@ -291,3 +291,4 @@
 {"capability": "邮件引用与来源列表测评", "origin_kind": "NEW-2.0", "target_path": "apps/photobench/src/photobench/domain/evaluation/sources.py", "verification": "apps/photobench/tests/test_source_evaluation.py", "status": "verified"}
 {"capability": "产品与测评聊天的会话删除、活动回合保护及二次确认", "origin_kind": "NEW-2.0", "target_path": "apps/photobench/src/photobench/application/interactive/chat.py", "verification": "apps/photobench/tests/test_interactive.py", "status": "verified"}
 {"capability": "确认身份与人物合并只入队外观取样，后台线程逐人调视觉模型，已采过的脸不再重复调用", "origin_kind": "NEW-2.0", "target_path": "apps/api/src/sentrix/application/identity/appearance_sampling.py", "verification": "apps/api/tests/integration/test_observe_appearance.py", "status": "verified"}
+{"capability":"视频按时间分组的结构化记忆","origin_kind":"NEW-2.0","target_path":"apps/api/src/sentrix/application/media/build_video_memory.py","verification":"apps/api/tests/integration/test_video_scenes.py","status":"verified"}

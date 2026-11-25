@@ -45,6 +45,13 @@ def _rate(value: object) -> float:
         return 0.0
 
 
+def _seconds(value: object) -> float | None:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 class FfprobeVideoMetadataReader:
     """domain ``VideoMetadataReader`` 的 ffprobe 实现。"""
 
@@ -95,6 +102,9 @@ class FfprobeVideoMetadataReader:
                 ],
             )
         ).strip()
+        audio = next((s for s in payload.get("streams") or [] if s.get("codec_type") == "audio"), None)
+        origin = _seconds(format_info.get("start_time")) or 0.0
+        audio_start = _seconds(audio.get("start_time")) if audio else None
         return VideoMetadata(
             captured_at=captured_at,
             latitude=latitude,
@@ -109,4 +119,8 @@ class FfprobeVideoMetadataReader:
             device=device,
             creation_source=creation_source,
             frame_count=frame_count,
+            audio_probed=True,
+            audio_stream_index=int(audio["index"]) if audio else None,
+            audio_source_start_sec=audio_start - origin if audio_start is not None else None,
+            audio_duration_sec=_seconds(audio.get("duration")) if audio else None,
         )

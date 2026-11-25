@@ -33,6 +33,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sentrix.application.media.build_video_memory import build_video_memory
 from sentrix.application.media.cross_modal_attention import (
     attended_speech_indices,
     bidirectional_cross_modal_attention,
@@ -45,7 +46,9 @@ from sentrix.domain.media.ports import (
     AssetRepository,
     AudioTranscriber,
     ObservationRepository,
+    ObservationSemantics,
     TranscriptionSegment,
+    VideoGroupObserver,
     VideoKeyframeExtractor,
     VideoRepository,
     VideoScenePlanner,
@@ -96,6 +99,7 @@ class VideoSceneExtraction:
     # 后者才会调用视觉/VLM/人脸/实体/事实流水线，把两者揉成一个数无法判断瓶颈。
     timings: dict[str, float] = field(default_factory=dict)
     timing_spans: dict[str, tuple[float, float]] = field(default_factory=dict)
+    memory_partial: bool = False
 
 
 class ExtractVideoScenes:
@@ -112,6 +116,9 @@ class ExtractVideoScenes:
         # （它还要负责去重、落盘、探测）。第二参是 ``forced_event_id``。
         process_image: Callable[[Asset, str], object],
         observations: ObservationRepository | None = None,
+        group_observer: VideoGroupObserver | None = None,
+        index_video_memory: Callable[[Asset, dict[str, object]], None] | None = None,
+        process_group_frame: Callable[[Asset, str, ObservationSemantics | None], object] | None = None,
         scene_planner: VideoScenePlanner | None = None,
         transcriber: AudioTranscriber | None = None,
         cross_modal_embedder: VisualEmbedder | None = None,
@@ -127,6 +134,9 @@ class ExtractVideoScenes:
         self._keyframes = keyframes
         self._process_image = process_image
         self._observations = observations
+        self._group_observer = group_observer
+        self._index_video_memory = index_video_memory
+        self._process_group_frame = process_group_frame
         self._scene_planner = scene_planner
         self._transcriber = transcriber
         self._cross_modal_embedder = cross_modal_embedder
@@ -141,6 +151,7 @@ class ExtractVideoScenes:
         source_asset_id: str,
         *,
         transcription_segments: Sequence[TranscriptionSegment] | None = None,
+        audio_status: str | None = None,
         planned_windows: Sequence[SceneWindow] | None = None,
         on_scene_plan: Callable[[Sequence[SceneWindow]], None] | None = None,
     ) -> VideoSceneExtraction:
@@ -153,7 +164,9 @@ class ExtractVideoScenes:
             )
 
         probe = self._video_repository.probe(source_asset_id)
-        duration = (probe.metadata.duration_sec if probe and probe.metadata else 0.0) or 0.0
+        metadata = probe.metadata if probe else None
+        duration = metadata.duration_sec if metadata else 0.0
+        no_audio = metadata is not None and metadata.audio_probed and metadata.audio_stream_index is None
         planning_started = time.perf_counter()
         with stage_span("video_scene_planning", asset.id):
             windows = planned_windows or (
@@ -187,10 +200,14 @@ class ExtractVideoScenes:
 
         transcription_started = time.perf_counter()
         segments: tuple[TranscriptionSegment, ...] = tuple(transcription_segments or ())
-        if transcription_segments is None and self._transcriber is not None:
+        if audio_status is None:
+            audio_status = "no_audio" if no_audio else "disabled"
+        if transcription_segments is None and self._transcriber is not None and not no_audio:
             try:
                 segments = tuple(self._transcriber.transcribe_video(Path(asset.path)))
+                audio_status = "success"
             except Exception as error:  # noqa: BLE001 — optional ASR must not block video import
+                audio_status = "failed"
                 log.warning("视频语音转写失败 asset=%s: %s", asset.id, error)
         transcription_seconds = time.perf_counter() - transcription_started
         construction_started = time.perf_counter()
@@ -275,6 +292,49 @@ class ExtractVideoScenes:
             if self._checkpoint is not None:
                 self._checkpoint("FRAME_SAMPLE_VSD", position, len(windows), window.index)
 
+        memory_partial = False
+        semantics_by_frame: dict[str, ObservationSemantics] = {}
+        if self._group_observer is not None:
+            memory = build_video_memory(
+                asset,
+                [
+                    (
+                        window.keyframe_timestamp_sec,
+                        window.selection_group if window.selection_group is not None else window.index,
+                        frame,
+                    )
+                    for window, frame, _ in frame_records
+                ],
+                segments,
+                metadata,
+                audio_status,
+                self._group_observer,
+                self._video_repository,
+            )
+            memory_partial = memory["status"] == "partial" or audio_status == "failed"
+            semantics_by_frame = {
+                group["frame_ids"][0]: ObservationSemantics(
+                    caption=group["caption"],
+                    ocr_text=group["ocr_text"],
+                    objects=tuple(dict.fromkeys(group["tags"] + group["entities"])),
+                    confidence=0.8,
+                )
+                for group in memory["groups"]
+                if group["status"] == "complete"
+            }
+            if self._index_video_memory is not None:
+                self._index_video_memory(asset, memory)
+
+        audio_offset = (metadata.audio_source_start_sec if metadata else None) or 0.0
+        if audio_offset:
+            segments = tuple(
+                replace(
+                    segment,
+                    start_sec=segment.start_sec + audio_offset,
+                    end_sec=segment.end_sec + audio_offset,
+                )
+                for segment in segments
+            )
         attended_by_scene: dict[int, tuple[str, tuple[dict[str, object], ...]]] = {}
         embedder = self._cross_modal_embedder
         if embedder is not None and segments and frame_records:
@@ -352,7 +412,10 @@ class ExtractVideoScenes:
             if self._checkpoint is not None:
                 self._checkpoint("KEYFRAME_MEMORY", memory_completed, len(frame_records), window.index)
             with stage_span("video_keyframe_memory", asset.id):
-                self._process_image(derived, event.id)
+                if self._process_group_frame is None:
+                    self._process_image(derived, event.id)
+                else:
+                    self._process_group_frame(derived, event.id, semantics_by_frame.get(derived.id))
             finished = time.perf_counter()
             keyframe_memory_seconds += finished - memory_started
             spans.include({"keyframe_memory": (memory_started, finished)})
@@ -364,6 +427,7 @@ class ExtractVideoScenes:
         spans.include({"total": (total_started, time.perf_counter())})
         return VideoSceneExtraction(
             scene_count=scene_count,
+            memory_partial=memory_partial,
             keyframe_count=keyframe_count,
             reused=reused,
             timing_spans=dict(spans.intervals),

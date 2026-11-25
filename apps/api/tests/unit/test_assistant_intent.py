@@ -566,3 +566,14 @@ def test_structured_planner_constrains_evidence_types_to_parser_registry():
         None,
         "invalid_planner_action",
     )
+
+
+@pytest.mark.parametrize("person", ["用户", "青少年", "students"])
+def test_planner_keeps_generic_people_as_content_instead_of_identity_filters(person):
+    model = ScriptedPlannerModel(
+        [declaration("photo_set", scope_body={"person": person, "event": "公园演出"})]
+    )
+    result = GoalPlanner(model).declare("When did I see a band perform?", scope_id=SCOPE)
+    assert result.ok
+    assert all("person" not in dict(requirement.scope) for requirement in result.requirements)
+    assert all(dict(requirement.scope)["event"] == "公园演出" for requirement in result.requirements)

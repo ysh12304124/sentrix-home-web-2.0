@@ -44,6 +44,7 @@ from sentrix.domain.assistant.evidence_ledger import (
     EvidenceType,
     RequirementValueType,
     clean_person_name,
+    is_generic_person_reference,
     split_person_scope,
 )
 from sentrix.domain.assistant.models import AmbiguousPersonName, Attachment, PersonProfile
@@ -402,7 +403,13 @@ class AssistantToolbox:
             return _failure("invalid_source_type", "source_type 需为 all、email 或 document")
 
         scopes = [dict(item.scope) for item in requirements]
-        names = tuple(dict.fromkeys(scope["person"] for scope in scopes if scope.get("person")))
+        names = tuple(
+            dict.fromkeys(
+                scope["person"]
+                for scope in scopes
+                if scope.get("person") and not is_generic_person_reference(scope["person"])
+            )
+        )
         try:
             groups = [self._search_people(name, scope_id) for name in names]
             if not groups:
@@ -603,11 +610,6 @@ class AssistantToolbox:
             "group_photo_rows": group_rows,
             "preview": preview,
         }
-        # 第一页只保留模型真正需要读的候选与合影汇总；内部 observation 仍保存全部
-        # 控制字段，JIT / 证据绑定 / 翻页判定继续从 observation 读。
-        if page_no == 1:
-            for key in ("result_set_id", "query", "page", "page_size", "total", "has_more", "can_inspect"):
-                model_visible.pop(key, None)
         if not preview and page.total:
             # **越界页仍然是 ``ok``**（1.0 的行为，``test_a_page_past_the_end_is_empty_not_an_error``
             # 钉着）：越界不是错误，是「没有更多了」。但**光给一个空数组不够**——实测模型
@@ -651,6 +653,9 @@ class AssistantToolbox:
             # 只在不关心地点的用例里出现（生产装配一定给）。**不给假的兜底地名**——
             # 编一个出来会让「没有反解」与「反解出这个地名」分不开。
             return ""
+        asset = self._assets.get(asset_id)
+        if asset is not None and asset.source_metadata.precise_address:
+            return asset.source_metadata.precise_address
         place = self._asset_places.get(asset_id)
         return place.display() if place is not None else ""
 
@@ -769,6 +774,13 @@ class AssistantToolbox:
         ):
             row["location_evidence"] = {"gps": None, "source": "unknown", "precision": "unknown"}
 
+        if asset is not None and asset.parent_asset_id:
+            parent = self._assets.get(asset.parent_asset_id)
+            row["source_video"] = {
+                "file_name": parent.file_name if parent else "",
+                "timestamp_sec": asset.source_timestamp_sec,
+                "captured_at": parent.captured_at.isoformat() if parent and parent.captured_at else "",
+            }
         hint = row["scene_hint"]
         summary = row["evidence_summary"]
         if hint and hint in summary:

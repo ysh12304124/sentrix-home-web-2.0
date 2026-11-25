@@ -10,6 +10,7 @@ windows, so the existing asset, event, and memory pipelines remain unchanged.
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
@@ -27,6 +28,7 @@ class FrameCandidate(TypedDict):
     image: np.ndarray
     candidate_index: NotRequired[int]
     endpoint_anchor: NotRequired[bool]
+    selection_group: NotRequired[int]
 
 
 SAMPLE_FPS = 10.0
@@ -113,6 +115,7 @@ def _sample_video(
     sampled_indices: list[int] = []
     last_frame: np.ndarray | None = None
     last_frame_index = -1
+    last_timestamp = -1.0
     next_tick = 0
     index = 0
     while True:
@@ -121,7 +124,13 @@ def _sample_video(
             break
         last_frame = image.copy()
         last_frame_index = index
-        source_time = index / source_fps
+        decoded_time = capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        source_time = (
+            decoded_time
+            if math.isfinite(decoded_time) and decoded_time > last_timestamp
+            else max(last_timestamp, index / source_fps)
+        )
+        last_timestamp = source_time
         target_time = next_tick / SAMPLE_FPS
         if source_time + (0.5 / max(source_fps, 1.0)) >= target_time and target_time < duration:
             if (image.shape[1], image.shape[0]) != (width, height):
@@ -137,7 +146,7 @@ def _sample_video(
     # The first 10fps sample is the exact first decoded frame. Add the exact
     # final decoded frame when the last regular tick did not land on it.
     tail_added = sampled_indices[-1] != last_frame_index
-    actual_last_timestamp = last_frame_index / source_fps
+    actual_last_timestamp = last_timestamp
     if tail_added:
         if (last_frame.shape[1], last_frame.shape[0]) != (width, height):
             last_frame = cv2.resize(last_frame, (width, height), interpolation=cv2.INTER_AREA)
@@ -338,6 +347,7 @@ def _scene_windows(selected: list[FrameCandidate], duration_sec: float) -> tuple
                 start_sec=start,
                 end_sec=max(start, end),
                 selected_timestamp_sec=timestamps[index],
+                selection_group=int(_item["selection_group"]) if "selection_group" in _item else None,
             )
         )
     return tuple(windows)
@@ -374,11 +384,15 @@ class SVDKatnaScenePlanner:
         # Katna itself selects the exact source endpoints through singleton
         # groups. Interior groups receive the full 10fps stream so short-lived
         # transitions are not erased by global deduplication before planning.
-        raw_selected = _katna_select([first], 1)
-        if last_index > 0:
-            raw_selected.extend(_katna_select([last], 1))
+        raw_selected: list[FrameCandidate] = [
+            {**item, "selection_group": 0} for item in _katna_select([first], 1)
+        ]
         interior_candidates = [item for item in candidates if 0 < int(item["frame_index"]) < last_index]
         groups, transitions, cut_thresholds = _shot_groups(frames, interior_candidates, representation)
+        if last_index > 0:
+            raw_selected.extend(
+                {**item, "selection_group": len(groups) + 1} for item in _katna_select([last], 1)
+            )
         shot_rows: list[dict[str, object]] = []
         for shot_number, group in enumerate(groups, start=1):
             start_index = int(group[0]["frame_index"])
@@ -408,7 +422,7 @@ class SVDKatnaScenePlanner:
                 max(1, int(round(1.0 + np.sqrt(len(group)) * change_score * 1.4))),
             )
             selected_group = _katna_select(group, budget)
-            raw_selected.extend(selected_group)
+            raw_selected.extend({**item, "selection_group": shot_number} for item in selected_group)
             shot_rows.append(
                 {
                     "shot": shot_number,
@@ -511,6 +525,7 @@ class SVDKatnaScenePlanner:
                     },
                     "final_selected_count": len(selected),
                     "selected_timestamps_sec": [window.keyframe_timestamp_sec for window in windows],
+                    "selection_groups": [window.selection_group for window in windows],
                     "runtime_seconds": elapsed,
                 },
                 ensure_ascii=False,

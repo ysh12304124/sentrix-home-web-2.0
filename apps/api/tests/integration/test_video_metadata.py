@@ -260,3 +260,28 @@ def test_half_a_coordinate_is_not_a_gps_point():
 
     assert metadata.gps() is None
     assert metadata.captured_datetime() is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-02-15T23:30:00Z;2024-02-15T23:30:00Z",
+        "2024-02-15T23:30:00Z;2024-02-16T00:30:00+0100",
+    ],
+)
+def test_duplicate_capture_timestamps_resolve_to_one_instant(value):
+    payload = {"format": {"tags": {"creation_time": value}}, "streams": [{"codec_type": "video"}]}
+    result = probe(payload)
+    assert result.captured_datetime().isoformat() == "2024-02-15T23:30:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-02-15T23:30:00Z;2024-02-16T23:30:00Z",
+        "2024-02-15T23:30:00Z;invalid",
+    ],
+)
+def test_conflicting_capture_timestamps_remain_unknown(value):
+    payload = {"format": {"tags": {"creation_time": value}}, "streams": [{"codec_type": "video"}]}
+    assert probe(payload).captured_datetime() is None

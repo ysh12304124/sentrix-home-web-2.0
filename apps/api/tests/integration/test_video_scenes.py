@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sentrix.application.media.build_video_memory import build_video_memory
 from sentrix.application.media.extract_video_scenes import ExtractVideoScenes
 from sentrix.application.media.import_assets import ImportAssets, ImportRequest
 from sentrix.domain.media.models import MediaType, VideoMetadata
+from sentrix.domain.media.ports import TranscriptionSegment
 from sentrix.infrastructure.persistence.database import Database
 from sentrix.infrastructure.persistence.repositories.asset_places import SqliteAssetPlaceRepository
 from sentrix.infrastructure.persistence.repositories.assets import (
@@ -440,3 +443,52 @@ def test_a_video_scene_summary_is_not_exempt_from_the_participant_refresh(
     assert "小明" in event.summary
     assert "0.0s~60.0s" in event.summary
     assert event.summary != "视频场景 · 0.0s~60.0s"
+
+
+def test_video_memory_keeps_variable_selection_groups_and_audio_lineage(
+    migrations_ready_db: Database,
+    tmp_path: Path,
+) -> None:
+    harness = Harness(migrations_ready_db, tmp_path)
+    video_id = harness.import_video().asset_id
+    video = harness.assets.get(video_id)
+    assert video is not None
+    source = harness.assets.get(harness.videos.list_derived(video_id)[0].id)
+    assert source is not None
+    selection_sizes = [1, 7, 3]
+    frames = [
+        (float(i), 0 if i == 0 else 1 if i < 8 else 2, replace(source, id=f"frame-{i}"))
+        for i in range(10, -1, -1)
+    ]
+
+    class GroupObserver:
+        calls: list[list[float]] = []
+
+        def observe_group(self, frames):
+            self.calls.append([seconds for _, seconds in frames])
+            return {
+                "short_caption": "画面",
+                "caption": "分组画面",
+                "tags": ["标签"],
+                "entities": ["物件"],
+                "ocr_text": "",
+            }
+
+    observer = GroupObserver()
+    metadata = VideoMetadata(audio_stream_index=2, audio_source_start_sec=1.25)
+    segments = [TranscriptionSegment(2.0, 3.0, "测试语音", "speaker_1")]
+    result = build_video_memory(video, frames, segments, metadata, "success", observer, harness.videos)
+    assert len(observer.calls) == len(result["groups"]) == 3
+    assert [len(times) for times in observer.calls] == selection_sizes
+    assert [second for times in observer.calls for second in times] == list(range(11))
+    assert result["groups"][1]["frame_ids"] == [f"frame-{i}" for i in range(1, 8)]
+    segment = result["segments"][0]
+    assert segment["audio_id"] == result["audio_track"]["audio_id"]
+    assert segment["video_id"] == result["audio_track"]["video_id"] == result["id"] == video_id
+    assert (segment["start_sec"], segment["end_sec"], segment["speaker_label"]) == (2.0, 3.0, "speaker_1")
+    assert (segment["video_start_sec"], segment["video_end_sec"]) == (3.25, 4.25)
+    assert (
+        build_video_memory(video, frames, segments, metadata, "success", observer, harness.videos) == result
+    )
+    assert len(observer.calls) == 3
+    assert harness.videos.read_video_memory_record(video_id, video_id) == result

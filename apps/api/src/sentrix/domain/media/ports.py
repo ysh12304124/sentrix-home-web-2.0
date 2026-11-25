@@ -257,6 +257,16 @@ class VlmObserver(Protocol):
     def observe(self, path: Path) -> ObservationSemantics | None: ...
 
 
+class VideoGroupObserver(Protocol):
+    """Observe the ordered frames jointly. Return None on provider failure."""
+
+    def observe_group(self, frames: Sequence[tuple[Path, float]]) -> dict[str, Any] | None: ...
+
+
+class MediaVlmObserver(VlmObserver, VideoGroupObserver, Protocol):
+    """Shared still-image and video-group visual provider."""
+
+
 class PhotoInspector(Protocol):
     """拿一个问题去问一张图。实现在 ``infrastructure/media/photo_inspector.py``。
 
@@ -454,7 +464,7 @@ class VideoScenePlanner(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TranscriptionSegment:
-    """A time-aligned speech segment returned by an ASR service (source-video seconds)."""
+    """A time-aligned speech segment returned by an ASR service (audio-track seconds)."""
 
     start_sec: float
     end_sec: float
@@ -463,7 +473,7 @@ class TranscriptionSegment:
 
 
 class AudioTranscriber(Protocol):
-    """Transcribe speech from a video and return source-timestamped segments."""
+    """Transcribe speech from a video and return audio-track-timestamped segments."""
 
     def transcribe_video(self, path: Path) -> Sequence[TranscriptionSegment]: ...
 
@@ -492,6 +502,10 @@ class VideoProbe:
 
 
 class VideoRepository(Protocol):
+    def read_video_memory_record(self, video_id: str, record_id: str) -> dict[str, Any] | None: ...
+
+    def save_video_memory_record(self, video_id: str, record_id: str, payload: Mapping[str, Any]) -> None: ...
+
     """视频血缘的读写：探测结果的落库与回读、派生物的查询与清场。
 
     **为什么与 ``AssetRepository`` 分开。** 这几个方法全都围绕「派生物怎么指回原片」

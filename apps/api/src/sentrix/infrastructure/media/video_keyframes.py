@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 from pathlib import Path
 
@@ -51,7 +52,7 @@ class FfmpegVideoKeyframeExtractor:
                 "-v",
                 "error",
                 "-ss",
-                f"{float(timestamp_sec):.3f}",
+                f"{math.floor(timestamp_sec * 1_000_000) / 1_000_000:.6f}",
                 "-i",
                 str(source),
                 "-frames:v",
@@ -60,7 +61,7 @@ class FfmpegVideoKeyframeExtractor:
                 # 不做这一步，抽出的 JPEG 会按方像素显示，人像被横向压扁；海报与
                 # 资料库预览正是直接拿这张 JPEG。按 SAR 展开到显示宽度再标记方像素。
                 "-vf",
-                "scale=iw*sar:ih,setsar=1",
+                "scale=max(2\\,trunc(iw*sar/2)*2):ih:out_range=full,setsar=1,format=yuvj420p",
                 "-q:v",
                 str(FRAME_QUALITY),
                 str(target),

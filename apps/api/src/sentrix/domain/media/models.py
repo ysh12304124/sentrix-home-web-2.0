@@ -141,6 +141,11 @@ class VideoMetadata:
     # 容错口径是 ``int(frames or 0)`` 且缺了就当 0）。**缺了就是 0，不是错误**：
     # 很多容器根本不给 ``nb_frames``（见 ``infrastructure/media/video_metadata.py``）。
     frame_count: int = 0
+    # None means this legacy probe has not inspected audio streams.
+    audio_stream_index: int | None = None
+    audio_source_start_sec: float | None = None
+    audio_duration_sec: float | None = None
+    audio_probed: bool = False
 
     def gps(self) -> GpsPoint | None:
         """经纬度 -> ``GpsPoint``，两个都解析出来才算。"""

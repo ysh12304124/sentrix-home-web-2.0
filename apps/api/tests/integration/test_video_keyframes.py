@@ -44,14 +44,14 @@ def test_the_command_seeks_before_the_input_and_takes_exactly_one_frame(tmp_path
         return Mock(returncode=0, stdout="", stderr="")
 
     with patch(PATCH_TARGET, side_effect=fake_run) as run:
-        _extractor(tmp_path).extract(source, "asset_1", 0, 30.0)
+        _extractor(tmp_path).extract(source, "asset_1", 0, 6.434733333)
 
     command = run.call_args.args[0]
     assert command[0] == "ffmpeg"
     # ``-ss`` 必须在 ``-i`` 之前：输入侧 seek。放到后面 ffmpeg 会整段解码到该秒，
     # 一个几小时的录像就是几十分钟的等待——命令仍然正确，只是慢得不可用。
     assert command.index("-ss") < command.index("-i")
-    assert command[command.index("-ss") + 1] == "30.000"
+    assert command[command.index("-ss") + 1] == "6.434733"
     assert command[command.index("-frames:v") + 1] == "1"
 
 

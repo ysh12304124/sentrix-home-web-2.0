@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import tempfile
 import wave
+from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import httpx
+import numpy as np
+import sherpa_onnx
 
 from sentrix.domain.media.ports import TranscriptionSegment
+
+log = logging.getLogger(__name__)
 
 
 class QwenAudioTranscriber:
@@ -24,11 +31,22 @@ class QwenAudioTranscriber:
 
     CHUNK_SECONDS = 15.0
 
-    def __init__(self, base_url: str, model: str, *, api_key: str = "", timeout_s: float = 300.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        *,
+        api_key: str = "",
+        timeout_s: float = 300.0,
+        speaker_model_dir: Path | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key = api_key.strip()
         self._timeout_s = timeout_s
+        self._speaker_model_dir = speaker_model_dir
+        self._speaker_model: Any = None
+        self._speaker_lock = Lock()
 
     def transcribe_video(self, path: Path) -> tuple[TranscriptionSegment, ...]:
         with tempfile.TemporaryDirectory(prefix="sentrix-asr-") as temporary:
@@ -42,6 +60,8 @@ class QwenAudioTranscriber:
                     "error",
                     "-i",
                     str(path),
+                    "-map",
+                    "0:a:0",
                     "-vn",
                     "-ac",
                     "1",
@@ -57,57 +77,85 @@ class QwenAudioTranscriber:
                 text=True,
                 timeout=self._timeout_s,
             )
-            with wave.open(str(audio_path), "rb") as audio:
-                duration = audio.getnframes() / float(audio.getframerate())
-
-            chunk_pattern = directory / "chunk_%05d.wav"
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-i",
-                    str(audio_path),
-                    "-f",
-                    "segment",
-                    "-segment_time",
-                    str(self.CHUNK_SECONDS),
-                    "-reset_timestamps",
-                    "1",
-                    "-c",
-                    "copy",
-                    str(chunk_pattern),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_s,
-            )
-            chunks = sorted(directory.glob("chunk_*.wav"))
+            chunk_path = directory / "chunk.wav"
             headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
             result: list[TranscriptionSegment] = []
-            for index, chunk_path in enumerate(chunks):
-                offset = index * self.CHUNK_SECONDS
-                with chunk_path.open("rb") as audio:
-                    response = httpx.post(
-                        f"{self._base_url}/audio/transcriptions",
-                        headers=headers,
-                        data={"model": self._model, "response_format": "json"},
-                        files={"file": (chunk_path.name, audio, "audio/wav")},
-                        timeout=self._timeout_s,
-                    )
-                response.raise_for_status()
-                payload: Any = response.json()
-                native_segments = payload.get("segments") or []
-                if native_segments:
-                    result.extend(_native_segments(native_segments, offset))
-                    continue
-                text = _clean_transcript(str(payload.get("text") or ""))
-                end = min(offset + self.CHUNK_SECONDS, duration)
-                if text and end > offset:
-                    result.append(TranscriptionSegment(offset, end, text))
+            with wave.open(str(audio_path), "rb") as audio:
+                rate = audio.getframerate()
+                step = int(self.CHUNK_SECONDS * rate)
+                for start_sample in range(0, audio.getnframes(), step):
+                    offset = start_sample / rate
+                    end = min(start_sample + step, audio.getnframes()) / rate
+                    with wave.open(str(chunk_path), "wb") as chunk:
+                        chunk.setparams(audio.getparams())
+                        chunk.writeframes(audio.readframes(step))
+                    with chunk_path.open("rb") as chunk_file:
+                        response = httpx.post(
+                            f"{self._base_url}/audio/transcriptions",
+                            headers=headers,
+                            data={"model": self._model, "response_format": "verbose_json"},
+                            files={"file": (chunk_path.name, chunk_file, "audio/wav")},
+                            timeout=self._timeout_s,
+                        )
+                    response.raise_for_status()
+                    payload: Any = response.json()
+                    native_segments = payload.get("segments") or []
+                    if native_segments:
+                        result.extend(_native_segments(native_segments, offset, end))
+                        continue
+                    text = _clean_transcript(str(payload.get("text") or ""))
+                    if text and end > offset:
+                        result.append(TranscriptionSegment(offset, end, text))
+            if any(not segment.speaker for segment in result):
+                try:
+                    return _label_speech(result, self._speaker_turns(audio_path))
+                except Exception:  # noqa: BLE001 — retain successful transcription
+                    log.warning("video speaker diarization failed path=%s", path, exc_info=True)
             return tuple(result)
+
+    def _speaker_turns(self, audio_path: Path) -> list[tuple[float, float, int]]:
+        if self._speaker_model_dir is None:
+            return []
+        segmentation = self._speaker_model_dir / "segmentation.onnx"
+        embedding = self._speaker_model_dir / "embedding.onnx"
+        if not segmentation.is_file() or not embedding.is_file():
+            return []
+        with self._speaker_lock:
+            if self._speaker_model is None:
+                config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+                    segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                        pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(str(segmentation))
+                    ),
+                    embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(str(embedding)),
+                    clustering=sherpa_onnx.FastClusteringConfig(),
+                )
+                self._speaker_model = sherpa_onnx.OfflineSpeakerDiarization(config)
+            with wave.open(str(audio_path), "rb") as wave_file:
+                pcm = np.frombuffer(wave_file.readframes(wave_file.getnframes()), dtype="<i2")
+            samples = pcm.astype(np.float32) / 32768.0
+            result = self._speaker_model.process(samples)
+            return [(turn.start, turn.end, turn.speaker) for turn in result.sort_by_start_time()]
+
+
+def _label_speech(
+    segments: list[TranscriptionSegment], turns: list[tuple[float, float, int]]
+) -> tuple[TranscriptionSegment, ...]:
+    labelled: list[TranscriptionSegment] = []
+    for segment in segments:
+        if segment.speaker:
+            labelled.append(segment)
+            continue
+        overlap: dict[int, float] = {}
+        for start, end, speaker in turns:
+            duration = min(segment.end_sec, end) - max(segment.start_sec, start)
+            if duration > 0:
+                overlap[speaker] = overlap.get(speaker, 0.0) + duration
+        if overlap:
+            speaker, duration = max(overlap.items(), key=lambda item: item[1])
+            if duration >= 0.2 and duration >= sum(overlap.values()) * 0.75:
+                segment = replace(segment, speaker=f"speaker_{speaker + 1}")
+        labelled.append(segment)
+    return tuple(labelled)
 
 
 def _clean_transcript(text: str) -> str:
@@ -116,7 +164,9 @@ def _clean_transcript(text: str) -> str:
     return " ".join(cleaned.split()).strip()
 
 
-def _native_segments(items: list[dict[str, object]], offset: float) -> list[TranscriptionSegment]:
+def _native_segments(
+    items: list[dict[str, object]], offset: float, limit: float
+) -> list[TranscriptionSegment]:
     result: list[TranscriptionSegment] = []
     for item in items:
         try:
@@ -124,13 +174,14 @@ def _native_segments(items: list[dict[str, object]], offset: float) -> list[Tran
             text = _clean_transcript(str(item.get("text") or ""))
         except (KeyError, TypeError, ValueError):
             continue
-        if start >= 0 and end > start and text:
+        end = min(end, limit)
+        if start >= offset and end > start and text:
             result.append(
                 TranscriptionSegment(
                     start_sec=start,
                     end_sec=end,
                     text=text,
-                    speaker=str(item.get("speaker") or "").strip(),
+                    speaker=str(item.get("speaker_label") or item.get("speaker") or "").strip(),
                 )
             )
     return result
