@@ -1125,3 +1125,28 @@ def face_instance_crop(face_instance_id: str, container: Container = Depends(get
         media_type="image/jpeg",
         headers={"Cache-Control": FACE_CROP_CACHE_CONTROL},
     )
+
+
+@router.get("/assets/{asset_id}/people")
+def asset_people(
+    asset_id: str, container: Container = Depends(get_container)
+) -> dict[str, object]:
+    """一张照片里**已绑到人物实体**的脸。
+
+    bridge（STW）回答"照片里是谁"时直接读这里，不再依赖手写标注表。
+    只返回绑了的；聚类里还没合并进实体的不出现——那条边界由
+    ``list_photo_identities`` 的 INNER JOIN 决定，这里不另判一遍。
+    """
+    records = container.face_repository.list_photo_identities(asset_id)
+    return {
+        "items": [
+            {
+                "person_id": record.entity_id,
+                "name": record.person_name,
+                "family_role": record.family_role,
+                "face_instance_id": record.face_instance_id,
+                "cluster_id": record.cluster_id,
+            }
+            for record in records
+        ]
+    }
