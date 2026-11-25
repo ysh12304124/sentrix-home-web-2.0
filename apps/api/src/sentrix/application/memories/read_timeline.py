@@ -21,7 +21,7 @@ from sentrix.domain.places.ports import AssetPlaceRepository
 DEFAULT_SCOPE_ID = "home-default"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
-EVENT_SCAN_LIMIT = 1000
+EVENT_SCAN_LIMIT = 10000
 #: 没有拍摄时间的事件桶。与日期筛选参数共用一个字面量。
 UNKNOWN_DAY = "unknown"
 
