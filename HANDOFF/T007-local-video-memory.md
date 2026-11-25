@@ -20,3 +20,5 @@
 
 
 GitHub yxw 交付说明见 [视频功能修改说明](../docs/reports/20261125-video-function-changes.md) 和 [测试发现的其他待修改部分](../docs/reports/20261125-other-module-test-followups.md)。
+
+两份 GitHub 说明已补充内部资产、视频、帧、分组、音轨、转写片段与任务编号的关系，以及同一工程内的视频和普通图片分离方式与跨模块验收项。
