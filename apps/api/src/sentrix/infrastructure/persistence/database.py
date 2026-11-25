@@ -159,6 +159,29 @@ class Database:
                     return done is None
                 if done is not None:
                     done, record_version = None, script.stem
+            # hpq already shipped the email/text-memory migrations as 0033–0037.
+            # Keep those schemas when main introduces its own migrations at 0033–0036;
+            # on an existing database record the new unique revision without replaying DDL.
+            local_text_schema_exists = {
+                "0041_unified_text_memory.sql": (
+                    Database._column_exists(connection, "observations", "source_metadata_json")
+                    and Database._table_exists(connection, "text_import_state")
+                ),
+                "0042_text_sources.sql": (
+                    Database._column_exists(connection, "assets", "external_source_id")
+                    and Database._column_exists(connection, "observations", "source_text")
+                ),
+                "0043_text_chunks.sql": Database._table_exists(connection, "text_memory_chunks"),
+                "0044_text_result_offsets.sql": Database._column_exists(
+                    connection, "agent_result_sets", "text_offsets_json"
+                ),
+                "0045_text_fts_relations.sql": Database._table_exists(connection, "text_source_fts")
+                and Database._table_exists(connection, "text_source_link_keys"),
+            }.get(script.name, False)
+            if done is None and local_text_schema_exists:
+                connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version,))
+                connection.execute("COMMIT")
+                return True
             # A prior database can contain the numeric 0020 marker while
             # agent_result_sets still lacks the attempt ownership columns.
             # Validate the schema as well as the ledger and repair idempotently.
