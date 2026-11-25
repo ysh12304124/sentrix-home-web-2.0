@@ -556,7 +556,16 @@ class OpenAIVlmObserver:
     def _observe_encoded(self, image: str, prompt: str) -> ObservationSemantics | None:
         parsed = self._chat(prompt, image)
         calls = 1
-        if parsed is None:
+        if parsed is None or not parsed:
+            # Qwen3.8-flash 偶发空回复：finish_reason=stop，content 只有 2 个字符，
+            # 同一请求重试一次通常就能拿到完整 JSON。不重试会把整张图静默记成空观察。
+            log.warning("观察模型返回空结果，重试一次")
+            retried = self._chat(prompt, image)
+            calls += 1
+            if retried is not None and retried:
+                parsed = retried
+        if parsed is None or not parsed:
+            log.warning("观察模型连续返回空结果，放弃本次观察")
             return None
 
         if not any(_text(parsed.get(field)) for field in _LANGUAGE_FIELDS) and not parsed.get("objects"):
