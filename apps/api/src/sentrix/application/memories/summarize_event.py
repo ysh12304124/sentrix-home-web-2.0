@@ -43,6 +43,14 @@ log = logging.getLogger("sentrix.memories.summarize_event")
 # 1.0 ``:660``：这三个是占位标题，模型原样返回它们等于没总结。
 PLACEHOLDER_TITLES = frozenset({"待总结事件", "待确认的家庭记录", "待判断"})
 
+def needs_summary(event: EventRecord) -> bool:
+    """批末收尾只补仍带占位标题或空摘要的事件。
+
+    已有真实标题和摘要的事件算完成：重跑 finalize/recover 时不能把已经总结过的
+    事件再调一次模型、覆盖原来的结果。
+    """
+    return not (event.summary.strip() and event.title.strip() and event.title not in PLACEHOLDER_TITLES)
+
 # 1.0 ``:655``：确定性摘要的固定置信度。
 FALLBACK_CONFIDENCE = 0.45
 FALLBACK_MODEL = "deterministic_event_fallback"

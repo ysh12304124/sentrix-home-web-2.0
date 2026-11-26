@@ -33,7 +33,7 @@ from sentrix.application.memories.assign_events import (
 )
 from sentrix.application.memories.build_graph import BuildMemoryGraph
 from sentrix.application.memories.maintain_facts import MaintainFacts
-from sentrix.application.memories.summarize_event import SummarizeEvent
+from sentrix.application.memories.summarize_event import SummarizeEvent, needs_summary
 from sentrix.application.memories.sync_corrections import ReindexCorrectedMemories, SyncCorrections
 from sentrix.application.retrieval.index_observation_text import IndexObservationText
 from sentrix.application.retrieval.index_visual import IndexAssetVisual
@@ -182,12 +182,12 @@ def build_media_postprocess(container: Container) -> Callable[[str, int], list[s
             model=container.chat_model,
         )
         # 事件之间彼此独立，模型调用可以并行；数据库写入由 30s busy_timeout + WAL 串行化。
+        # 事件归属会先写一句初步摘要，但标题仍是“待总结事件”；只按 summary
+        # 判断会把这些事件永久跳过，时间线就一直是占位标题。判据与批末收尾共用。
         pending = [
             event
             for event in container.event_repository.list_by_scope(scope_id, limit=10000)
-            # 事件归属会先写一句初步摘要，但标题仍是“待总结事件”；只按 summary
-            # 判断会把这些事件永久跳过，时间线就一直是占位标题。
-            if not (event.summary.strip() and event.title.strip() not in {"", "待总结事件"})
+            if needs_summary(event)
         ]
         total = len(pending)
         _stage(scope_id, generation, "event_summary", total=total)

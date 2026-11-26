@@ -96,11 +96,23 @@ def test_finalize_requires_processed_sources_and_never_prepares_media(client, tm
     monkeypatch.setattr(ProcessAlbumPipeline, "_summarize_events", record_events)
     result = client.post("/api/v1/pipeline/finalize", json={**payload, "operation_id": "recovery"})
     assert result.status_code == 200, result.text
-    assert event_ids
+    assert event_ids == [], "已总结过的事件不能在 finalize 里再次调用模型"
     assert result.json()["processed"] == 0 and result.json()["skipped"] == 1
-    assert result.json()["summarized"] == len(event_ids)
+    assert result.json()["summarized"] == 0
     assert result.json()["memory_graph"] is not None
     assert client.get("/api/v1/pipeline/operations/recovery").json()["result"] == result.json()
+
+    # 只有退回占位标题的事件才重新总结：finalize 要能补缺，也要不动已完成的。
+    container = client.app.state.container  # type: ignore[attr-defined]
+    event = container.event_repository.list_by_scope("finish-scope", limit=10)[0]
+    container.event_repository.apply_summary(
+        event.id, title="待总结事件", event_type=event.event_type, activity=event.activity, summary=""
+    )
+    event_ids.clear()
+    refill = client.post("/api/v1/pipeline/finalize", json={**payload, "operation_id": "refill"})
+    assert refill.status_code == 200, refill.text
+    assert event_ids == [event.id]
+    assert refill.json()["summarized"] == 1
 
 
 def test_recover_processes_only_unfinished_sources_and_receipt_survives_tracker_restart(

@@ -60,7 +60,7 @@ from sentrix.application.memories.read_timeline import (
 from sentrix.application.memories.read_timeline import (
     TimelineEventSummary as TimelineEventSummaryResult,
 )
-from sentrix.application.memories.summarize_event import SummarizeEvent
+from sentrix.application.memories.summarize_event import SummarizeEvent, needs_summary
 from sentrix.bootstrap.container import Container
 from sentrix.bootstrap.import_wiring import build_import_assets, refresh_memory_graph
 from sentrix.domain.media.progress import OperationCancelled
@@ -474,6 +474,7 @@ def _execute_pipeline(
             for event in container.event_repository.list_by_scope(
                 request.scope_id, limit=container.event_repository.count_by_scope(request.scope_id)
             )
+            if needs_summary(event)
         )
         if finalize_only or resume_interrupted
         else ()
